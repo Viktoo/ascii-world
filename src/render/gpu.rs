@@ -130,7 +130,7 @@ impl Gpu {
         g.probe = [n as u32, mode, tid, 0];
         let ub = self.buf("probe-globals", std::mem::size_of::<Globals>() as u64, U::UNIFORM | U::COPY_DST);
         self.queue.write_buffer(&ub, 0, bytemuck::bytes_of(&g));
-        let ib = self.buf("probe-inst", 80, U::STORAGE | U::COPY_DST);
+        let ib = self.buf("probe-inst", INST_BYTES, U::STORAGE | U::COPY_DST);
         self.queue.write_buffer(&ib, 0, bytemuck::bytes_of(inst));
         let cb = self.buf("probe-cells", 16, U::STORAGE);
         let tb = self.buf("probe-items", 16, U::STORAGE);
@@ -220,6 +220,7 @@ struct Renderer {
 }
 
 const SLOTS: usize = 3;
+const INST_BYTES: u64 = std::mem::size_of::<GpuInst>() as u64;
 /// Heightmap: 512² cells of 0.75 m (±192 m), recentred every 24 m.
 const HMAP_N: usize = 512;
 const HMAP_CELL: f32 = 0.75;
@@ -229,7 +230,7 @@ impl Renderer {
     fn new(gpu: Arc<Gpu>) -> Renderer {
         use wgpu::BufferUsages as U;
         let globals = gpu.buf("globals", std::mem::size_of::<Globals>() as u64, U::UNIFORM | U::COPY_DST);
-        let inst = gpu.buf("inst", 80 * 256, U::STORAGE | U::COPY_DST);
+        let inst = gpu.buf("inst", INST_BYTES * 256, U::STORAGE | U::COPY_DST);
         let cells = gpu.buf("cells", 8 * 1024, U::STORAGE | U::COPY_DST);
         let items = gpu.buf("items", 4 * 4096, U::STORAGE | U::COPY_DST);
         let out = gpu.buf("out", 4 * 64 * 64, U::STORAGE | U::COPY_SRC);
@@ -248,7 +249,7 @@ impl Renderer {
             gpu,
             globals,
             inst,
-            inst_cap: 80 * 256,
+            inst_cap: INST_BYTES * 256,
             cells,
             cells_cap: 8 * 1024,
             items,
@@ -291,7 +292,7 @@ impl Renderer {
             _ => (vec![[0, 0]], vec![0]),
         };
         let mut dirty = self.bind.is_none();
-        dirty |= Self::ensure(&gpu, &mut self.inst, &mut self.inst_cap, (insts.len() * 80) as u64, "inst", U::STORAGE | U::COPY_DST);
+        dirty |= Self::ensure(&gpu, &mut self.inst, &mut self.inst_cap, insts.len() as u64 * INST_BYTES, "inst", U::STORAGE | U::COPY_DST);
         dirty |= Self::ensure(&gpu, &mut self.cells, &mut self.cells_cap, (cells.len() * 8) as u64, "cells", U::STORAGE | U::COPY_DST);
         dirty |= Self::ensure(&gpu, &mut self.items, &mut self.items_cap, (items.len() * 4) as u64, "items", U::STORAGE | U::COPY_DST);
         dirty |= Self::ensure(&gpu, &mut self.out, &mut self.out_cap, npx * 4, "out", U::STORAGE | U::COPY_SRC);

@@ -1,0 +1,271 @@
+//! The live layer: things that move, burn, grow or act. Most of the world is
+//! static and versioned (story instances, procedural scatter); a thing joins
+//! the live layer the moment it is touched, thrown, set alight, or has
+//! behaviour code. Live things are saved continuously, not versioned.
+
+use super::ActorId;
+use super::props::*;
+use crate::world::TypeEntry;
+use glam::Vec3;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+
+pub type ThingId = i64;
+
+/// Where a live thing came from.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Origin {
+    /// Story instance it was promoted from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<i64>,
+    /// Scatter cell it was picked from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<(i32, i32)>,
+    /// Who made it ("the traveller", a character's name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
+    /// What it was made from (names).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub made_from: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Thing {
+    pub id: ThingId,
+    pub type_id: u32,
+    /// Origin position (as for a placed instance: the type's local origin).
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub yaw: f32,
+    pub spin: f32,
+    pub scale: f32,
+    pub params: [f32; 8],
+    /// Behaviour state, visible to the shape as k.s0 … k.s7.
+    pub state: [f32; 8],
+    pub props: Props,
+    pub holder: Option<ActorId>,
+    /// A second holder carrying it together with the first.
+    pub co_holder: Option<ActorId>,
+    pub asleep: bool,
+    /// Never moves (buildings, very heavy things).
+    pub anchored: bool,
+    pub origin: Origin,
+    /// Game time it joined the live layer.
+    pub born: f64,
+    /// Who last threw it, and when.
+    pub thrown_by: Option<(ActorId, f64)>,
+    pub rest_t: f32,
+    pub in_contact: bool,
+    pub removed: bool,
+    pub dirty: bool,
+    /// Last behaviour tick (game time).
+    pub last_tick: f64,
+    /// Recently fired rules (name, game time), newest last.
+    pub fired: Vec<(String, f64)>,
+    /// Earliest game time behaviour code may spawn again.
+    pub cooldown: f64,
+    /// The type it last fell through (one "through" per throw).
+    pub through: Option<u32>,
+}
+
+impl Thing {
+    pub fn new(id: ThingId, ty: &TypeEntry, pos: Vec3, yaw: f32, scale: f32, params: [f32; 8], props: Props, born: f64) -> Thing {
+        let anchored = props[P_MASS] >= ANCHOR_MASS || ty.has_tag("building") || ty.has_tag("landmark");
+        Thing {
+            id,
+            type_id: ty.id,
+            pos,
+            vel: Vec3::ZERO,
+            yaw,
+            spin: 0.0,
+            scale,
+            params,
+            state: [0.0; 8],
+            props,
+            holder: None,
+            co_holder: None,
+            asleep: true,
+            anchored,
+            origin: Origin::default(),
+            born,
+            thrown_by: None,
+            rest_t: 0.0,
+            in_contact: true,
+            removed: false,
+            dirty: true,
+            last_tick: born,
+            fired: Vec::new(),
+            cooldown: 0.0,
+            through: None,
+        }
+    }
+
+    pub fn held(&self) -> bool {
+        self.holder.is_some()
+    }
+
+    pub fn mass(&self) -> f32 {
+        self.props[P_MASS]
+    }
+
+    /// Holdable by one person / by two together.
+    pub fn liftable(&self, holders: usize) -> bool {
+        !self.anchored && self.mass() <= STRENGTH * holders as f32
+    }
+
+    /// Physics proxy: a sphere around the centre of the shape.
+    pub fn proxy(&self, ty: &TypeEntry) -> (Vec3, f32) {
+        let b = ty.ct.meta.bounds;
+        let r = (b[0].min(b[1]).min(b[2]) * self.scale).clamp(0.03, 1.2);
+        let cy = (ty.bottom + r / self.scale.max(0.01)) * self.scale;
+        (self.pos + Vec3::Y * cy, r)
+    }
+
+    /// The origin height that puts the shape's lowest point on `ground`.
+    pub fn rest_y(&self, ty: &TypeEntry, ground: f32) -> f32 {
+        ground - ty.bottom * self.scale
+    }
+
+    pub fn note_rule(&mut self, name: &str, t: f64) {
+        if self.fired.last().is_some_and(|(n, _)| n == name) {
+            if let Some(last) = self.fired.last_mut() {
+                last.1 = t;
+            }
+            return;
+        }
+        self.fired.push((name.to_string(), t));
+        if self.fired.len() > 8 {
+            self.fired.remove(0);
+        }
+    }
+}
+
+/// All live things, in id order (iteration order is part of determinism).
+#[derive(Default)]
+pub struct Things {
+    pub map: BTreeMap<ThingId, Thing>,
+    pub next_id: ThingId,
+    grid: HashMap<(i32, i32), Vec<ThingId>>,
+    grid_dirty: bool,
+    /// Story instances that live here now (hidden from the static layer).
+    pub by_instance: HashMap<i64, ThingId>,
+    /// Scatter cells whose item was taken into the live layer.
+    pub taken: HashMap<(i32, i32), ThingId>,
+    /// Removed ids not yet deleted from the database.
+    pub removed: Vec<ThingId>,
+    /// Scatter cells whose item was used up (eaten, burnt), and when.
+    pub spent_cells: std::collections::BTreeMap<(i32, i32), f64>,
+}
+
+const GRID: f32 = 8.0;
+
+fn gcell(p: Vec3) -> (i32, i32) {
+    ((p.x / GRID).floor() as i32, (p.z / GRID).floor() as i32)
+}
+
+impl Things {
+    pub fn alloc(&mut self) -> ThingId {
+        self.next_id = self.next_id.max(1);
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    pub fn insert(&mut self, t: Thing) {
+        if let Some(i) = t.origin.instance {
+            self.by_instance.insert(i, t.id);
+        }
+        if let Some(c) = t.origin.cell {
+            self.taken.insert(c, t.id);
+        }
+        self.next_id = self.next_id.max(t.id + 1);
+        self.map.insert(t.id, t);
+        self.grid_dirty = true;
+    }
+
+    pub fn get(&self, id: ThingId) -> Option<&Thing> {
+        self.map.get(&id).filter(|t| !t.removed)
+    }
+
+    pub fn get_mut(&mut self, id: ThingId) -> Option<&mut Thing> {
+        self.map.get_mut(&id).filter(|t| !t.removed)
+    }
+
+    /// Remove a thing. The story instance or scatter item it came from stays
+    /// hidden (it was moved, burnt or eaten, not undone).
+    pub fn remove(&mut self, id: ThingId) {
+        if let Some(t) = self.map.get_mut(&id) {
+            if let Some(c) = t.origin.cell {
+                self.spent_cells.insert(c, t.born.max(t.last_tick));
+                self.taken.insert(c, -1);
+            }
+            t.removed = true;
+            t.holder = None;
+            t.co_holder = None;
+            self.removed.push(id);
+            self.grid_dirty = true;
+        }
+    }
+
+    /// Forget a thing completely (its source was undone): the source shows again.
+    pub fn forget(&mut self, id: ThingId) {
+        if let Some(t) = self.map.remove(&id) {
+            if let Some(i) = t.origin.instance {
+                self.by_instance.remove(&i);
+            }
+            if let Some(c) = t.origin.cell {
+                self.taken.remove(&c);
+            }
+            self.removed.push(id);
+            self.grid_dirty = true;
+        }
+    }
+
+    pub fn moved(&mut self) {
+        self.grid_dirty = true;
+    }
+
+    fn rebuild(&mut self) {
+        self.grid.clear();
+        for (id, t) in &self.map {
+            if !t.removed {
+                self.grid.entry(gcell(t.pos)).or_default().push(*id);
+            }
+        }
+        self.grid_dirty = false;
+    }
+
+    /// Ids of things whose origin is within `r` of `p` (sorted).
+    pub fn near(&mut self, p: Vec3, r: f32) -> Vec<ThingId> {
+        if self.grid_dirty {
+            self.rebuild();
+        }
+        let mut out = Vec::new();
+        let n = (r / GRID).ceil() as i32;
+        let c = gcell(p);
+        for dz in -n..=n {
+            for dx in -n..=n {
+                if let Some(v) = self.grid.get(&(c.0 + dx, c.1 + dz)) {
+                    for id in v {
+                        if let Some(t) = self.map.get(id) {
+                            let d = t.pos - p;
+                            if d.x * d.x + d.z * d.z <= r * r && !t.removed {
+                                out.push(*id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    pub fn live(&self) -> impl Iterator<Item = &Thing> {
+        self.map.values().filter(|t| !t.removed)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.values().filter(|t| !t.removed).count()
+    }
+}

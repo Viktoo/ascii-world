@@ -45,7 +45,7 @@ pub fn check(src: &str) -> Result<Module, Vec<Diag>> {
         }
         return Err(out);
     }
-    let mut cx = Cx { src, diags: Vec::new() };
+    let mut cx = Cx { src, diags: Vec::new(), prop_names: Vec::new() };
     let module = cx.program(&ret.program);
     match module {
         Some(m) if cx.diags.is_empty() => Ok(m),
@@ -82,6 +82,8 @@ fn nesting_too_deep(src: &str) -> Option<u32> {
 struct Cx<'s> {
     src: &'s str,
     diags: Vec<Diag>,
+    /// Property names referenced by behaviour code, shared by all functions.
+    prop_names: Vec<String>,
 }
 
 impl<'s> Cx<'s> {
@@ -94,6 +96,7 @@ impl<'s> Cx<'s> {
         let mut meta = None;
         let mut sdf_fn: Option<&js::Function<'a>> = None;
         let mut color_fn: Option<&js::Function<'a>> = None;
+        let mut behavior_fns: Vec<(Behavior, &js::Function<'a>)> = Vec::new();
         let mut consts: Vec<(&'a str, &js::Expression<'a>, Span)> = Vec::new();
 
         for d in p.directives.iter() {
@@ -108,7 +111,11 @@ impl<'s> Cx<'s> {
                             "sdf" if sdf_fn.is_none() => sdf_fn = Some(f),
                             "color" if color_fn.is_none() => color_fn = Some(f),
                             "sdf" | "color" => self.err(f.span, format!("{name}() is defined twice")),
-                            _ => self.err(f.span, format!("only sdf() and color() may be exported, not '{name}'")),
+                            n => match Behavior::from_name(n) {
+                                Some(b) if behavior_fns.iter().any(|(x, _)| *x == b) => self.err(f.span, format!("{name}() is defined twice")),
+                                Some(b) => behavior_fns.push((b, f)),
+                                None => self.err(f.span, format!("only sdf(), color(), tick(), use() and touch() may be exported, not '{name}'")),
+                            },
                         }
                     }
                     js::Declaration::VariableDeclaration(vd) => {
@@ -127,7 +134,7 @@ impl<'s> Cx<'s> {
                             }
                         }
                     }
-                    other => self.err(other.span(), "only meta, sdf() and color() may be exported"),
+                    other => self.err(other.span(), "only meta, sdf(), color(), tick(), use() and touch() may be exported"),
                 },
                 Statement::VariableDeclaration(vd) => {
                     if vd.kind != js::VariableDeclarationKind::Const {
@@ -143,7 +150,7 @@ impl<'s> Cx<'s> {
                 }
                 Statement::FunctionDeclaration(f) => {
                     let name = f.id.as_ref().map(|i| i.name.as_str()).unwrap_or("?");
-                    self.err(f.span, format!("helper function '{name}' is not allowed; only exported sdf() and color()"));
+                    self.err(f.span, format!("helper function '{name}' is not allowed; only the exported sdf(), color(), tick(), use() and touch()"));
                 }
                 Statement::ImportDeclaration(s) => self.err(s.span, "import is not allowed"),
                 Statement::EmptyStatement(_) => {}
@@ -166,9 +173,16 @@ impl<'s> Cx<'s> {
         if color_fn.is_none() {
             self.diags.push(Diag::new(Stage::Allowlist, 1, "missing `export function color(x, y, z, k)`".into()));
         }
-        let sdf = sdf_fn.and_then(|f| self.function(f, "sdf", Ty::F, &consts));
-        let color = color_fn.and_then(|f| self.function(f, "color", Ty::V, &consts));
-        Some(Module { meta: meta?, sdf: sdf?, color: color? })
+        let lists = meta.as_ref().map(|m| [m.says.len(), m.sounds.len(), m.spawns.len()]);
+        let sdf = sdf_fn.and_then(|f| self.function(f, "sdf", Role::Shape(Ty::F), &consts, lists));
+        let color = color_fn.and_then(|f| self.function(f, "color", Role::Shape(Ty::V), &consts, lists));
+        let mut behaviors = Vec::new();
+        for (b, f) in behavior_fns {
+            if let Some(func) = self.function(f, b.name(), Role::Behavior(b), &consts, lists) {
+                behaviors.push((b, func));
+            }
+        }
+        Some(Module { meta: meta?, sdf: sdf?, color: color?, behaviors, prop_names: std::mem::take(&mut self.prop_names) })
     }
 
     fn top_level_reject(&mut self, st: &Statement) {
@@ -180,6 +194,8 @@ impl<'s> Cx<'s> {
         let mut name = None;
         let mut bounds = None;
         let mut tags = Vec::new();
+        let mut props: Vec<(String, f32)> = Vec::new();
+        let mut lists: [Vec<String>; 3] = Default::default();
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -224,6 +240,34 @@ impl<'s> Cx<'s> {
                     }
                     _ => self.err(p.span, "meta.tags must be an array of strings"),
                 },
+                "props" => match &p.value {
+                    Expression::ObjectExpression(po) => props = self.meta_props(po),
+                    _ => self.err(p.span, "meta.props must be an object of numbers, e.g. { mass: 2, burns: 0.5 }"),
+                },
+                "says" | "sounds" | "spawns" => {
+                    let slot = match key.as_str() {
+                        "says" => 0,
+                        "sounds" => 1,
+                        _ => 2,
+                    };
+                    match &p.value {
+                        Expression::ArrayExpression(a) => {
+                            for el in a.elements.iter() {
+                                match el {
+                                    js::ArrayExpressionElement::StringLiteral(s) if lists[slot].len() < 8 => {
+                                        lists[slot].push(s.value.as_str().chars().take(120).collect::<String>())
+                                    }
+                                    js::ArrayExpressionElement::StringLiteral(_) => {
+                                        self.err(a.span, format!("meta.{key} may hold at most 8 entries"));
+                                        break;
+                                    }
+                                    _ => self.err(a.span, format!("meta.{key} must be an array of strings")),
+                                }
+                            }
+                        }
+                        _ => self.err(p.span, format!("meta.{key} must be an array of strings")),
+                    }
+                }
                 _ => {
                     // Unknown keys are tolerated if they are inert literals.
                     if !is_inert_literal(&p.value) {
@@ -243,7 +287,52 @@ impl<'s> Cx<'s> {
             self.err(o.span, "meta.bounds is required");
             return None;
         };
-        Some(Meta { name, bounds, tags })
+        let [says, sounds, spawns] = lists;
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns })
+    }
+
+    fn meta_props(&mut self, o: &js::ObjectExpression) -> Vec<(String, f32)> {
+        let mut out: Vec<(String, f32)> = Vec::new();
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
+                self.err(o.span, "spread is not allowed in meta.props");
+                continue;
+            };
+            let key = match &p.key {
+                js::PropertyKey::StaticIdentifier(id) if !p.computed => id.name.as_str().to_string(),
+                js::PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                _ => {
+                    self.err(p.span, "meta.props keys must be plain names");
+                    continue;
+                }
+            };
+            if !valid_prop_name(&key) || ctx_field(&key).is_some() {
+                self.err(p.span, format!("'{key}' is not a valid property name (lower-case letters, digits and _, not one of {})", CTX_FIELDS.join(", ")));
+                continue;
+            }
+            let v = match &p.value {
+                Expression::NumericLiteral(n) => Some(n.value as f32),
+                Expression::BooleanLiteral(b) => Some(if b.value { 1.0 } else { 0.0 }),
+                Expression::UnaryExpression(u) if u.operator == UnaryOperator::UnaryNegation => match &u.argument {
+                    Expression::NumericLiteral(n) => Some(-n.value as f32),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match v {
+                Some(v) if v.is_finite() && v.abs() <= 1e5 => {
+                    if out.iter().any(|(k, _)| *k == key) {
+                        self.err(p.span, format!("meta.props.{key} is given twice"));
+                    } else if out.len() >= MAX_PROPS {
+                        self.err(p.span, format!("meta.props may hold at most {MAX_PROPS} properties"));
+                    } else {
+                        out.push((key, v));
+                    }
+                }
+                _ => self.err(p.span, format!("meta.props.{key} must be a literal number or boolean")),
+            }
+        }
+        out
     }
 
     fn literal_numbers(&mut self, e: &Expression) -> Option<Vec<f32>> {
@@ -258,7 +347,7 @@ impl<'s> Cx<'s> {
         Some(v)
     }
 
-    fn function<'a>(&mut self, f: &js::Function<'a>, name: &'static str, ret: Ty, consts: &[(&'a str, &Expression<'a>, Span)]) -> Option<Func> {
+    fn function<'a>(&mut self, f: &js::Function<'a>, name: &'static str, role: Role, consts: &[(&'a str, &Expression<'a>, Span)], lists: Option<[usize; 3]>) -> Option<Func> {
         if f.r#async || f.generator {
             self.err(f.span, format!("{name}() must be a plain function (no async or generators)"));
         }
@@ -275,14 +364,28 @@ impl<'s> Cx<'s> {
         if f.params.rest.is_some() {
             self.err(f.params.span, "rest parameters are not allowed");
         }
-        if !(3..=4).contains(&params.len()) {
-            self.err(f.params.span, format!("{name}() must take (x, y, z, k)"));
-            return None;
+        match role {
+            Role::Shape(_) if !(3..=4).contains(&params.len()) => {
+                self.err(f.params.span, format!("{name}() must take (x, y, z, k)"));
+                return None;
+            }
+            Role::Behavior(b) if !(2..=4).contains(&params.len()) || (b == Behavior::Tick && params.len() > 3) => {
+                let sig = if b == Behavior::Tick { "(s, w, k)" } else { "(s, w, k, o)" };
+                self.err(f.params.span, format!("{name}() must take {sig}"));
+                return None;
+            }
+            _ => {}
         }
         let body = f.body.as_ref()?;
+        let ret = match role {
+            Role::Shape(t) => t,
+            Role::Behavior(_) => Ty::F,
+        };
         let mut lw = Lower {
             cx: self,
             fname: name,
+            role,
+            lists,
             params,
             locals: Vec::new(),
             scopes: vec![Vec::new()],
@@ -302,12 +405,38 @@ impl<'s> Cx<'s> {
             }
         }
         lw.block(&body.statements, &mut out);
-        if !always_returns(&out) {
+        if matches!(role, Role::Shape(_)) && !always_returns(&out) {
             let what = if ret == Ty::F { "a number" } else { "a colour, e.g. rgb(r, g, b)" };
             lw.cx.err(Span::new(body.span.end.saturating_sub(1), body.span.end), format!("{name}() can reach its end without returning; every path must return {what}"));
         }
         Some(Func { locals: lw.locals, body: out })
     }
+}
+
+/// What a function is for: a shape function returning a value of this type,
+/// or a behaviour entry point (no return value; may change state and props).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    Shape(Ty),
+    Behavior(Behavior),
+}
+
+/// What a parameter name stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParamRole {
+    /// x, y, z of a shape function.
+    Coord(u8),
+    K,
+    State,
+    World,
+    Other,
+}
+
+/// An assignable member in behaviour code.
+#[derive(Clone, Copy, Debug)]
+enum Target {
+    State(u8),
+    Prop(bool, u16),
 }
 
 fn is_inert_literal(e: &Expression) -> bool {
@@ -349,7 +478,7 @@ fn stmt_reject_reason(st: &Statement) -> Option<&'static str> {
         Statement::ExportAllDeclaration(_)
         | Statement::ExportDefaultDeclaration(_)
         | Statement::ExportNamedDeclaration(_)
-        | Statement::ExportFromDeclaration(_) => "only `export const meta`, `export function sdf` and `export function color` are allowed",
+        | Statement::ExportFromDeclaration(_) => "only `export const meta` and `export function` sdf, color, tick, use or touch are allowed",
         _ => return None,
     })
 }
@@ -357,7 +486,7 @@ fn stmt_reject_reason(st: &Statement) -> Option<&'static str> {
 /// True if every path through `stmts` ends in a return.
 pub fn always_returns(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|s| match s {
-        Stmt::Return(_) => true,
+        Stmt::Return(_) | Stmt::End => true,
         Stmt::If { then, els, .. } => always_returns(then) && always_returns(els),
         _ => false,
     })
@@ -366,6 +495,9 @@ pub fn always_returns(stmts: &[Stmt]) -> bool {
 struct Lower<'c, 's> {
     cx: &'c mut Cx<'s>,
     fname: &'static str,
+    role: Role,
+    /// Lengths of meta.says / meta.sounds / meta.spawns, when meta parsed.
+    lists: Option<[usize; 3]>,
     params: Vec<String>,
     locals: Vec<Local>,
     scopes: Vec<Vec<(String, u32)>>,
@@ -383,6 +515,105 @@ fn ex(kind: ExprKind, ty: Ty) -> Expr {
 impl<'c, 's> Lower<'c, 's> {
     fn err(&mut self, span: Span, msg: impl Into<String>) {
         self.cx.err(span, msg);
+    }
+
+    /// The role of a parameter name (if it is one and not shadowed).
+    fn param_role(&self, name: &str) -> Option<ParamRole> {
+        if self.lookup(name).is_some() {
+            return None;
+        }
+        let i = self.params.iter().position(|p| p == name)?;
+        Some(match self.role {
+            Role::Shape(_) => {
+                if i == 3 {
+                    ParamRole::K
+                } else {
+                    ParamRole::Coord(i as u8)
+                }
+            }
+            Role::Behavior(_) => match i {
+                0 => ParamRole::State,
+                1 => ParamRole::World,
+                2 => ParamRole::K,
+                _ => ParamRole::Other,
+            },
+        })
+    }
+
+    fn is_behavior(&self) -> bool {
+        matches!(self.role, Role::Behavior(_))
+    }
+
+    /// Index of a property name in the module's list (added on first use).
+    fn prop_index(&mut self, name: &str, span: Span) -> Option<u16> {
+        if !valid_prop_name(name) {
+            self.err(span, format!("'{name}' is not a property name (lower-case letters, digits and _)"));
+            return None;
+        }
+        if let Some(i) = self.cx.prop_names.iter().position(|p| p == name) {
+            return Some(i as u16);
+        }
+        if self.cx.prop_names.len() >= MAX_PROPS {
+            self.err(span, format!("behaviour code may use at most {MAX_PROPS} different properties"));
+            return None;
+        }
+        self.cx.prop_names.push(name.to_string());
+        Some((self.cx.prop_names.len() - 1) as u16)
+    }
+
+    /// A member that can be assigned in behaviour code: s.sN, w.<prop>, o.<prop>.
+    fn member_target(&mut self, m: &js::StaticMemberExpression) -> Option<Target> {
+        let field = m.property.name.as_str();
+        let Expression::Identifier(obj) = &m.object else {
+            self.err(m.span, "only s.<slot>, w.<property> and o.<property> can be assigned");
+            return None;
+        };
+        let on = obj.name.as_str();
+        match self.param_role(on) {
+            Some(ParamRole::State) => match state_field(field) {
+                Some(i) => Some(Target::State(i)),
+                None => {
+                    self.err(m.span, format!("{on}.{field} does not exist; state slots are {}", STATE_FIELDS.join(", ")));
+                    None
+                }
+            },
+            Some(ParamRole::World) => {
+                if ctx_field(field).is_some() {
+                    self.err(m.span, format!("{on}.{field} is read-only (it describes the situation); only properties can be set"));
+                    return None;
+                }
+                self.prop_index(field, m.span).map(|i| Target::Prop(false, i))
+            }
+            Some(ParamRole::Other) => {
+                if ctx_field(field).is_some() {
+                    self.err(m.span, format!("{on}.{field} is not a property"));
+                    return None;
+                }
+                self.prop_index(field, m.span).map(|i| Target::Prop(true, i))
+            }
+            Some(ParamRole::K) => {
+                self.err(m.span, format!("{on} (instance params) is read-only; keep changing values in s.s0 … s.s7"));
+                None
+            }
+            _ => {
+                self.err(m.span, "only s.<slot>, w.<property> and o.<property> can be assigned");
+                None
+            }
+        }
+    }
+
+    fn target_read(&self, t: Target) -> Expr {
+        match t {
+            Target::State(i) => ex(ExprKind::State(i), Ty::F),
+            Target::Prop(o, i) => ex(ExprKind::Prop { other: o, idx: i }, Ty::F),
+        }
+    }
+
+    fn target_write(t: Target, value: Expr) -> Stmt {
+        match t {
+            Target::State(idx) => Stmt::SetState { idx, value },
+            Target::Prop(other, idx) => Stmt::SetProp { other, idx, value },
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<u32> {
@@ -467,6 +698,10 @@ impl<'c, 's> Lower<'c, 's> {
             }
             Statement::BlockStatement(b) => self.block(&b.body, out),
             Statement::ForStatement(fs) => self.for_stmt(fs, out),
+            Statement::ReturnStatement(rs) if self.is_behavior() => match &rs.argument {
+                None => out.push(Stmt::End),
+                Some(_) => self.err(rs.span, format!("{}() does not return a value; use a plain `return;`", self.fname)),
+            },
             Statement::ReturnStatement(rs) => match &rs.argument {
                 None => self.err(rs.span, format!("{}() must return a value", self.fname)),
                 Some(a) => {
@@ -535,27 +770,54 @@ impl<'c, 's> Lower<'c, 's> {
         Some((id, local.ty))
     }
 
+    fn assign_op(&mut self, op: AssignmentOperator, span: Span) -> Option<Option<BinOp>> {
+        Some(match op {
+            AssignmentOperator::Assign => None,
+            AssignmentOperator::Addition => Some(BinOp::Add),
+            AssignmentOperator::Subtraction => Some(BinOp::Sub),
+            AssignmentOperator::Multiplication => Some(BinOp::Mul),
+            AssignmentOperator::Division => Some(BinOp::Div),
+            AssignmentOperator::Remainder => Some(BinOp::Rem),
+            _ => {
+                self.err(span, "only =, +=, -=, *=, /= and %= are allowed");
+                return None;
+            }
+        })
+    }
+
     fn expr_stmt(&mut self, e: &Expression, out: &mut Vec<Stmt>) {
         match e {
             Expression::AssignmentExpression(a) => {
+                if let js::AssignmentTarget::StaticMemberExpression(m) = &a.left {
+                    if !self.is_behavior() {
+                        self.err(a.span, "only local variables can be assigned");
+                        return;
+                    }
+                    let Some(t) = self.member_target(m) else { return };
+                    let Some(rhs) = self.expr(&a.right) else { return };
+                    let Some(op) = self.assign_op(a.operator, a.span) else { return };
+                    let value = match op {
+                        None => rhs,
+                        Some(op) => match self.arith(op, self.target_read(t), rhs, a.span) {
+                            Some(v) => v,
+                            None => return,
+                        },
+                    };
+                    if value.ty != Ty::F {
+                        self.err(a.span, format!("state slots and properties hold numbers, not a {}", value.ty.name()));
+                        return;
+                    }
+                    out.push(Self::target_write(t, value));
+                    return;
+                }
                 let js::AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left else {
-                    self.err(a.span, "only local variables can be assigned");
+                    let what = if self.is_behavior() { "only local variables, s.<slot>, w.<property> and o.<property> can be assigned" } else { "only local variables can be assigned" };
+                    self.err(a.span, what);
                     return;
                 };
                 let Some((vid, ty)) = self.assign_target(id.name.as_str(), a.span) else { return };
                 let Some(rhs) = self.expr(&a.right) else { return };
-                let op = match a.operator {
-                    AssignmentOperator::Assign => None,
-                    AssignmentOperator::Addition => Some(BinOp::Add),
-                    AssignmentOperator::Subtraction => Some(BinOp::Sub),
-                    AssignmentOperator::Multiplication => Some(BinOp::Mul),
-                    AssignmentOperator::Division => Some(BinOp::Div),
-                    AssignmentOperator::Remainder => Some(BinOp::Rem),
-                    _ => {
-                        self.err(a.span, "only =, +=, -=, *=, /= and %= are allowed");
-                        return;
-                    }
-                };
+                let Some(op) = self.assign_op(a.operator, a.span) else { return };
                 let value = match op {
                     None => rhs,
                     Some(op) => {
@@ -573,6 +835,17 @@ impl<'c, 's> Lower<'c, 's> {
                 out.push(Stmt::Assign { id: vid, value });
             }
             Expression::UpdateExpression(u) => {
+                let op = if u.operator == UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub };
+                if let js::SimpleAssignmentTarget::StaticMemberExpression(m) = &u.argument {
+                    if !self.is_behavior() {
+                        self.err(u.span, "only local variables can be incremented");
+                        return;
+                    }
+                    let Some(t) = self.member_target(m) else { return };
+                    let value = ex(ExprKind::Bin(op, Box::new(self.target_read(t)), Box::new(ex(ExprKind::Num(1.0), Ty::F))), Ty::F);
+                    out.push(Self::target_write(t, value));
+                    return;
+                }
                 let js::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) = &u.argument else {
                     self.err(u.span, "only local variables can be incremented");
                     return;
@@ -582,17 +855,58 @@ impl<'c, 's> Lower<'c, 's> {
                     self.err(u.span, "++/-- need a number");
                     return;
                 }
-                let op = if u.operator == UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub };
                 let value = ex(ExprKind::Bin(op, Box::new(ex(ExprKind::Local(vid), Ty::F)), Box::new(ex(ExprKind::Num(1.0), Ty::F))), Ty::F);
                 out.push(Stmt::Assign { id: vid, value });
             }
+            Expression::CallExpression(c) if self.is_behavior() && self.effect_call(c, out) => {}
             other => {
                 // Still walk it so that disallowed constructs inside are reported precisely.
                 if self.expr(other).is_some() {
-                    self.err(other.span(), "this expression does nothing; only assignments may be statements");
+                    let what = if self.is_behavior() { "this expression does nothing; only assignments and effects (say, sound, spawn, transform, remove) may be statements" } else { "this expression does nothing; only assignments may be statements" };
+                    self.err(other.span(), what);
                 }
             }
         }
+    }
+
+    /// An effect call statement in behaviour code. Returns false if `c` is not
+    /// an effect call (it is then checked as an ordinary expression).
+    fn effect_call(&mut self, c: &js::CallExpression, out: &mut Vec<Stmt>) -> bool {
+        let Expression::Identifier(id) = &c.callee else { return false };
+        let name = id.name.as_str();
+        if self.lookup(name).is_some() {
+            return false;
+        }
+        let Some(effect) = Effect::from_name(name) else { return false };
+        let mut args = Vec::new();
+        for a in c.arguments.iter() {
+            match a.as_expression().and_then(|e| self.expr(e)) {
+                Some(e) => args.push(e),
+                None => return true,
+            }
+        }
+        if !effect.takes_index() {
+            if !args.is_empty() {
+                self.err(c.span, format!("{name}() takes no arguments"));
+            } else {
+                out.push(Stmt::Effect { effect, arg: None });
+            }
+            return true;
+        }
+        if args.len() > 1 || args.first().is_some_and(|a| a.ty != Ty::F) {
+            self.err(c.span, format!("{name}(i) takes one number: the index into meta.{}", effect_list(effect)));
+            return true;
+        }
+        let arg = args.pop().unwrap_or(ex(ExprKind::Num(0.0), Ty::F));
+        if let (Some(lists), ExprKind::Num(v)) = (self.lists, &arg.kind) {
+            let n = lists[effect_list_index(effect)];
+            if *v < 0.0 || (*v as usize) >= n || v.fract() != 0.0 {
+                self.err(c.span, format!("{name}({v}) needs meta.{} to have an entry {v} (it has {n})", effect_list(effect)));
+                return true;
+            }
+        }
+        out.push(Stmt::Effect { effect, arg: Some(arg) });
+        true
     }
 
     fn lit_num(&self, e: &Expression) -> Option<f64> {
@@ -955,12 +1269,25 @@ impl<'c, 's> Lower<'c, 's> {
         if let Some(id) = self.lookup(name) {
             return Some(ex(ExprKind::Local(id), self.locals[id as usize].ty));
         }
-        if let Some(i) = self.params.iter().position(|p| p == name) {
-            if i == 3 {
+        match self.param_role(name) {
+            Some(ParamRole::Coord(i)) => return Some(ex(ExprKind::Param(i), Ty::F)),
+            Some(ParamRole::K) => {
                 self.err(span, format!("'{name}' (instance params) can only be read as {name}.<field>: {}", K_FIELDS.join(", ")));
                 return None;
             }
-            return Some(ex(ExprKind::Param(i as u8), Ty::F));
+            Some(ParamRole::State) => {
+                self.err(span, format!("'{name}' (state) can only be used as {name}.<slot>: {}", STATE_FIELDS.join(", ")));
+                return None;
+            }
+            Some(ParamRole::World) => {
+                self.err(span, format!("'{name}' can only be used as {name}.<field>: {} or a property name", CTX_FIELDS.join(", ")));
+                return None;
+            }
+            Some(ParamRole::Other) => {
+                self.err(span, format!("'{name}' (the other thing) can only be used as {name}.<property>"));
+                return None;
+            }
+            None => {}
         }
         match name {
             "PI" => Some(ex(ExprKind::Num(std::f32::consts::PI), Ty::F)),
@@ -1004,14 +1331,39 @@ impl<'c, 's> Lower<'c, 's> {
         }
         if let Expression::Identifier(obj) = &m.object {
             let on = obj.name.as_str();
-            if self.params.len() == 4 && self.params[3] == on && self.lookup(on).is_none() {
-                return match k_field(field) {
-                    Some(i) => Some(ex(ExprKind::KField(i), Ty::F)),
-                    None => {
-                        self.err(m.span, format!("{on}.{field} does not exist; fields are {}", K_FIELDS.join(", ")));
-                        None
+            match self.param_role(on) {
+                Some(ParamRole::K) => {
+                    return match k_field(field) {
+                        Some(i) => Some(ex(ExprKind::KField(i), Ty::F)),
+                        None => {
+                            self.err(m.span, format!("{on}.{field} does not exist; fields are {}", K_FIELDS.join(", ")));
+                            None
+                        }
+                    };
+                }
+                Some(ParamRole::State) => {
+                    return match state_field(field) {
+                        Some(i) => Some(ex(ExprKind::State(i), Ty::F)),
+                        None => {
+                            self.err(m.span, format!("{on}.{field} does not exist; state slots are {}", STATE_FIELDS.join(", ")));
+                            None
+                        }
+                    };
+                }
+                Some(ParamRole::World) => {
+                    if let Some(i) = ctx_field(field) {
+                        return Some(ex(ExprKind::Ctx(i), Ty::F));
                     }
-                };
+                    return self.prop_index(field, m.span).map(|i| ex(ExprKind::Prop { other: false, idx: i }, Ty::F));
+                }
+                Some(ParamRole::Other) => {
+                    if ctx_field(field).is_some() {
+                        self.err(m.span, format!("{on}.{field} is not a property of the other thing"));
+                        return None;
+                    }
+                    return self.prop_index(field, m.span).map(|i| ex(ExprKind::Prop { other: true, idx: i }, Ty::F));
+                }
+                _ => {}
             }
             if on == "Math" && self.lookup(on).is_none() {
                 if field == "PI" {
@@ -1131,6 +1483,18 @@ impl<'c, 's> Lower<'c, 's> {
             }
         }
     }
+}
+
+fn effect_list_index(e: Effect) -> usize {
+    match e {
+        Effect::Say => 0,
+        Effect::Sound => 1,
+        _ => 2,
+    }
+}
+
+fn effect_list(e: Effect) -> &'static str {
+    ["says", "sounds", "spawns"][effect_list_index(e)]
 }
 
 /// Make a JS identifier safe as a WGSL identifier fragment.

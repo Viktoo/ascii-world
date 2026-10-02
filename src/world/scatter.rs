@@ -18,23 +18,29 @@ pub struct ScatterItem {
     pub inst: GpuInst,
     pub max_dist: f32,
     pub solid: bool,
+    /// The 4 m scatter cell this item stands in (its identity).
+    pub cell: (i32, i32),
 }
 
 pub fn max_dist_for(tags: &[String]) -> f32 {
     if tags.iter().any(|t| t == "grass") {
         24.0
-    } else if tags.iter().any(|t| t == "bush" || t == "flower" || t == "small") {
+    } else if tags.iter().any(|t| t == "small") {
+        45.0
+    } else if tags.iter().any(|t| t == "bush" || t == "flower") {
         110.0
     } else {
         f32::MAX
     }
 }
 
+
 fn scale_range(tag: &str) -> (f32, f32) {
     match tag {
         "tree" | "pine" => (0.7, 1.3),
         "rock" => (0.5, 1.6),
         "grass" => (0.8, 1.3),
+        "stick" | "stone" | "mushroom" => (0.8, 1.2),
         _ => (0.75, 1.25),
     }
 }
@@ -111,7 +117,13 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
             let (s0, s1) = scale_range(tag);
             let scale = s0 + (s1 - s0) * hseqf(seed, gx, gz, 6);
             let rot = hseqf(seed, gx, gz, 7) * std::f32::consts::TAU;
-            let sink = if ty.has_tag("rock") { 0.25 } else { 0.08 };
+            let sink = if ty.has_tag("rock") {
+                0.25
+            } else if ty.has_tag("small") {
+                0.0
+            } else {
+                0.08
+            };
             let y = h - ty.bottom * scale - sink * scale;
             let pseed = (u2f(hseq(seed, gx, gz, 8)) * 97.0).floor();
             let k = [pseed, scale, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
@@ -121,17 +133,38 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
                 k0: [k[0], k[1], k[2], k[3]],
                 k1: [k[4], k[5], k[6], k[7]],
                 info: ty.gpu_info(),
+                ..Default::default()
             };
-            out.push(ScatterItem { inst, max_dist: max_dist_for(&ty.ct.meta.tags), solid: ty.solid });
+            out.push(ScatterItem { inst, max_dist: max_dist_for(&ty.ct.meta.tags), solid: ty.solid, cell: (gx, gz) });
         }
     }
     out
+}
+
+/// How the live layer changes the static one: placed objects and scatter
+/// items that now live as things (hidden here), and per-cell looks
+/// (charred, wet) or cells whose small item burnt away.
+#[derive(Default, Clone)]
+pub struct Overlay {
+    pub hidden: std::collections::HashSet<i64>,
+    pub taken: std::collections::HashSet<(i32, i32)>,
+    pub cell_fx: HashMap<(i32, i32), [f32; 4]>,
+    pub cell_gone: std::collections::HashSet<(i32, i32)>,
+    pub version: u64,
+}
+
+impl Overlay {
+    /// Whether a scatter item is still there (not taken or burnt away).
+    pub fn shows(&self, cell: (i32, i32)) -> bool {
+        !self.taken.contains(&cell) && !self.cell_gone.contains(&cell)
+    }
 }
 
 /// Per-chunk scatter cache, invalidated per chunk when its inputs change.
 #[derive(Default)]
 pub struct ScatterCache {
     chunks: HashMap<(i32, i32), (u64, Arc<Vec<ScatterItem>>)>,
+    pub overlay: Overlay,
 }
 
 fn signature(snap: &WorldSnapshot, c: (i32, i32)) -> u64 {
@@ -163,6 +196,30 @@ impl ScatterCache {
         self.chunks.retain(|k, _| (k.0 - cc.0).abs() <= r && (k.1 - cc.1).abs() <= r);
     }
 
+    /// The scatter item standing in a cell, if any (ignores the overlay).
+    pub fn item_at(&mut self, snap: &WorldSnapshot, cell: (i32, i32)) -> Option<ScatterItem> {
+        let c = (cell.0.div_euclid(CELLS), cell.1.div_euclid(CELLS));
+        self.get(snap, c).iter().find(|it| it.cell == cell).cloned()
+    }
+
+    /// Scatter items (shown ones) whose position is within `radius` of `p`.
+    pub fn items_near(&mut self, snap: &WorldSnapshot, p: Vec3, radius: f32) -> Vec<ScatterItem> {
+        let mut out = Vec::new();
+        let n = (radius / CHUNK).ceil() as i32;
+        let c = chunk_of(p.x, p.z);
+        for dz in -n..=n {
+            for dx in -n..=n {
+                for it in self.get(snap, (c.0 + dx, c.1 + dz)).iter() {
+                    let d = it.inst.pos() - p;
+                    if d.x * d.x + d.z * d.z <= radius * radius && self.overlay.shows(it.cell) {
+                        out.push(it.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Solid scatter + story instances whose bounds come within `radius` of `p`.
     pub fn solids_near(&mut self, snap: &WorldSnapshot, p: Vec3, radius: f32) -> Vec<Solid> {
         let mut out = Vec::new();
@@ -172,7 +229,7 @@ impl ScatterCache {
                 let cc = (c.0 + dx, c.1 + dz);
                 let items = self.get(snap, cc);
                 for it in items.iter() {
-                    if !it.solid {
+                    if !it.solid || !self.overlay.shows(it.cell) {
                         continue;
                     }
                     if (it.inst.center() - p).length() - it.inst.radius() > radius {
@@ -186,7 +243,7 @@ impl ScatterCache {
                     for &i in v {
                         let pl = &snap.instances[i];
                         let Some(ty) = snap.type_of(pl.type_id) else { continue };
-                        if !ty.solid {
+                        if !ty.solid || self.overlay.hidden.contains(&pl.id) {
                             continue;
                         }
                         let gi = pl.gpu(ty, 1.0);

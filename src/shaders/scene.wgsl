@@ -13,7 +13,8 @@ var<private> ncand: u32;
 var<private> dither: f32;
 
 fn inst_params(i: Inst) -> Params {
-  return Params(i.k0.x, i.k0.y, i.k0.z, i.k0.w, i.k1.x, i.k1.y, i.k1.z, i.k1.w);
+  return Params(i.k0.x, i.k0.y, i.k0.z, i.k0.w, i.k1.x, i.k1.y, i.k1.z, i.k1.w,
+                i.s0.x, i.s0.y, i.s0.z, i.s0.w, i.s1.x, i.s1.y, i.s1.z, i.s1.w);
 }
 
 fn to_local(i: Inst, p: vec3f) -> vec3f {
@@ -262,6 +263,30 @@ fn fog_color(rd: vec3f) -> vec3f {
 
 fn to_lin(c: vec3f) -> vec3f { return c * c; }
 
+// Lanterns, fires and other glowing things: no shadows, soft falloff.
+fn point_light(p: vec3f, n: vec3f) -> vec3f {
+  var sum = vec3f(0.0);
+  let count = min(G.grid1.z, 8u);
+  for (var i = 0u; i < count; i = i + 1u) {
+    let l = G.lights[i];
+    let c = G.light_cols[i];
+    let d = l.xyz - p;
+    let dist = length(d);
+    if (dist > c.w) { continue; }
+    let fall = 1.0 - smoothstep(c.w * 0.4, c.w, dist);
+    let ndl = max(dot(n, d / max(dist, 1e-3)), 0.0) * 0.8 + 0.2;
+    sum = sum + to_lin(c.xyz) * l.w * ndl * fall / (1.0 + dist * dist * 0.3);
+  }
+  return sum;
+}
+
+// Generic looks every object can have: charred, wet, highlighted.
+fn apply_fx(albedo: vec3f, fx: vec4f) -> vec3f {
+  var a = mix(albedo, vec3f(0.07, 0.06, 0.055), clamp(fx.x, 0.0, 1.0));
+  a = a * (1.0 - 0.35 * clamp(fx.y, 0.0, 1.0));
+  return mix(a, vec3f(1.0, 0.97, 0.8), clamp(fx.w, 0.0, 1.0) * 0.4);
+}
+
 fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
   let sun = G.sun_dir.xyz;
   let ndl = dot(n, sun);
@@ -276,7 +301,7 @@ fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
   let strength = max(0.15 + 0.85 * G.sun_dir.w, 0.75 * G.sun_col.w);
   let direct = to_lin(G.sun_col.xyz) * max(ndl, 0.0) * shadow * strength * 1.6;
   let night_floor = vec3f(0.018, 0.022, 0.035) * G.sun_col.w;
-  var lin = a * (direct + (sky_amb + bounce + night_floor) * ao);
+  var lin = a * (direct + (sky_amb + bounce + night_floor) * ao + point_light(p, n));
   let h = normalize(sun - rd);
   lin = lin + to_lin(G.sun_col.xyz) * pow(max(dot(n, h), 0.0), 40.0) * 0.08 * shadow * G.sun_dir.w;
   return sqrt(max(lin, vec3f(0.0)));
@@ -311,6 +336,7 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
     let p = ro + rd * h.t;
     var n: vec3f;
     var albedo: vec3f;
+    var glow = vec3f(0.0);
     var ao = 1.0;
     if (h.id < 0.0) {
       n = terrain_normal(p, h.t);
@@ -322,12 +348,14 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       let idx = cand[u32(h.id)];
       n = inst_normal(idx, p, h.t);
       let i = insts[idx];
-      albedo = clamp(type_color(i.info.x, to_local(i, p), inst_params(i)), vec3f(0.0), vec3f(1.0));
+      let base = clamp(type_color(i.info.x, to_local(i, p), inst_params(i)), vec3f(0.0), vec3f(1.0));
+      albedo = apply_fx(base, i.fx);
+      glow = base * clamp(i.fx.z, 0.0, 2.0);
       let o1 = map_scene(p + n * 0.15).z;
       let o2 = map_scene(p + n * 0.5).z;
       ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);
     }
-    col = shade(p, n, albedo, rd, ao);
+    col = shade(p, n, albedo, rd, ao) + glow;
   }
   // water plane
   let wl = G.water.w;

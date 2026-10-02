@@ -54,6 +54,11 @@ fn block(s: &mut String, f: &Func, stmts: &[Stmt], d: usize) {
             Stmt::Return(e) => {
                 let _ = writeln!(s, "return {};", expr(f, e));
             }
+            // Behaviour-only statements never reach shape functions (the checker
+            // only allows them in tick/use/touch, which run on the CPU).
+            Stmt::SetState { .. } | Stmt::SetProp { .. } | Stmt::Effect { .. } | Stmt::End => {
+                s.push_str("// (behaviour statement)\n");
+            }
             Stmt::If { cond, then, els } => {
                 let _ = writeln!(s, "if ({}) {{", expr(f, cond));
                 block(s, f, then, d + 1);
@@ -98,7 +103,8 @@ fn expr(f: &Func, e: &Expr) -> String {
         }
         ExprKind::Local(id) => local(f, *id),
         ExprKind::Param(i) => ["p.x", "p.y", "p.z"][*i as usize % 3].into(),
-        ExprKind::KField(i) => format!("k.{}", K_FIELDS[*i as usize % 8]),
+        ExprKind::KField(i) => format!("k.{}", K_FIELDS[*i as usize % K_FIELDS.len()]),
+        ExprKind::State(_) | ExprKind::Ctx(_) | ExprKind::Prop { .. } => "f32(0.0)".into(),
         ExprKind::Comp(v, c) => format!("({}).{}", expr(f, v), ["x", "y", "z"][*c as usize % 3]),
         ExprKind::Neg(a) => format!("(-{})", expr(f, a)),
         ExprKind::Not(a) => format!("(!{})", expr(f, a)),

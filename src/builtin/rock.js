@@ -1,5 +1,5 @@
 // Built-in boulder.
-export const meta = { name: "boulder", bounds: [1.8, 1.4, 1.8], tags: ["builtin", "rock"] };
+export const meta = { name: "boulder", bounds: [1.8, 1.4, 1.8], tags: ["builtin", "rock"], props: { mass: 3500, bounce: 0.1 } };
 
 export function sdf(x, y, z, k) {
   const q = rotY(x, y, z, hash(k.seed) * 6.28);

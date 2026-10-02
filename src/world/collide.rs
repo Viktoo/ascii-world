@@ -121,7 +121,7 @@ mod tests {
              export function color(x, y, z, k) { return rgb(200, 200, 200); }",
         )
         .unwrap();
-        let ty = Arc::new(TypeEntry { id: 1, ct: Arc::new(ct), builtin: false, solid: true, bottom: -2.0, sphere_cy: 0.0, sphere_r: 4.7 });
+        let ty = Arc::new(TypeEntry { id: 1, ct: Arc::new(ct), builtin: false, solid: true, bottom: -2.0, top: 2.0, sphere_cy: 0.0, sphere_r: 4.7 });
         let terrain = Terrain::new(1, crate::terrain::default_biomes());
         let c = Vec3::new(500.0, 0.0, 500.0);
         let inst = GpuInst { pos_scale: [c.x, terrain.height(c.x, c.z) + 1.0, c.z, 1.0], rot: [1.0, 0.0, ty.radius(), 1.0], ..Default::default() };
@@ -152,7 +152,7 @@ mod tests {
              export function color(x, y, z, k) { return rgb(200, 200, 200); }",
         )
         .unwrap();
-        let ty = Arc::new(TypeEntry { id: 1, ct: Arc::new(ct), builtin: false, solid: true, bottom: -2.0, sphere_cy: 0.0, sphere_r: 3.7 });
+        let ty = Arc::new(TypeEntry { id: 1, ct: Arc::new(ct), builtin: false, solid: true, bottom: -2.0, top: 2.0, sphere_cy: 0.0, sphere_r: 3.7 });
         let terrain = Terrain::new(1, crate::terrain::default_biomes());
         let base = Vec3::new(500.0, 0.0, 500.0);
         let g = terrain.height(base.x, base.z + 5.0);

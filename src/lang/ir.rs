@@ -3,11 +3,31 @@
 
 use super::api::{Api, Ty};
 
-/// Instance parameter fields readable as `k.<name>`.
-pub const K_FIELDS: [&str; 8] = ["seed", "scale", "a", "b", "c", "d", "e", "f"];
+/// Instance parameter fields readable as `k.<name>`: 8 static parameters,
+/// then the 8 live state slots (`s0`..`s7`, written by behaviour code).
+pub const K_FIELDS: [&str; 16] = ["seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
+/// State slots writable as `s.<name>` in behaviour functions.
+pub const STATE_FIELDS: [&str; 8] = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
+/// What a behaviour function knows about its situation, read as `w.<name>`.
+/// Every other `w.<name>` is one of the thing's own properties.
+pub const CTX_FIELDS: [&str; 10] = ["dt", "hour", "age", "held", "near", "speed", "ground", "water", "impact", "on"];
+pub const MAX_PROPS: usize = 32;
 
 pub fn k_field(name: &str) -> Option<u8> {
     K_FIELDS.iter().position(|f| *f == name).map(|i| i as u8)
+}
+
+pub fn state_field(name: &str) -> Option<u8> {
+    STATE_FIELDS.iter().position(|f| *f == name).map(|i| i as u8)
+}
+
+pub fn ctx_field(name: &str) -> Option<u8> {
+    CTX_FIELDS.iter().position(|f| *f == name).map(|i| i as u8)
+}
+
+/// A property name: lower-case letters, digits and underscores, starting with a letter.
+pub fn valid_prop_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 24 && n.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +63,13 @@ pub enum ExprKind {
     /// 0 = x, 1 = y, 2 = z
     Param(u8),
     KField(u8),
+    /// Behaviour: `s.sN`.
+    State(u8),
+    /// Behaviour: `w.<ctx field>`.
+    Ctx(u8),
+    /// Behaviour: `w.<prop>` (other = false) or `o.<prop>` (other = true);
+    /// `idx` indexes `Module::prop_names`.
+    Prop { other: bool, idx: u16 },
     /// Component 0..2 of a vec3 expression.
     Comp(Box<Expr>, u8),
     /// Arithmetic negation (number or vec3).
@@ -58,6 +85,39 @@ pub enum ExprKind {
     Call(Api, Vec<Expr>),
 }
 
+/// Things behaviour code can ask the world to do. They are queued, never run
+/// directly; the simulation applies them with per-tick caps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effect {
+    /// say(i): speak `meta.says[i]`.
+    Say,
+    /// sound(i): make the sound `meta.sounds[i]`.
+    Sound,
+    /// spawn(i): make a new `meta.spawns[i]` next to it.
+    Spawn,
+    /// transform(i): turn into `meta.spawns[i]`.
+    Transform,
+    /// remove(): vanish.
+    Remove,
+}
+
+impl Effect {
+    pub fn from_name(n: &str) -> Option<Effect> {
+        Some(match n {
+            "say" => Effect::Say,
+            "sound" => Effect::Sound,
+            "spawn" => Effect::Spawn,
+            "transform" => Effect::Transform,
+            "remove" => Effect::Remove,
+            _ => return None,
+        })
+    }
+    pub fn takes_index(self) -> bool {
+        self != Effect::Remove
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Stmt {
     Let { id: u32, init: Expr },
@@ -66,6 +126,14 @@ pub enum Stmt {
     /// `for (let i = start; i < end; i += step)`, unrolled count known statically.
     For { id: u32, start: f32, step: f32, count: u32, body: Vec<Stmt> },
     Return(Expr),
+    /// Behaviour: `s.sN = value`.
+    SetState { idx: u8, value: Expr },
+    /// Behaviour: `w.<prop> = value` / `o.<prop> = value`.
+    SetProp { other: bool, idx: u16, value: Expr },
+    /// Behaviour: an effect call statement.
+    Effect { effect: Effect, arg: Option<Expr> },
+    /// Behaviour: `return;`
+    End,
 }
 
 #[derive(Clone, Debug)]
@@ -81,11 +149,52 @@ pub struct Func {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Default)]
 pub struct Meta {
     pub name: String,
     pub bounds: [f32; 3],
     pub tags: Vec<String>,
+    /// Initial property values, e.g. `props: { mass: 2, burns: 0.6 }`.
+    #[serde(default)]
+    pub props: Vec<(String, f32)>,
+    /// Lines for `say(i)`.
+    #[serde(default)]
+    pub says: Vec<String>,
+    /// Sounds for `sound(i)`.
+    #[serde(default)]
+    pub sounds: Vec<String>,
+    /// Type names for `spawn(i)` / `transform(i)`.
+    #[serde(default)]
+    pub spawns: Vec<String>,
+}
+
+/// Behaviour entry points a type may export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Behavior {
+    /// Runs a few times a second while anyone is near.
+    Tick,
+    /// Runs when someone uses it.
+    Use,
+    /// Runs when something hits it.
+    Touch,
+}
+
+impl Behavior {
+    pub fn name(self) -> &'static str {
+        match self {
+            Behavior::Tick => "tick",
+            Behavior::Use => "use",
+            Behavior::Touch => "touch",
+        }
+    }
+    pub fn from_name(n: &str) -> Option<Behavior> {
+        Some(match n {
+            "tick" => Behavior::Tick,
+            "use" => Behavior::Use,
+            "touch" => Behavior::Touch,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -93,4 +202,7 @@ pub struct Module {
     pub meta: Meta,
     pub sdf: Func,
     pub color: Func,
+    pub behaviors: Vec<(Behavior, Func)>,
+    /// Property names read or written by behaviour code (`w.<prop>`, `o.<prop>`).
+    pub prop_names: Vec<String>,
 }

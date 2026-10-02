@@ -73,12 +73,23 @@ pub fn cull(snap: &WorldSnapshot, cache: &mut ScatterCache, cam: &Camera, aspect
             if dist - CHUNK * 0.75 > VIEW_DIST + 20.0 {
                 continue;
             }
-            for it in cache.get(snap, c).iter() {
-                push(it.inst, it.max_dist, &mut list);
+            let items = cache.get(snap, c);
+            for it in items.iter() {
+                if !cache.overlay.shows(it.cell) {
+                    continue;
+                }
+                let mut inst = it.inst;
+                if let Some(fx) = cache.overlay.cell_fx.get(&it.cell) {
+                    inst.fx = *fx;
+                }
+                push(inst, it.max_dist, &mut list);
             }
             if let Some(v) = snap.by_chunk.get(&c) {
                 for &i in v {
                     let p = &snap.instances[i];
+                    if cache.overlay.hidden.contains(&p.id) {
+                        continue;
+                    }
                     let Some(ty) = snap.type_of(p.type_id) else { continue };
                     let f = fade.get(&p.id).copied().unwrap_or(1.0);
                     if f <= 0.0 {

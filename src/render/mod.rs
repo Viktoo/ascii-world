@@ -37,25 +37,60 @@ pub struct Globals {
     pub probe: [u32; 4],
     pub hmap: [f32; 4],
     pub biomes: [[f32; 4]; 18],
+    /// Point lights: position, intensity.
+    pub lights: [[f32; 4]; MAX_LIGHTS],
+    /// Point lights: colour, reach in metres.
+    pub light_cols: [[f32; 4]; MAX_LIGHTS],
+}
+
+pub const MAX_LIGHTS: usize = 8;
+
+/// A light-emitting thing (lantern, fire) near the camera.
+#[derive(Clone, Copy, Debug)]
+pub struct PointLight {
+    pub pos: Vec3,
+    pub color: Vec3,
+    pub intensity: f32,
+    pub reach: f32,
 }
 
 pub const FLAG_GRID: u32 = 1;
 pub const FLAG_SHADOWS: u32 = 2;
 
-/// One instance as the shader sees it (80 bytes).
+/// One instance as the shader sees it (128 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct GpuInst {
     pub pos_scale: [f32; 4],
     pub rot: [f32; 4],
+    /// Static parameters k.seed, k.scale, k.a … k.f.
     pub k0: [f32; 4],
     pub k1: [f32; 4],
+    /// Live state k.s0 … k.s7 (behaviour code, poses).
+    pub s0: [f32; 4],
+    pub s1: [f32; 4],
+    /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1.
+    pub fx: [f32; 4],
     pub info: [u32; 4],
 }
 
+pub const FX_CHAR: usize = 0;
+pub const FX_WET: usize = 1;
+pub const FX_GLOW: usize = 2;
+pub const FX_HIGHLIGHT: usize = 3;
+
 impl GpuInst {
-    pub fn k(&self) -> [f32; 8] {
-        [self.k0[0], self.k0[1], self.k0[2], self.k0[3], self.k1[0], self.k1[1], self.k1[2], self.k1[3]]
+    pub fn k(&self) -> [f32; 16] {
+        let mut k = [0.0; 16];
+        k[0..4].copy_from_slice(&self.k0);
+        k[4..8].copy_from_slice(&self.k1);
+        k[8..12].copy_from_slice(&self.s0);
+        k[12..16].copy_from_slice(&self.s1);
+        k
+    }
+    pub fn set_state(&mut self, s: &[f32; 8]) {
+        self.s0.copy_from_slice(&s[0..4]);
+        self.s1.copy_from_slice(&s[4..8]);
     }
     pub fn pos(&self) -> Vec3 {
         Vec3::new(self.pos_scale[0], self.pos_scale[1], self.pos_scale[2])
@@ -167,6 +202,8 @@ pub struct SceneParams<'a> {
     pub time: f32,
     pub frame: u32,
     pub shadows: bool,
+    /// Nearest first; at most MAX_LIGHTS are used.
+    pub lights: &'a [PointLight],
 }
 
 /// Identifies the terrain function (the renderer rebuilds its heightmap when it changes).
@@ -208,6 +245,13 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         flags |= v.parse::<u32>().unwrap_or(0);
     }
     let g = grid.cloned().unwrap_or_default();
+    let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
+    let mut light_cols = [[0.0f32; 4]; MAX_LIGHTS];
+    let nl = sp.lights.len().min(MAX_LIGHTS);
+    for (i, l) in sp.lights.iter().take(MAX_LIGHTS).enumerate() {
+        lights[i] = [l.pos.x, l.pos.y, l.pos.z, l.intensity];
+        light_cols[i] = [l.color.x, l.color.y, l.color.z, l.reach.max(0.5)];
+    }
     Globals {
         cam_pos: v4(sp.camera.pos, sp.time),
         cam_fwd: v4(f, VIEW_DIST),
@@ -226,10 +270,12 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         dims: [sp.width, sp.height, n_inst as u32, flags],
         seed: [t.seed, t.biomes.len().min(MAX_BIOMES) as u32, sp.frame, terrain_epoch(t)],
         grid0: [g.origin[0], g.origin[1], g.cell.max(1.0), 0.0],
-        grid1: [g.w, g.h, 0, 0],
+        grid1: [g.w, g.h, nl as u32, 0],
         probe: [0; 4],
         hmap: [0.0; 4],
         biomes,
+        lights,
+        light_cols,
     }
 }
 

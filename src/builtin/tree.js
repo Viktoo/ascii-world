@@ -1,5 +1,5 @@
 // Built-in broadleaf tree.
-export const meta = { name: "oak", bounds: [3.6, 7.2, 3.6], tags: ["builtin", "tree"] };
+export const meta = { name: "oak", bounds: [3.6, 7.2, 3.6], tags: ["builtin", "tree"], props: { mass: 900, burns: 0.55, alive: 1, fuel: 1 } };
 
 export function sdf(x, y, z, k) {
   const ox = (hash(k.seed) - 0.5) * 1.2;

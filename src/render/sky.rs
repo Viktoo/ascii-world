@@ -23,6 +23,19 @@ pub fn time_label(t_game: f64) -> &'static str {
     }
 }
 
+/// How long ago something happened, as a person would say it (game time).
+pub fn ago(dt_game: f64) -> &'static str {
+    let h = dt_game.max(0.0) / (DAY_SECONDS / 24.0);
+    match h {
+        h if h < 0.25 => "just now",
+        h if h < 1.0 => "a little while ago",
+        h if h < 4.0 => "earlier",
+        h if h < 24.0 => "earlier today",
+        h if h < 48.0 => "yesterday",
+        _ => "days ago",
+    }
+}
+
 pub fn is_night(t_game: f64) -> bool {
     time_label(t_game) == "night"
 }

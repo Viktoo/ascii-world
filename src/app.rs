@@ -5,13 +5,15 @@ use crate::brain::{Brain, Cmd, Event};
 use crate::db::{Db, PlayerRow};
 use crate::model::LiveRef;
 use crate::render::{self, Camera, Frame, FrameRequest, RenderHandle, RenderMsg, SceneParams, sky};
+use crate::sim::actions::Action;
+use crate::sim::pick::Picked;
+use crate::sim::{ActorId, Note, Sim, Target};
 use crate::term::{self, Cell, Screen};
-use crate::world::characters::{Cast, CastEvent, Mode as NpcMode, TALK_RANGE};
-use crate::world::collide::{Obstacles, PLAYER_RADIUS, move_body};
-use crate::world::describe::{NpcView, describe};
-use crate::world::scatter::ScatterCache;
+use crate::world::characters::TALK_RANGE;
+use crate::world::collide::{Obstacles, PLAYER_RADIUS};
+use crate::world::describe::describe;
 use crate::world::{WorldSnapshot, cull, region_center, region_of};
-use crossterm::event::{self, Event as TEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event as TEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -34,6 +36,8 @@ pub enum Mode {
     Walk,
     Talk(i64),
     Create,
+    /// Free text: anything you do, in words.
+    Do,
 }
 
 #[derive(Clone)]
@@ -95,14 +99,11 @@ pub struct App {
     events: crossbeam_channel::Receiver<Event>,
     render: RenderHandle,
     pub snap: Arc<WorldSnapshot>,
-    cache: ScatterCache,
-    cast: Cast,
+    /// The living world: actors, live things, rules, minds.
+    pub sim: Sim,
     live: LiveRef,
-    pub pos: Vec3,
-    pub yaw: f32,
     pitch: f32,
     cam_y: f32,
-    pub t_game: f64,
     mode: Mode,
     input: String,
     log: VecDeque<LogLine>,
@@ -119,10 +120,10 @@ pub struct App {
     appear: HashMap<i64, Instant>,
     regions_inflight: HashSet<(i32, i32)>,
     regions_failed: HashSet<(i32, i32)>,
-    near_flags: HashMap<i64, f64>,
     conv: HashMap<i64, Vec<(bool, String)>>,
     replying: Option<i64>,
-    recent_actions: VecDeque<String>,
+    /// Replies to the sim's own talk requests, being streamed.
+    sim_talk: HashMap<i64, String>,
     pub stats: Stats,
     start: Instant,
     last_save: Instant,
@@ -138,6 +139,15 @@ pub struct App {
     llm: Option<Arc<crate::llm::Llm>>,
     /// Region plans wait until the universe's look (and so its terrain) exists.
     genesis_pending: bool,
+    /// F2: the raw truth about what you point at.
+    inspect: bool,
+    /// Mouse cell over the viewport, when the terminal reports it.
+    mouse: Option<(u16, u16)>,
+    /// When the right button went down (hold to throw harder).
+    right_down: Option<Instant>,
+    /// What the mouse (or the centre of the view) points at.
+    pub pointed: Option<Picked>,
+    last_pick: Instant,
 }
 
 pub struct Setup {
@@ -163,22 +173,19 @@ impl App {
         };
         // Saved under water (an older save, or a spawn on a lake bed): back to dry land.
         let pos = if pos.y < crate::terrain::WATER_LEVEL + 0.3 { s.snap.spawn } else { pos };
-        let mut cast = Cast::default();
-        cast.sync(&s.snap);
+        let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
+        let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
+        sim.has_llm = s.brain.has_llm;
         let mut app = App {
             db: s.db,
             brain: s.brain,
             events: s.events,
             render: s.render,
             snap: s.snap,
-            cache: ScatterCache::default(),
-            cast,
+            sim,
             live: s.live,
-            pos,
-            yaw,
             pitch: -0.06,
             cam_y: pos.y + EYE,
-            t_game,
             mode: Mode::Walk,
             input: String::new(),
             log: VecDeque::new(),
@@ -195,10 +202,9 @@ impl App {
             appear: HashMap::new(),
             regions_inflight: HashSet::new(),
             regions_failed: HashSet::new(),
-            near_flags: HashMap::new(),
             conv: HashMap::new(),
             replying: None,
-            recent_actions: VecDeque::new(),
+            sim_talk: HashMap::new(),
             stats: Stats { frames: VecDeque::new(), max_loop_ms: 0.0, worst_recent: VecDeque::new(), gpu_ms: 0.0, insts: 0, shown: 0, max_gap_ms: 0.0 },
             start: Instant::now(),
             last_save: Instant::now(),
@@ -213,10 +219,15 @@ impl App {
             dirty: true,
             llm: s.llm.clone(),
             genesis_pending: false,
+            inspect: false,
+            mouse: None,
+            right_down: None,
+            pointed: None,
+            last_pick: Instant::now(),
         };
         app.unstick();
         let name = app.snap.look.name.clone();
-        app.say(None, &format!("Welcome{}. ↑↓ walk, ←→ turn, A/D strafe, Enter talk, / create, Tab style, q quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
+        app.say(None, &format!("Welcome{}. ↑↓ walk, ←→ turn, A/D strafe, Enter talk, / create, : do, e use, g grab, f throw, q quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
             None => {
@@ -240,25 +251,34 @@ impl App {
     fn unstick(&mut self) {
         use crate::world::collide::{NPC_RADIUS, free_spot};
         let snap = self.snap.clone();
-        let solids = self.cache.solids_near(&snap, self.pos, 6.0);
+        let p = self.sim.player.pos;
+        let solids = self.sim.solids_near(p, 6.0);
         if !solids.is_empty() {
             let obs = Obstacles { solids: &solids, bodies: &[] };
-            if obs.dist(&snap.terrain, self.pos.x, self.pos.z) < PLAYER_RADIUS {
-                self.pos = free_spot(&snap.terrain, &obs, self.pos, PLAYER_RADIUS, 40.0);
-                self.cam_y = self.pos.y + EYE;
+            if obs.dist(&snap.terrain, p.x, p.z) < PLAYER_RADIUS {
+                self.sim.player.pos = free_spot(&snap.terrain, &obs, p, PLAYER_RADIUS, 40.0);
+                self.cam_y = self.sim.player.pos.y + EYE;
             }
         }
-        for i in 0..self.cast.npcs.len() {
-            let p = self.cast.npcs[i].pos;
-            let solids = self.cache.solids_near(&snap, p, 6.0);
+        for i in 0..self.sim.cast.npcs.len() {
+            let p = self.sim.cast.npcs[i].a.pos;
+            let solids = self.sim.solids_near(p, 6.0);
             if solids.is_empty() {
                 continue;
             }
             let obs = Obstacles { solids: &solids, bodies: &[] };
             if obs.dist(&snap.terrain, p.x, p.z) < NPC_RADIUS {
-                self.cast.npcs[i].pos = free_spot(&snap.terrain, &obs, p, NPC_RADIUS, 40.0);
+                self.sim.cast.npcs[i].a.pos = free_spot(&snap.terrain, &obs, p, NPC_RADIUS, 40.0);
             }
         }
+    }
+
+    pub fn pos(&self) -> Vec3 {
+        self.sim.player.pos
+    }
+
+    pub fn yaw(&self) -> f32 {
+        self.sim.player.yaw
     }
 
     fn say(&mut self, speaker: Option<&str>, text: &str, color: [u8; 3]) {
@@ -278,7 +298,8 @@ impl App {
     }
 
     fn camera(&self) -> Camera {
-        Camera { pos: Vec3::new(self.pos.x, self.cam_y, self.pos.z), yaw: self.yaw, pitch: self.pitch, fov_y: FOV_Y }
+        let p = self.sim.player.pos;
+        Camera { pos: Vec3::new(p.x, self.cam_y, p.z), yaw: self.sim.player.yaw, pitch: self.pitch, fov_y: FOV_Y }
     }
 
     /// Viewport size in cells.
@@ -323,9 +344,16 @@ impl App {
             }
             return;
         }
+        if k.code == KeyCode::F(2) {
+            if k.kind == KeyEventKind::Press {
+                self.inspect = !self.inspect;
+                self.dirty = true;
+            }
+            return;
+        }
         match self.mode {
             Mode::Walk => self.walk_key(k),
-            Mode::Talk(_) | Mode::Create => self.text_key(k),
+            Mode::Talk(_) | Mode::Create | Mode::Do => self.text_key(k),
         }
     }
 
@@ -355,6 +383,14 @@ impl App {
                 self.set_mode(Mode::Create);
                 self.input = "/".into();
             }
+            KeyCode::Char(':') => {
+                self.set_mode(Mode::Do);
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') => self.use_pointed(),
+            KeyCode::Char('g') | KeyCode::Char('G') => self.grab_or_drop(),
+            KeyCode::Char('f') | KeyCode::Char('F') => self.throw_held(9.0),
+            KeyCode::Char('y') | KeyCode::Char('Y') => self.player_act(Action::Answer { yes: true, to: None }),
+            KeyCode::Char('n') | KeyCode::Char('N') => self.player_act(Action::Answer { yes: false, to: None }),
             KeyCode::Enter => {
                 if let Some((id, name)) = self.talk_hint.clone() {
                     if !self.brain.has_llm {
@@ -362,16 +398,138 @@ impl App {
                         return;
                     }
                     self.set_mode(Mode::Talk(id));
+                    self.sim.talking_to = Some(id);
                     self.say(None, &format!("You approach {name}. (Esc to leave)"), DIM);
                 }
             }
             KeyCode::PageUp => self.pitch = (self.pitch + 0.08).min(0.6),
-            KeyCode::PageDown => self.pitch = (self.pitch - 0.08).max(-0.6),
+            KeyCode::PageDown => self.pitch = (self.pitch - 0.08).max(-0.95),
             _ => {}
         }
     }
 
+    fn on_mouse(&mut self, m: MouseEvent) {
+        let (_, vh, _) = self.layout();
+        if m.row < vh {
+            self.mouse = Some((m.column, m.row));
+        } else {
+            self.mouse = None;
+        }
+        if self.mode != Mode::Walk {
+            return;
+        }
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if m.row < vh => {
+                self.repick();
+                self.use_pointed();
+            }
+            MouseEventKind::Down(MouseButton::Right) if m.row < vh => {
+                self.right_down = Some(Instant::now());
+            }
+            MouseEventKind::Up(MouseButton::Right) => {
+                let held_for = self.right_down.take().map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+                self.repick();
+                if self.sim.player.held.is_some() && held_for > 0.25 {
+                    // Hold the right button to wind up: longer is harder.
+                    self.throw_held(4.0 + (held_for * 9.0).min(14.0));
+                } else {
+                    self.grab_or_drop();
+                }
+            }
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                self.last_pick = Instant::now() - Duration::from_secs(1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Act as the player; say how it went.
+    fn player_act(&mut self, a: Action) {
+        let verb = a.verb();
+        match self.sim.act(ActorId::Player, a) {
+            Ok(o) => {
+                if !o.ok || matches!(verb, "use" | "do" | "eat" | "answer" | "give" | "gesture" | "propose") {
+                    self.say(None, &o.msg, if o.ok { TEXT } else { DIM });
+                }
+            }
+            Err(e) => self.say(None, &format!("Can't: {e}."), DIM),
+        }
+        self.dirty = true;
+    }
+
+    /// The target the player points at (the mouse, or the middle of the view).
+    fn pointed_target(&self) -> Option<Target> {
+        self.pointed.as_ref().map(|p| p.target.clone())
+    }
+
+    /// The pointed target, if it is a thing (not ground or a far point).
+    fn pointed_thing(&self) -> Option<Target> {
+        match self.pointed_target() {
+            Some(Target::Point(_)) | None => None,
+            t => t,
+        }
+    }
+
+    fn use_pointed(&mut self) {
+        let target = self.pointed_thing();
+        let held = self.sim.player.held;
+        let a = match (held, target) {
+            (Some(_), Some(t)) => Action::Use { target: None, on: Some(t) },
+            (Some(_), None) => Action::Use { target: None, on: None },
+            (None, Some(Target::Actor(ActorId::Npc(c)))) => {
+                // Using a person is greeting them.
+                let _ = c;
+                Action::Gesture { kind: "wave".into(), to: self.pointed_thing() }
+            }
+            (None, Some(t)) => Action::Use { target: Some(t), on: None },
+            (None, None) => {
+                self.say(None, "Nothing to use there. (Point at something; g picks things up.)", DIM);
+                return;
+            }
+        };
+        self.player_act(a);
+    }
+
+    fn grab_or_drop(&mut self) {
+        if self.sim.player.held.is_some() {
+            self.player_act(Action::Drop);
+            return;
+        }
+        let pointed = self.pointed_thing().filter(|_| self.pointed.as_ref().is_some_and(|p| p.dist < crate::sim::actor::REACH + 1.0));
+        match pointed.or_else(|| self.sim.nearest_in_front(ActorId::Player)) {
+            Some(Target::Actor(_)) => self.say(None, "You can't pick up a person. (/hug, /wave, /give …)", DIM),
+            Some(t) => self.player_act(Action::Hold { target: t }),
+            None => self.say(None, "Nothing to pick up within reach.", DIM),
+        }
+    }
+
+    fn throw_held(&mut self, force: f32) {
+        if self.sim.player.held.is_none() {
+            self.say(None, "You aren't holding anything to throw.", DIM);
+            return;
+        }
+        let at = match self.pointed_thing() {
+            Some(t) => Some(t),
+            None => None,
+        };
+        let ground = self.pointed.as_ref().filter(|p| p.dist < 30.0 && matches!(p.target, Target::Point(_))).map(|p| p.pos);
+        let a = match (at, ground) {
+            (Some(t), _) if self.pointed.as_ref().is_some_and(|p| p.dist < 30.0) => Action::Throw { at: Some(t), dir: None, force: Some(force) },
+            // Pointing at the ground: lob it there.
+            (None, Some(p)) => Action::Throw { at: Some(Target::Point(p.to_array())), dir: None, force: Some(force) },
+            _ => {
+                let cam = self.camera();
+                let d = cam.forward() + Vec3::Y * 0.25;
+                Action::Throw { at: None, dir: Some(d.to_array()), force: Some(force) }
+            }
+        };
+        self.player_act(a);
+    }
+
     fn set_mode(&mut self, m: Mode) {
+        if !matches!(m, Mode::Talk(_)) {
+            self.sim.talking_to = None;
+        }
         self.mode = m;
         self.keys.down.clear();
         self.keys.until.clear();
@@ -389,6 +547,10 @@ impl App {
                     Mode::Create => {
                         self.set_mode(Mode::Walk);
                         self.command(text.trim());
+                    }
+                    Mode::Do => {
+                        self.set_mode(Mode::Walk);
+                        self.do_text(text.trim());
                     }
                     Mode::Walk => {}
                 }
@@ -411,17 +573,56 @@ impl App {
         self.dirty = true;
     }
 
+    /// Free text: anything you do, interpreted by the world.
+    fn do_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.say(Some("you"), &format!("*{text}*"), ACCENT);
+        if self.over_budget() {
+            return;
+        }
+        let on = self.pointed_thing();
+        self.player_act(Action::Do { text: text.to_string(), on });
+    }
+
+    /// The nearest character whose name starts with `who`, or the one pointed at.
+    fn person(&mut self, who: &str) -> Option<Target> {
+        if who.trim().is_empty() {
+            return match self.pointed_thing() {
+                Some(t @ Target::Actor(_)) => Some(t),
+                _ => self.talk_hint.as_ref().map(|(id, _)| Target::Actor(ActorId::Npc(*id))),
+            };
+        }
+        let p = self.sim.player.pos;
+        self.sim.find_named(who, p, ActorId::Player).filter(|t| matches!(t, Target::Actor(_)))
+    }
+
     fn command(&mut self, line: &str) {
         let body = line.trim_start_matches('/').trim();
         let (cmd, rest) = body.split_once(' ').map(|(a, b)| (a, b.trim())).unwrap_or((body, ""));
-        match cmd.to_lowercase().as_str() {
+        let lc = cmd.to_lowercase();
+        if let Some(k) = crate::sim::actor::GestureKind::parse(&lc) {
+            let to = self.person(rest);
+            if k.contact() && to.is_none() {
+                self.say(None, &format!("/{lc} whom? e.g. /{lc} Mara"), DIM);
+                return;
+            }
+            self.player_act(Action::Gesture { kind: lc.clone(), to });
+            return;
+        }
+        match lc.as_str() {
             "" => {}
             "help" | "?" => {
                 for l in [
                     "/a <thing> — create something where you are looking, e.g. /a lighthouse on that hill",
                     "/undo — remove the last thing you created   /history — list world versions",
+                    "/do <anything> (or press :) — do something in words, e.g. :rub the stone on the lantern",
+                    "e use · g pick up / put down · f throw · y/n answer · mouse: left use, right grab (hold right to wind up a throw)",
+                    "/wave /bow /nod /cheer /dance /sit /hug NAME /kiss NAME /handshake NAME /highfive NAME · /gesture ANY [NAME]",
+                    "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
-                    "Walk: ↑↓ move, ←→ turn, A/D strafe, PgUp/PgDn look, Tab ascii/blocks, F1 stats, q quit",
+                    "Walk: ↑↓ move, ←→ turn, A/D strafe, PgUp/PgDn look, Tab ascii/blocks, F1 stats, F2 inspect, q quit",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
                 ] {
                     self.say(None, l, DIM);
@@ -437,6 +638,47 @@ impl App {
                 Ok(h) if (0.0..24.0).contains(&h) => self.set_hour(h),
                 _ => self.say(None, "Usage: /time 12  (an hour from 0 to 23)", DIM),
             },
+            "do" => self.do_text(rest),
+            "gesture" | "g" => {
+                // Any gesture; ones nobody knows yet are written once by the LLM.
+                let (kind, who) = rest.split_once(' ').map(|(a, b)| (a, b.trim())).unwrap_or((rest, ""));
+                if kind.is_empty() {
+                    self.say(None, "Usage: /gesture salute [name]", DIM);
+                    return;
+                }
+                let to = if who.is_empty() { None } else { self.person(who) };
+                self.player_act(Action::Gesture { kind: kind.to_string(), to });
+            }
+            "drop" => self.player_act(Action::Drop),
+            "inspect" => {
+                self.inspect = !self.inspect;
+            }
+            "yes" => self.player_act(Action::Answer { yes: true, to: None }),
+            "no" => self.player_act(Action::Answer { yes: false, to: None }),
+            "say" | "shout" => {
+                if rest.is_empty() {
+                    self.say(None, "Usage: /say hello there", DIM);
+                    return;
+                }
+                self.say(Some("you"), rest, ACCENT);
+                let to = self.person("");
+                self.player_act(Action::Say { text: rest.to_string(), to });
+            }
+            "give" => match self.person(rest) {
+                Some(t) => self.player_act(Action::Give { to: t }),
+                None => self.say(None, "/give whom? Stand close to them.", DIM),
+            },
+            "propose" | "ask" => {
+                let (who, what) = rest.split_once(' ').unwrap_or((rest, ""));
+                match (self.person(who), what.trim()) {
+                    (Some(t), w) if !w.is_empty() => {
+                        let with = self.pointed_thing().filter(|x| !matches!(x, Target::Actor(_)));
+                        let with = with.or(self.sim.player.held.map(Target::Thing));
+                        self.player_act(Action::Propose { to: t, activity: w.to_string(), with });
+                    }
+                    _ => self.say(None, "Usage: /propose Mara catch  (catch, carry, dance, walk, hug, …)", DIM),
+                }
+            }
             "a" | "add" | "create" | "build" | "make" => self.create(rest, line),
             _ => self.create(body, line),
         }
@@ -445,11 +687,11 @@ impl App {
     /// Jump the clock forward to the next occurrence of `hour` (never backwards).
     fn set_hour(&mut self, hour: f64) {
         let day = sky::DAY_SECONDS;
-        let mut t = (self.t_game / day).floor() * day + hour / 24.0 * day;
-        if t <= self.t_game {
+        let mut t = (self.sim.t / day).floor() * day + hour / 24.0 * day;
+        if t <= self.sim.t {
             t += day;
         }
-        self.t_game = t;
+        self.sim.t = t;
         self.say(None, &format!("Time jumps to {:02}:{:02} ({}).", hour as u32, ((hour.fract()) * 60.0).round() as u32, sky::time_label(t)), DIM);
     }
 
@@ -468,40 +710,36 @@ impl App {
         let cam = self.camera();
         let (pw, ph, pa) = self.pixel_size();
         let aspect = pw as f32 / ph as f32 * pa;
-        let npcs = self.npc_views();
-        let view = describe(&self.snap, &mut self.cache, &npcs, &cam, aspect, self.t_game);
-        let f = Vec3::new(self.yaw.sin(), 0.0, self.yaw.cos());
+        let npcs = self.sim.npc_views();
+        let view = describe(&self.snap, &mut self.sim.cache, &npcs, &cam, aspect, self.sim.t);
+        let f = Vec3::new(self.yaw().sin(), 0.0, self.yaw().cos());
         let target = match &view.target {
             Some(t) if t.distance > 3.0 => Vec3::new(t.x, t.y, t.z),
             Some(_) | None => {
-                let p = self.pos + f * 12.0;
+                let p = self.pos() + f * 12.0;
                 Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z)
             }
         };
         self.say(Some("you"), typed, ACCENT);
-        self.recent_actions.push_back(format!("created \"{text}\""));
-        if self.recent_actions.len() > 4 {
-            self.recent_actions.pop_front();
-        }
-        self.brain.send(Cmd::Create { text: text.to_string(), view, target, yaw: self.yaw });
-    }
-
-    fn npc_views(&self) -> Vec<NpcView> {
-        self.cast.npcs.iter().map(|n| NpcView { id: n.def.id, name: n.name().to_string(), pos: n.pos }).collect()
+        self.sim.player_did(format!("created \"{text}\""));
+        let id = self.sim.next_id();
+        self.sim.interp.creating.insert(id, (ActorId::Player, self.sim.t));
+        self.brain.send(Cmd::Create { id: Some(id), by: None, text: text.to_string(), view, target, yaw: self.yaw() });
     }
 
     fn talk_context(&mut self) -> String {
         let cam = self.camera();
-        let npcs = self.npc_views();
-        let view = describe(&self.snap, &mut self.cache, &npcs, &cam, 1.6, self.t_game);
+        let npcs = self.sim.npc_views();
+        let view = describe(&self.snap, &mut self.sim.cache, &npcs, &cam, 1.6, self.sim.t);
         let seen: Vec<String> = view.visible.iter().take(10).map(|s| format!("{} ({:.0} m {})", s.name, s.distance, s.third)).collect();
         let place = view.region.clone().unwrap_or_else(|| view.biome.clone());
+        let held = self.sim.player.held.map(|h| format!(" The traveller is holding {}.", crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
         format!(
-            "It is {} in {}. Visible around you: {}. Recently the traveller {}.",
+            "It is {} in {}. Visible around you: {}. Recently the traveller {}.{held}",
             view.time,
             place,
             if seen.is_empty() { "open land".into() } else { seen.join(", ") },
-            if self.recent_actions.is_empty() { "just arrived".into() } else { self.recent_actions.iter().cloned().collect::<Vec<_>>().join("; ") }
+            if self.sim.recent_player.is_empty() { "just arrived".into() } else { self.sim.recent_player.iter().map(|(t, w)| format!("{w} ({})", sky::ago(self.sim.t - t))).collect::<Vec<_>>().join("; ") }
         )
     }
 
@@ -515,6 +753,8 @@ impl App {
         let history = self.conv.get(&cid).cloned().unwrap_or_default();
         self.conv.entry(cid).or_default().push((true, text.clone()));
         self.replying = Some(cid);
+        let name = self.sim.actor_name(ActorId::Npc(cid));
+        self.sim.event("said", Some(ActorId::Player), Some(ActorId::Npc(cid).key()), format!("the traveller said to {name}: \"{text}\""), Some(self.pos()), serde_json::json!({ "text": text }));
         self.brain.send(Cmd::Talk { cid, text, context, history });
     }
 
@@ -546,11 +786,12 @@ impl App {
                 }
             }
             Event::Token { cid, text } => {
-                let name = self.cast.get(cid).map(|n| n.name().to_string()).unwrap_or_else(|| "?".into());
+                let name = self.sim.actor_name(ActorId::Npc(cid));
                 match self.log.back_mut() {
                     Some(l) if l.streaming == Some(cid) => l.text.push_str(&text),
                     _ => self.log.push_back(LogLine { speaker: Some(name), text: text.trim_start().to_string(), color: TEXT, streaming: Some(cid) }),
                 }
+                self.sim_talk.entry(cid).or_default().push_str(&text);
                 self.dirty = true;
             }
             Event::ReplyDone { cid, ok } => {
@@ -559,6 +800,11 @@ impl App {
                     if ok {
                         let reply = l.text.clone();
                         self.conv.entry(cid).or_default().push((false, reply));
+                    }
+                }
+                if let Some(line) = self.sim_talk.remove(&cid) {
+                    if ok {
+                        self.sim.npc_said(cid, line.trim());
                     }
                 }
                 if !ok {
@@ -570,10 +816,6 @@ impl App {
                 self.replying = None;
                 self.dirty = true;
             }
-            Event::Decision { cid, decision } => {
-                let now = self.start.elapsed().as_secs_f64();
-                self.cast.apply(cid, &decision, now);
-            }
             Event::GenesisDone => {
                 self.genesis_pending = false;
             }
@@ -583,53 +825,42 @@ impl App {
                     self.say(None, l, DIM);
                 }
             }
+            other => {
+                let mut scratch = HashMap::new();
+                crate::sim::headless::apply(&mut self.sim, other, &mut scratch);
+                self.dirty = true;
+            }
         }
     }
 
     fn flip(&mut self, snap: Arc<WorldSnapshot>, region: Option<((i32, i32), String)>) {
         let old: HashSet<i64> = self.snap.instances.iter().map(|p| p.id).collect();
         let now = Instant::now();
-        let mut new_near: Vec<(String, Vec3)> = Vec::new();
         for p in &snap.instances {
             if !old.contains(&p.id) {
                 self.appear.insert(p.id, now);
-                if (p.pos - self.pos).length() < 70.0 {
-                    if let Some(t) = snap.type_of(p.type_id) {
-                        new_near.push((t.name().to_string(), p.pos));
-                    }
-                }
-            }
-        }
-        // Characters witness new things nearby.
-        for (name, at) in &new_near {
-            for n in &self.cast.npcs {
-                if (n.pos - *at).length() < 60.0 {
-                    let dir = compass(*at - n.pos);
-                    self.brain.send(Cmd::Witness { cid: n.def.id, text: format!("A {name} appeared {dir} of me, out of nowhere, after the traveller arrived."), importance: 0.6 });
-                    if self.brain.has_llm {
-                        self.brain.send(Cmd::Decide { cid: n.def.id, event: "new_building".into(), context: format!("A {name} just appeared {dir} of you.") });
-                    }
-                }
             }
         }
         if let Some((r, name)) = region {
-            let pr = region_of(self.pos.x, self.pos.z);
+            let pr = region_of(self.pos().x, self.pos().z);
             if (r.0 - pr.0).abs() <= 1 && (r.1 - pr.1).abs() <= 1 && !name.is_empty() {
                 self.say(None, &format!("The fog lifts over {name}."), [170, 200, 255]);
             }
         }
         let terrain_changed = render::terrain_epoch(&snap.terrain) != render::terrain_epoch(&self.snap.terrain);
-        self.snap = snap;
-        self.cast.sync(&self.snap);
+        self.snap = snap.clone();
+        self.sim.flip(snap);
         self.unstick();
         if terrain_changed {
             // The land reshaped itself; don't leave the player under water.
-            let h = self.snap.terrain.height(self.pos.x, self.pos.z);
+            let p = self.pos();
+            let h = self.snap.terrain.height(p.x, p.z);
             if h < crate::terrain::WATER_LEVEL + 0.3 {
-                self.pos = self.snap.spawn;
+                self.sim.player.pos = self.snap.spawn;
             }
-            self.pos.y = self.snap.terrain.height(self.pos.x, self.pos.z);
-            self.cam_y = self.pos.y + EYE;
+            let p = self.pos();
+            self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
+            self.cam_y = self.sim.player.pos.y + EYE;
         }
         self.dirty = true;
     }
@@ -637,16 +868,14 @@ impl App {
     // ------------------------------------------------------------------ sim
 
     fn tick(&mut self, dt: f32) {
-        let now_s = self.start.elapsed().as_secs_f64();
-        self.t_game += dt as f64;
-        let night = sky::is_night(self.t_game);
         if self.mode == Mode::Walk || self.noclip {
             let fwd = (self.held('^') || self.held('w')) as i32 - (self.held('v') || self.held('s')) as i32;
             let turn = self.held('>') as i32 - self.held('<') as i32;
             let strafe = self.held('d') as i32 - self.held('a') as i32;
-            self.yaw += turn as f32 * TURN_SPEED * dt;
-            let f = Vec3::new(self.yaw.sin(), 0.0, self.yaw.cos());
-            let r = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
+            self.sim.player.yaw += turn as f32 * TURN_SPEED * dt;
+            let yaw = self.yaw();
+            let f = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+            let r = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
             let mut dir = f * fwd as f32 + r * strafe as f32;
             if dir.length() > 1.0 {
                 dir = dir.normalize();
@@ -654,58 +883,56 @@ impl App {
             if dir != Vec3::ZERO {
                 let delta = dir * WALK_SPEED * dt;
                 if self.noclip {
-                    let p = self.pos + delta;
-                    self.pos = Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z);
+                    let p = self.pos() + delta;
+                    self.sim.player.pos = Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z);
                 } else {
-                    let solids = self.cache.solids_near(&self.snap, self.pos, 4.0);
-                    let bodies: Vec<Vec3> = self.cast.npcs.iter().map(|n| n.pos).filter(|p| (*p - self.pos).length() < 4.0).collect();
-                    let obs = Obstacles { solids: &solids, bodies: &bodies };
-                    self.pos = move_body(&self.snap.terrain, &obs, self.pos, delta, PLAYER_RADIUS);
+                    self.sim.walk(ActorId::Player, delta);
+                    self.sim.kick_things(ActorId::Player, delta);
                 }
+                // Walking away cancels an agent-style task.
+                self.sim.player.task = None;
             }
         }
-        self.pos.y = self.snap.terrain.height(self.pos.x, self.pos.z);
-        let eye = self.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + EYE;
+        let p = self.pos();
+        self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
+        let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + EYE;
         self.cam_y += (eye - self.cam_y) * (dt * 10.0).min(1.0);
 
-        // Characters.
-        let talking = if let Mode::Talk(id) = self.mode { Some(id) } else { None };
-        let mut events = Vec::new();
-        {
-            let snap = self.snap.clone();
-            let cache = &mut self.cache;
-            let mut solids_for = |p: Vec3| cache.solids_near(&snap, p, 3.0);
-            self.cast.tick(dt, now_s, night, self.pos, talking, &snap.terrain, &mut solids_for, &mut events, &mut self.near_flags);
+        // The living world.
+        self.sim.step(dt);
+        for r in self.sim.drain_requests() {
+            if self.budget_paused && !matches!(r, crate::sim::Request::Witness { .. }) {
+                continue;
+            }
+            crate::sim::headless::forward(&self.sim, &self.brain, r);
         }
-        for e in events {
-            match e {
-                CastEvent::Says { id, line } => {
-                    let name = self.cast.get(id).map(|n| n.name().to_string()).unwrap_or_default();
-                    self.say(Some(&name), &line, TEXT);
-                    self.conv.entry(id).or_default().push((false, line.clone()));
-                    self.brain.send(Cmd::Witness { cid: id, text: format!("I went up to the traveller and said: \"{line}\""), importance: 0.4 });
-                }
-                CastEvent::PlayerNear { id } => {
-                    if self.brain.has_llm && !self.budget_paused && talking.is_none() {
-                        let ctx = format!("The traveller has come within a few metres of you. It is {}.", sky::time_label(self.t_game));
-                        self.brain.send(Cmd::Decide { cid: id, event: "player_near".into(), context: ctx });
+        for n in self.sim.drain_notes() {
+            match n {
+                Note::Line { who, text } => {
+                    if let Some(c) = self.sim.cast.npcs.iter().find(|x| x.name() == who).map(|x| x.def.id) {
+                        self.conv.entry(c).or_default().push((false, text.clone()));
                     }
+                    self.say(Some(&who), &text, TEXT);
                 }
+                Note::Info(t) => self.say(None, &t, [200, 205, 220]),
             }
         }
         // Leave talk mode if they walked off.
         if let Mode::Talk(id) = self.mode {
-            if self.cast.get(id).is_none_or(|n| (n.pos - self.pos).length() > TALK_RANGE * 3.0) {
+            let me = self.pos();
+            if self.sim.cast.get(id).is_none_or(|n| (n.a.pos - me).length() > TALK_RANGE * 3.0) {
                 self.set_mode(Mode::Walk);
             }
         }
         // Who could we talk to?
-        let f = Vec3::new(self.yaw.sin(), 0.0, self.yaw.cos());
+        let me = self.pos();
+        let yaw = self.yaw();
+        let f = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let mut best: Option<(f32, i64, String)> = None;
-        for n in &self.cast.npcs {
-            let d = n.pos - self.pos;
+        for n in &self.sim.cast.npcs {
+            let d = n.a.pos - me;
             let dist = Vec3::new(d.x, 0.0, d.z).length();
-            if dist > TALK_RANGE || n.mode == NpcMode::Sleep && dist > 2.0 {
+            if dist > TALK_RANGE || n.a.asleep && dist > 2.0 {
                 continue;
             }
             let ang = (Vec3::new(d.x, 0.0, d.z).normalize_or_zero().dot(f)).clamp(-1.0, 1.0).acos();
@@ -718,35 +945,66 @@ impl App {
             self.talk_hint = hint;
             self.dirty = true;
         }
+        // What are we pointing at?
+        if self.last_pick.elapsed() > Duration::from_millis(120) {
+            self.repick();
+        }
         {
             let mut l = self.live.lock();
-            l.player = self.pos;
-            l.characters = self.cast.npcs.iter().map(|n| n.pos).collect();
+            l.player = self.pos();
+            l.characters = self.sim.cast.npcs.iter().map(|n| n.a.pos).collect();
         }
         if self.last_save.elapsed() > Duration::from_secs(3) {
             self.save_player();
         }
-        if self.last_char_save.elapsed() > Duration::from_secs(12) {
+        if self.last_char_save.elapsed() > Duration::from_secs(10) {
             self.save_characters();
         }
         if self.last_region_check.elapsed() > Duration::from_millis(500) {
             self.last_region_check = Instant::now();
             self.schedule_regions();
-            self.cache.trim(self.pos, render::VIEW_DIST + 80.0);
+            let p = self.pos();
+            self.sim.cache.trim(p, render::VIEW_DIST + 80.0);
         }
+    }
+
+    /// Point at whatever is under the mouse, or in the middle of the view.
+    fn repick(&mut self) {
+        self.last_pick = Instant::now();
+        let cam = self.camera();
+        let (w, vh, _) = self.layout();
+        let (pw, ph, pa) = self.pixel_size();
+        let aspect = pw as f32 / ph as f32 * pa;
+        let (f, r, u) = cam.basis();
+        let tan = (cam.fov_y * 0.5).tan();
+        let (cx, cy) = match self.mouse {
+            Some((x, y)) if y < vh => (x as f32 + 0.5, y as f32 + 0.5),
+            _ => (w as f32 * 0.5, vh as f32 * 0.5),
+        };
+        let uu = 2.0 * cx / w as f32 - 1.0;
+        let vv = 1.0 - 2.0 * cy / vh as f32;
+        let rd = (f + r * uu * tan * aspect + u * vv * tan).normalize();
+        let picked = self.sim.pick(cam.pos, rd, 40.0, Some(ActorId::Player));
+        let hover = picked.as_ref().filter(|p| p.dist < 12.0 && !matches!(p.target, Target::Point(_))).map(|p| p.target.clone());
+        if hover != self.sim.hover {
+            self.sim.hover = hover;
+            self.dirty = true;
+        }
+        if picked.as_ref().map(|p| (&p.target, p.name.as_str())) != self.pointed.as_ref().map(|p| (&p.target, p.name.as_str())) {
+            self.dirty = true;
+        }
+        self.pointed = picked;
     }
 
     pub fn save_player(&mut self) {
         self.last_save = Instant::now();
-        let _ = self.db.save_player(PlayerRow { x: self.pos.x, z: self.pos.z, yaw: self.yaw, t_game: self.t_game });
+        let p = self.pos();
+        let _ = self.db.save_player(PlayerRow { x: p.x, z: p.z, yaw: self.yaw(), t_game: self.sim.t });
     }
 
     pub fn save_characters(&mut self) {
         self.last_char_save = Instant::now();
-        let states: Vec<(i64, String)> = self.cast.npcs.iter().map(|n| (n.def.id, serde_json::to_string(&n.saved()).unwrap_or_default())).collect();
-        if !states.is_empty() {
-            let _ = self.db.save_character_states(&states);
-        }
+        crate::sim::persist::save(&mut self.sim);
     }
 
     /// Queue story plans for unplanned regions within 2 regions, nearest and
@@ -755,8 +1013,9 @@ impl App {
         if !self.brain.has_llm || self.budget_paused || self.genesis_pending || self.regions_inflight.len() >= 2 {
             return;
         }
-        let pr = region_of(self.pos.x, self.pos.z);
-        let f = Vec3::new(self.yaw.sin(), 0.0, self.yaw.cos());
+        let me = self.pos();
+        let pr = region_of(me.x, me.z);
+        let f = Vec3::new(self.yaw().sin(), 0.0, self.yaw().cos());
         let mut best: Option<(f32, (i32, i32))> = None;
         let rr: i32 = std::env::var("POCKET_REGION_RADIUS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).clamp(0, 4);
         for dz in -rr..=rr {
@@ -766,7 +1025,7 @@ impl App {
                     continue;
                 }
                 let c = region_center(r);
-                let to = Vec3::new(c.x - self.pos.x, 0.0, c.z - self.pos.z);
+                let to = Vec3::new(c.x - me.x, 0.0, c.z - me.z);
                 let d = to.length();
                 let score = d - to.normalize_or_zero().dot(f) * crate::world::REGION * 0.6;
                 if best.is_none_or(|b| score < b.0) {
@@ -797,11 +1056,10 @@ impl App {
                 false
             }
         });
-        let figure = self.snap.figure_type.and_then(|f| self.snap.type_of(f)).cloned();
-        let dynamic = self.cast.instances(figure.as_ref(), self.pos);
-        let culled = cull::cull(&self.snap, &mut self.cache, &cam, aspect, &dynamic, &fade);
+        let drawn = self.sim.draw_first_person(&cam, render::VIEW_DIST);
+        let culled = cull::cull(&self.snap, &mut self.sim.cache, &cam, aspect, &drawn.insts, &fade);
         self.stats.insts = culled.insts.len();
-        let light = sky::lighting(self.t_game, &self.snap.look.palette);
+        let light = sky::lighting(self.sim.t, &self.snap.look.palette);
         let sp = SceneParams {
             terrain: &self.snap.terrain,
             palette: &self.snap.look.palette,
@@ -813,6 +1071,7 @@ impl App {
             time: self.start.elapsed().as_secs_f32(),
             frame: self.next_frame_id as u32,
             shadows: !self.render.cpu_fallback && std::env::var("POCKET_NO_SHADOWS").is_err(),
+            lights: &drawn.lights,
         };
         let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
         let req = FrameRequest {
@@ -844,16 +1103,21 @@ impl App {
             }
         }
         self.draw_labels(w, vh);
+        self.draw_pointer(w, vh);
         if self.debug {
             self.draw_debug();
+        }
+        if self.inspect {
+            self.draw_inspect(w, vh);
         }
         // Separator with mode.
         let sep = vh;
         self.screen.fill_row(sep, Cell { ch: '─', fg: [60, 64, 80], bg: PANEL_BG, bold: false });
         let tag = match self.mode {
             Mode::Walk => " walk ".to_string(),
-            Mode::Talk(id) => format!(" talking to {} ", self.cast.get(id).map(|n| n.name()).unwrap_or("?")),
+            Mode::Talk(id) => format!(" talking to {} ", self.sim.cast.get(id).map(|n| n.name()).unwrap_or("?")),
             Mode::Create => " create ".to_string(),
+            Mode::Do => " do ".to_string(),
         };
         self.screen.text(2, sep, &tag, ACCENT, PANEL_BG, true);
         // Log.
@@ -893,14 +1157,22 @@ impl App {
         self.screen.fill_row(iy, Cell { bg: PANEL_BG, ..Cell::BLANK });
         match self.mode {
             Mode::Walk => {
-                let hint = match &self.talk_hint {
-                    Some((_, n)) => format!("Enter: talk to {n}   / create   Tab style   q quit"),
-                    None => "↑↓ walk  ←→ turn  A/D strafe  / create  Tab style  F1 stats  q quit".into(),
+                let near = self.pointed.as_ref().filter(|p| p.dist < 3.2 && !matches!(p.target, Target::Point(_)));
+                let hint = match (&self.talk_hint, near, self.sim.player.held) {
+                    (Some((_, n)), _, _) => format!("Enter: talk to {n}   e wave   / create   : do   F2 inspect"),
+                    (None, Some(p), None) => format!("{}: e use   g pick up   : do something   F2 inspect", p.name),
+                    (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   : do", self.sim.thing_name(h), p.name),
+                    (None, None, Some(h)) => format!("holding the {}: e use   f throw (mouse: hold right)   g put down", self.sim.thing_name(h)),
+                    (None, None, None) => "↑↓ walk  ←→ turn  A/D strafe  / create  : do  e use  g grab  F1 stats  F2 inspect  q quit".into(),
                 };
                 self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
             }
             _ => {
-                let prompt = if self.mode == Mode::Create { "" } else { "> " };
+                let prompt = match self.mode {
+                    Mode::Create => "",
+                    Mode::Do => "you ",
+                    _ => "> ",
+                };
                 let shown: String = {
                     let full = format!("{prompt}{}", self.input);
                     let n = full.chars().count();
@@ -918,14 +1190,18 @@ impl App {
         // Status bar.
         let sy = iy + 1;
         self.screen.fill_row(sy, Cell { bg: STATUS_BG, ..Cell::BLANK });
-        let pr = region_of(self.pos.x, self.pos.z);
+        let me = self.pos();
+        let pr = region_of(me.x, me.z);
         let place = self.snap.region_name(pr).map(str::to_string).unwrap_or_else(|| {
-            let b = self.snap.terrain.biome_at(self.pos.x, self.pos.z);
+            let b = self.snap.terrain.biome_at(me.x, me.z);
             let n = self.snap.terrain.biomes[b].name.clone();
             let mut c = n.chars();
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
         });
-        let mut parts = vec![place, sky::time_label(self.t_game).to_string()];
+        let mut parts = vec![place, sky::time_label(self.sim.t).to_string()];
+        if let Some(h) = self.sim.player.held {
+            parts.push(format!("holding {}", self.sim.thing_name(h)));
+        }
         if self.building > 0 {
             parts.push(format!("◌ building {}", self.building));
         }
@@ -975,8 +1251,8 @@ impl App {
         let (pw, ph, pa) = self.pixel_size();
         let aspect = pw as f32 / ph as f32 * pa;
         let mut labels = Vec::new();
-        for n in &self.cast.npcs {
-            let head = n.pos + Vec3::Y * (n.def.persona.look.height + 0.35);
+        for n in &self.sim.cast.npcs {
+            let head = n.a.pos + Vec3::Y * (n.def.persona.look.height + 0.35);
             let v = head - cam.pos;
             let d = v.length();
             if d > 10.0 {
@@ -993,7 +1269,7 @@ impl App {
             }
             let col = ((sx + 1.0) * 0.5 * w as f32) as i32;
             let row = ((1.0 - sy) * 0.5 * vh as f32) as i32 - 1;
-            let name = if n.mode == NpcMode::Sleep { format!("{} (asleep)", n.name()) } else { n.name().to_string() };
+            let name = if n.a.asleep { format!("{} (asleep)", n.name()) } else { n.name().to_string() };
             labels.push((col, row, name));
         }
         for (col, row, name) in labels {
@@ -1012,12 +1288,55 @@ impl App {
         }
     }
 
+    /// A small reticle in the middle (when the mouse isn't used) and the
+    /// name of what is pointed at.
+    fn draw_pointer(&mut self, w: u16, vh: u16) {
+        let (cx, cy) = match self.mouse {
+            Some(m) => m,
+            None => (w / 2, vh / 2),
+        };
+        if self.mouse.is_none() && self.mode == Mode::Walk {
+            if let Some(c) = self.screen.get(cx, cy) {
+                self.screen.set(cx, cy, Cell { ch: '+', fg: [255, 255, 255], bg: c.bg, bold: true });
+            }
+        }
+        if let Some(p) = &self.pointed {
+            if p.dist < 12.0 && !matches!(p.target, Target::Point(_)) {
+                let label = format!(" {} ", p.name);
+                let x = (cx as i32 + 2).clamp(0, (w as i32 - label.chars().count() as i32).max(0)) as u16;
+                let y = cy.saturating_sub(1);
+                self.screen.text(x, y, &label, [255, 245, 200], [30, 30, 40], false);
+            }
+        }
+    }
+
+    /// F2: the raw truth about what you point at (or yourself).
+    fn draw_inspect(&mut self, w: u16, vh: u16) {
+        let target = self.pointed.as_ref().filter(|p| p.dist < 40.0).map(|p| p.target.clone()).unwrap_or(Target::Actor(ActorId::Player));
+        let lines = self.sim.inspect_lines(&target);
+        let pw = (w as usize / 2).clamp(30, 72);
+        let x0 = w.saturating_sub(pw as u16);
+        let mut y = 0u16;
+        for l in lines {
+            for wl in term::wrap(&l, pw - 2) {
+                if y >= vh {
+                    return;
+                }
+                let s = format!(" {wl:<width$}", width = pw - 1);
+                self.screen.text(x0, y, &s, [210, 230, 255], [10, 14, 28], false);
+                y += 1;
+            }
+        }
+    }
+
     fn draw_debug(&mut self) {
         let lines = vec![
             format!("fps {:5.1}   worst loop {:4.1} ms   worst gap {:4.1} ms", self.stats.fps(), self.stats.worst(), self.stats.max_gap_ms),
             format!("gpu {:5.2} ms   {}", self.stats.gpu_ms, self.render.backend),
             format!("instances {}   out {} KB/frame", self.stats.insts, self.screen.bytes_last / 1024),
-            format!("pos {:.0}, {:.0}  yaw {:.0}°  v{}", self.pos.x, self.pos.z, self.yaw.to_degrees().rem_euclid(360.0), self.snap.version),
+            format!("pos {:.0}, {:.0}  yaw {:.0}°  v{}", self.pos().x, self.pos().z, self.yaw().to_degrees().rem_euclid(360.0), self.snap.version),
+            format!("live {} things ({} moving)  {} burning cells  {} people", self.sim.things.len(), self.sim.things.live().filter(|t| !t.asleep).count(), self.sim.field.cells.values().filter(|c| c.props[crate::sim::props::P_FIRE] > 0.0).count(), self.sim.cast.npcs.len()),
+            format!("events {}  llm queued {}  rules {} ({} the universe's own)", self.sim.log.total, self.sim.queued(), self.sim.rules.len(), self.sim.rules.iter().filter(|r| !r.builtin).count()),
             format!("{} keys{}", if self.enhanced { "enhanced" } else { "legacy" }, if self.screen.truecolor { "  truecolor" } else { "  256 colours" }),
         ];
         for (i, l) in lines.iter().enumerate() {
@@ -1060,6 +1379,7 @@ impl App {
                         TEvent::FocusLost => {
                             self.keys.down.clear();
                         }
+                        TEvent::Mouse(m) => self.on_mouse(m),
                         _ => {}
                     }
                 }
@@ -1143,10 +1463,6 @@ impl App {
     }
 }
 
-fn compass(d: Vec3) -> &'static str {
-    let a = d.x.atan2(d.z).to_degrees().rem_euclid(360.0);
-    ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][((a + 22.5) / 45.0) as usize % 8]
-}
 
 fn speaker_color(name: &str) -> [u8; 3] {
     let h = crate::noise::pcg(name.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)));
@@ -1279,7 +1595,7 @@ mod tests {
         if sys.contains("You are a character") {
             return "You look like you fell from the sky.".into();
         }
-        if user.contains("The player is creating") {
+        if user.contains("is making something in the world") {
             return format!("```json\n{{\"summary\": \"a lighthouse\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 0}}]}}\n```\n```js\n{lh}\n```");
         }
         if sys.contains("You decide what a character") {
@@ -1349,12 +1665,15 @@ mod tests {
     fn talk_create_undo_via_keys() {
         let (mut app, _db) = make_app(false);
         // Keep Mara where she is, in front of us.
-        app.yaw = 0.0;
+        app.sim.player.yaw = 0.0;
         let mut phase = 0;
         drive(&mut app, 40.0, |a, _t| {
-            if let Some(n) = a.cast.npcs.first_mut() {
+            if let Some(n) = a.sim.cast.npcs.first_mut() {
                 if phase < 3 {
-                    n.mode = NpcMode::Watch { until: f64::MAX };
+                    // Keep Mara standing still, facing us.
+                    n.a.task = Some(crate::sim::actor::Task::Face { target: Target::Actor(ActorId::Player), until: f64::MAX });
+                    n.think_at = f64::MAX;
+                    n.plan.clear();
                 }
             }
             match phase {
@@ -1433,7 +1752,7 @@ mod tests {
         app.events = rx;
         app.noclip = true;
         let distance: f32 = std::env::var("POCKET_WALK_M").ok().and_then(|v| v.parse().ok()).unwrap_or(1500.0);
-        let start = app.pos;
+        let start = app.pos();
         let mut warm = 0.0;
         drive(&mut app, 900.0, |a, t| {
             if t < 2.0 {
@@ -1445,7 +1764,7 @@ mod tests {
                 warm = t;
             }
             a.keys.until.insert('^', Instant::now() + Duration::from_millis(200));
-            let d = Vec3::new(a.pos.x - start.x, 0.0, a.pos.z - start.z).length();
+            let d = Vec3::new(a.pos().x - start.x, 0.0, a.pos().z - start.z).length();
             d < distance
         });
         let regions = app.snap.regions.len();
@@ -1460,7 +1779,7 @@ mod tests {
     fn held_key_moves_at_constant_speed_and_stops_on_release() {
         let (mut app, _db) = make_app(true);
         app.noclip = true; // isolate key handling from collisions
-        let start = app.pos;
+        let start = app.pos();
         let mut pressed_at = None;
         let mut released_pos = None;
         drive(&mut app, 3.0, |a, t| {
@@ -1471,7 +1790,7 @@ mod tests {
             if let Some(p0) = pressed_at {
                 if t - p0 >= 1.0 && released_pos.is_none() {
                     a.on_key(key(KeyCode::Up, KeyEventKind::Release));
-                    released_pos = Some(a.pos);
+                    released_pos = Some(a.pos());
                 }
             }
             true
@@ -1479,7 +1798,7 @@ mod tests {
         let rp = released_pos.unwrap();
         let moved = Vec3::new(rp.x - start.x, 0.0, rp.z - start.z).length();
         assert!((moved - WALK_SPEED).abs() < WALK_SPEED * 0.2, "1 s held moved {moved} m");
-        let after = Vec3::new(app.pos.x - rp.x, 0.0, app.pos.z - rp.z).length();
+        let after = Vec3::new(app.pos().x - rp.x, 0.0, app.pos().z - rp.z).length();
         assert!(after < 0.15, "kept moving {after} m after release");
         app.shutdown();
     }
@@ -1488,7 +1807,7 @@ mod tests {
     fn legacy_keys_step_per_event() {
         let (mut app, _db) = make_app(false);
         app.noclip = true;
-        let start = app.pos;
+        let start = app.pos();
         let mut sent = 0;
         drive(&mut app, 1.5, |a, t| {
             if t > 0.2 && sent < 1 {
@@ -1497,8 +1816,86 @@ mod tests {
             }
             true
         });
-        let moved = Vec3::new(app.pos.x - start.x, 0.0, app.pos.z - start.z).length();
+        let moved = Vec3::new(app.pos().x - start.x, 0.0, app.pos().z - start.z).length();
         assert!(moved > 0.2 && moved < 1.6, "one press = one short step, moved {moved}");
         app.shutdown();
     }
+    fn screen_text(app: &App) -> String {
+        let mut out = String::new();
+        for y in 0..app.screen.h {
+            for x in 0..app.screen.w {
+                out.push(app.screen.get(x, y).map(|c| c.ch).unwrap_or(' '));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn grab_throw_inspect_and_do_with_keys_and_mouse() {
+        let (mut app, _db) = make_app(false);
+        let stick = app.sim.type_by_name("stick").unwrap().id;
+        let at = app.pos() + Vec3::new(1.2, 0.0, 1.0);
+        let id = app.sim.spawn_thing(stick, at, 0.0, 1.0, Default::default(), true).unwrap();
+        app.sim.player.yaw = 1.2f32.atan2(1.0);
+        app.pitch = -0.78;
+        let mut phase = 0;
+        drive(&mut app, 12.0, |a, t| {
+            if let Some(n) = a.sim.cast.npcs.first_mut() {
+                n.think_at = f64::MAX;
+            }
+            match phase {
+                0 if a.pointed.as_ref().is_some_and(|p| p.target == Target::Thing(id)) => {
+                    a.on_key(key(KeyCode::Char('g'), KeyEventKind::Press));
+                    assert_eq!(a.sim.player.held, Some(id), "picked up with g");
+                    phase = 1;
+                }
+                1 => {
+                    a.on_key(key(KeyCode::F(2), KeyEventKind::Press));
+                    a.compose();
+                    let txt = screen_text(a);
+                    assert!(txt.contains("stick") || txt.contains("traveller"), "inspect panel shows something:\n{txt}");
+                    a.on_key(key(KeyCode::Char('f'), KeyEventKind::Press));
+                    assert_eq!(a.sim.player.held, None, "thrown with f");
+                    assert!(!a.sim.things.get(id).unwrap().asleep, "flying");
+                    phase = 2;
+                }
+                2 if a.sim.things.get(id).is_some_and(|t| t.asleep) => {
+                    // Mouse: point at it and right-click to pick it up again.
+                    let me = a.pos();
+                    let tp = a.sim.things.get(id).unwrap().pos;
+                    a.sim.player.yaw = (tp.x - me.x).atan2(tp.z - me.z);
+                    a.mouse = None;
+                    a.repick();
+                    if (tp - me).length() < 3.0 && a.pointed.as_ref().is_some_and(|p| p.target == Target::Thing(id)) {
+                        a.on_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: a.screen.w / 2, row: 5, modifiers: KeyModifiers::NONE });
+                        a.on_mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Right), column: a.screen.w / 2, row: 5, modifiers: KeyModifiers::NONE });
+                    }
+                    phase = 3;
+                }
+                3 => {
+                    a.on_key(key(KeyCode::Char(':'), KeyEventKind::Press));
+                    assert_eq!(a.mode, Mode::Do);
+                    for c in "whistle a tune".chars() {
+                        a.on_key(key(KeyCode::Char(c), KeyEventKind::Press));
+                    }
+                    a.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+                    assert_eq!(a.mode, Mode::Walk);
+                    phase = 4;
+                }
+                4 if t > 8.0 => {
+                    phase = 5;
+                    return false;
+                }
+                _ => {}
+            }
+            true
+        });
+        assert!(phase >= 4, "stuck in phase {phase}; log: {:?}", app.log.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        assert!(log_has(&app, "whistle a tune"), "the do line was shown");
+        let kinds: Vec<String> = app.sim.log.recent.iter().map(|e| e.kind.clone()).collect();
+        assert!(kinds.contains(&"picked_up".to_string()) && kinds.contains(&"threw".to_string()), "{kinds:?}");
+        app.shutdown();
+    }
+
 }

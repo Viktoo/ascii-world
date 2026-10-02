@@ -32,6 +32,10 @@ enum Op {
     Jmp { to: u32 },
     Jz { c: u16, to: u32 },
     Ret { src: u16, width: u8 },
+    /// Behaviour: queue an effect with the value of register `arg`.
+    Effect { effect: Effect, arg: u16 },
+    /// Behaviour: finish normally.
+    End,
     Trap,
 }
 
@@ -39,7 +43,24 @@ enum Op {
 pub struct Program {
     ops: Vec<Op>,
     nregs: usize,
+    /// Behaviour programs: number of property registers per side (self, other).
+    nprops: u16,
 }
+
+/// Inputs and outputs of one behaviour call.
+pub struct BehaviorIo<'a> {
+    pub k: &'a [f32; 16],
+    pub state: &'a mut [f32; 8],
+    pub ctx: &'a [f32; CTX_LEN],
+    /// The thing's own properties, in `Module::prop_names` order.
+    pub props: &'a mut [f32],
+    /// The other thing's properties (zeros when there is none).
+    pub other: &'a mut [f32],
+    pub effects: &'a mut Vec<(Effect, f32)>,
+}
+
+/// At most this many effects are kept per call.
+pub const MAX_EFFECTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VmError {
@@ -49,10 +70,16 @@ pub enum VmError {
 
 pub const REG_X: u16 = 0;
 pub const REG_K: u16 = 3;
-const FIRST_LOCAL: u16 = 11;
+pub const K_LEN: usize = 16;
+pub const CTX_LEN: usize = CTX_FIELDS.len();
+const SHAPE_FIRST_LOCAL: u16 = REG_K + K_LEN as u16;
+pub const REG_STATE: u16 = REG_K + K_LEN as u16;
+pub const REG_CTX: u16 = REG_STATE + 8;
+pub const REG_PROPS: u16 = REG_CTX + CTX_LEN as u16;
 
 struct Compiler<'f> {
     f: &'f Func,
+    nprops: u16,
     ops: Vec<Op>,
     local_reg: Vec<u16>,
     next: u16,
@@ -81,7 +108,16 @@ impl<'f> Compiler<'f> {
             }
             ExprKind::Local(id) => self.local_reg.get(*id as usize).copied().unwrap_or(0),
             ExprKind::Param(i) => REG_X + *i as u16,
-            ExprKind::KField(i) => REG_K + *i as u16,
+            ExprKind::KField(i) => REG_K + (*i as u16).min(K_LEN as u16 - 1),
+            ExprKind::State(i) => REG_STATE + (*i as u16).min(7),
+            ExprKind::Ctx(i) => REG_CTX + (*i as u16).min(CTX_LEN as u16 - 1),
+            ExprKind::Prop { other, idx } => {
+                if *idx >= self.nprops {
+                    self.overflow = true;
+                    return 0;
+                }
+                REG_PROPS + if *other { self.nprops } else { 0 } + *idx
+            }
             ExprKind::Comp(v, c) => self.expr(v) + *c as u16,
             ExprKind::Neg(a) => {
                 let w = e.ty.width();
@@ -165,9 +201,13 @@ impl<'f> Compiler<'f> {
     }
 
     fn assign(&mut self, id: u32, e: &Expr) {
+        let dst = self.local_reg.get(id as usize).copied().unwrap_or(0);
+        self.store(dst, e);
+    }
+
+    fn store(&mut self, dst: u16, e: &Expr) {
         let mark = self.next;
         let r = self.expr(e);
-        let dst = self.local_reg.get(id as usize).copied().unwrap_or(0);
         for i in 0..e.ty.width() {
             self.ops.push(Op::Mov { dst: dst + i, src: r + i });
         }
@@ -179,6 +219,28 @@ impl<'f> Compiler<'f> {
             match s {
                 Stmt::Let { id, init } => self.assign(*id, init),
                 Stmt::Assign { id, value } => self.assign(*id, value),
+                Stmt::SetState { idx, value } => self.store(REG_STATE + (*idx as u16).min(7), value),
+                Stmt::SetProp { other, idx, value } => {
+                    if *idx >= self.nprops {
+                        self.overflow = true;
+                        continue;
+                    }
+                    self.store(REG_PROPS + if *other { self.nprops } else { 0 } + *idx, value)
+                }
+                Stmt::Effect { effect, arg } => {
+                    let mark = self.next;
+                    let r = match arg {
+                        Some(a) => self.expr(a),
+                        None => {
+                            let d = self.alloc(1);
+                            self.ops.push(Op::Const { dst: d, v: 0.0 });
+                            d
+                        }
+                    };
+                    self.ops.push(Op::Effect { effect: *effect, arg: r });
+                    self.next = mark;
+                }
+                Stmt::End => self.ops.push(Op::End),
                 Stmt::Return(e) => {
                     let mark = self.next;
                     let r = self.expr(e);
@@ -219,18 +281,28 @@ impl<'f> Compiler<'f> {
 }
 
 pub fn compile(f: &Func) -> Result<Program, String> {
-    let mut c = Compiler { f, ops: Vec::new(), local_reg: Vec::new(), next: FIRST_LOCAL, hwm: FIRST_LOCAL, overflow: false };
+    build(f, SHAPE_FIRST_LOCAL, 0, Op::Trap)
+}
+
+/// Compile a behaviour function that uses `nprops` property names.
+pub fn compile_behavior(f: &Func, nprops: usize) -> Result<Program, String> {
+    let n = nprops.min(MAX_PROPS) as u16;
+    build(f, REG_PROPS + 2 * n, n, Op::End)
+}
+
+fn build(f: &Func, first_local: u16, nprops: u16, tail: Op) -> Result<Program, String> {
+    let mut c = Compiler { f, nprops, ops: Vec::new(), local_reg: Vec::new(), next: first_local, hwm: first_local, overflow: false };
     for l in &c.f.locals.clone() {
         let r = c.alloc(l.ty.width());
         c.local_reg.push(r);
     }
     let body = c.f.body.clone();
     c.block(&body);
-    c.ops.push(Op::Trap);
+    c.ops.push(tail);
     if c.overflow {
         return Err("function is too complex (register limit)".into());
     }
-    let p = Program { ops: c.ops, nregs: c.hwm as usize + 1 };
+    let p = Program { ops: c.ops, nregs: c.hwm as usize + 1, nprops };
     p.verify()?;
     Ok(p)
 }
@@ -254,21 +326,57 @@ impl Program {
             Op::Jmp { to } => to <= len,
             Op::Jz { c, to } => r(c, 1) && to <= len,
             Op::Ret { src, width } => r(src, width as u16),
-            Op::Trap => true,
+            Op::Effect { arg, .. } => r(arg, 1),
+            Op::End | Op::Trap => true,
         });
         if ok { Ok(()) } else { Err("internal: bytecode failed verification".into()) }
     }
 
     /// Run with inputs. Returns (result, fuel used).
-    pub fn run(&self, regs: &mut Vec<f32>, p: [f32; 3], k: &[f32; 8], fuel: u32) -> Result<([f32; 3], u32), VmError> {
+    pub fn run(&self, regs: &mut Vec<f32>, p: [f32; 3], k: &[f32; 16], fuel: u32) -> Result<([f32; 3], u32), VmError> {
         if regs.len() < self.nregs {
             regs.resize(self.nregs, 0.0);
         }
-        let regs = &mut regs[..self.nregs];
-        regs[0] = p[0];
-        regs[1] = p[1];
-        regs[2] = p[2];
-        regs[3..11].copy_from_slice(k);
+        let r = &mut regs[..self.nregs];
+        r[0] = p[0];
+        r[1] = p[1];
+        r[2] = p[2];
+        r[REG_K as usize..REG_K as usize + K_LEN].copy_from_slice(k);
+        self.exec(r, fuel, None)
+    }
+
+    /// Run a behaviour function. State and properties are updated in place;
+    /// effects are appended. Returns the fuel used.
+    pub fn run_behavior(&self, regs: &mut Vec<f32>, io: BehaviorIo, fuel: u32) -> Result<u32, VmError> {
+        let need = self.nregs.max(REG_PROPS as usize + 2 * self.nprops as usize);
+        if regs.len() < need {
+            regs.resize(need, 0.0);
+        }
+        let r = &mut regs[..need];
+        r[..3].fill(0.0);
+        r[REG_K as usize..REG_K as usize + K_LEN].copy_from_slice(io.k);
+        r[REG_STATE as usize..REG_STATE as usize + 8].copy_from_slice(io.state);
+        r[REG_CTX as usize..REG_CTX as usize + CTX_LEN].copy_from_slice(io.ctx);
+        let n = self.nprops as usize;
+        let pb = REG_PROPS as usize;
+        for i in 0..n {
+            r[pb + i] = io.props.get(i).copied().unwrap_or(0.0);
+            r[pb + n + i] = io.other.get(i).copied().unwrap_or(0.0);
+        }
+        let (_, used) = self.exec(r, fuel, Some(io.effects))?;
+        io.state.copy_from_slice(&r[REG_STATE as usize..REG_STATE as usize + 8]);
+        for i in 0..n {
+            if let Some(v) = io.props.get_mut(i) {
+                *v = r[pb + i];
+            }
+            if let Some(v) = io.other.get_mut(i) {
+                *v = r[pb + n + i];
+            }
+        }
+        Ok(used)
+    }
+
+    fn exec(&self, regs: &mut [f32], fuel: u32, mut effects: Option<&mut Vec<(Effect, f32)>>) -> Result<([f32; 3], u32), VmError> {
         let mut pc = 0usize;
         let mut used = 0u32;
         let fuel = fuel.min(HARD_FUEL);
@@ -343,6 +451,14 @@ impl Program {
                     out[..width as usize].copy_from_slice(&regs[s..s + width as usize]);
                     return Ok((out, used));
                 }
+                Op::Effect { effect, arg } => {
+                    if let Some(e) = effects.as_deref_mut() {
+                        if e.len() < MAX_EFFECTS {
+                            e.push((effect, regs[arg as usize]));
+                        }
+                    }
+                }
+                Op::End => return Ok((out, used)),
                 Op::Trap => return Err(VmError::NoReturn),
             }
         }

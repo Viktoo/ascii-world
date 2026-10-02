@@ -162,7 +162,7 @@ fn vm_never_panics_on_weird_inputs() {
     let weird = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MIN, 0.0, -0.0, 1e-38, 1e30];
     for &a in &weird {
         for &b in &weird {
-            let k = [a, b, a, b, a, b, a, b];
+            let k = [a, b, a, b, a, b, a, b, b, a, b, a, b, a, b, a];
             let _ = t.sdf_checked([a, b, a], &k, 100_000);
             let _ = t.color_checked([b, a, b], &k, 100_000);
             let _ = t.sdf_checked([a, b, a], &k, 3);
@@ -217,4 +217,170 @@ fn fuzz_checker_and_vm() {
             }
         }
     }
+}
+
+const LANTERN: &str = r#"
+export const meta = {
+  name: "lantern",
+  bounds: [0.2, 0.3, 0.2],
+  tags: ["item", "light"],
+  props: { mass: 1.2, light: 0, heat: 0, fragile: 0.5, lit: true },
+  says: ["The flame steadies."],
+  sounds: ["clink"],
+  spawns: ["ash"],
+};
+export function sdf(x, y, z, k) {
+  return roundBox(x, y, z, 0.15, 0.25 - k.s1 * 0.01, 0.15, 0.03);
+}
+export function color(x, y, z, k) {
+  return mix(rgb(60, 50, 40), rgb(255, 210, 120), k.s0);
+}
+export function tick(s, w, k) {
+  s.s1 += w.dt;
+  if (w.fire > 0 && w.wet < 0.5) {
+    s.s0 = 1;
+  }
+  w.light = s.s0;
+  w.heat = s.s0 * 300;
+  if (w.water > 0) {
+    s.s0 = 0;
+    sound(0);
+    return;
+  }
+  if (s.s1 > 100) { remove(); }
+}
+export function use(s, w, k, o) {
+  s.s0 = 1 - s.s0;
+  if (w.on > 0) {
+    o.temp += 200 * s.s0;
+  }
+  say(0);
+}
+export function touch(s, w, k) {
+  if (w.impact > 4) { w.health -= 0.5; spawn(0); }
+}
+"#;
+
+fn run(t: &CompiledType, b: crate::lang::ir::Behavior, state: &mut [f32; 8], ctx: &[(&str, f32)], props: &mut Vec<f32>, other: &mut Vec<f32>) -> Vec<(crate::lang::ir::Effect, f32)> {
+    use crate::lang::ir::CTX_FIELDS;
+    let mut c = [0.0f32; crate::lang::vm::CTX_LEN];
+    for (n, v) in ctx {
+        c[CTX_FIELDS.iter().position(|f| f == n).unwrap()] = *v;
+    }
+    let mut effects = Vec::new();
+    let io = crate::lang::vm::BehaviorIo { k: &default_k(0.0), state, ctx: &c, props, other, effects: &mut effects };
+    t.run_behavior(b, io, BEHAVIOR_FUEL).unwrap().unwrap();
+    effects
+}
+
+#[test]
+fn behaviour_code_reads_and_writes_state_props_and_effects() {
+    use crate::lang::ir::{Behavior, Effect};
+    let t = compile(LANTERN).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    assert_eq!(t.meta.props.iter().find(|p| p.0 == "lit").map(|p| p.1), Some(1.0));
+    assert_eq!(t.meta.says, vec!["The flame steadies."]);
+    assert_eq!(t.meta.spawns, vec!["ash"]);
+    assert!(t.tick.is_some() && t.use_fn.is_some() && t.touch.is_some());
+    probe(&t).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    let idx = |n: &str| t.prop_names.iter().position(|p| p == n).unwrap();
+    let mut state = [0.0; 8];
+    let mut props = vec![0.0; t.prop_names.len()];
+    let mut other = vec![0.0; t.prop_names.len()];
+    // Lit by fire: light and heat follow.
+    props[idx("fire")] = 1.0;
+    let fx = run(&t, Behavior::Tick, &mut state, &[("dt", 0.5)], &mut props, &mut other);
+    assert!(fx.is_empty());
+    assert_eq!(state[0], 1.0);
+    assert_eq!(state[1], 0.5);
+    assert_eq!(props[idx("light")], 1.0);
+    assert_eq!(props[idx("heat")], 300.0);
+    // Dropped in water: goes out, makes its sound, and `return;` stops the rest.
+    let fx = run(&t, Behavior::Tick, &mut state, &[("dt", 0.5), ("water", 1.0)], &mut props, &mut other);
+    assert_eq!(state[0], 0.0);
+    assert_eq!(fx, vec![(Effect::Sound, 0.0)]);
+    // Used on something: heats the other thing.
+    other[idx("temp")] = 15.0;
+    let fx = run(&t, Behavior::Use, &mut state, &[("on", 1.0)], &mut props, &mut other);
+    assert_eq!(state[0], 1.0);
+    assert_eq!(other[idx("temp")], 215.0);
+    assert_eq!(fx, vec![(Effect::Say, 0.0)]);
+    // Hit hard: loses health and spawns ash.
+    props[idx("health")] = 1.0;
+    let fx = run(&t, Behavior::Touch, &mut state, &[("impact", 6.0)], &mut props, &mut other);
+    assert_eq!(props[idx("health")], 0.5);
+    assert_eq!(fx, vec![(Effect::Spawn, 0.0)]);
+    // State is visible to the shape as k.s0 … k.s7.
+    let mut k = default_k(0.0);
+    k[8] = 1.0;
+    let c = t.color([0.0, 0.0, 0.0], &k);
+    assert!((c[0] - 1.0).abs() < 1e-6);
+    assert!(t.wgsl.contains("k.s0") && t.wgsl.contains("k.s1"));
+    assert!(!t.wgsl.contains("tick"), "behaviour stays on the CPU");
+}
+
+#[test]
+fn behaviour_rules_are_enforced() {
+    let base = |body: &str| {
+        format!(
+            "export const meta = {{ name: \"x\", bounds: [1, 1, 1], tags: [], says: [\"hi\"] }};\n\
+             export function sdf(x, y, z, k) {{ return sphere(x, y, z, 0.5); }}\n\
+             export function color(x, y, z, k) {{ return rgb(1, 2, 3); }}\n{body}"
+        )
+    };
+    let cases = [
+        ("export function tick(s, w, k) { return 1; }", "does not return a value"),
+        ("export function tick(s, w, k) { w.dt = 1; }", "read-only"),
+        ("export function tick(s, w, k) { k.a = 1; }", "read-only"),
+        ("export function tick(s, w, k) { s.s9 = 1; }", "state slots are"),
+        ("export function tick(s, w, k) { say(3); }", "needs meta.says to have an entry 3"),
+        ("export function tick(s, w, k) { remove(1); }", "takes no arguments"),
+        ("export function tick(s, w, k) { const a = s; }", "can only be used as s.<slot>"),
+        ("export function tick(s, w, k, o) { }", "must take (s, w, k)"),
+        ("export function think(s, w, k) { }", "may be exported"),
+        ("export function tick(s, w, k) { w.Fire = 1; }", "not a property name"),
+        ("export function tick(s, w, k) { fetch(1); }", "'fetch' is not an allowed function"),
+    ];
+    for (body, expect) in cases {
+        let d = compile(&base(body)).expect_err(body);
+        assert!(d.iter().any(|d| d.msg.contains(expect)), "{body}: expected {expect:?}, got {}", format_diags(&d));
+    }
+    // Shape functions still cannot assign members or call effects.
+    let src = "export const meta = { name: \"x\", bounds: [1, 1, 1], tags: [] };\n\
+               export function sdf(x, y, z, k) { k.a = 2; return 1; }\n\
+               export function color(x, y, z, k) { remove(); return rgb(1, 2, 3); }";
+    let d = compile(src).expect_err("shape effects");
+    assert!(d.iter().any(|d| d.msg.contains("only local variables can be assigned")), "{}", format_diags(&d));
+    assert!(d.iter().any(|d| d.msg.contains("'remove' is not an allowed function")), "{}", format_diags(&d));
+    // Bad meta.props.
+    for (props, expect) in [("{ mass: \"heavy\" }", "literal number"), ("{ Mass: 1 }", "not a valid property name"), ("{ dt: 1 }", "not a valid property name")] {
+        let src = format!("export const meta = {{ name: \"x\", bounds: [1, 1, 1], tags: [], props: {props} }};\n\
+               export function sdf(x, y, z, k) {{ return sphere(x, y, z, 0.5); }}\n\
+               export function color(x, y, z, k) {{ return rgb(1, 2, 3); }}");
+        let d = compile(&src).expect_err(props);
+        assert!(d.iter().any(|d| d.msg.contains(expect)), "{props}: {}", format_diags(&d));
+    }
+}
+
+#[test]
+fn expensive_or_nan_behaviour_fails_the_probe() {
+    let src = r#"
+export const meta = { name: "x", bounds: [1, 1, 1], tags: [] };
+export function sdf(x, y, z, k) { return sphere(x, y, z, 0.5); }
+export function color(x, y, z, k) { return rgb(1, 2, 3); }
+export function tick(s, w, k) {
+  for (let i = 0; i < 32; i++) { for (let j = 0; j < 8; j++) { s.s0 = s.s0 + sin(i * j + s.s0) * cos(j) + noise3(i, j, s.s1) + hash(i, j); } }
+}
+"#;
+    let t = compile(src).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    let d = probe(&t).expect_err("too expensive");
+    assert!(d[0].msg.contains("too expensive"), "{}", format_diags(&d));
+    let src = r#"
+export const meta = { name: "x", bounds: [1, 1, 1], tags: [] };
+export function sdf(x, y, z, k) { return sphere(x, y, z, 0.5); }
+export function color(x, y, z, k) { return rgb(1, 2, 3); }
+export function tick(s, w, k) { s.s2 = 1 / (w.dt - w.dt); }
+"#;
+    let t = compile(src).unwrap();
+    let d = probe(&t).expect_err("nan");
+    assert!(d[0].msg.contains("s.s2"), "{}", format_diags(&d));
 }

@@ -1,5 +1,5 @@
 // Built-in shrub, sometimes flowering.
-export const meta = { name: "shrub", bounds: [1.5, 1.4, 1.5], tags: ["builtin", "bush"] };
+export const meta = { name: "shrub", bounds: [1.5, 1.4, 1.5], tags: ["builtin", "bush"], props: { mass: 40, burns: 0.7, alive: 1, fuel: 0.8 } };
 
 export function sdf(x, y, z, k) {
   const a = sphere(x, y - 0.45, z, 0.75);

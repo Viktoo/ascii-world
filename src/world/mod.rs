@@ -59,6 +59,8 @@ pub struct TypeEntry {
     pub solid: bool,
     /// Lowest solid point in local space (for ground placement).
     pub bottom: f32,
+    /// Highest solid point in local space (as probed, at rest).
+    pub top: f32,
     /// Bounding sphere: centre height (local) and radius (unscaled).
     pub sphere_cy: f32,
     pub sphere_r: f32,
@@ -121,6 +123,7 @@ impl Placed {
             k0: [k[0], k[1], k[2], k[3]],
             k1: [k[4], k[5], k[6], k[7]],
             info: ty.gpu_info(),
+            ..Default::default()
         }
     }
 }

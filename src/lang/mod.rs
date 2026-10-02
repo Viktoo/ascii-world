@@ -8,7 +8,7 @@ pub mod probe;
 pub mod vm;
 pub mod wgsl;
 
-use ir::Meta;
+use ir::{Behavior, Meta};
 use std::cell::RefCell;
 use std::fmt;
 
@@ -75,30 +75,52 @@ pub struct CompiledType {
     pub wgsl: String,
     pub sdf: vm::Program,
     pub color: vm::Program,
+    pub tick: Option<vm::Program>,
+    pub use_fn: Option<vm::Program>,
+    pub touch: Option<vm::Program>,
+    /// Property names behaviour code reads or writes, in register order.
+    pub prop_names: Vec<String>,
 }
 
 /// Fuel budget used when evaluating on the CPU outside of probing.
 pub const RUN_FUEL: u32 = 20_000;
+/// Fuel budget for one behaviour call.
+pub const BEHAVIOR_FUEL: u32 = 6_000;
 
 thread_local! {
     static REGS: RefCell<Vec<f32>> = RefCell::new(Vec::with_capacity(256));
 }
 
 impl CompiledType {
-    pub fn sdf_checked(&self, p: [f32; 3], k: &[f32; 8], fuel: u32) -> Result<(f32, u32), vm::VmError> {
+    pub fn sdf_checked(&self, p: [f32; 3], k: &[f32; 16], fuel: u32) -> Result<(f32, u32), vm::VmError> {
         REGS.with(|r| self.sdf.run(&mut r.borrow_mut(), p, k, fuel).map(|(o, u)| (o[0], u)))
     }
-    pub fn color_checked(&self, p: [f32; 3], k: &[f32; 8], fuel: u32) -> Result<([f32; 3], u32), vm::VmError> {
+    pub fn color_checked(&self, p: [f32; 3], k: &[f32; 16], fuel: u32) -> Result<([f32; 3], u32), vm::VmError> {
         REGS.with(|r| self.color.run(&mut r.borrow_mut(), p, k, fuel))
     }
+    pub fn behavior(&self, b: Behavior) -> Option<&vm::Program> {
+        match b {
+            Behavior::Tick => self.tick.as_ref(),
+            Behavior::Use => self.use_fn.as_ref(),
+            Behavior::Touch => self.touch.as_ref(),
+        }
+    }
+    pub fn has_behavior(&self) -> bool {
+        self.tick.is_some() || self.use_fn.is_some() || self.touch.is_some()
+    }
+    /// Run a behaviour entry point with the given fuel.
+    pub fn run_behavior(&self, b: Behavior, io: vm::BehaviorIo, fuel: u32) -> Option<Result<u32, vm::VmError>> {
+        let prog = self.behavior(b)?;
+        Some(REGS.with(|r| prog.run_behavior(&mut r.borrow_mut(), io, fuel)))
+    }
     /// Distance in local space; a failing evaluation counts as "far away".
-    pub fn sdf(&self, p: [f32; 3], k: &[f32; 8]) -> f32 {
+    pub fn sdf(&self, p: [f32; 3], k: &[f32; 16]) -> f32 {
         match self.sdf_checked(p, k, RUN_FUEL) {
             Ok((d, _)) if d.is_finite() => d,
             _ => 1e9,
         }
     }
-    pub fn color(&self, p: [f32; 3], k: &[f32; 8]) -> [f32; 3] {
+    pub fn color(&self, p: [f32; 3], k: &[f32; 16]) -> [f32; 3] {
         match self.color_checked(p, k, RUN_FUEL) {
             Ok((c, _)) if c.iter().all(|v| v.is_finite()) => c,
             _ => [1.0, 0.0, 1.0],
@@ -113,7 +135,18 @@ pub fn compile(source: &str) -> Result<CompiledType, Vec<Diag>> {
     let tr = |e: String| vec![Diag::new(Stage::Translate, 0, e)];
     let sdf = vm::compile(&module.sdf).map_err(tr)?;
     let color = vm::compile(&module.color).map_err(tr)?;
-    Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color })
+    let n = module.prop_names.len();
+    let mut progs: [Option<vm::Program>; 3] = [None, None, None];
+    for (b, f) in &module.behaviors {
+        let i = match b {
+            Behavior::Tick => 0,
+            Behavior::Use => 1,
+            Behavior::Touch => 2,
+        };
+        progs[i] = Some(vm::compile_behavior(f, n).map_err(tr)?);
+    }
+    let [tick, use_fn, touch] = progs;
+    Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color, tick, use_fn, touch, prop_names: module.prop_names })
 }
 
 #[cfg(test)]

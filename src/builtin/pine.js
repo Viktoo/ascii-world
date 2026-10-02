@@ -1,5 +1,5 @@
 // Built-in conifer.
-export const meta = { name: "pine", bounds: [2.6, 9.5, 2.6], tags: ["builtin", "pine"] };
+export const meta = { name: "pine", bounds: [2.6, 9.5, 2.6], tags: ["builtin", "pine"], props: { mass: 700, burns: 0.75, alive: 1, fuel: 1 } };
 
 export function sdf(x, y, z, k) {
   const s = 0.85 + hash(k.seed) * 0.3;

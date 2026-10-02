@@ -1,7 +1,9 @@
 //! Step 4: probe a compiled type on the CPU evaluator at ~2,000 points in and
 //! around its bounds.
 
-use super::{CompiledType, Diag, Stage, vm::VmError};
+use super::ir::{Behavior, CTX_FIELDS};
+use super::vm::{BehaviorIo, CTX_LEN, VmError};
+use super::{BEHAVIOR_FUEL, CompiledType, Diag, Stage};
 use crate::noise::{pcg, u2f};
 
 /// An sdf call may use at most this much fuel (keeps GPU cost bounded too).
@@ -18,8 +20,10 @@ pub struct ProbeReport {
     pub max_fuel: u32,
 }
 
-pub fn default_k(seed: f32) -> [f32; 8] {
-    [seed, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+pub fn default_k(seed: f32) -> [f32; 16] {
+    let mut k = [0.0; 16];
+    k[..8].copy_from_slice(&[seed, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    k
 }
 
 /// The deterministic probe point set for a bounds box.
@@ -58,7 +62,7 @@ pub fn probe(t: &CompiledType) -> Result<ProbeReport, Vec<Diag>> {
     probe_with(t, &default_k(0.37))
 }
 
-pub fn probe_with(t: &CompiledType, k: &[f32; 8]) -> Result<ProbeReport, Vec<Diag>> {
+pub fn probe_with(t: &CompiledType, k: &[f32; 16]) -> Result<ProbeReport, Vec<Diag>> {
     let b = t.meta.bounds;
     let pts = sample_points(b);
     let mut diags = Vec::new();
@@ -204,5 +208,60 @@ pub fn probe_with(t: &CompiledType, k: &[f32; 8]) -> Result<ProbeReport, Vec<Dia
     }
 
     interior.truncate(400);
+    probe_behavior(t, k)?;
     Ok(ProbeReport { bottom, top, interior, max_fuel })
+}
+
+/// Behaviour code must stay cheap and finite: run every entry point through
+/// a few typical situations (day and night, held and not, hit, used on things).
+pub fn probe_behavior(t: &CompiledType, k: &[f32; 16]) -> Result<(), Vec<Diag>> {
+    let n = t.prop_names.len();
+    for b in [Behavior::Tick, Behavior::Use, Behavior::Touch] {
+        if t.behavior(b).is_none() {
+            continue;
+        }
+        let name = b.name();
+        let mut state = [0.0f32; 8];
+        let mut props: Vec<f32> = t.prop_names.iter().map(|p| if p == "temp" { 15.0 } else { 0.2 }).collect();
+        let mut other: Vec<f32> = vec![0.3; n];
+        for step in 0..48u32 {
+            let mut ctx = [0.0f32; CTX_LEN];
+            let set = |ctx: &mut [f32; CTX_LEN], name: &str, v: f32| {
+                if let Some(i) = CTX_FIELDS.iter().position(|f| *f == name) {
+                    ctx[i] = v;
+                }
+            };
+            set(&mut ctx, "dt", if b == Behavior::Tick { 0.25 } else { 0.0 });
+            set(&mut ctx, "hour", (step as f32 * 0.7) % 24.0);
+            set(&mut ctx, "age", step as f32 * 30.0);
+            set(&mut ctx, "held", (step % 2) as f32);
+            set(&mut ctx, "near", (step % 3) as f32);
+            set(&mut ctx, "speed", (step % 5) as f32);
+            set(&mut ctx, "ground", ((step + 1) % 2) as f32);
+            set(&mut ctx, "water", (step % 7 == 3) as u32 as f32);
+            set(&mut ctx, "impact", if b == Behavior::Touch { 1.0 + (step % 6) as f32 } else { 0.0 });
+            set(&mut ctx, "on", (step % 2) as f32);
+            let mut effects = Vec::new();
+            let io = BehaviorIo { k, state: &mut state, ctx: &ctx, props: &mut props, other: &mut other, effects: &mut effects };
+            match t.run_behavior(b, io, BEHAVIOR_FUEL) {
+                Some(Ok(_)) | None => {}
+                Some(Err(VmError::OutOfFuel)) => {
+                    return Err(vec![Diag::new(Stage::Probe, 0, format!("{name}() is too expensive: more than {BEHAVIOR_FUEL} operations per call"))]);
+                }
+                Some(Err(VmError::NoReturn)) => return Err(vec![Diag::new(Stage::Probe, 0, format!("{name}() did not finish"))]),
+            }
+            if let Some(i) = state.iter().position(|v| !v.is_finite()) {
+                return Err(vec![Diag::new(Stage::Probe, 0, format!("{name}() makes s.s{i} NaN or Infinity; guard divisions"))]);
+            }
+            if let Some(i) = props.iter().chain(other.iter()).position(|v| !v.is_finite()) {
+                let p = t.prop_names.get(i % n.max(1)).cloned().unwrap_or_default();
+                return Err(vec![Diag::new(Stage::Probe, 0, format!("{name}() sets the property {p} to NaN or Infinity"))]);
+            }
+            // Keep values in a sane range between calls, as the world does.
+            for v in props.iter_mut().chain(other.iter_mut()) {
+                *v = v.clamp(-1e4, 1e4);
+            }
+        }
+    }
+    Ok(())
 }

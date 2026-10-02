@@ -26,6 +26,17 @@ CREATE TABLE IF NOT EXISTS summaries(character_id INTEGER PRIMARY KEY, text TEXT
 CREATE TABLE IF NOT EXISTS player(id INTEGER PRIMARY KEY CHECK (id = 1), x REAL NOT NULL, z REAL NOT NULL, yaw REAL NOT NULL, t_game REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS llm_usage(t REAL NOT NULL, purpose TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cost REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS things(id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, yaw REAL NOT NULL, scale REAL NOT NULL, params_json TEXT NOT NULL, state_json TEXT NOT NULL, props_json TEXT NOT NULL, holder TEXT, co_holder TEXT, asleep INTEGER NOT NULL, anchored INTEGER NOT NULL, origin_json TEXT NOT NULL, born REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS cells(gx INTEGER NOT NULL, gz INTEGER NOT NULL, props_json TEXT NOT NULL, active INTEGER NOT NULL, PRIMARY KEY(gx, gz));
+CREATE TABLE IF NOT EXISTS relationships(a INTEGER NOT NULL, b INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(a, b));
+CREATE TABLE IF NOT EXISTS rules(id INTEGER PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS vocab(name TEXT PRIMARY KEY, meaning TEXT NOT NULL, default_value REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS interp_cache(key TEXT PRIMARY KEY, effect_json TEXT NOT NULL, t REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, t REAL NOT NULL, kind TEXT NOT NULL, actor TEXT, subject TEXT, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS events_subject ON events(subject);
+CREATE TABLE IF NOT EXISTS origins(instance_id INTEGER PRIMARY KEY, made_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS gestures(name TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS spent_cells(gx INTEGER NOT NULL, gz INTEGER NOT NULL, t REAL NOT NULL, PRIMARY KEY(gx, gz));
 "#;
 
 pub fn now() -> f64 {
@@ -234,15 +245,6 @@ impl Db {
                 })
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
-        })
-    }
-
-    pub fn save_character_states(&self, states: &[(i64, String)]) -> Result<()> {
-        self.tx(|tx| {
-            for (id, s) in states {
-                tx.execute("UPDATE characters SET state_json = ?1 WHERE id = ?2", params![s, id])?;
-            }
-            Ok(())
         })
     }
 

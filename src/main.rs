@@ -15,6 +15,7 @@ mod picker;
 mod png;
 mod prompts;
 mod render;
+mod sim;
 mod term;
 mod terrain;
 mod world;
@@ -35,13 +36,20 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR]
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
+  pocket sim FILE [--hours H] [--seed S] [--events out.jsonl] [--save] [--no-llm] [--verify]
+                                         run the world headless, fast, and report what emerged
+  pocket sim --replay out.jsonl [--from T] [--kinds ignited,caught]
+  pocket act FILE --as player|ID|NAME '{\"do\": \"hold\", \"target\": {\"name\": \"stick\"}}' [--run SECS] [--dry]
+  pocket act FILE --stdin                one JSON command per line (actions, inspect, look, run)
+  pocket inspect FILE player|npc:ID|thing:ID|instance:ID|cell:X,Z|NAME   (or --look [--as WHO])
   pocket check TYPE.js                   validate an object type module (steps 1-4)
   pocket selftest                        GPU/CPU parity and validator checks
 
 Environment: ANTHROPIC_API_KEY, or POCKET_LLM_BASE_URL (+ POCKET_LLM_API_KEY) for any
 OpenAI-compatible endpoint; POCKET_MODEL_{BUILDER,CHARACTER,DECIDER,SUMMARIZER};
 POCKET_BUDGET_USD; POCKET_REGION_RADIUS (default 2); POCKET_DECIDER_URL; POCKET_FPS;
-POCKET_NO_GPU=1; POCKET_HOME (default ~/.pocket).";
+POCKET_NO_GPU=1; POCKET_HOME (default ~/.pocket); POCKET_SIM_NEAR, POCKET_SIM_MEDIUM,
+POCKET_SIM_FAR (frozen | catchup:HOURS), POCKET_LLM_PER_MIN (how alive the world is).";
 
 fn main() {
     log::init();
@@ -93,6 +101,9 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("selftest") => selftest(),
         Some("gpubench") => gpubench(&args[1..]),
         Some("check") => check_file(&args[1..]),
+        Some("sim") => sim::headless::run_sim_cli(&args[1..]),
+        Some("act") => sim::headless::act_cli(&args[1..]),
+        Some("inspect") => sim::headless::inspect_cli(&args[1..]),
         Some(p) if !p.starts_with('-') => play(Path::new(p), false),
         Some(other) => bail!("unknown option {other}\n\n{USAGE}"),
         None => {
@@ -220,15 +231,12 @@ fn parse_size(args: &[String]) -> Result<(u16, u16)> {
 /// One frame, rendered synchronously (shared by snapshot and tests).
 fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64) -> Result<render::Frame> {
     let snap = &l.snap;
-    let mut cache = world::scatter::ScatterCache::default();
-    let mut cast = world::characters::Cast::default();
-    cast.sync(snap);
+    let mut live = sim::Sim::new(l.db.clone(), snap.clone(), cam.pos, cam.yaw, t_game, 1);
     let aspect = w as f32 / h as f32 * pixel_aspect;
-    let figure = snap.figure_type.and_then(|f| snap.type_of(f)).cloned();
-    let dynamic = cast.instances(figure.as_ref(), cam.pos);
-    let culled = world::cull::cull(snap, &mut cache, &cam, aspect, &dynamic, &Default::default());
+    let drawn = live.draw(cam.pos, render::VIEW_DIST);
+    let culled = world::cull::cull(snap, &mut live.cache, &cam, aspect, &drawn.insts, &Default::default());
     let light = render::sky::lighting(t_game, &snap.look.palette);
-    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: w, height: h, pixel_aspect, light, time: 0.0, frame: 0, shadows: l.gpu.is_some() && std::env::var("POCKET_NO_SHADOWS").is_err() };
+    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: w, height: h, pixel_aspect, light, time: 0.0, frame: 0, shadows: l.gpu.is_some() && std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &drawn.lights };
     let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = render::FrameRequest { id: 1, width: w, height: h, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match &l.gpu {
@@ -284,13 +292,11 @@ fn describe(args: &[String]) -> Result<()> {
     let l = load(&path)?;
     let t_game = l.db.player().map(|p| p.t_game).unwrap_or(0.33 * render::sky::DAY_SECONDS);
     let cam = camera_at(&l.snap, x, z, yaw);
-    let mut cache = world::scatter::ScatterCache::default();
-    let mut cast = world::characters::Cast::default();
-    cast.sync(&l.snap);
-    let npcs: Vec<world::describe::NpcView> = cast.npcs.iter().map(|n| world::describe::NpcView { id: n.def.id, name: n.name().to_string(), pos: n.pos }).collect();
+    let mut live = sim::Sim::new(l.db.clone(), l.snap.clone(), cam.pos, cam.yaw, t_game, 1);
+    let npcs = live.npc_views();
     let (w, h) = parse_size(args)?;
     let aspect = w as f32 / (h as f32 * 2.0);
-    let v = world::describe::describe(&l.snap, &mut cache, &npcs, &cam, aspect, t_game);
+    let v = world::describe::describe(&l.snap, &mut live.cache, &npcs, &cam, aspect, t_game);
     println!("{}", serde_json::to_string_pretty(&v)?);
     Ok(())
 }
@@ -310,7 +316,7 @@ fn bench(args: &[String]) -> Result<()> {
     let backend = render.backend.clone();
     let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, enhanced: true, truecolor: true, size: (w, h), llm, genesis: false });
     app.noclip = true;
-    let start = app.pos;
+    let start = app.pos();
     let stop = AtomicBool::new(false);
     let t0 = Instant::now();
     let mut warm = 0.0f32;
@@ -320,10 +326,10 @@ fn bench(args: &[String]) -> Result<()> {
         if warm < 1.0 {
             return true; // let the first frames settle
         }
-        let f = Vec3::new(a.yaw.sin(), 0.0, a.yaw.cos());
-        let p = a.pos + f * app::WALK_SPEED * 2.0 * dt;
-        a.pos = Vec3::new(p.x, a.snap.terrain.height(p.x, p.z), p.z);
-        walked = Vec3::new(a.pos.x - start.x, 0.0, a.pos.z - start.z).length();
+        let f = Vec3::new(a.yaw().sin(), 0.0, a.yaw().cos());
+        let p = a.pos() + f * app::WALK_SPEED * 2.0 * dt;
+        a.sim.player.pos = Vec3::new(p.x, a.snap.terrain.height(p.x, p.z), p.z);
+        walked = Vec3::new(a.pos().x - start.x, 0.0, a.pos().z - start.z).length();
         if warm > 1.0 && warm < 1.05 {
             a.stats.max_loop_ms = 0.0;
             a.stats.max_gap_ms = 0.0;
@@ -371,7 +377,7 @@ fn gpubench(args: &[String]) -> Result<()> {
     let mut cache = world::scatter::ScatterCache::default();
     let culled = world::cull::cull(snap, &mut cache, &cam, pw as f32 / ph as f32, &[], &Default::default());
     let light = render::sky::lighting(400.0, &snap.look.palette);
-    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 0.0, frame: 0, shadows: std::env::var("POCKET_NO_SHADOWS").is_err() };
+    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 0.0, frame: 0, shadows: std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &[] };
     let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let mut handle = render::gpu::spawn(gpu);
     let mut times = Vec::new();

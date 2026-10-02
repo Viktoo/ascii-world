@@ -24,6 +24,10 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/rock.js"),
     include_str!("builtin/bush.js"),
     include_str!("builtin/grass.js"),
+    include_str!("builtin/flame.js"),
+    include_str!("builtin/stick.js"),
+    include_str!("builtin/stone.js"),
+    include_str!("builtin/mushroom.js"),
 ];
 
 /// Live positions the committer must not build on top of.
@@ -116,13 +120,23 @@ pub struct WorldModel {
 }
 
 fn meta_json(ct: &CompiledType, bottom: f32, top: f32) -> String {
-    serde_json::json!({ "name": ct.meta.name, "bounds": ct.meta.bounds, "tags": ct.meta.tags, "bottom": bottom, "top": top }).to_string()
+    serde_json::json!({ "name": ct.meta.name, "bounds": ct.meta.bounds, "tags": ct.meta.tags, "props": ct.meta.props, "bottom": bottom, "top": top }).to_string()
 }
 
 fn type_entry(id: u32, ct: Arc<CompiledType>, bottom: f32, top: f32, builtin: bool) -> Arc<TypeEntry> {
     let solid = !ct.meta.tags.iter().any(|t| t == "nonsolid" || t == "grass");
-    let (sphere_cy, sphere_r) = TypeEntry::sphere(ct.meta.bounds, bottom, top);
-    Arc::new(TypeEntry { id, ct, builtin, solid, bottom, sphere_cy, sphere_r })
+    // A shape that reads its live state (poses, growth, doors) can move
+    // anywhere inside its bounds: the bounding sphere must cover all of them.
+    let b = ct.meta.bounds[1];
+    let (sb, st) = if ct.meta.tags.iter().any(|t| t == "figure") {
+        (0.0, b)
+    } else if ct.wgsl.contains("k.s") {
+        (-b, b)
+    } else {
+        (bottom, top)
+    };
+    let (sphere_cy, sphere_r) = TypeEntry::sphere(ct.meta.bounds, sb, st);
+    Arc::new(TypeEntry { id, ct, builtin, solid, bottom, top, sphere_cy, sphere_r })
 }
 
 /// Choose a dry, gentle spawn point near the origin.
@@ -156,7 +170,8 @@ impl WorldModel {
     /// Load everything from the database and recompile every type from source.
     pub fn load(db: Arc<Db>, gpu: Option<Arc<Gpu>>, live: LiveRef) -> Result<WorldModel> {
         let u = db.universe()?;
-        let look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
+        let mut look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
+        crate::terrain::add_litter(&mut look.biomes);
         let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()));
         let mut m = WorldModel {
             db: db.clone(),
@@ -184,13 +199,25 @@ impl WorldModel {
             }
         };
 
-        // Built-in types are stored like any other, on first open.
+        // Built-in types are stored like any other. Worlds made by older
+        // versions get new built-ins added and changed ones updated in place.
         let rows = db.types()?;
-        if !rows.iter().any(|r| r.status == "builtin") {
-            for src in BUILTIN_SOURCES {
-                let ct = compile(src).map_err(|d| anyhow::anyhow!("builtin type failed: {}", format_diags(&d)))?;
-                let rep = probe(&ct).map_err(|d| anyhow::anyhow!("builtin {} failed probe: {}", ct.meta.name, format_diags(&d)))?;
-                db.with(|c| db::add_type(c, None, &ct.meta.name, src, &meta_json(&ct, rep.bottom, rep.top), "builtin", ""))?;
+        for src in BUILTIN_SOURCES {
+            let ct = compile(src).map_err(|d| anyhow::anyhow!("builtin type failed: {}", format_diags(&d)))?;
+            let existing = rows.iter().find(|r| r.status == "builtin" && r.name == ct.meta.name);
+            if existing.is_some_and(|r| r.code == *src) {
+                continue;
+            }
+            let rep = probe(&ct).map_err(|d| anyhow::anyhow!("builtin {} failed probe: {}", ct.meta.name, format_diags(&d)))?;
+            let meta = meta_json(&ct, rep.bottom, rep.top);
+            match existing {
+                Some(r) => db.with(|c| {
+                    c.execute("UPDATE types SET code = ?1, meta_json = ?2 WHERE id = ?3", rusqlite::params![src, meta, r.id])?;
+                    Ok(())
+                })?,
+                None => {
+                    db.with(|c| db::add_type(c, None, &ct.meta.name, src, &meta, "builtin", ""))?;
+                }
             }
         }
         let versions = db.versions()?;
@@ -487,7 +514,9 @@ impl WorldModel {
         let gi = placed.gpu(entry, 1.0);
         let sdf_at = |p: Vec3| entry.ct.sdf(gi.to_local(p), &gi.k()) * scale;
         let live = self.live.lock().clone();
-        if entry.solid {
+        // Small things (a ball, a lamp) may appear right next to people.
+        let small = entry.ct.meta.bounds.iter().fold(0.0f32, |a, b| a.max(*b)) * scale <= 0.6;
+        if entry.solid && !small {
             let pp = live.player;
             for h in [0.4, 1.0, 1.6] {
                 if sdf_at(Vec3::new(pp.x, t.height(pp.x, pp.z) + h, pp.z)) < 0.6 {
@@ -670,7 +699,7 @@ impl WorldModel {
             if prov != real {
                 remap = true;
             }
-            let entry = Arc::new(TypeEntry { id: *real, ct: e.ct.clone(), builtin: false, solid: e.solid, bottom: e.bottom, sphere_cy: e.sphere_cy, sphere_r: e.sphere_r });
+            let entry = Arc::new(TypeEntry { id: *real, ct: e.ct.clone(), builtin: false, solid: e.solid, bottom: e.bottom, top: e.top, sphere_cy: e.sphere_cy, sphere_r: e.sphere_r });
             self.types.insert(*real, TypeRec { entry, version: Some(v), interior: Vec::new() });
         }
         for ((p, _), (id, tid)) in placed.iter().zip(&inst_ids) {
@@ -783,6 +812,7 @@ pub fn probe_globals(terrain: &Terrain) -> crate::render::Globals {
         time: 0.0,
         frame: 0,
         shadows: false,
+        lights: &[],
     };
     crate::render::build_globals(&sp, 1, None)
 }

@@ -18,10 +18,12 @@ struct Globals {
   dims: vec4u,        // width, height, instance count, flags (1 = grid, 2 = shadows)
   seed: vec4u,        // seed, biome count, frame, -
   grid0: vec4f,       // origin x, origin z, cell size, -
-  grid1: vec4u,       // cells x, cells z, -, -
+  grid1: vec4u,       // cells x, cells z, point lights, -
   probe: vec4u,       // count, mode (0 = type, 1 = terrain), type id, -
   hmap: vec4f,        // heightmap origin x, origin z, cell size, cells per side (0 = none)
   biomes: array<vec4f, 18>, // per biome: (cx, cy, base, amp), (rough, g1), (g2, -)
+  lights: array<vec4f, 8>,     // point lights: position, intensity
+  light_cols: array<vec4f, 8>, // colour, reach (m)
 }
 
 struct Inst {
@@ -29,10 +31,14 @@ struct Inst {
   rot: vec4f,         // cos, sin, bounding radius, fade 0..1
   k0: vec4f,          // seed, scale, a, b
   k1: vec4f,          // c, d, e, f
-  info: vec4u,        // type id, flags, -, -
+  s0: vec4f,          // live state s0..s3
+  s1: vec4f,          // live state s4..s7
+  fx: vec4f,          // charred, wet, glow, highlight
+  info: vec4u,        // type id, sphere centre y, box half-extents x/z
 }
 
-struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, }
+struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32,
+  s0: f32, s1: f32, s2: f32, s3: f32, s4: f32, s5: f32, s6: f32, s7: f32, }
 
 @group(0) @binding(0) var<uniform> G: Globals;
 @group(0) @binding(1) var<storage, read> insts: array<Inst>;

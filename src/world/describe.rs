@@ -165,6 +165,9 @@ pub fn describe(snap: &WorldSnapshot, cache: &mut ScatterCache, npcs: &[NpcView]
     };
     // Story instances.
     for p in &snap.instances {
+        if cache.overlay.hidden.contains(&p.id) {
+            continue;
+        }
         let Some(ty) = snap.type_of(p.type_id) else { continue };
         let top = p.pos + Vec3::Y * (ty.ct.meta.bounds[1] * p.scale * 0.5).min(4.0);
         let Some((u, d)) = project(p.pos) else { continue };

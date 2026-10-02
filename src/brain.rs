@@ -21,12 +21,22 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 pub enum Cmd {
     Genesis,
     Region((i32, i32)),
-    Create { text: String, view: View, target: Vec3, yaw: f32 },
+    /// `id` identifies the request (answered by `Event::Created`); `by` is a
+    /// character making something (None: the player).
+    Create { id: Option<u64>, by: Option<(i64, String)>, text: String, view: View, target: Vec3, yaw: f32 },
     Undo,
     History,
     Talk { cid: i64, text: String, context: String, history: Vec<(bool, String)> },
     Decide { cid: i64, event: String, context: String },
     Witness { cid: i64, text: String, importance: f32 },
+    /// What does this action do? Answered by `Event::Interpreted`.
+    Interpret { id: u64, actor: String, text: String, context: String },
+    /// Two characters talk (the player can hear). Answered by `Event::ChatLines`.
+    Chat { a: i64, b: i64, context: String },
+    /// Write a new object type. Answered by `Event::TypeBuilt`.
+    BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)> },
+    /// Write a gesture's pose keyframes. Answered by `Event::GestureBuilt`.
+    BuildGesture { id: u64, name: String },
 }
 
 pub enum Event {
@@ -37,9 +47,17 @@ pub enum Event {
     RegionFinished((i32, i32), bool),
     Token { cid: i64, text: String },
     ReplyDone { cid: i64, ok: bool },
-    Decision { cid: i64, decision: Decision },
+    /// A character's decision (None: nothing to do; every Decide is answered).
+    Decision { cid: i64, decision: Option<Decision> },
     History(Vec<String>),
     GenesisDone,
+    Interpreted { id: u64, result: Result<Value, String> },
+    Created { id: Option<u64>, instances: Vec<i64> },
+    ChatLines { a: i64, b: i64, lines: Vec<(i64, String)> },
+    TypeBuilt { id: u64, type_id: Option<u32> },
+    /// The universe's own properties and rules changed (genesis).
+    RulesChanged,
+    GestureBuilt { id: u64, result: Result<Value, String> },
 }
 
 enum CMsg {
@@ -108,6 +126,7 @@ impl Brain {
         let decider = crate::decider::from_env(llm.clone(), &bible);
         let ev2 = events.clone();
         let commit2 = ctx_tx.clone();
+        let mem_db = db.clone();
         rt.spawn(async move {
             let ctx = llm.map(|llm| Ctx { llm, db, bible, commit: commit2.clone(), events: ev2.clone(), decider, regions: Arc::new(Semaphore::new(2)) });
             while let Some(cmd) = rx.recv().await {
@@ -131,6 +150,11 @@ impl Brain {
                         });
                         continue;
                     }
+                    // Memories need no model.
+                    Cmd::Witness { cid, text, importance } => {
+                        let _ = mem_db.add_memory(cid, crate::db::now(), &text, importance);
+                        continue;
+                    }
                     Cmd::History => {
                         let (otx, orx) = oneshot::channel();
                         let _ = commit2.send(CMsg::History(otx));
@@ -145,8 +169,19 @@ impl Brain {
                     _ => {}
                 }
                 let Some(ctx) = ctx.clone() else {
-                    if let Cmd::Talk { cid, .. } = cmd {
-                        let _ = ev2.send(Event::ReplyDone { cid, ok: false });
+                    // No LLM: every request still gets an (empty) answer.
+                    let reply = match cmd {
+                        Cmd::Talk { cid, .. } => Some(Event::ReplyDone { cid, ok: false }),
+                        Cmd::Decide { cid, .. } => Some(Event::Decision { cid, decision: None }),
+                        Cmd::Interpret { id, .. } => Some(Event::Interpreted { id, result: Err("no LLM".into()) }),
+                        Cmd::Create { id, .. } => Some(Event::Created { id, instances: vec![] }),
+                        Cmd::Chat { a, b, .. } => Some(Event::ChatLines { a, b, lines: vec![] }),
+                        Cmd::BuildType { id, .. } => Some(Event::TypeBuilt { id, type_id: None }),
+                        Cmd::BuildGesture { id, .. } => Some(Event::GestureBuilt { id, result: Err("no LLM".into()) }),
+                        _ => None,
+                    };
+                    if let Some(r) = reply {
+                        let _ = ev2.send(r);
                     }
                     continue;
                 };
@@ -178,6 +213,13 @@ fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>) {
 }
 
 impl Ctx {
+    /// Property names this universe knows (built-in and its own).
+    fn known_props(&self) -> Vec<String> {
+        let mut v: Vec<String> = crate::sim::props::BUILTIN.iter().map(|(n, _, _)| n.to_string()).collect();
+        v.extend(crate::sim::persist::universe_props(&self.db).into_iter().map(|(n, _, _)| n));
+        v
+    }
+
     fn log(&self, s: impl Into<String>) {
         let _ = self.events.send(Event::Log(s.into()));
     }
@@ -230,12 +272,59 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             let _ = ctx.events.send(Event::Building(-1));
             let _ = ctx.events.send(Event::RegionFinished(r, ok));
         }
-        Cmd::Create { text, view, target, yaw } => {
+        Cmd::Create { id, by, text, view, target, yaw } => {
             let _ = ctx.events.send(Event::Building(1));
-            if let Err(e) = create(&ctx, &text, &view, target, yaw).await {
-                crate::log::error(format!("create '{text}' failed: {e:#}"));
-                ctx.log(budget_msg(&e).unwrap_or_else(|| format!("Couldn't build that: {}", short(&e.to_string()))));
+            match create(&ctx, &text, &view, target, yaw, by.as_ref()).await {
+                Ok(instances) => {
+                    let _ = ctx.events.send(Event::Created { id, instances });
+                }
+                Err(e) => {
+                    crate::log::error(format!("create '{text}' failed: {e:#}"));
+                    if by.is_none() {
+                        ctx.log(budget_msg(&e).unwrap_or_else(|| format!("Couldn't build that: {}", short(&e.to_string()))));
+                    }
+                    let _ = ctx.events.send(Event::Created { id, instances: vec![] });
+                }
             }
+            let _ = ctx.events.send(Event::Building(-1));
+        }
+        Cmd::Interpret { id, actor, text, context } => {
+            let result = interpret(&ctx, &actor, &text, &context).await.map_err(|e| {
+                crate::log::error(format!("interpret '{text}' failed: {e:#}"));
+                short(&e.to_string())
+            });
+            let _ = ctx.events.send(Event::Interpreted { id, result });
+        }
+        Cmd::Chat { a, b, context } => {
+            let lines = match chat(&ctx, a, b, &context).await {
+                Ok(l) => l,
+                Err(e) => {
+                    crate::log::error(format!("chat failed: {e:#}"));
+                    vec![]
+                }
+            };
+            let _ = ctx.events.send(Event::ChatLines { a, b, lines });
+        }
+        Cmd::BuildGesture { id, name } => {
+            let mut req = Req::new(Role::Decider, prompts::GESTURE_TASK, format!("The gesture: \"{name}\""));
+            req.max_tokens = 600;
+            req.effort = Some("low");
+            let result = match ctx.llm.complete(&req, "gesture").await {
+                Ok(reply) => extract_json(&reply).map_err(|e| e.to_string()),
+                Err(e) => Err(short(&e.to_string())),
+            };
+            let _ = ctx.events.send(Event::GestureBuilt { id, result });
+        }
+        Cmd::BuildType { id, name, description, size, props } => {
+            let _ = ctx.events.send(Event::Building(1));
+            let type_id = match build_item_type(&ctx, &name, &description, size, &props).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    crate::log::error(format!("building type '{name}' failed: {e:#}"));
+                    None
+                }
+            };
+            let _ = ctx.events.send(Event::TypeBuilt { id, type_id });
             let _ = ctx.events.send(Event::Building(-1));
         }
         Cmd::Talk { cid, text, context, history } => {
@@ -253,15 +342,18 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             let persona = ctx.db.characters().ok().and_then(|cs| cs.into_iter().find(|c| c.id == cid)).map(|c| c.persona_json).unwrap_or_default();
             let name = serde_json::from_str::<Persona>(&persona).map(|p| p.name).unwrap_or_default();
             let summary = ctx.db.summary(cid).map(|s| s.0).unwrap_or_default();
-            let dctx = DecisionCtx { character: name, persona, event, context: format!("{context}\nWhat they remember of the traveller: {summary}") };
-            if let Some(d) = ctx.decider.decide(dctx).await {
-                let _ = ctx.events.send(Event::Decision { cid, decision: d });
-            }
+            let mems = ctx.db.memories(cid).unwrap_or_default();
+            let recent: Vec<String> = mems.iter().rev().take(6).map(|m| m.text.clone()).collect();
+            let dctx = DecisionCtx {
+                character: name,
+                persona,
+                event,
+                context: format!("{context}\nWhat they remember of the traveller: {summary}\nTheir latest memories: {}", if recent.is_empty() { "none".into() } else { recent.join(" | ") }),
+            };
+            let d = ctx.decider.decide(dctx).await;
+            let _ = ctx.events.send(Event::Decision { cid, decision: d });
         }
-        Cmd::Witness { cid, text, importance } => {
-            let _ = ctx.db.add_memory(cid, crate::db::now(), &text, importance);
-        }
-        Cmd::Undo | Cmd::History => {}
+        Cmd::Undo | Cmd::History | Cmd::Witness { .. } => {}
     }
 }
 
@@ -274,10 +366,17 @@ fn short(s: &str) -> String {
     if s.chars().count() > 90 { format!("{}…", s.chars().take(90).collect::<String>()) } else { s.to_string() }
 }
 
-/// Steps 1–4 on the worker pool.
-async fn validate(code: String) -> Result<NewType, Vec<Diag>> {
+/// Steps 1–4 on the worker pool, plus: every property it names must be one
+/// this universe knows.
+async fn validate(code: String, known: Vec<String>) -> Result<NewType, Vec<Diag>> {
     tokio::task::spawn_blocking(move || {
         let ct = compile(&code)?;
+        let unknown: Vec<&String> = ct.meta.props.iter().map(|(n, _)| n).chain(ct.prop_names.iter()).filter(|n| !known.contains(n)).collect();
+        if !unknown.is_empty() {
+            let mut u: Vec<String> = unknown.into_iter().cloned().collect();
+            u.dedup();
+            return Err(vec![Diag::new(Stage::Allowlist, 0, format!("unknown properties: {}; this universe knows: {}", u.join(", "), known.join(", ")))]);
+        }
         let report = probe(&ct)?;
         Ok(NewType { ct: Arc::new(ct), report: Arc::new(report) })
     })
@@ -299,7 +398,7 @@ async fn build_type(ctx: &Ctx, system: &str, task: String, name: &str, extra_tag
             Some(code) => {
                 let code = add_tags(&code, extra_tags);
                 last_code = code.clone();
-                match validate(code).await {
+                match validate(code, ctx.known_props()).await {
                     Ok(t) => return Ok(t),
                     Err(d) => d,
                 }
@@ -349,12 +448,20 @@ fn all_code_blocks(text: &str) -> Vec<String> {
 }
 
 async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
-    let system = prompts::builder_system(&ctx.bible);
+    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
     let mut req = Req::new(Role::Builder, system.clone(), prompts::GENESIS_TASK);
     req.max_tokens = 32000;
     req.effort = Some("medium");
     let reply = ctx.llm.complete(&req, "genesis").await?;
     let v = extract_json(&reply)?;
+    // The universe's own properties and rules come first: base types may use them.
+    let (uprops, urules) = universe_rules_from(&v);
+    if !uprops.is_empty() || !urules.is_empty() {
+        let (props, rules) = check_universe_rules(&uprops, &urules);
+        crate::sim::persist::set_universe_rules(&ctx.db, &props, &rules)?;
+        crate::log::info(format!("universe rules: {} properties, {} rules", props.len(), rules.len()));
+        let _ = ctx.events.send(Event::RulesChanged);
+    }
     let mut look: Look = serde_json::from_value(v.clone()).unwrap_or_default();
     if look.biomes.is_empty() {
         look.biomes = crate::terrain::default_biomes();
@@ -362,6 +469,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     for b in &mut look.biomes {
         b.scatter.entry("grass".into()).or_insert(1.0);
     }
+    crate::terrain::add_litter(&mut look.biomes);
     // Validate each base type; repair failures one at a time.
     let mut types = Vec::new();
     let mut futs = Vec::new();
@@ -370,7 +478,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
         let code = add_tags(&code, &["base"]);
         let system = system_ref;
         futs.push(async move {
-            match validate(code.clone()).await {
+            match validate(code.clone(), ctx.known_props()).await {
                 Ok(t) => Some(t),
                 Err(d) if d.iter().all(|x| x.stage.repairable()) => {
                     let name = code.split("name:").nth(1).and_then(|s| s.split('"').nth(1)).unwrap_or("object").to_string();
@@ -499,7 +607,7 @@ fn s(v: &Value, k: &str) -> String {
 
 async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let info = ctx.info(r).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
-    let system = prompts::builder_system(&ctx.bible);
+    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let task = format!(
         "{}\n\nRegion ({}, {}) in the land of {}.\nTerrain notes:\n{}\nNeighbouring regions: {}\nExisting object types:\n{}",
@@ -525,10 +633,11 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let futs = specs.iter().map(|spec| {
         let name = s(spec, "name");
         let task = format!(
-            "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nIt appears in the region \"{rname}\" ({}).\n\n{}",
+            "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): {}\nIt appears in the region \"{rname}\" ({}).\n\n{}",
             s(spec, "description"),
             spec.get("size_m").map(|v| v.to_string()).unwrap_or_else(|| "unspecified".into()),
             spec.get("tags").map(|v| v.to_string()).unwrap_or_else(|| "[]".into()),
+            spec.get("props").map(|v| v.to_string()).unwrap_or_else(|| "choose fitting ones".into()),
             s(&plan, "mood"),
             prompts::TYPE_TASK
         );
@@ -637,12 +746,16 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32) -> anyhow::Result<()> {
+async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: Option<&(i64, String)>) -> anyhow::Result<Vec<i64>> {
     let info = ctx.info(crate::world::region_of(target.x, target.z)).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
-    let system = prompts::builder_system(&ctx.bible);
+    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
+    let (who, sees) = match by {
+        Some((_, name)) => (format!("Made by: {name}, a character who lives here (not the player)."), format!("What {name} sees")),
+        None => ("Made by: the player.".to_string(), "What the player sees".to_string()),
+    };
     let task = format!(
-        "{}\nWhat the player sees:\n```json\n{}\n```\nExisting object types:\n{}\n\nThe player typed: \"{}\"",
+        "{}\n{who}\n{sees}:\n```json\n{}\n```\nExisting object types:\n{}\n\nThe request: \"{}\"",
         prompts::CREATE_TASK,
         serde_json::to_string_pretty(view)?,
         type_list.join("\n"),
@@ -667,7 +780,7 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32) -> a
                 },
                 None => {
                     let code = all_code_blocks(&reply).into_iter().next().or_else(|| extract_code(&reply)).ok_or_else(|| vec![Diag::new(Stage::Parse, 0, "no ```js block with the new type".into())])?;
-                    new_types.push(validate(code).await?);
+                    new_types.push(validate(code, ctx.known_props()).await?);
                     TypeRef::New(0)
                 }
             };
@@ -692,15 +805,20 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32) -> a
                 let s0 = s(&v, "summary");
                 if s0.is_empty() { text.to_string() } else { s0 }
             };
-            ctx.commit(CommitRequest { kind: "create", summary, new_types, placements, nudge: false, region: None, look: None }).await
+            let kind = if by.is_some() { "npc_create" } else { "create" };
+            ctx.commit(CommitRequest { kind, summary, new_types, placements, nudge: by.is_some(), region: None, look: None }).await
         }
         .await;
         match outcome {
             Ok(ok) => {
                 let name = ok.snapshot.instances.last().and_then(|p| ok.snapshot.type_of(p.type_id)).map(|t| t.name().to_string()).unwrap_or_else(|| "it".into());
+                let v = ok.snapshot.version;
+                let ids: Vec<i64> = ok.snapshot.instances.iter().filter(|p| p.version == v).map(|p| p.id).collect();
                 let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
-                ctx.log(format!("Built the {name}. (/undo to remove)"));
-                return Ok(());
+                if by.is_none() {
+                    ctx.log(format!("Built the {name}. (/undo to remove)"));
+                }
+                return Ok(ids);
             }
             Err(d) => {
                 last_err = format_diags(&d);
@@ -714,6 +832,114 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32) -> a
         }
     }
     anyhow::bail!("{}", last_err.lines().next().unwrap_or("validation failed").trim_start_matches(|c: char| c == '[' || c.is_alphabetic() || c == ']').trim())
+}
+
+
+/// Universe properties and rules from a genesis reply.
+fn universe_rules_from(v: &Value) -> (Vec<(String, f32, String)>, Vec<crate::sim::rules::RuleSpec>) {
+    let mut props = Vec::new();
+    for p in v.get("properties").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(8) {
+        let name = s(p, "name").trim().to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        props.push((name, f(p, "default", 0.0), s(p, "meaning")));
+    }
+    let rules = v.get("rules").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|r| serde_json::from_value(r).ok()).take(crate::sim::rules::MAX_UNIVERSE_RULES).collect();
+    (props, rules)
+}
+
+/// Keep the properties with good names and the rules that parse and survive a
+/// test scene (one by one, so one bad rule doesn't sink the rest).
+pub fn check_universe_rules(props: &[(String, f32, String)], rules: &[crate::sim::rules::RuleSpec]) -> (Vec<(String, f32, String)>, Vec<crate::sim::rules::RuleSpec>) {
+    let mut vocab = crate::sim::props::Vocab::builtin();
+    let mut kept_props = Vec::new();
+    for (n, d, m) in props {
+        match vocab.add(n, *d, m) {
+            Ok(_) => kept_props.push((n.clone(), *d, m.clone())),
+            Err(e) => crate::log::info(format!("universe property dropped: {e}")),
+        }
+    }
+    let mut kept = Vec::new();
+    for r in rules {
+        let mut trial = kept.clone();
+        trial.push(r.clone());
+        match crate::sim::env::probe_rules(&trial, &vocab) {
+            Ok(_) => kept.push(r.clone()),
+            Err(e) => crate::log::info(format!("universe rule '{}' dropped: {e}", r.name)),
+        }
+    }
+    (kept_props, kept)
+}
+
+/// The interpreter: what does this action do, in primitives.
+async fn interpret(ctx: &Ctx, actor: &str, text: &str, context: &str) -> anyhow::Result<Value> {
+    let system = format!("{}\n\nThe universe:\n{}\n\nProperties this universe knows:\n{}", prompts::INTERPRET_TASK, ctx.bible, known_props_described(&ctx.db));
+    let user = format!("{actor} does this: \"{text}\"\n\nThe situation (JSON):\n{context}");
+    let mut req = Req::new(Role::Character, system, user);
+    req.max_tokens = 1200;
+    req.effort = Some("low");
+    let reply = ctx.llm.complete(&req, "interpret").await?;
+    extract_json(&reply)
+}
+
+fn known_props_described(db: &Db) -> String {
+    let mut v = crate::sim::props::Vocab::builtin();
+    for (n, d, m) in crate::sim::persist::universe_props(db) {
+        let _ = v.add(&n, d, &m);
+    }
+    v.describe()
+}
+
+/// Two characters talk; returns (speaker id, line) pairs.
+async fn chat(ctx: &Ctx, a: i64, b: i64, context: &str) -> anyhow::Result<Vec<(i64, String)>> {
+    let chars = ctx.db.characters()?;
+    let persona = |id: i64| chars.iter().find(|c| c.id == id).and_then(|c| serde_json::from_str::<Persona>(&c.persona_json).ok()).unwrap_or_default();
+    let (pa, pb) = (persona(a), persona(b));
+    let mem = |id: i64| ctx.db.memories(id).unwrap_or_default().iter().rev().take(5).map(|m| m.text.clone()).collect::<Vec<_>>().join(" | ");
+    let system = format!("{}\n\nThe universe:\n{}", prompts::CHAT_TASK, ctx.bible);
+    let user = format!(
+        "{} ({}; voice: {}) meets {} ({}; voice: {}).\n{}'s recent memories: {}\n{}'s recent memories: {}\n\n{}",
+        pa.name, pa.personality, pa.voice, pb.name, pb.personality, pb.voice, pa.name, mem(a), pb.name, mem(b), context
+    );
+    let mut req = Req::new(Role::Character, system, user);
+    req.max_tokens = 600;
+    req.effort = Some("low");
+    let reply = ctx.llm.complete(&req, "chat").await?;
+    let v = extract_json(&reply)?;
+    let mut out = Vec::new();
+    for l in v.get("lines").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
+        let who = s(l, "who");
+        let text = s(l, "text");
+        if text.trim().is_empty() {
+            continue;
+        }
+        let id = if who.eq_ignore_ascii_case(&pb.name) || (!pb.name.is_empty() && who.to_lowercase().contains(&pb.name.to_lowercase())) { b } else { a };
+        out.push((id, text.trim().to_string()));
+        let mem_text = format!("I talked with {}: \"{}\"", if id == a { &pb.name } else { &pa.name }, text.trim());
+        let _ = ctx.db.add_memory(id, crate::db::now(), &mem_text, 0.3);
+    }
+    Ok(out)
+}
+
+/// Write a small new object type on demand (for interpretations and spawn()).
+async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3], props: &[(String, f32)]) -> anyhow::Result<u32> {
+    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let props_s = if props.is_empty() { "choose fitting ones".to_string() } else { props.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ") };
+    let task = format!(
+        "Object type to write: \"{name}\"\nDescription: {description}\nApproximate size (w × h × d, metres): {:?}\nProperties (meta.props): {props_s}\nIt is a thing people can pick up and use, unless it is clearly too big.\n\n{}",
+        size,
+        prompts::TYPE_TASK
+    );
+    let t = build_type(ctx, &system, task, name, &[]).await?;
+    let tname = t.ct.meta.name.clone();
+    let ok = ctx
+        .commit(CommitRequest { kind: "interp", summary: format!("new kind of thing: {tname}"), new_types: vec![t], placements: vec![], nudge: true, region: None, look: None })
+        .await
+        .map_err(|d| anyhow::anyhow!(format_diags(&d)))?;
+    let id = ok.snapshot.scene.types.values().filter(|e| e.name() == tname).map(|e| e.id).max().ok_or_else(|| anyhow::anyhow!("type vanished"))?;
+    let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
+    Ok(id)
 }
 
 fn words(s: &str) -> std::collections::HashSet<String> {

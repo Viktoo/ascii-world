@@ -51,7 +51,26 @@ impl Scene<'_> {
         col
     }
 
-    fn shade(&self, n: Vec3, albedo: Vec3) -> Vec3 {
+    fn point_light(&self, p: Vec3, n: Vec3) -> Vec3 {
+        let g = self.g;
+        let mut sum = Vec3::ZERO;
+        for i in 0..(g.grid1[2] as usize).min(super::MAX_LIGHTS) {
+            let l = g.lights[i];
+            let c = g.light_cols[i];
+            let d = v3(l) - p;
+            let dist = d.length();
+            if dist > c[3] {
+                continue;
+            }
+            let fall = 1.0 - smoothstep(c[3] * 0.4, c[3], dist);
+            let ndl = n.dot(d / dist.max(1e-3)).max(0.0) * 0.8 + 0.2;
+            let col = v3(c);
+            sum += col * col * l[3] * ndl * fall / (1.0 + dist * dist * 0.3);
+        }
+        sum
+    }
+
+    fn shade(&self, p: Vec3, n: Vec3, albedo: Vec3) -> Vec3 {
         let g = self.g;
         let sun = v3(g.sun_dir);
         let ndl = n.dot(sun).max(0.0);
@@ -63,7 +82,7 @@ impl Scene<'_> {
         let sc = v3(g.sun_col);
         let strength = (0.15 + 0.85 * g.sun_dir[3]).max(0.75 * g.sun_col[3]);
         let floor = Vec3::new(0.018, 0.022, 0.035) * g.sun_col[3];
-        let lin = a * (sc * sc * ndl * strength * 1.6 + amb + floor);
+        let lin = a * (sc * sc * ndl * strength * 1.6 + amb + floor + self.point_light(p, n));
         Vec3::new(lin.x.max(0.0).sqrt(), lin.y.max(0.0).sqrt(), lin.z.max(0.0).sqrt())
     }
 
@@ -106,7 +125,7 @@ impl Scene<'_> {
                 match id {
                     None => {
                         let n = self.terrain.normal(p.x, p.z);
-                        self.shade(n, ground(p.x, p.z, p.y, n.y))
+                        self.shade(p, n, ground(p.x, p.z, p.y, n.y))
                     }
                     Some(i) => {
                         let e = 0.01;
@@ -117,8 +136,12 @@ impl Scene<'_> {
                         )
                         .normalize_or_zero();
                         let (gi, ty) = &self.insts[i];
-                        let c = ty.ct.color(gi.to_local(p), &gi.k());
-                        self.shade(n, Vec3::from(c).clamp(Vec3::ZERO, Vec3::ONE))
+                        let base = Vec3::from(ty.ct.color(gi.to_local(p), &gi.k())).clamp(Vec3::ZERO, Vec3::ONE);
+                        let fx = gi.fx;
+                        let mut a = base.lerp(Vec3::new(0.07, 0.06, 0.055), fx[0].clamp(0.0, 1.0));
+                        a *= 1.0 - 0.35 * fx[1].clamp(0.0, 1.0);
+                        a = a.lerp(Vec3::new(1.0, 0.97, 0.8), fx[3].clamp(0.0, 1.0) * 0.4);
+                        self.shade(p, n, a) + base * fx[2].clamp(0.0, 2.0)
                     }
                 }
             }
@@ -128,7 +151,7 @@ impl Scene<'_> {
             if tw < t_hit && tw < tmax {
                 let pw = ro + rd * tw;
                 let depth = (WATER_LEVEL - self.terrain.height(pw.x, pw.z)).max(0.0);
-                let body = self.shade(Vec3::Y, v3(self.g.water));
+                let body = self.shade(pw, Vec3::Y, v3(self.g.water));
                 let under = col * Vec3::new(0.55, 0.75, 0.8);
                 let fres = 0.03 + 0.97 * (1.0 - (-rd.y).max(0.0)).powi(5);
                 col = under.lerp(body, (1.0 - (-depth * 0.7).exp()).clamp(0.15, 1.0)).lerp(self.sky(Vec3::new(rd.x, -rd.y, rd.z)), fres * 0.85);

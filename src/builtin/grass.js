@@ -1,5 +1,5 @@
 // Built-in grass tuft (walk-through).
-export const meta = { name: "grass tuft", bounds: [0.45, 0.6, 0.45], tags: ["builtin", "grass", "nonsolid"] };
+export const meta = { name: "grass tuft", bounds: [0.45, 0.6, 0.45], tags: ["builtin", "grass", "nonsolid"], props: { mass: 0.2, burns: 0.9, alive: 1, fuel: 0.4 } };
 
 export function sdf(x, y, z, k) {
   let d = 10;

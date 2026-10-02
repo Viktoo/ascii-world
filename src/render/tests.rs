@@ -76,9 +76,10 @@ fn renders_a_frame_quickly() {
         k0: [0.0, 1.0, 0.5, 0.5],
         k1: [0.5; 4],
         info: [lid, 0, 0, 0],
+        ..Default::default()
     };
     let (w, hgt) = (250u32, 140u32);
-    let sp = SceneParams { terrain: &terrain, palette: &pal, camera: cam, width: w, height: hgt, pixel_aspect: 1.0, light: sky::lighting(500.0, &pal), time: 1.0, frame: 0, shadows: true };
+    let sp = SceneParams { terrain: &terrain, palette: &pal, camera: cam, width: w, height: hgt, pixel_aspect: 1.0, light: sky::lighting(500.0, &pal), time: 1.0, frame: 0, shadows: true, lights: &[] };
     let scene = std::sync::Arc::new(crate::world::SceneTypes { types: Default::default(), pipeline: Some(pipe) });
     let mut handle = gpu::spawn(gpu.clone());
     let mut times = Vec::new();

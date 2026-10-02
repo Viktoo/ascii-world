@@ -10,6 +10,7 @@ export const meta = {
   name: "lighthouse",
   bounds: [3, 14, 3],          // half-extents in metres around the local origin (each 0 < b <= 40)
   tags: ["building", "landmark"],
+  props: { burns: 0.1, light: 1 },   // optional: what it is made of and does (see Properties)
 };
 
 // Signed distance in local space (metres). Negative inside, positive outside.
@@ -54,6 +55,30 @@ Rotation (return a vec3 point): rotX(x, y, z, angle), rotY(x, y, z, angle), rotZ
 Noise and colour: noise3(x, y, z) in [0,1); hash(a [, b [, c]]) in [0,1); rgb(r, g, b) with 0–255 channels; hsv(h, s, v) all 0–1; mix(a, b, t) for numbers or colours
 Maths: abs, min (2–8 args), max (2–8 args), clamp(x, lo, hi), floor, ceil, round, fract, mod(a, b), sin, cos, tan, atan2(y, x), sqrt, pow(a, b) (uses |a|), exp, sign, step(edge, x), smoothstep(e0, e1, x), length2(x, y), length3(x, y, z)
 
+## Properties (meta.props)
+Every thing has a few numbers the world's rules act on. Give the ones that matter for this object; the rest default sensibly from tags and size:
+__PROPS__
+Examples: a wooden hut { burns: 0.4 }; a lantern { light: 1, heat: 120, fragile: 0.6, burns: 0.6, fuel: 0.5 } (oil inside: if it breaks, it burns); a ball { bounce: 0.8, mass: 0.6 }; an apple { edible: 0.4, mass: 0.2 }; a bucket of water { wet: 1, mass: 8 }; a sapling { alive: 1, growth: 0.1, burns: 0.5 }. Only use the property names listed. The world does the rest: fire spreads to what burns, water puts it out, fragile things break when hit hard, living things grow.
+
+## Behaviour (optional): tick, use, touch
+An object can act on its own with these optional exports. They run on the CPU a few times a second near people; they never draw anything themselves, but the shape and colour functions can read their state as k.s0 … k.s7.
+```js
+export const meta = { name: "brass clock", bounds: [0.3, 0.4, 0.2], tags: ["item"], says: ["Tick… tock."], sounds: ["ding"], spawns: [] };
+export function tick(s, w, k) {        // s: state s.s0 … s.s7 (numbers, start at 0, saved)
+  s.s0 = s.s0 + w.dt;                  // w.dt = seconds since the last tick
+  if (s.s0 > 60) { s.s0 = 0; sound(0); }
+  w.light = w.hour > 19 || w.hour < 6 ? 0.5 : 0;   // set its own properties
+}
+export function use(s, w, k, o) {      // someone uses it (o = the thing it is used on, when w.on is 1)
+  s.s1 = 1 - s.s1;                     // e.g. open/closed, read in sdf as k.s1
+  say(0);
+}
+export function touch(s, w, k) { if (w.impact > 6) { w.health = w.health - 0.5; } }   // something hit it
+```
+- w.<field> describes the situation (read only): dt, hour (0–24), age (seconds since it was made), held (1 if someone holds it), near (people within 4 m), speed, ground (1 if resting on the ground), water (1 if in water), impact (touch: hit speed), on (use: 1 if used on something). Every other w.<name> is one of its own properties (read and write); o.<name> is the other thing's property (read and write).
+- Effects (statements): say(i) speaks meta.says[i]; sound(i) makes meta.sounds[i]; spawn(i) makes a new meta.spawns[i] (a type name) next to it; transform(i) turns it into meta.spawns[i] (a seed into a sapling, an egg into a chick); remove() makes it vanish. Effects are rate-limited.
+- Same language rules as sdf/color (no strings outside meta, loops with literal bounds); `return;` ends early; no return value. Keep them small.
+
 ## Rules that the validator checks
 - sdf returns a number on every path; color returns a colour on every path.
 - Results must be finite everywhere in and around the bounds: guard divisions and sqrt of possibly negative values.
@@ -65,8 +90,21 @@ Maths: abs, min (2–8 args), max (2–8 args), clamp(x, lo, hi), floor, ceil, r
 Recognisable silhouettes beat fine detail: the world is seen at low resolution. Use colour boldly and consistently with the universe's palette. A building is typically 4–10 m wide and 4–12 m tall; a person is 1.75 m tall.
 "#;
 
-pub fn builder_system(bible: &str) -> String {
-    format!("{LANGUAGE}\n## The universe\nEvery object belongs to this universe; match its tone, era, materials and palette:\n{bible}\n")
+pub fn builder_system(bible: &str, props: &[String]) -> String {
+    let lang = LANGUAGE.replace("__PROPS__", &props_doc(props));
+    format!("{lang}\n## The universe\nEvery object belongs to this universe; match its tone, era, materials and palette:\n{bible}\n")
+}
+
+fn props_doc(props: &[String]) -> String {
+    let vocab = crate::sim::props::BUILTIN;
+    props
+        .iter()
+        .map(|p| match vocab.iter().find(|(n, _, _)| n == p) {
+            Some((n, d, m)) => format!("- {n}: {m} (default {d})"),
+            None => format!("- {p} (this universe's own property)"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply with:
@@ -88,7 +126,12 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 - scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3). Use the tags of your base types below; "grass" tufts already exist.
 - fog: 1 = clear air, up to 3 = misty.
 
-2. Then 4 to 8 base object types, each in its own ```js block, following the module rules exactly. These are scattered across the land by the scatter densities (trees, rocks, bushes, flowers, reeds…), so each must be small to medium (bounds under ~8 m) and varied per instance with hash(k.seed). Give each the scatter tag it fills (e.g. "tree", "rock", "bush", "flower").
+Optionally, in the same JSON object, the universe's own nature: properties and rules beyond the built-in physics (fire, water, breaking, growing already exist; don't repeat them). Only if this universe really has its own forces (magic, curses, rot, radiation, holiness, static, spores…):
+  "properties": [ { "name": "cursed", "default": 0, "meaning": "how cursed it is, 0..1" } ],
+  "rules": [ { "name": "curses spread by touch", "near": 1.5, "when": "self.cursed > 0.5 && other.cursed < self.cursed", "do": ["other.cursed += 0.05 * dt"] } ]
+Rule language: `when` is a condition and `do` a list of assignments (=, +=, -=, *=) on self.<property> or other.<property>; you may use numbers, + - * /, comparisons, && || !, min(a,b), max(a,b), clamp(x,lo,hi), abs(x), dt (seconds), dist (metres apart, with "near"), hour, night (0/1), water (1 when in water), held (1 when held). Without "near" a rule applies to each thing alone; with "near": r (≤ 10 m) to each pair within r. Spread slowly (rates times dt), at most 12 rules.
+
+2. Then 4 to 8 base object types, each in its own ```js block, following the module rules exactly. These are scattered across the land by the scatter densities (trees, rocks, bushes, flowers, reeds…), so each must be small to medium (bounds under ~8 m) and varied per instance with hash(k.seed). Give each the scatter tag it fills (e.g. "tree", "rock", "bush", "flower") and fitting meta.props (trees and grass burn and are alive).
 "#;
 
 pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 256 m). Reply with one ```json block:
@@ -96,7 +139,7 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
   "name": "region name (2–3 words)",
   "mood": "one line",
   "facts": ["short lore lines that people living here know", "..."],
-  "new_types": [ { "name": "…", "description": "what it looks like, materials, colours", "size_m": [w, h, d], "tags": ["building"] } ],
+  "new_types": [ { "name": "…", "description": "what it looks like, materials, colours", "size_m": [w, h, d], "tags": ["building"], "props": { "burns": 0.4 } } ],
   "landmarks": [ { "type": "type name", "x": 0-256, "z": 0-256, "rot": degrees, "scale": 1.0, "why": "why it is here" } ],
   "settlement": { "name": "…", "x": 0-256, "z": 0-256, "buildings": [ { "type": "type name", "dx": metres, "dz": metres, "rot": degrees } ] },
   "characters": [ {
@@ -111,12 +154,13 @@ Rules:
 - 0–3 landmarks, 0–1 settlement (with 1–6 buildings), 0–6 characters, 0–3 new_types. Empty regions are fine sometimes: wilderness has value.
 - Reuse existing types by exact name when they fit; only invent new_types the region really needs (a settlement needs at least one building type).
 - Put things on dry land (see the terrain notes), settlements on gentle ground, landmarks where they would be seen.
-- Characters live near the settlement or a landmark. home_x/home_z is where they stand by day: a spot a few metres outside their house (never the building's own coordinates). Give them distinct voices, goals and relationships with each other. Weave in the region facts and the neighbouring regions.
+- Characters live near the settlement or a landmark. home_x/home_z is where they stand by day: a spot a few metres outside their house (never the building's own coordinates). Give them distinct voices, goals and relationships with each other ("Name: relation", e.g. "Ola: daughter", "Bren: rival", "Tam: husband"): families, couples, friends and rivals make a village come alive. Weave in the region facts and the neighbouring regions.
+- Small things people use (tools, balls, food, lamps) are welcome as new_types too, placed as landmarks near where they belong.
 "#;
 
 pub const TYPE_TASK: &str = "Write this object type as one ```js block containing the complete module.";
 
-pub const CREATE_TASK: &str = r#"The player is creating something in the world by typing a request. You see what they see (JSON below). Decide what to build and where.
+pub const CREATE_TASK: &str = r#"Someone is making something in the world by asking for it. You see what they see (JSON below). Decide what to build and where.
 
 Reply with one ```json block:
 {
@@ -130,16 +174,47 @@ and, if "reuse" is null, one ```js block with the new type module.
 - rot = 0 makes the object's front (+z) face away from the viewer; rot = 180 faces the viewer.
 - Objects are set on the ground automatically. Only add "lift": metres if the object must deliberately hover.
 - Keep the player's position free: the target may be close.
+- Give a new type fitting meta.props (a ball bounces, bread is edible, a lamp gives light, a wooden thing burns). Small things (under ~1 m) can be picked up and used.
 "#;
 
 pub fn repair(errors: &str) -> String {
     format!("That failed validation:\n{errors}\n\nFix every problem and reply again in the same format, with the complete corrected answer.")
 }
 
-pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveller (the player) from your memories below; refer to them naturally when relevant. You only know what your character would know. If you are asked about things outside your world, respond as your character would.";
+pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveller (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would.";
 
-pub const DECIDER_TASK: &str = r#"You decide what a character in a small simulated world does next, given an event. Reply with one JSON object only:
-{"action": "approach" | "watch" | "go_home" | "ignore", "line": "what they say if they approach (one short sentence, in their voice), or null"}
-"approach" means walk up to the player and say the line. Choose it only if the character plausibly has something to say to the player now."#;
+pub const DECIDER_TASK: &str = r#"You decide what a character in a small simulated world does next, given an event and what they know. Reply with one JSON object only:
+{"goal": "a few words", "say": "what they say now (one short sentence in their voice) or null", "steps": [ ... ]}
+Steps are actions, carried out in order (walking there first when needed). Use names of things and people you were told about:
+  {"do": "goto", "target": "Mara"}            {"do": "hold", "target": "ball"}        {"do": "drop"}
+  {"do": "throw", "at": "hoop"}                {"do": "give", "to": "Ola"}             {"do": "eat", "target": "apple"}
+  {"do": "use", "target": "lantern", "on": "woodpile"}                                {"do": "say", "text": "…", "to": "Ola"}
+  {"do": "gesture", "kind": "wave|bow|nod|point|cheer|shrug|dance|sit|handshake|high_five|hug|kiss", "to": "Ola"}
+  {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
+  {"do": "create", "text": "a wooden ball"}    (make something new: only when it really fits who they are)
+  {"do": "do", "text": "carve a notch in the door"}                                   (anything else, in words)
+  {"do": "follow", "target": "the traveller"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
+Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
+For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveller"}] with "say" set, or nothing."#;
 
 pub const SUMMARY_TASK: &str = "Update this character's private memory summary. Write at most 120 words in the first person, covering what they know and feel about the traveller (the player), promises, recurring topics, and notable things they witnessed. Keep the important older points. Plain text only.";
+
+pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a small simulated world. Someone did something that the world's rules don't cover. Decide what happens, as changes to things, not just words. Reply with one JSON object only:
+{
+  "narration": "one or two sentences: what visibly happens",
+  "changes": [ { "target": "held" | "target", "props": { "<property>": number }, "state": { "s0": number } } ],
+  "create": [ { "name": "new thing", "replace": "held" | "target" | null, "description": "looks, materials", "size_m": [w, h, d], "props": { "<property>": number } } ],
+  "remove": [ "held" | "target" ],
+  "say": "a few words the actor says, or null",
+  "cache": true
+}
+- "held" is what the actor holds; "target" is what they act on. Use only property names from the list. Set "cache": false if the result depends on chance or the moment.
+- Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). If nothing would happen, say so in the narration and change nothing."#;
+
+pub const CHAT_TASK: &str = "Two characters in a small living world meet and talk briefly, in their own voices, about what is on their minds (what they saw, what they are doing, each other). 2 to 4 short lines, plain speech, no stage directions. Reply with one JSON object only: {\"lines\": [{\"who\": \"Name\", \"text\": \"…\"}]}";
+
+pub const GESTURE_TASK: &str = r#"You animate a simple figure (a person in a small 3D world). Write the gesture named below as a few key poses. Reply with one JSON object only:
+{"duration": seconds (0.5–8), "contact": false, "distance": metres to the other person (0.4–3; only matters with contact), "intimacy": affection needed to agree, -1..1 (contact gestures only),
+ "frames": [{"t": 0, "pose": {}}, {"t": 0.3, "pose": {"r_raise": 0.6, "r_fwd": 0.2}}, …, {"t": 1, "pose": {}}]}
+Pose channels (all default 0, the figure standing with arms down): l_raise / r_raise: left / right arm raised sideways, 0 down … 0.5 level … 1 straight up. l_fwd / r_fwd: arm reaching forward, 0 … 1 straight ahead. lean: bend forward at the hips in radians, -0.3 … 0.6. nod: head tipped down, -1 … 1. crouch: 0 standing … 1 crouching.
+Start and end at rest ({}), 3 to 8 frames, t from 0 to 1. Set "contact": true only for things done touching another person (an embrace, a dance hold, a forehead touch)."#;

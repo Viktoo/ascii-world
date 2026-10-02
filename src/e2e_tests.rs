@@ -57,7 +57,7 @@ fn script(sys: &str, msgs: &[Msg], db: &Db, calls: &Mutex<Calls>) -> String {
             "```json\n{{\"summary\": \"a lighthouse on the hill\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 0, \"rot\": 0, \"scale\": 1.0}}]}}\n```\n```js\n{lighthouse}\n```"
         );
     }
-    if user.contains("The player is creating something") {
+    if user.contains("is making something in the world") {
         if user.contains("hovering") {
             c.float_attempts += 1;
             note!("create-float");
@@ -191,7 +191,7 @@ fn story_pipeline_end_to_end() {
         Vec3::new(p.x, snap.terrain.height(p.x, p.z), p.z)
     };
     let before = snap.instances.len();
-    s.brain.send(Cmd::Create { text: "a lighthouse on that hill".into(), view: view.clone(), target, yaw: std::f32::consts::PI });
+    s.brain.send(Cmd::Create { id: None, by: None, text: "a lighthouse on that hill".into(), view: view.clone(), target, yaw: std::f32::consts::PI });
     assert!(wait_for(&s.rx, 60, |e| matches!(e, Event::Log(l) if l.starts_with("Built") || l.starts_with("Couldn't")), &mut snap, &mut logs), "create timed out");
     assert!(logs.iter().any(|l| l.contains("Built the lighthouse")), "{logs:?}");
     assert_eq!(snap.instances.len(), before + 1);
@@ -203,7 +203,7 @@ fn story_pipeline_end_to_end() {
     let with_lighthouse = snap.version;
 
     // A floating placement is rejected at the placement step and repaired.
-    s.brain.send(Cmd::Create { text: "a hovering lighthouse".into(), view: view.clone(), target: target + Vec3::new(40.0, 0.0, 0.0), yaw: std::f32::consts::PI });
+    s.brain.send(Cmd::Create { id: None, by: None, text: "a hovering lighthouse".into(), view: view.clone(), target: target + Vec3::new(40.0, 0.0, 0.0), yaw: std::f32::consts::PI });
     assert!(wait_for(&s.rx, 60, |e| matches!(e, Event::Log(l) if l.starts_with("Built") || l.starts_with("Couldn't")), &mut snap, &mut logs));
     {
         let c = calls.lock();

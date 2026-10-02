@@ -88,7 +88,26 @@ impl Default for Palette {
     }
 }
 
+/// Small loose things on the ground (sticks, stones, mushrooms) that anyone
+/// can pick up. Added to every biome that does not choose its own.
+pub fn add_litter(biomes: &mut [Biome]) {
+    for b in biomes {
+        let wooded = ["tree", "pine", "bush"].iter().any(|t| b.scatter.get(*t).is_some_and(|d| *d > 0.0));
+        b.scatter.entry("stick".into()).or_insert(if wooded { 0.12 } else { 0.03 });
+        b.scatter.entry("stone".into()).or_insert(0.08);
+        if wooded {
+            b.scatter.entry("mushroom".into()).or_insert(0.05);
+        }
+    }
+}
+
 pub fn default_biomes() -> Vec<Biome> {
+    let mut b = base_biomes();
+    add_litter(&mut b);
+    b
+}
+
+fn base_biomes() -> Vec<Biome> {
     let s = |pairs: &[(&str, f32)]| pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect();
     vec![
         Biome {
