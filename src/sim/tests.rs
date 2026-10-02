@@ -1062,7 +1062,7 @@ fn an_unknown_gesture_is_learned_and_kept() {
     let c2 = calls.clone();
     let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
-        if sys.contains("You animate a simple figure") {
+        if sys.contains("You animate a simple body") {
             *c2.lock() += 1;
             assert!(user.contains("salute"));
             return r#"{"duration": 2, "frames": [{"t": 0, "pose": {}}, {"t": 0.3, "pose": {"r_raise": 0.75, "r_fwd": 0.2, "nod": -0.1}}, {"t": 0.8, "pose": {"r_raise": 0.75, "r_fwd": 0.2}}, {"t": 1, "pose": {}}]}"#.into();
