@@ -189,6 +189,8 @@ pub struct Interp {
     pub gestures: HashMap<u64, (ActorId, Option<Target>, String)>,
     /// Species' own versions of gestures already asked for (name@species).
     pub variants_asked: std::collections::HashSet<String>,
+    /// The trip (by its deadline) for which a character last asked its mount.
+    pub mount_asked: HashMap<ActorId, u64>,
     pub hits: u64,
 }
 
@@ -536,6 +538,7 @@ impl Sim {
             if let Some(nid) = self.spawn_thing(tid, at, 0.0, 1.0, origin, false) {
                 if let Err(e) = self.wear(by, wearer, nid) {
                     crate::log::info(format!("couldn't put it on: {e:?}"));
+                    self.things.remove(nid);
                 }
             }
         }

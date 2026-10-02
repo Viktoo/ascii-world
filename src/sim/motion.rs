@@ -57,7 +57,8 @@ impl Sim {
         let k = if below > 1.0 { 0.25 } else if landing { 0.6 } else { 1.0 };
         let step = dir * (speed * dt * k).min(len);
         let next = Vec3::new(me.x + step.x, me.y + dy, me.z + step.z);
-        let floor = self.snap.terrain.height(next.x, next.z);
+        // Over water, the surface is the floor (it settles on it, and swims).
+        let floor = self.snap.terrain.height(next.x, next.z).max(crate::terrain::WATER_LEVEL - 0.2);
         if let Some(a) = self.actor_mut(who) {
             if dir != Vec3::ZERO {
                 a.face(dir, dt * 4.0);

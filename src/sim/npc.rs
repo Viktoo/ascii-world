@@ -551,8 +551,11 @@ impl Sim {
         if let (ActorId::Npc(_), Task::Goto { target, .. }) = (who, &task) {
             if self.actor(who).is_some_and(|a| a.riding.is_none()) {
                 let far = self.resolve(target, who).map(|r| r.pos).zip(self.actor(who).map(|a| a.pos)).is_some_and(|(p, m)| Vec3::new(p.x - m.x, 0.0, p.z - m.z).length() > 50.0);
-                if far {
-                    if let Some(m) = self.own_mount(who, 15.0) {
+                // Once per trip: a mount that says no isn't asked again every step.
+                let asked = matches!(task, Task::Goto { deadline, .. } if self.interp.mount_asked.get(&who) == Some(&deadline.to_bits()));
+                if far && !asked {
+                    if let (Some(m), Task::Goto { deadline, .. }) = (self.own_mount(who, 15.0), &task) {
+                        self.interp.mount_asked.insert(who, deadline.to_bits());
                         let _ = self.ride(who, m);
                     }
                 }

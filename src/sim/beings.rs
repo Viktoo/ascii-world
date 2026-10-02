@@ -73,7 +73,7 @@ impl Sim {
     /// Extra room a contact gesture needs between two bodies bigger than a
     /// person's: the distance is kept between their sides.
     pub fn contact_gap(&self, a: ActorId, b: ActorId) -> f32 {
-        let r = |x: ActorId| self.actor(x).map(|a| (a.dims.radius - 0.3).max(0.0)).unwrap_or(0.0);
+        let r = |x: ActorId| self.actor(x).map(|a| (a.dims.radius - 0.35).max(0.0)).unwrap_or(0.0);
         r(a) + r(b)
     }
 
@@ -471,6 +471,13 @@ impl Sim {
         if let Some(h) = self.actor(who).and_then(|a| a.held) {
             self.release(h);
         }
+        for id in self.worn_by(who) {
+            if let Some(t) = self.things.get_mut(id) {
+                t.worn = None;
+                t.asleep = false;
+                t.dirty = true;
+            }
+        }
         let name = self.actor_name(who);
         self.social.joints.retain(|j| !j.has(who));
         if let Some(n) = self.cast.get_mut(cid) {
@@ -782,7 +789,9 @@ impl Sim {
                 Some(ty) => {
                     let origin = super::things::Origin { made_by: Some(self.actor_name(actor)), ..Default::default() };
                     if let Some(id) = self.spawn_thing(ty.id, at, 0.0, 1.0, origin, false) {
-                        let _ = self.wear(actor, b, id);
+                        if self.wear(actor, b, id).is_err() {
+                            self.things.remove(id);
+                        }
                     }
                 }
                 None => {
