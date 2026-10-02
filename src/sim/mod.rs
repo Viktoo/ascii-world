@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod actor;
 pub mod behavior;
+pub mod beings;
 pub mod catchup;
 pub mod config;
 pub mod env;

@@ -616,13 +616,14 @@ impl Sim {
             return fail(format!("the {} won't budge", r.name));
         }
         let mass = t.mass();
+        let strength = self.strength(who);
         match t.holder {
             Some(h) if h != who => {
-                if t.co_holder.is_some() || mass <= STRENGTH {
+                if t.co_holder.is_some() || mass <= strength {
                     return fail(format!("{} is holding the {}", self.actor_name(h), r.name));
                 }
                 // The other end of something heavy.
-                if mass > STRENGTH * 2.0 {
+                if mass > strength * 2.0 {
                     return fail(format!("the {} is too heavy even for two ({mass:.0} kg)", r.name));
                 }
                 if let Some(t) = self.things.get_mut(id) {
@@ -642,7 +643,7 @@ impl Sim {
             }
             _ => {}
         }
-        if mass > STRENGTH * 2.0 {
+        if mass > strength * 2.0 {
             return fail(format!("the {} is far too heavy ({mass:.0} kg)", r.name));
         }
         if let Some(t) = self.things.get_mut(id) {
@@ -654,7 +655,7 @@ impl Sim {
         if let Some(a) = self.actor_mut(who) {
             a.held = Some(id);
         }
-        if mass > STRENGTH {
+        if mass > strength {
             self.event("grip", Some(who), Some(format!("thing:{id}")), format!("{name} grabs one end of the {}; it needs two", r.name), Some(r.pos), json!({ "mass": mass }));
             return Ok(Outcome::ok(format!("{name} grabs one end of the {} ({mass:.0} kg): it needs a second pair of hands", r.name)).thing(id));
         }
@@ -698,7 +699,7 @@ impl Sim {
         let name = self.actor_name(who);
         let id = me.held.ok_or(ActErr::Fail("not holding anything to throw".into()))?;
         let t = self.things.get(id).cloned().ok_or(ActErr::Fail("it's gone".into()))?;
-        if t.co_holder.is_some() || t.mass() > STRENGTH {
+        if t.co_holder.is_some() || t.mass() > self.strength(who) {
             return fail("too heavy to throw");
         }
         let tname = self.thing_name(id);
@@ -761,6 +762,7 @@ impl Sim {
         if who != ActorId::Player {
             self.note_near(me.pos, 25.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
         }
+        self.animals_notice_throw(me.pos);
         Ok(Outcome::ok(msg).thing(id))
     }
 
@@ -877,6 +879,12 @@ impl Sim {
             Target::Actor(a) => Some(self.actor_name(*a)),
             _ => None,
         });
+        if let ActorId::Npc(c) = who {
+            if !self.speaks(who) {
+                self.speak_as_animal(c, text);
+                return;
+            }
+        }
         if who != ActorId::Player {
             self.note_near(at, 22.0, Note::Line { who: name.clone(), text: text.to_string() });
         }

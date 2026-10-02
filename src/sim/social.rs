@@ -317,7 +317,7 @@ impl Sim {
         if matches!(act, Activity::Catch) && thing.is_none() {
             return Err(ActErr::Fail("there is nothing to throw".into()));
         }
-        if matches!(act, Activity::Carry) && thing.is_none_or(|t| self.things.get(t).is_none_or(|x| x.mass() <= STRENGTH || x.anchored)) {
+        if matches!(act, Activity::Carry) && thing.is_none_or(|t| self.things.get(t).is_none_or(|x| x.mass() <= self.strength(from) || x.anchored)) {
             return Err(ActErr::Fail("carry what? (something too heavy for one)".into()));
         }
         let delay = 0.8 + self.rand() as f64 * 0.8;
@@ -402,7 +402,7 @@ impl Sim {
         if n.a.asleep || (self.night() && !matches!(act, Activity::Gesture(_))) {
             return false;
         }
-        let aff = self.social.affection(me, from);
+        let aff = self.social.affection(me, from) - self.wariness(cid);
         let rel = self.social.rel(me, from).cloned().unwrap_or_default();
         let tr = n.traits;
         let needs = n.needs;
@@ -703,7 +703,7 @@ impl Sim {
                 }
             }
             JointKind::Gesture(k) => {
-                let want = k.distance();
+                let want = k.distance() + self.contact_gap(j.a, j.b);
                 if j.phase == 0 {
                     // Come close: characters walk to the other.
                     for (who, other) in [(j.a, j.b), (j.b, j.a)] {
@@ -940,6 +940,18 @@ impl Sim {
     /// otherwise in a few plain words. They also pass on news (gossip).
     fn converse(&mut self, a: i64, b: i64) {
         let (Some(pa), Some(_)) = (self.cast.get(a).map(|n| n.a.pos), self.cast.get(b)) else { return };
+        // Without shared words there is no talk and no news: a noise, a look.
+        if !self.speaks(ActorId::Npc(a)) || !self.speaks(ActorId::Npc(b)) {
+            for x in [a, b] {
+                if !self.speaks(ActorId::Npc(x)) {
+                    let other = if x == a { b } else { a };
+                    let happy = self.social.affection(ActorId::Npc(x), ActorId::Npc(other)) > -0.2;
+                    self.make_noise(x, happy);
+                }
+            }
+            self.social.bond(ActorId::Npc(a), ActorId::Npc(b), 0.02, self.t);
+            return;
+        }
         let an = self.actor_name(ActorId::Npc(a));
         let bn = self.actor_name(ActorId::Npc(b));
         let t = self.t;

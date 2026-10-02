@@ -1504,3 +1504,57 @@ fn species_lineup_picture() {
     let cam = crate::render::Camera { pos: me + Vec3::Y * 1.4 + Vec3::new(0.0, 0.0, -1.5), yaw: 0.0, pitch: -0.1, fov_y: 1.0 };
     render_png(&mut s, &w, cam, &out);
 }
+
+/// Phase 2: a dog follows its person, brings back what they throw and gives
+/// it to them, and wags when they meet after a while apart. A cat that
+/// doesn't know you won't be hugged. Talking to a dog gets a noise and a
+/// look, never words.
+#[test]
+fn a_dog_follows_and_fetches_and_a_wary_cat_keeps_its_distance() {
+    let w = world("fetch", 43);
+    let p = dry_spot(&w, 10.0, 0.9);
+    let ola = add_char(&w, "Ola", "kind and patient", &["Rex: her dog"], p);
+    let rex = add_being(&w, "Rex", "dog", &["Ola: owner"], p + Vec3::new(2.0, 0.0, 0.0));
+    let tib = add_being(&w, "Tib", "cat", &[], p + Vec3::new(-6.0, 0.0, 3.0));
+    let mut s = session(&w, 12, None);
+    calm(&mut s);
+    s.sim.player.pos = p + Vec3::new(-5.0, 0.0, 0.0);
+    let (o, r, c) = (ActorId::Npc(ola), ActorId::Npc(rex), ActorId::Npc(tib));
+    s.sim.cast.get_mut(rex).unwrap().think_at = 0.0;
+    s.sim.cast.get_mut(rex).unwrap().needs.social = 0.5;
+    // Ola walks off; Rex goes with her.
+    let far = dry_spot(&w, 34.0, 0.9);
+    s.sim.act(o, Action::Goto { target: Target::Point(far.to_array()), run: false }).unwrap();
+    s.run(40.0, 0.1);
+    let (op, rp) = (s.sim.actor(o).unwrap().pos, s.sim.actor(r).unwrap().pos);
+    assert!((op - far).length() < 3.0, "Ola got there");
+    assert!((op - rp).length() < 6.0, "Rex stayed with Ola ({:.1} m): {:?}", (op - rp).length(), s.sim.cast.get(rex).unwrap().decisions);
+    assert!(events(&s.sim, "gesture").iter().any(|e| e.actor == Some(r) && e.data["kind"] == "wag"), "Rex wagged on meeting her");
+    // Ola throws a stick; Rex brings it back to her.
+    let stick = s.sim.type_by_name("stick").unwrap().id;
+    let id = s.sim.spawn_thing(stick, op + s.sim.actor(o).unwrap().forward() * 0.6, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.act(o, Action::Hold { target: Target::Thing(id) }).unwrap();
+    s.run(0.5, 0.05);
+    let a = s.sim.actor(o).unwrap().yaw;
+    s.sim.act(o, Action::Throw { at: None, dir: Some([a.sin(), 0.5, a.cos()]), force: Some(9.0) }).unwrap();
+    let thrown_to = { s.run(3.0, 0.05); s.sim.things.get(id).unwrap().pos };
+    assert!((thrown_to - op).length() > 3.0, "the stick flew");
+    s.run(30.0, 0.1);
+    assert!(!events(&s.sim, "fetch").is_empty(), "Rex went after it: {:?}", s.sim.cast.get(rex).unwrap().decisions);
+    let gave: Vec<_> = events(&s.sim, "gave").into_iter().filter(|e| e.actor == Some(r)).collect();
+    assert!(!gave.is_empty(), "and gave it back: {:?} {:?}", s.sim.log.recent.iter().rev().take(20).map(|e| e.text.clone()).collect::<Vec<_>>(), s.sim.cast.get(rex).unwrap().decisions);
+    assert_eq!(s.sim.things.get(id).unwrap().holder, Some(o), "Ola has her stick again");
+    // A cat that doesn't know you.
+    let res = s.sim.act(ActorId::Player, Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(c)) });
+    s.run(3.0, 0.1);
+    assert!(res.is_err() || events(&s.sim, "hug").is_empty(), "no hug for a stranger: {res:?}");
+    // Talking to a dog: a noise and a look, never words, and no LLM call.
+    s.sim.player.pos = s.sim.actor(r).unwrap().pos + Vec3::new(1.5, 0.0, 0.0);
+    let before = events(&s.sim, "sound").len();
+    s.sim.player_talks(rex, "Good boy! Who's a good boy?");
+    let reqs = s.sim.drain_requests();
+    assert!(!reqs.iter().any(|q| matches!(q, super::Request::Talk { .. })), "no dialogue for a dog");
+    assert!(events(&s.sim, "sound").len() > before, "Rex answers with a noise");
+    assert!(!events(&s.sim, "said").iter().any(|e| e.actor == Some(r)), "Rex never says words");
+    sound(&s);
+}

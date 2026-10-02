@@ -5,7 +5,7 @@
 
 use super::props::*;
 use super::things::ThingId;
-use super::{ActorId, Note, Sim};
+use super::{ActorId, Note, Sim, Target};
 use crate::terrain::WATER_LEVEL;
 use crate::world::Solid;
 use glam::Vec3;
@@ -51,11 +51,14 @@ fn enclosed(s: &Solid, p: Vec3, reach: f32) -> bool {
 
 /// Distance from a point to an actor's body (a vertical capsule).
 fn body_dist(p: Vec3, feet: Vec3, height: f32) -> (f32, Vec3) {
-    let y = p.y.clamp(feet.y + 0.3, feet.y + height - 0.25);
+    // A person's capsule (0.3 m round, from 0.3 m to 0.25 m below the top),
+    // in proportion for smaller and bigger bodies.
+    let s = height / 1.75;
+    let y = p.y.clamp(feet.y + 0.3 * s, feet.y + height - 0.25 * s);
     let c = Vec3::new(feet.x, y, feet.z);
     let d = p - c;
     let l = d.length();
-    (l - 0.3, if l > 1e-5 { d / l } else { Vec3::Y })
+    (l - 0.3 * s, if l > 1e-5 { d / l } else { Vec3::Y })
 }
 
 impl Sim {
@@ -100,7 +103,7 @@ impl Sim {
             let Some(t) = self.things.get(id) else { continue };
             let Some(ty) = self.snap.type_of(t.type_id).cloned() else { continue };
             // Too heavy for one: gripped, not lifted, until a second pair of hands comes.
-            if co.is_none() && t.mass() > STRENGTH {
+            if co.is_none() && t.mass() > self.strength(h) {
                 let tp = t.pos;
                 if self.actor(h).is_none_or(|a| (a.pos - tp).length() > 3.0) {
                     self.release(id);
@@ -243,7 +246,7 @@ impl Sim {
             }
             let height = self.actor_height(a);
             let (d, n) = body_dist(p, body.0, height);
-            if d < r + 0.25 && body.1 > self.t && v.length() > 0.5 && self.actor(a).is_some_and(|x| x.held.is_none()) && mass <= STRENGTH {
+            if d < r + 0.25 && body.1 > self.t && v.length() > 0.5 && self.actor(a).is_some_and(|x| x.held.is_none()) && mass <= self.strength(a) {
                 // Caught.
                 let thrower = thrown.map(|x| x.0);
                 if let Some(t) = self.things.get_mut(id) {
@@ -436,15 +439,24 @@ impl Sim {
         if step.length() < 1e-4 {
             return;
         }
+        // Not what they are walking up to (to pick it up).
+        let aim = match self.actor(who).and_then(|a| a.task.clone()) {
+            Some(super::actor::Task::Goto { target: Target::Point(q), .. }) => Some(Vec3::from_array(q)),
+            _ => None,
+        };
+        let strength = self.strength(who);
         for id in self.things.near(p, 0.9) {
             let Some(t) = self.things.get(id) else { continue };
-            if t.anchored || t.held() || t.mass() > STRENGTH * 0.4 {
+            if t.anchored || t.held() || t.mass() > strength * 0.4 {
                 continue;
             }
             let Some(ty) = self.snap.type_of(t.type_id).cloned() else { continue };
             let (c, r) = t.proxy(&ty);
             let d = Vec3::new(c.x - p.x, 0.0, c.z - p.z);
             if d.length() > r + 0.35 || c.y > p.y + 1.0 {
+                continue;
+            }
+            if aim.is_some_and(|q| Vec3::new(q.x - t.pos.x, 0.0, q.z - t.pos.z).length() < 1.2) {
                 continue;
             }
             let dir = (d.normalize_or_zero() + step.normalize_or_zero()).normalize_or_zero();

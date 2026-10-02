@@ -387,6 +387,12 @@ impl App {
             KeyCode::Char('n') | KeyCode::Char('N') => self.player_act(Action::Answer { yes: false, to: None }),
             KeyCode::Enter => {
                 if let Some((id, name)) = self.talk_hint.clone() {
+                    // Animals answer with a noise and their body, no words needed.
+                    if !self.sim.speaks(ActorId::Npc(id)) {
+                        self.say(Some("you"), &format!("(you call {name})"), DIM);
+                        self.sim.animal_answers(id);
+                        return;
+                    }
                     if !self.brain.has_llm {
                         self.say(None, &format!("{name} looks at you, but words need an LLM key."), DIM);
                         return;
@@ -651,6 +657,10 @@ impl App {
         }
         self.sim.t = t;
         self.say(None, &format!("Time jumps to {:02}:{:02} ({}).", hour as u32, ((hour.fract()) * 60.0).round() as u32, sky::time_label(t)), DIM);
+    }
+
+    fn talk_verb(&self, id: i64) -> &'static str {
+        if self.sim.speaks(ActorId::Npc(id)) { "talk to" } else { "call" }
     }
 
     fn talk_context(&mut self) -> String {
@@ -1087,7 +1097,7 @@ impl App {
             Mode::Walk => {
                 let near = self.pointed.as_ref().filter(|p| p.dist < 3.2 && !matches!(p.target, Target::Point(_)));
                 let hint = match (&self.talk_hint, near, self.sim.player.held) {
-                    (Some((_, n)), _, _) => format!("Enter: talk to {n}   e wave   / do anything   F2 inspect"),
+                    (Some((id, n)), _, _) => format!("Enter: {} {n}   e wave   / do anything   F2 inspect", self.talk_verb(*id)),
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
@@ -1148,8 +1158,8 @@ impl App {
         if self.render.cpu_fallback {
             right = format!("{right}{}CPU renderer", if right.is_empty() { "" } else { " · " });
         }
-        if let (Mode::Walk, Some((_, n))) = (self.mode, &self.talk_hint) {
-            right = format!("Enter: talk to {n}");
+        if let (Mode::Walk, Some((id, n))) = (self.mode, &self.talk_hint) {
+            right = format!("Enter: {} {n}", self.talk_verb(*id));
         }
         let rx = w.saturating_sub(right.chars().count() as u16 + 1);
         if !right.is_empty() {

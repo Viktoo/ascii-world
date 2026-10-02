@@ -403,8 +403,9 @@ impl Sim {
         if self.actor(who).is_some_and(|a| a.held.is_some()) {
             return;
         }
+        let strength = self.strength(who);
         if let Some(t) = self.things.get_mut(id) {
-            if t.anchored || t.mass() > STRENGTH {
+            if t.anchored || t.mass() > strength {
                 return;
             }
             t.holder = Some(who);

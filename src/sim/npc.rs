@@ -47,6 +47,31 @@ impl Traits {
     }
 }
 
+impl Traits {
+    /// A species' temper sets the starting point; the persona's words still
+    /// nudge it (a timid dragon is possible).
+    pub fn with_temper(self, sp: &Species) -> Traits {
+        use crate::world::species::{Mind, Social};
+        let t = sp.temper;
+        let blend = |own: f32, base: f32| (own - 0.5) * 0.5 + base;
+        let sociable = match sp.social {
+            Social::Solitary => 0.2,
+            Social::Pair => 0.45,
+            Social::Pack | Social::Herd => 0.65,
+            Social::Village => 0.6,
+        };
+        let sapient = sp.mind == Mind::Sapient;
+        Traits {
+            sociable: blend(self.sociable, sociable).clamp(0.0, 1.0),
+            playful: blend(self.playful, t.playful).clamp(0.0, 1.0),
+            curious: self.curious,
+            brave: blend(self.brave, t.bold).clamp(0.0, 1.0),
+            generous: if sapient { self.generous } else { 0.2 },
+            crafty: if sapient { self.crafty } else { 0.0 },
+        }
+    }
+}
+
 pub struct Npc {
     pub def: Arc<CharacterDef>,
     pub species: Arc<Species>,
@@ -73,6 +98,8 @@ pub struct Npc {
     pub bored_since: f64,
     pub last_line: f64,
     pub last_work: f64,
+    /// When an animal last greeted its person.
+    pub last_greet: f64,
 }
 
 impl Npc {
@@ -80,7 +107,7 @@ impl Npc {
         &self.def.persona.name
     }
 
-    fn rand(&mut self) -> f32 {
+    pub fn rand(&mut self) -> f32 {
         self.rng = crate::noise::pcg(self.rng);
         crate::noise::u2f(self.rng)
     }
@@ -163,7 +190,10 @@ impl Cast {
             let sliders = crate::world::species::sliders(&bmeta, &species, variety, &def.persona.look, rng);
             a.dims = body_dims(&bmeta, &species, &sliders, snap.species.size_of(&species.name));
             a.roles = super::actor::role_mask(&bmeta);
-            let traits = Traits::from_persona(&def.persona, rng);
+            let mut traits = Traits::from_persona(&def.persona, rng);
+            if !species.is_human() {
+                traits = traits.with_temper(&species);
+            }
             let needs = s.needs.unwrap_or_else(|| {
                 let r = |k: u32| crate::noise::u2f(crate::noise::pcg(rng ^ k)) * 0.4;
                 Needs { hunger: 0.1 + r(1), fatigue: r(2) * 0.5, social: 0.2 + r(3), fun: 0.2 + r(4), curiosity: 0.2 + r(5) }
@@ -192,6 +222,7 @@ impl Cast {
                 bored_since: f64::MAX,
                 last_line: f64::MIN,
                 last_work: f64::MIN,
+                last_greet: f64::MIN,
             });
         }
     }
@@ -413,6 +444,12 @@ impl Sim {
                         self.plan_failed(who, &format!("{label}: too far ({dist:.0} m)"));
                         return false;
                     }
+                    // Standing right under it: out of reach (up a bush, on a roof).
+                    let me = self.actor(who).map(|a| a.pos).unwrap_or(at);
+                    if Vec3::new(at.x - me.x, 0.0, at.z - me.z).length() < self.reach_of(who) * 0.6 + 0.3 {
+                        self.plan_failed(who, &format!("{label}: out of reach"));
+                        return false;
+                    }
                     if let Some(p) = self.plan_mut(who) {
                         p.push_front(next);
                     }
@@ -577,20 +614,25 @@ impl Sim {
     fn npc_tick(&mut self, cid: i64, dt: f32, near: bool) {
         let t = self.t;
         let night = self.night();
+        let hour = self.hour();
         let player = self.player.pos;
         let Some(n) = self.cast.get_mut(cid) else { return };
         n.last_sim = t;
-        // Needs drift.
+        // Needs drift, each at its species' pace.
         let tr = n.traits;
-        n.needs.hunger = (n.needs.hunger + dt / 900.0).min(1.0);
+        let rate = n.species.needs;
+        let sapient = n.species.mind == crate::world::species::Mind::Sapient;
+        // People sleep at night; other species keep their own hours.
+        let night = if n.species.is_human() { night } else { n.species.sleeps_at(hour) };
+        n.needs.hunger = (n.needs.hunger + dt / 900.0 * rate.hunger).min(1.0);
         if n.a.asleep {
             n.needs.fatigue = (n.needs.fatigue - dt / 300.0).max(0.0);
         } else {
-            n.needs.fatigue = (n.needs.fatigue + dt / 1100.0).min(1.0);
+            n.needs.fatigue = (n.needs.fatigue + dt / 1100.0 * rate.fatigue).min(1.0);
         }
-        n.needs.social = (n.needs.social + dt / 420.0 * (0.4 + tr.sociable)).min(1.0);
-        n.needs.fun = (n.needs.fun + dt / 520.0 * (0.4 + tr.playful)).min(1.0);
-        n.needs.curiosity = (n.needs.curiosity - dt / 400.0).max(0.0);
+        n.needs.social = (n.needs.social + dt / 420.0 * (0.4 + tr.sociable) * rate.social).min(1.0);
+        n.needs.fun = (n.needs.fun + dt / 520.0 * (0.4 + tr.playful) * rate.fun).min(1.0);
+        n.needs.curiosity = (n.needs.curiosity - dt / 400.0 / rate.curiosity.max(0.1)).max(0.0);
         // Talking with the player: stand and face them.
         if self.talking_to == Some(cid) {
             if let Some(n) = self.cast.get_mut(cid) {
@@ -613,7 +655,7 @@ impl Sim {
             if t - n.last_player_near > 240.0 {
                 n.last_player_near = t;
                 let ctx = format!("The traveller has come within a few metres of you. It is {}.", crate::render::sky::time_label(t));
-                if self.has_llm && near {
+                if self.has_llm && near && sapient {
                     let context = self.decide_context(cid, &ctx);
                     self.request(Request::Decide { cid, event: "player_near".into(), context }, player);
                 }
@@ -697,6 +739,10 @@ impl Sim {
                 next_think(self, 6.0);
                 return;
             }
+        }
+        if self.mind_of(me) != crate::world::species::Mind::Sapient {
+            self.think_animal(cid);
+            return;
         }
         // Candidate scores.
         let mut best: (f32, &str) = (0.15 + 0.1 * self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0), "wander");
@@ -920,7 +966,7 @@ impl Sim {
     }
 
     /// Walk somewhere on dry land near home.
-    fn wander(&mut self, cid: i64, home: Vec3, radius: f32) {
+    pub(super) fn wander(&mut self, cid: i64, home: Vec3, radius: f32) {
         for _ in 0..6 {
             let (a, r) = match self.cast.get_mut(cid) {
                 Some(n) => (n.rand() * std::f32::consts::TAU, 3.0 + n.rand() * radius),
@@ -1087,7 +1133,7 @@ impl Sim {
 
     /// Ask the planner about an event (rate-limited per character).
     pub fn ask(&mut self, cid: i64, event: &str, what: &str) {
-        if !self.has_llm {
+        if !self.has_llm || self.mind_of(ActorId::Npc(cid)) != crate::world::species::Mind::Sapient {
             return;
         }
         let t = self.t;
@@ -1216,6 +1262,10 @@ impl Sim {
 
     /// The player spoke to a character outside the talk screen (agents).
     pub fn player_talks(&mut self, cid: i64, text: &str) {
+        if !self.speaks(ActorId::Npc(cid)) {
+            self.animal_answers(cid);
+            return;
+        }
         let context = self.decide_context(cid, "The traveller is talking to you.");
         self.request_now(Request::Talk { cid, text: text.to_string(), context });
     }
