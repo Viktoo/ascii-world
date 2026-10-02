@@ -196,7 +196,7 @@ impl WorldModel {
             seed: u.seed,
             bible: u.bible,
             look: Arc::new(look),
-            species: Arc::new(crate::world::species::SpeciesBook::builtin()),
+            species: Arc::new(crate::world::species::SpeciesBook::load(&db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), db.kv_get("species.world").as_deref())),
             terrain,
             types: BTreeMap::new(),
             insts: Vec::new(),

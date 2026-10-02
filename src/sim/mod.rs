@@ -328,7 +328,7 @@ impl Sim {
         persist::load_gestures(&sim.db);
         sim.cast.sync(&snap, seed);
         persist::load(&mut sim);
-        sim.social.seed_from_personas(&sim.cast);
+        sim.social.seed_from_personas(&sim.cast, &snap.species);
         sim.sync_overlay();
         sim
     }
@@ -400,7 +400,7 @@ impl Sim {
 
     pub fn actor_ids(&self) -> Vec<ActorId> {
         let mut v = vec![ActorId::Player];
-        v.extend(self.cast.npcs.iter().map(|n| ActorId::Npc(n.def.id)));
+        v.extend(self.cast.npcs.iter().filter(|n| !n.dead).map(|n| ActorId::Npc(n.def.id)));
         v
     }
 
@@ -447,7 +447,7 @@ impl Sim {
 
     /// Characters within `range` of `at` who can see it remember it.
     pub fn witness(&mut self, at: Vec3, range: f32, text: &str, importance: f32, except: &[ActorId]) {
-        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| (n.a.pos - at).length() < range && !n.a.asleep && !except.contains(&ActorId::Npc(n.def.id))).map(|n| n.def.id).collect();
+        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| !n.dead && (n.a.pos - at).length() < range && !n.a.asleep && !except.contains(&ActorId::Npc(n.def.id))).map(|n| n.def.id).collect();
         for cid in ids {
             if let Some(n) = self.cast.get_mut(cid) {
                 if n.recently_witnessed(text, self.t) {
@@ -570,7 +570,7 @@ impl Sim {
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
         self.player.dims = traveller_dims(&snap);
-        self.social.seed_from_personas(&self.cast);
+        self.social.seed_from_personas(&self.cast, &snap.species);
         self.sync_overlay();
     }
 
@@ -668,7 +668,7 @@ impl Sim {
                 continue;
             }
             let Some(name) = self.snap.type_of(p.type_id).map(|t| t.name().to_string()) else { continue };
-            let near: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| (n.a.pos - p.pos).length() < 60.0).map(|n| (n.def.id, n.a.pos)).collect();
+            let near: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| !n.dead && (n.a.pos - p.pos).length() < 60.0).map(|n| (n.def.id, n.a.pos)).collect();
             for (cid, at) in near {
                 let dir = compass(p.pos - at);
                 self.out.push(Request::Witness { cid, text: format!("A {name} appeared {dir} of me, out of nowhere, after the traveller arrived."), importance: 0.6 });

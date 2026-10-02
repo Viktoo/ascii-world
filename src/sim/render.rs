@@ -72,6 +72,9 @@ impl Sim {
         let figure = self.snap.figure_type.and_then(|f| self.snap.type_of(f));
         for n in &self.cast.npcs {
             let Some(body) = self.snap.type_of(n.body_ty).or(figure) else { continue };
+            if n.dead {
+                continue;
+            }
             {
                 if (n.a.pos - cam).length() < 200.0 {
                     let mut g = n.gpu(body);

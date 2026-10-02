@@ -100,6 +100,7 @@ pub struct Npc {
     pub last_work: f64,
     /// When an animal last greeted its person.
     pub last_greet: f64,
+    pub dead: bool,
 }
 
 impl Npc {
@@ -113,7 +114,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -223,6 +224,7 @@ impl Cast {
                 last_line: f64::MIN,
                 last_work: f64::MIN,
                 last_greet: f64::MIN,
+                dead: s.dead,
             });
         }
     }
@@ -376,6 +378,9 @@ impl Sim {
         for i in 0..self.cast.npcs.len() {
             let (cid, d) = {
                 let n = &self.cast.npcs[i];
+                if n.dead {
+                    continue;
+                }
                 (n.def.id, self.dist_to_player(n.a.pos))
             };
             if d <= near {
@@ -742,6 +747,11 @@ impl Sim {
         }
         if self.mind_of(me) != crate::world::species::Mind::Sapient {
             self.think_animal(cid);
+            return;
+        }
+        // Something that would hunt them: get away (people too).
+        if let Some((from, at)) = self.threat(me) {
+            self.flee(cid, from, at);
             return;
         }
         // Candidate scores.

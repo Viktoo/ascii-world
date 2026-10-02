@@ -870,7 +870,7 @@ impl App {
         let yaw = self.yaw();
         let f = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let mut best: Option<(f32, i64, String)> = None;
-        for n in &self.sim.cast.npcs {
+        for n in self.sim.cast.npcs.iter().filter(|n| !n.dead) {
             let d = n.a.pos - me;
             let dist = Vec3::new(d.x, 0.0, d.z).length();
             if dist > TALK_RANGE || n.a.asleep && dist > 2.0 {
@@ -1188,7 +1188,7 @@ impl App {
         let (pw, ph, pa) = self.pixel_size();
         let aspect = pw as f32 / ph as f32 * pa;
         let mut labels = Vec::new();
-        for n in &self.sim.cast.npcs {
+        for n in self.sim.cast.npcs.iter().filter(|n| !n.dead) {
             let head = n.a.pos + Vec3::Y * (n.a.dims.height + 0.35);
             let v = head - cam.pos;
             let d = v.length();

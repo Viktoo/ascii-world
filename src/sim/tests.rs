@@ -1558,3 +1558,102 @@ fn a_dog_follows_and_fetches_and_a_wary_cat_keeps_its_distance() {
     assert!(!events(&s.sim, "said").iter().any(|e| e.actor == Some(r)), "Rex never says words");
     sound(&s);
 }
+
+/// Two peoples for a fantasy valley: both use the human body, with their
+/// own looks, and start out distrusting each other.
+fn add_elves_and_orcs(w: &W) {
+    let elf = serde_json::json!({ "name": "elf", "plural": "elves", "body": "figure", "mind": "sapient", "speech": "words", "social": "village",
+        "temper": { "bold": 0.4, "wary": 0.6, "playful": 0.5, "tame": 0.5 }, "look": { "height": [1.85, 2.0], "build": [0.7, 0.85], "skin": [0.0, 0.2] } });
+    let orc = serde_json::json!({ "name": "orc", "plural": "orcs", "body": "figure", "mind": "sapient", "speech": "words", "social": "village",
+        "temper": { "bold": 0.8, "wary": 0.3, "playful": 0.6, "tame": 0.4 }, "look": { "height": [1.7, 1.9], "build": [1.2, 1.4], "skin": [0.55, 0.8] }, "mass": 95 });
+    w.db.with(|c| {
+        db::put_species(c, "elf", &elf.to_string())?;
+        db::put_species(c, "orc", &orc.to_string())
+    })
+    .unwrap();
+    w.db.kv_set("species.world", &serde_json::json!({ "attitudes": [{ "a": "elf", "b": "orc", "affection": -0.4, "trust": -0.3, "rivalry": 0.3 }] }).to_string()).unwrap();
+}
+
+/// Phase 3: the taxonomy at work. Hungry wolves go after goats (smaller,
+/// and not their kin) but never after a grown person; the goats bolt as a
+/// herd and keep together; in a world that doesn't hunt, nobody dies. Elves
+/// and orcs start out cold; the pair who play together warm up.
+#[test]
+fn wolves_chase_a_herd_and_peoples_warm_to_each_other() {
+    let w = world("taxonomy", 44);
+    add_elves_and_orcs(&w);
+    let farm = dry_spot(&w, 12.0, 2.0);
+    let goats: Vec<i64> = (0..4).map(|i| add_being(&w, &format!("Goat {i}"), "goat", &[], farm + Vec3::new(i as f32 * 1.5, 0.0, (i % 2) as f32 * 1.5))).collect();
+    let den = farm + Vec3::new(30.0, 0.0, 6.0);
+    let wolves: Vec<i64> = (0..2).map(|i| add_being(&w, &format!("Wolf {i}"), "wolf", &[], den + Vec3::new(i as f32 * 1.2, 0.0, 0.0))).collect();
+    let ola = add_char(&w, "Ola", "a kind herder", &[], farm + Vec3::new(-3.0, 0.0, -3.0));
+    let green = dry_spot(&w, 40.0, 4.0);
+    let mk = |name: &str, sp: &str, at: Vec3| {
+        let persona = crate::world::Persona { name: name.into(), species: sp.into(), personality: "playful and lively".into(), ..Default::default() };
+        w.db.with(|c| db::add_character(c, crate::world::region_of(at.x, at.z), &serde_json::to_string(&persona)?, at.x, at.z, w.version)).unwrap()
+    };
+    let (e1, o1) = (mk("Ael", "elf", green), mk("Grub", "orc", green + Vec3::new(4.0, 0.0, 0.0)));
+    let (e2, o2) = (mk("Siv", "elf", green + Vec3::new(0.0, 0.0, 30.0)), mk("Mog", "orc", green + Vec3::new(4.0, 0.0, 30.0)));
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let ball_id = place(&w, ball, green + Vec3::new(2.0, 0.0, 1.0), 0.0);
+    let mut s = session(&w, 13, None);
+    calm(&mut s);
+    let all = record(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * (16.0 / 24.0);
+    s.sim.player.pos = farm + Vec3::new(-8.0, 0.0, 0.0);
+    for g in goats.iter().chain(&wolves) {
+        s.sim.cast.get_mut(*g).unwrap().think_at = 0.0;
+    }
+    for wf in &wolves {
+        s.sim.cast.get_mut(*wf).unwrap().needs.hunger = 0.95;
+    }
+    let (ae, ao) = (ActorId::Npc(e1), ActorId::Npc(o1));
+    let start = s.sim.social.affection(ae, ao);
+    assert!(start < -0.1, "elves and orcs start cold ({start})");
+    assert!(s.sim.cast.get(e1).unwrap().a.dims.height > s.sim.cast.get(o1).unwrap().a.dims.height - 0.2, "elves are tall");
+    let b = s.sim.liven(&Target::Instance(ball_id)).unwrap();
+    s.sim.cast.get_mut(o1).unwrap().needs.fun = 0.9;
+    s.sim.cast.get_mut(e1).unwrap().needs.fun = 0.9;
+    let _ = s.sim.propose(ae, ao, "catch", Some(b));
+    for _ in 0..10 {
+        s.run(30.0, 0.1);
+        if s.sim.social.joints.is_empty() {
+            s.sim.cast.get_mut(o1).unwrap().needs.fun = 0.9;
+            let _ = s.sim.propose(ae, ao, "catch", Some(b));
+        }
+    }
+    let chases = of(&all, "chase");
+    assert!(!chases.is_empty(), "the wolves hunted: {:?}", s.sim.cast.get(wolves[0]).unwrap().decisions);
+    for c in &chases {
+        let target = c.subject.clone().unwrap_or_default();
+        assert!(goats.iter().any(|g| ActorId::Npc(*g).key() == target), "wolves only go after goats, not {target}");
+    }
+    let fled = of(&all, "fled");
+    assert!(fled.iter().any(|e| e.data["herd"] == true), "the goats bolted as a herd: {:?}", fled.iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    assert!(of(&all, "died").is_empty(), "nobody dies in a world that doesn't hunt");
+    assert!(!of(&all, "chase").iter().any(|e| e.subject.as_deref() == Some(&ActorId::Npc(ola).key())), "Ola is never hunted");
+    let gp: Vec<Vec3> = goats.iter().map(|g| s.sim.actor(ActorId::Npc(*g)).unwrap().pos).collect();
+    let centre = gp.iter().fold(Vec3::ZERO, |a, p| a + *p) / gp.len() as f32;
+    let spread = gp.iter().map(|p| (*p - centre).length()).sum::<f32>() / gp.len() as f32;
+    assert!(spread < 15.0, "the herd kept together ({spread:.1} m from its middle on average)");
+    // The pair who played warmed up; the pair who didn't stayed cold.
+    let played = s.sim.social.affection(ae, ao);
+    let other = s.sim.social.affection(ActorId::Npc(e2), ActorId::Npc(o2));
+    assert!(played > start + 0.15 && played > other + 0.1, "play warms them: {start:.2} → {played:.2} (others {other:.2})");
+    // In a world that hunts, a caught goat dies.
+    s.sim.cfg.hunting = true;
+    let (wf, g) = (wolves[0], goats[0]);
+    let gpos = s.sim.actor(ActorId::Npc(g)).unwrap().pos;
+    s.sim.cast.get_mut(wf).unwrap().a.pos = gpos + Vec3::new(1.0, 0.0, 0.0);
+    s.sim.cast.get_mut(wf).unwrap().doing = "chasing Goat 0".into();
+    s.sim.cast.get_mut(wf).unwrap().plan.clear();
+    s.sim.cast.get_mut(wf).unwrap().a.task = None;
+    s.sim.cast.get_mut(wf).unwrap().think_at = 0.0;
+    s.sim.cast.get_mut(g).unwrap().think_at = f64::MAX;
+    s.sim.cast.get_mut(g).unwrap().plan.clear();
+    s.sim.cast.get_mut(g).unwrap().a.task = None;
+    s.run(1.0, 0.1);
+    assert!(s.sim.cast.get(g).unwrap().dead, "the goat was killed");
+    assert!(!s.sim.actor_ids().contains(&ActorId::Npc(g)));
+    sound(&s);
+}

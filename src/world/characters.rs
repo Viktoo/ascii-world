@@ -43,6 +43,9 @@ pub struct SavedState {
     /// Game time of the last simulation step (for catching up).
     #[serde(default)]
     pub t: f64,
+    /// Killed (by a predator, when the universe hunts): no longer in the world.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dead: bool,
 }
 
 /// What a character decided to do about an event: either a legacy single

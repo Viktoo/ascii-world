@@ -1014,7 +1014,7 @@ impl Sim {
 
     /// The characters near enough to describe.
     pub fn npc_views(&self) -> Vec<crate::world::describe::NpcView> {
-        self.cast.npcs.iter().map(|n| crate::world::describe::NpcView { id: n.def.id, name: n.name().to_string(), pos: n.a.pos }).collect()
+        self.cast.npcs.iter().filter(|n| !n.dead).map(|n| crate::world::describe::NpcView { id: n.def.id, name: n.name().to_string(), pos: n.a.pos }).collect()
     }
 }
 

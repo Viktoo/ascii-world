@@ -125,7 +125,7 @@ impl Sim {
         // What happened there while nobody watched.
         let happened: Vec<String> = self.log.recent.iter().rev().take((self.log.total - before) as usize).filter(|e| matches!(e.kind.as_str(), "ignited" | "burnt_out" | "doused" | "grown" | "died")).map(|e| e.text.clone()).collect();
         let night = self.night();
-        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| region_of(n.a.pos.x, n.a.pos.z) == r || region_of(n.def.home.x, n.def.home.z) == r).map(|n| n.def.id).collect();
+        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| !n.dead).filter(|n| region_of(n.a.pos.x, n.a.pos.z) == r || region_of(n.def.home.x, n.def.home.z) == r).map(|n| n.def.id).collect();
         for cid in ids {
             let Some(n) = self.cast.get_mut(cid) else { continue };
             n.needs.hunger = (n.needs.hunger + missed / 900.0).min(1.0);

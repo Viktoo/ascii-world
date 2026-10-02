@@ -227,6 +227,33 @@ pub struct SpeciesBook {
     pub sizes: BTreeMap<String, f32>,
     /// The traveller's height (m).
     pub traveller_height: Option<f32>,
+    /// Starting feelings between peoples (only the start: each pair's own
+    /// history takes over).
+    pub attitudes: Vec<Attitude>,
+}
+
+/// How one species starts out feeling about another.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Attitude {
+    pub a: String,
+    pub b: String,
+    #[serde(default)]
+    pub affection: f32,
+    #[serde(default)]
+    pub trust: f32,
+    #[serde(default)]
+    pub rivalry: f32,
+}
+
+/// World-wide species settings, stored as JSON in kv `species.world`.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SpeciesWorld {
+    #[serde(default)]
+    pub sizes: BTreeMap<String, f32>,
+    #[serde(default)]
+    pub traveller_height: Option<f32>,
+    #[serde(default)]
+    pub attitudes: Vec<Attitude>,
 }
 
 pub const BUILTIN_SPECIES: &str = include_str!("../builtin/species.json");
@@ -235,6 +262,28 @@ impl SpeciesBook {
     pub fn builtin() -> SpeciesBook {
         let list: Vec<Species> = serde_json::from_str(BUILTIN_SPECIES).expect("builtin species.json");
         SpeciesBook { list: list.into_iter().map(Arc::new).collect(), ..Default::default() }
+    }
+
+    /// Built-ins, then the universe's own species and world settings.
+    pub fn load(rows: &[(String, String)], world: Option<&str>) -> SpeciesBook {
+        let mut b = SpeciesBook::builtin();
+        for (name, json) in rows {
+            match serde_json::from_str::<Species>(json) {
+                Ok(s) => b.add(s),
+                Err(e) => crate::log::info(format!("species {name}: unreadable ({e})")),
+            }
+        }
+        if let Some(w) = world.and_then(|w| serde_json::from_str::<SpeciesWorld>(w).ok()) {
+            b.sizes = w.sizes;
+            b.traveller_height = w.traveller_height;
+            b.attitudes = w.attitudes;
+        }
+        b
+    }
+
+    /// The starting attitude of species `a` towards `b` (either way round).
+    pub fn attitude(&self, a: &str, b: &str) -> Option<&Attitude> {
+        self.attitudes.iter().find(|x| (x.a == a && x.b == b) || (x.a == b && x.b == a))
     }
 
     pub fn size_of(&self, species: &str) -> f32 {

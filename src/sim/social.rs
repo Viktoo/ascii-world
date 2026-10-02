@@ -228,7 +228,7 @@ impl Social {
     }
 
     /// Relationships from the personas ("Ola: daughter") for pairs not yet known.
-    pub fn seed_from_personas(&mut self, cast: &super::npc::Cast) {
+    pub fn seed_from_personas(&mut self, cast: &super::npc::Cast, book: &crate::world::species::SpeciesBook) {
         let fresh: Vec<&Npc> = cast.npcs.iter().filter(|n| !self.seeded.contains(&n.def.id)).collect();
         if fresh.is_empty() {
             return;
@@ -248,6 +248,14 @@ impl Social {
                 if n.def.home.distance(m.def.home) < 200.0 {
                     r.familiarity = 0.3;
                     r.affection = 0.1;
+                }
+                // How their peoples feel about each other, to start with.
+                if n.species.name != m.species.name {
+                    if let Some(at) = book.attitude(&n.species.name, &m.species.name) {
+                        r.affection = (r.affection + at.affection).clamp(-1.0, 1.0);
+                        r.trust = (r.trust + at.trust).clamp(-1.0, 1.0);
+                        r.rivalry = (r.rivalry + at.rivalry).clamp(0.0, 1.0);
+                    }
                 }
                 for (x, y) in [(n, m), (m, n)] {
                     for rel in &x.def.persona.relationships {

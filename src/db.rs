@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, t REAL NOT NULL, kind 
 CREATE INDEX IF NOT EXISTS events_subject ON events(subject);
 CREATE TABLE IF NOT EXISTS origins(instance_id INTEGER PRIMARY KEY, made_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS gestures(name TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS species(name TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS thing_shapes(id INTEGER PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS spent_cells(gx INTEGER NOT NULL, gz INTEGER NOT NULL, t REAL NOT NULL, PRIMARY KEY(gx, gz));
 "#;
@@ -308,6 +309,18 @@ impl Db {
         })
     }
 
+}
+
+/// A universe's own species (by name), replacing a built-in of the same name.
+pub fn put_species(c: &Connection, name: &str, json: &str) -> Result<()> {
+    c.execute("INSERT INTO species(name, json) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET json = excluded.json", params![name, json])?;
+    Ok(())
+}
+
+pub fn species_rows(c: &Connection) -> Result<Vec<(String, String)>> {
+    let mut st = c.prepare("SELECT name, json FROM species ORDER BY rowid")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 pub fn kv_set(c: &Connection, key: &str, value: &str) -> Result<()> {

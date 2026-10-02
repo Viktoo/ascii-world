@@ -48,6 +48,10 @@ pub struct SimConfig {
     /// ...and across the whole world, at most one character this often (s):
     /// each piece of work may add a type, and every type slows shader builds.
     pub work_gap_secs: f32,
+    /// Predators kill what they catch (off: they only chase, and give up).
+    pub hunting: bool,
+    /// At most this many beings of one species are born in a region.
+    pub max_creatures: usize,
 }
 
 impl Default for SimConfig {
@@ -67,6 +71,8 @@ impl Default for SimConfig {
             max_things: 5000,
             work_secs: 600.0,
             work_gap_secs: 120.0,
+            hunting: false,
+            max_creatures: 24,
         }
     }
 }
@@ -98,6 +104,7 @@ impl SimConfig {
             ("max_things", "POCKET_SIM_MAX_THINGS"),
             ("work_secs", "POCKET_SIM_WORK_SECS"),
             ("work_gap_secs", "POCKET_SIM_WORK_GAP"),
+            ("max_creatures", "POCKET_SIM_MAX_CREATURES"),
         ] {
             set(key, env, &mut c);
         }
@@ -110,6 +117,9 @@ impl SimConfig {
                 let h = h.trim_start_matches([':', '=', ' ']).parse::<f32>().unwrap_or(24.0);
                 c.far = FarMode::CatchUp { max_hours: h.clamp(0.1, 24.0 * 30.0) };
             }
+        }
+        if let Some(v) = kv("sim.hunting").or_else(|| std::env::var("POCKET_SIM_HUNTING").ok()) {
+            c.hunting = matches!(v.trim(), "1" | "true" | "yes" | "on");
         }
         let ml = kv("sim.medium_llm").or_else(|| std::env::var("POCKET_SIM_MEDIUM_LLM").ok());
         if let Some(v) = ml {
@@ -133,6 +143,8 @@ impl SimConfig {
             "max_things" => self.max_things = v.clamp(10.0, 1_000_000.0) as usize,
             "work_secs" => self.work_secs = v.clamp(10.0, 1e7),
             "work_gap_secs" => self.work_gap_secs = v.clamp(0.0, 1e7),
+            "max_creatures" => self.max_creatures = v.clamp(1.0, 10_000.0) as usize,
+            "hunting" => self.hunting = v > 0.5,
             _ => {}
         }
     }
