@@ -60,8 +60,8 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             brain.send(Cmd::Talk { cid, text, context, history: vec![] });
             true
         }
-        Request::BuildGesture { id, name } => {
-            brain.send(Cmd::BuildGesture { id, name });
+        Request::BuildGesture { id, name, body } => {
+            brain.send(Cmd::BuildGesture { id, name, body });
             true
         }
         Request::EditType { id, name, source, change, spot, cuts, with } => {

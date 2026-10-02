@@ -643,6 +643,8 @@ impl WorldModel {
 
     pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
         let reshape = is_reshape(req.kind, &req.summary);
+        // Species the brain stored for this commit travel with its snapshot.
+        self.species = Arc::new(crate::world::species::SpeciesBook::load(&self.db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), self.db.kv_get("species.world").as_deref()));
         // Provisional entries for new types (ids assigned after the DB insert).
         // Provisional ids match what SQLite will assign (failed types also take ids).
         let db_max = self.db.with(|c| Ok(c.query_row("SELECT COALESCE(MAX(id), 0) FROM types", [], |r| r.get::<_, i64>(0))?)).unwrap_or(0) as u32;

@@ -90,7 +90,12 @@ static CUSTOM: std::sync::RwLock<Vec<CustomGesture>> = std::sync::RwLock::new(Ve
 /// Check and register a custom gesture (replacing one of the same name).
 pub fn register_gesture(mut g: CustomGesture) -> Result<GestureKind, String> {
     g.name = g.name.trim().to_lowercase().replace(['-', ' '], "_");
-    if g.name.is_empty() || g.name.len() > 24 || !g.name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+    let valid = match g.name.split_once('@') {
+        Some((a, b)) => ok(a) && ok(b),
+        None => ok(&g.name),
+    };
+    if !valid || g.name.len() > 48 {
         return Err(format!("'{}' is not a gesture name", g.name));
     }
     if g.frames.is_empty() || g.frames.len() > 12 {
@@ -187,6 +192,22 @@ impl GestureKind {
             GestureKind::Custom(_) => "gesture",
         }
         .to_string()
+    }
+
+    /// This gesture as a body of `species` does it: its own version
+    /// (`name@species`) when one was written, else the shared one.
+    pub fn for_body(self, species: &str) -> GestureKind {
+        let name = self.name();
+        let base = name.split('@').next().unwrap_or(&name).to_string();
+        if species.is_empty() {
+            return if name.contains('@') { GestureKind::parse(&base).unwrap_or(self) } else { self };
+        }
+        GestureKind::parse(&format!("{base}@{species}")).unwrap_or(self)
+    }
+
+    /// Whether this gesture moves roles a body lacks (`roles` bit mask).
+    pub fn needs_roles(self, roles: u8) -> bool {
+        (0..8).any(|i| roles & (1 << i) == 0 && [0.3f32, 0.5, 0.7].iter().any(|u| self.pose(*u, 0.0)[i].abs() > 0.15))
     }
 
     /// Gestures that need the other person close and willing.
@@ -375,6 +396,8 @@ pub struct Actor {
     pub stuck: f32,
     /// The body's size numbers.
     pub dims: Dims,
+    /// Species name for gestures written for it ("" for people).
+    pub species: String,
     /// Roles the body answers to (bit i = k.s<i>).
     pub roles: u8,
 }
@@ -395,7 +418,7 @@ pub const HUMAN_ROLES: u8 = 0b0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES }
+        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new() }
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -496,7 +519,7 @@ impl Actor {
         }
         if let Some(g) = &self.gesture {
             let u = ((t - g.t0) as f32 / g.dur).clamp(0.0, 1.0);
-            let gp = g.kind.pose(u, t as f32);
+            let gp = g.kind.for_body(&self.species).pose(u, t as f32);
             for i in 0..8 {
                 if gp[i].abs() > goal[i].abs() || g.kind.contact() {
                     goal[i] = gp[i];

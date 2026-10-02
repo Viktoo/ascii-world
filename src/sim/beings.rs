@@ -134,6 +134,26 @@ impl Sim {
         }
     }
 
+    /// A gesture that moves parts this body doesn't have: ask once for this
+    /// species' own version (the shared one plays meanwhile, with fallbacks).
+    pub fn ask_body_gesture(&mut self, who: ActorId, k: super::actor::GestureKind) {
+        let ActorId::Npc(c) = who else { return };
+        let Some(n) = self.cast.get(c) else { return };
+        if n.species.is_human() || !self.has_llm || k.for_body(&n.a.species) != k || !k.needs_roles(n.a.roles) {
+            return;
+        }
+        let name = format!("{}@{}", k.name(), n.species.name.replace([' ', '-'], "_"));
+        if !self.interp.variants_asked.insert(name.clone()) {
+            return;
+        }
+        let roles: Vec<&str> = crate::lang::ir::ROLES.iter().enumerate().filter(|(i, _)| n.a.roles & (1 << i) != 0).map(|(_, r)| *r).collect();
+        let body = format!("a {} ({}; {} m tall, moves by {}). Its roles: {}.", n.species.name, n.species.description, (n.a.dims.height * 10.0).round() / 10.0, if n.a.dims.flies { "flying and walking" } else { "walking" }, roles.join(", "));
+        let pos = n.a.pos;
+        let id = self.next_id();
+        self.interp.gestures.insert(id, (who, None, name.clone()));
+        self.request(super::Request::BuildGesture { id, name, body }, pos);
+    }
+
     /// Something thrown lately by someone this animal likes, for fetching.
     fn fetchable(&self, cid: i64, range: f32) -> Option<(ThingId, ActorId)> {
         let me = ActorId::Npc(cid);

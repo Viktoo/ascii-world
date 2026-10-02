@@ -131,6 +131,17 @@ Optionally, in the same JSON object, the universe's own nature: properties and r
   "rules": [ { "name": "curses spread by touch", "near": 1.5, "when": "self.cursed > 0.5 && other.cursed < self.cursed", "do": ["other.cursed += 0.05 * dt"] } ]
 Rule language: `when` is a condition and `do` a list of assignments (=, +=, -=, *=) on self.<property> or other.<property>; you may use numbers, + - * /, comparisons, && || !, min(a,b), max(a,b), clamp(x,lo,hi), abs(x), dt (seconds), dist (metres apart, with "near"), hour, night (0/1), water (1 when in water), held (1 when held). Without "near" a rule applies to each thing alone; with "near": r (≤ 10 m) to each pair within r. Spread slowly (rates times dt), at most 12 rules.
 
+Optionally, the universe's peoples and beasts beyond plain humans (people always exist; dogs, cats, horses, wolves, goats and deer are built in for earthly worlds). Add species only if this universe has them (elves and orcs, a race of giants, dragons, griffins, lizard folk…), up to 5, in the same JSON object:
+  "species": [ { "name": "elf", "plural": "elves", "body": "figure", "size": 1.0, "mind": "sapient", "speech": "words", "social": "village",
+                 "diet": { "plants": 0.8, "meat": 0.2 }, "temper": { "bold": 0.4, "wary": 0.6, "playful": 0.5, "tame": 0.5 },
+                 "move": { "walk": 1.4, "run": 3.5, "fly": 0, "swim": 0.8 }, "life": { "sleep": [23, 6] }, "mass": 60,
+                 "look": { "height": [1.85, 2.0], "build": [0.7, 0.85], "skin": [0.0, 0.25] }, "sounds": [], "description": "tall, quiet forest folk" } ],
+  "attitudes": [ { "a": "elf", "b": "orc", "affection": -0.4, "trust": -0.3, "rivalry": 0.3 } ],
+  "sizes": { "human": 1.0 }, "traveller_height": 1.75
+- body: "figure" (a person's body; its look sliders are height in metres 1.3–2.0, build 0.7–1.4, skin 0–1, shirt and trousers hue 0–1), "quadruped" (a four-legged animal about 1 m tall at size 1; sliders legs, length, ears, hue, shade, all 0–1), or a new body name with "body_description": what it looks like and how it moves (a dragon with wings, a serpent body, a giant beetle); new bodies are written for you. Nothing smaller than a cat (about 0.3 m).
+- mind: "sapient" (people: talk, plan, make things), "simple" (clever animals), "instinct" (beasts). speech: "words", "sounds" (noises listed in "sounds") or "none". social: solitary, pair, pack, herd or village. temper and diet values 0–1; size multiplies the body (a quadruped at 1.8 is horse-sized); mass in kg; move speeds in m/s; sleep: [from hour, to hour].
+- attitudes: how peoples start out feeling about each other (-0.8..0.8); only the start, people's own history takes over. sizes: multiply a species everywhere ("everyone is a giant": "human": 1.8). traveller_height: the player's own height in metres (only if the world says they are small or big).
+
 2. Then 4 to 8 base object types, each in its own ```js block, following the module rules exactly. These are scattered across the land by the scatter densities (trees, rocks, bushes, flowers, reeds…), so each must be small to medium (bounds under ~8 m) and varied per instance with hash(k.seed). Give each the scatter tag it fills (e.g. "tree", "rock", "bush", "flower") and fitting meta.props (trees and grass burn and are alive).
 "#;
 
@@ -147,7 +158,9 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
       "look": { "height": 1.75, "build": 1.0, "skin": 0.0-1.0, "shirt_hue": 0.0-1.0, "trousers_hue": 0.0-1.0 },
       "personality": "…", "goals": "…", "voice": "how they speak",
       "home": "where they live", "home_x": 0-256, "home_z": 0-256,
-      "relationships": ["Name: relation"] } ]
+      "relationships": ["Name: relation"], "species": "human" } ],
+  "creatures": [ { "species": "goat", "count": 4, "x": 0-256, "z": 0-256, "names": [], "owner": "Name of their person, or empty", "description": "…" } ],
+  "new_species": [ ]
 }
 Rules:
 - Coordinates are local to the region: x and z from 0 to 256.
@@ -157,9 +170,32 @@ Rules:
 - Give each character a trade or daily work in "goals" (what they make, mend or tend, and something they want to make or improve), e.g. "mends the fishing nets; wants to build a proper boat".
 - Characters live near the settlement or a landmark. home_x/home_z is where they stand by day: a spot a few metres outside their house (never the building's own coordinates). Give them distinct voices, goals and relationships with each other ("Name: relation", e.g. "Ola: daughter", "Bren: rival", "Tam: husband"): families, couples, friends and rivals make a village come alive. Weave in the region facts and the neighbouring regions.
 - Small things people use (tools, balls, food, lamps) are welcome as new_types too, placed as landmarks near where they belong.
+- Characters are people by default; give "species" (one of the species listed below) for anyone else who talks and plans (an elf, an orc). Their "look" uses their body's sliders.
+- creatures: 0–4 groups of beings that don't talk (herds by farms, a dog or cat with its person, wild packs, a beast in its lair), from the species listed below. Pets and working animals name their "owner" (a character of this plan). Wilderness may have wild herds or predators; villages, pets and livestock.
+- new_species: at most one, only if this region really holds a people or beast the universe doesn't have yet, in the species format of genesis (with "body_description" if no existing body fits).
 "#;
 
 pub const TYPE_TASK: &str = "Write this object type as one ```js block containing the complete module.";
+
+/// Writing the body of a species: a type with `meta.body` that answers to
+/// pose roles, drawn at its natural size.
+pub fn body_task(name: &str, description: &str, species: &str) -> String {
+    format!(
+        r#"Body type to write: "{name}"
+What it looks like and how it moves: {description}
+The species that lives in it: {species}
+
+A body is an object type that beings live in. Besides the usual module rules it has `meta.body` and its shape moves with a pose:
+- Draw it at its natural size in metres, standing on y = 0, facing +z. Give it the tags ["body"].
+- meta.body = {{ height: m, eye: m (eye height), radius: m (footprint radius for walking), reach: m, grip: [x, y, z] (where it holds a thing: hand, mouth or claw), seat: [x, y, z] (only if it can be ridden: where a rider sits), roles: [...], gait: "biped" | "quad" | "slither" | "hover", flies: true|false, arms: false, look: {{ name: [lo, hi], ... }} }}
+- Pose roles, read as k.s0 … k.s7 (each 0 at rest; give each the meaning that fits this body and list only the ones it answers to in roles): k.s0 / k.s1 raise_l / raise_r (raise a left / right limb or wing, 0 … 1), k.s2 / k.s3 reach_l / reach_r (reach forward or wrap around someone, 0 … 1: a hug), k.s4 lean (bend forward, radians -0.3 … 0.6), k.s5 head (head down, -1 … 1), k.s6 crouch (0 standing … 1 lying down), k.s7 spread (tail, wings or frill, -1 … 1). Use "raise" / "reach" in roles for both sides. Every listed role must visibly move the shape.
+- k.f is its walk phase in radians (swing legs, undulate a tail with sin(k.f)).
+- look: up to 5 sliders, read as k.a … k.e in that order, each between its lo and hi (colours, horn length, proportions); vary them per being. Use hash(k.seed) for small details.
+- Keep it cheap: about 12–18 primitives. Stay inside meta.bounds in every pose.
+
+Write it as one ```js block containing the complete module."#
+    )
+}
 
 /// Rewriting one thing's shape: the current module, the change, and where.
 /// `with`: another thing to work into it (name, module, its size relative to this one).
@@ -246,8 +282,8 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
 
 pub const CHAT_TASK: &str = "Two characters in a small living world meet and talk briefly, in their own voices, about what is on their minds (what they saw, what they are doing, each other). 2 to 4 short lines, plain speech, no stage directions. Reply with one JSON object only: {\"lines\": [{\"who\": \"Name\", \"text\": \"…\"}]}";
 
-pub const GESTURE_TASK: &str = r#"You animate a simple figure (a person in a small 3D world). Write the gesture named below as a few key poses. Reply with one JSON object only:
+pub const GESTURE_TASK: &str = r#"You animate a simple body in a small 3D world (a person, unless the body is described below). Write the gesture named below as a few key poses. Reply with one JSON object only:
 {"duration": seconds (0.5–8), "contact": false, "distance": metres to the other person (0.4–3; only matters with contact), "intimacy": affection needed to agree, -1..1 (contact gestures only),
- "frames": [{"t": 0, "pose": {}}, {"t": 0.3, "pose": {"r_raise": 0.6, "r_fwd": 0.2}}, …, {"t": 1, "pose": {}}]}
-Pose channels (all default 0, the figure standing with arms down): l_raise / r_raise: left / right arm raised sideways, 0 down … 0.5 level … 1 straight up. l_fwd / r_fwd: arm reaching forward, 0 … 1 straight ahead. lean: bend forward at the hips in radians, -0.3 … 0.6. nod: head tipped down, -1 … 1. crouch: 0 standing … 1 crouching.
-Start and end at rest ({}), 3 to 8 frames, t from 0 to 1. Set "contact": true only for things done touching another person (an embrace, a dance hold, a forehead touch)."#;
+ "frames": [{"t": 0, "pose": {}}, {"t": 0.3, "pose": {"raise_r": 0.6, "reach_r": 0.2}}, …, {"t": 1, "pose": {}}]}
+Pose roles (all default 0, the body at rest). For a person: raise_l / raise_r: left / right arm raised sideways, 0 down … 0.5 level … 1 straight up. reach_l / reach_r: arm reaching forward, 0 … 1 straight ahead. lean: bend forward at the hips in radians, -0.3 … 0.6. head: head tipped down, -1 … 1. crouch: 0 standing … 1 crouching. spread: a tail, wings or frill (-1 … 1), for bodies that have one. Other bodies give each role their own meaning (described with the body); use only the roles that body has.
+Start and end at rest ({}), 3 to 8 frames, t from 0 to 1. Set "contact": true only for things done touching another (an embrace, a dance hold, a forehead touch)."#;

@@ -139,7 +139,8 @@ pub enum Request {
     /// The player says something to a character (outside the talk screen).
     Talk { cid: i64, text: String, context: String },
     /// Write the pose keyframes of a gesture nobody knows yet.
-    BuildGesture { id: u64, name: String },
+    /// `body`: for a species' own version (name@species), what its body can move.
+    BuildGesture { id: u64, name: String, body: String },
     /// Rewrite a thing's shape code: `source` changed as `change` says, near
     /// `spot` (JSON, the type's own coordinates), with `cuts` baked in and
     /// maybe another thing worked in (name, source, its size relative to this one).

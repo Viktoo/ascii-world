@@ -168,11 +168,38 @@ pub struct Cast {
     index: HashMap<i64, usize>,
     /// When any character last turned to their craft (see `SimConfig::work_gap_secs`).
     pub last_work: f64,
+    /// The species book the cast was last fitted to.
+    book: Option<Arc<crate::world::species::SpeciesBook>>,
 }
 
 impl Cast {
-    /// Add characters that appeared in a new snapshot.
+    /// Add characters that appeared in a new snapshot; when the species
+    /// changed (one was written or replaced), everyone takes theirs anew.
     pub fn sync(&mut self, snap: &WorldSnapshot, seed: u64) {
+        let fresh_book = !self.book.as_ref().is_some_and(|b| Arc::ptr_eq(b, &snap.species));
+        self.book = Some(snap.species.clone());
+        if fresh_book {
+            for n in self.npcs.iter_mut() {
+                let species = snap.species.of(&n.def.persona.species);
+                let body = snap.body_type(&species.body);
+                let body_ty = body.map(|b| b.id).unwrap_or(0);
+                if species.as_ref() == n.species.as_ref() && body_ty == n.body_ty {
+                    continue;
+                }
+                let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
+                let variety = species.varieties.iter().find(|v| v.name == n.def.persona.variety);
+                let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
+                n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
+                n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name));
+                n.a.roles = super::actor::role_mask(&bmeta);
+                n.a.species = if species.is_human() { String::new() } else { species.name.clone() };
+                if !species.is_human() {
+                    n.traits = n.traits.with_temper(&species);
+                }
+                n.body_ty = body_ty;
+                n.species = species;
+            }
+        }
         for def in &snap.characters {
             if self.index.contains_key(&def.id) {
                 continue;
@@ -191,6 +218,9 @@ impl Cast {
             let sliders = crate::world::species::sliders(&bmeta, &species, variety, &def.persona.look, rng);
             a.dims = body_dims(&bmeta, &species, &sliders, snap.species.size_of(&species.name));
             a.roles = super::actor::role_mask(&bmeta);
+            if !species.is_human() {
+                a.species = species.name.clone();
+            }
             let mut traits = Traits::from_persona(&def.persona, rng);
             if !species.is_human() {
                 traits = traits.with_temper(&species);

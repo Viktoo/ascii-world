@@ -503,13 +503,16 @@ impl Sim {
                     None => None,
                 };
                 match GestureKind::parse(&kind) {
-                    Some(k) => self.gesture(who, k, to_r),
+                    Some(k) => {
+                        self.ask_body_gesture(who, k);
+                        self.gesture(who, k, to_r)
+                    }
                     None if self.has_llm && kind.trim().len() <= 24 && kind.trim().chars().all(|c| c.is_alphabetic() || c == ' ' || c == '_' || c == '-') => {
                         // A gesture nobody knows yet: have its pose written, then do it.
                         let id = self.next_id();
                         let name = kind.trim().to_lowercase().replace(['-', ' '], "_");
                         self.interp.gestures.insert(id, (who, to_r.map(|r| r.target), name.clone()));
-                        let req = Request::BuildGesture { id, name: name.clone() };
+                        let req = Request::BuildGesture { id, name: name.clone(), body: String::new() };
                         if who == ActorId::Player {
                             self.request_now(req);
                         } else {

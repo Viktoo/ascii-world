@@ -1657,3 +1657,172 @@ fn wolves_chase_a_herd_and_peoples_warm_to_each_other() {
     assert!(!s.sim.actor_ids().contains(&ActorId::Npc(g)));
     sound(&s);
 }
+
+/// Phase 4, through the brain with a scripted LLM: genesis brings a dragon
+/// and a naga, whose bodies the builder writes; a region plan brings a
+/// dragon who loves its rider, a naga and a small herd with its person. The
+/// dragon's hug is a wing-wrap through the shared `reach` role. A naga has
+/// no arms to raise, so its own cheer is written once and kept.
+#[test]
+fn llm_written_species_live_hug_and_learn_their_own_gestures() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let w = world("species-llm", 47);
+    let dragon = fixture("species/dragon.js");
+    let naga = fixture("species/naga.js");
+    let pine = fixture("mock/seapine.js");
+    let db2 = w.db.clone();
+    let cheers = Arc::new(AtomicUsize::new(0));
+    let cheers2 = cheers.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if user.contains("Design the base layer") {
+            return format!(
+                "```json\n{}\n```\n```js\n{pine}\n```",
+                serde_json::json!({ "name": "Emberreach", "biomes": [],
+                    "species": [
+                        { "name": "dragon", "body": "dragon", "body_description": "a winged dragon, four legs, long neck and tail", "mind": "simple", "speech": "sounds", "social": "solitary",
+                          "diet": { "meat": 0.9, "plants": 0.1 }, "temper": { "bold": 0.9, "wary": 0.3, "playful": 0.3, "tame": 0.3 }, "move": { "walk": 2.0, "run": 8.0, "fly": 14.0 },
+                          "mass": 3000, "sounds": ["a low rumble", "a puff of smoke", "a roar"], "description": "a great winged dragon" },
+                        { "name": "naga", "body": "naga", "body_description": "a person's chest on a serpent's tail", "mind": "sapient", "speech": "words", "social": "village", "description": "serpent folk" }
+                    ],
+                    "attitudes": [{ "a": "naga", "b": "human", "affection": -0.2 }] })
+            );
+        }
+        if user.contains("Body type to write: \"dragon\"") {
+            return format!("```js\n{dragon}\n```");
+        }
+        if user.contains("Body type to write: \"naga\"") {
+            return format!("```js\n{naga}\n```");
+        }
+        if user.contains("Plan the story layer") {
+            let spawn: [f32; 3] = serde_json::from_str(&db2.kv_get("spawn").unwrap()).unwrap();
+            let caps: Vec<i32> = user.split("Region (").nth(1).unwrap().split(')').next().unwrap().split(", ").map(|v| v.parse().unwrap()).collect();
+            let (lx, lz) = (spawn[0] - caps[0] as f32 * 256.0, spawn[2] - caps[1] as f32 * 256.0);
+            let cl = |v: f32| v.clamp(10.0, 246.0);
+            return format!("```json\n{}\n```", serde_json::json!({ "name": "Ash Hollow", "mood": "smoky", "facts": [],
+                "characters": [
+                    { "name": "Ilsa", "look": { "height": 1.7 }, "personality": "brave and warm", "home_x": cl(lx + 12.0), "home_z": cl(lz + 14.0), "relationships": ["Vyrm: her dragon"] },
+                    { "name": "Vyrm", "species": "dragon", "home_x": cl(lx + 19.0), "home_z": cl(lz + 14.0), "relationships": ["Ilsa: rider"] },
+                    { "name": "Sess", "species": "naga", "personality": "cheerful", "home_x": cl(lx + 12.0), "home_z": cl(lz + 24.0), "relationships": [] }
+                ],
+                "creatures": [{ "species": "goat", "count": 3, "x": cl(lx + 6.0), "z": cl(lz + 4.0), "owner": "Ilsa" }] }));
+        }
+        if sys.contains("You animate a simple body") {
+            if user.contains("as a naga does it") {
+                cheers2.fetch_add(1, Ordering::SeqCst);
+                return r#"{"duration": 1.6, "frames": [{"t": 0, "pose": {}}, {"t": 0.4, "pose": {"reach": 0.9, "head": -0.4, "spread": 0.8}}, {"t": 1, "pose": {}}]}"#.into();
+            }
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let mut s = session(&w, 19, Some(llm));
+    s.brain.send(crate::brain::Cmd::Genesis);
+    for _ in 0..600 {
+        s.step(0.05);
+        if s.sim.snap.species.get("dragon").is_some() && s.sim.snap.body_type("dragon").is_some_and(|b| b.name() == "dragon") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let sp = s.sim.snap.species.clone();
+    assert!(sp.get("dragon").is_some() && sp.get("naga").is_some(), "both species arrived");
+    assert_eq!(s.sim.snap.body_type("dragon").map(|b| b.name().to_string()).as_deref(), Some("dragon"), "the dragon's body was written");
+    assert!(sp.attitude("naga", "human").is_some());
+    let r = crate::world::region_of(s.sim.snap.spawn.x, s.sim.snap.spawn.z);
+    s.brain.send(crate::brain::Cmd::Region(r));
+    for _ in 0..600 {
+        s.step(0.05);
+        if s.sim.cast.npcs.len() >= 6 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let find = |s: &Session, n: &str| s.sim.cast.npcs.iter().find(|x| x.name() == n).map(|x| x.def.id);
+    let (ilsa, vyrm, sess) = (find(&s, "Ilsa").expect("Ilsa"), find(&s, "Vyrm").expect("Vyrm"), find(&s, "Sess").expect("Sess"));
+    let goats: Vec<i64> = s.sim.cast.npcs.iter().filter(|n| n.species.name == "goat").map(|n| n.def.id).collect();
+    assert_eq!(goats.len(), 3, "a herd of three");
+    calm(&mut s);
+    {
+        let d = s.sim.cast.get(vyrm).unwrap();
+        assert_eq!(d.species.name, "dragon");
+        assert_eq!(s.sim.snap.type_of(d.body_ty).unwrap().name(), "dragon");
+        assert!(d.a.dims.height > 3.0 && d.a.dims.flies, "{:?}", d.a.dims);
+    }
+    assert_eq!(s.sim.owner_of(goats[0]), Some(ActorId::Npc(ilsa)), "the goats are Ilsa's");
+    assert_eq!(s.sim.owner_of(vyrm), Some(ActorId::Npc(ilsa)), "Ilsa is Vyrm's rider");
+    // The dragon wraps its wings around Ilsa.
+    let ip = s.sim.actor(ActorId::Npc(ilsa)).unwrap().pos;
+    s.sim.cast.get_mut(vyrm).unwrap().a.pos = ip + Vec3::new(6.0, 0.0, 0.0);
+    s.sim.player.pos = ip + Vec3::new(0.0, 0.0, -14.0);
+    let res = s.sim.act(ActorId::Npc(vyrm), Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(ActorId::Npc(ilsa))) });
+    assert!(res.is_ok(), "{res:?}");
+    let mut wrap: f32 = 0.0;
+    for _ in 0..200 {
+        s.step(0.1);
+        wrap = wrap.max(s.sim.cast.get(vyrm).unwrap().a.pose[super::actor::L_FWD]);
+    }
+    assert!(!events(&s.sim, "hug").is_empty(), "Vyrm and Ilsa hugged: {:?}", s.sim.log.recent.iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    assert!(wrap > 0.5, "with its wings ({wrap})");
+    let gap = (s.sim.actor(ActorId::Npc(vyrm)).unwrap().pos - s.sim.actor(ActorId::Npc(ilsa)).unwrap().pos).length();
+    assert!(gap > 1.5, "a dragon hugs from its side, not from inside ({gap:.1} m)");
+    // A naga cheers: no arms to raise, so its own version is written once.
+    s.sim.act(ActorId::Npc(sess), Action::Gesture { kind: "cheer".into(), to: None }).unwrap();
+    for _ in 0..300 {
+        s.step(0.05);
+        if super::actor::GestureKind::parse("cheer@naga").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(super::actor::GestureKind::parse("cheer@naga").is_some(), "the naga's cheer was written");
+    s.run(3.0, 0.1);
+    s.sim.act(ActorId::Npc(sess), Action::Gesture { kind: "cheer".into(), to: None }).unwrap();
+    let mut reach: f32 = 0.0;
+    for _ in 0..12 {
+        s.step(0.05);
+        reach = reach.max(s.sim.cast.get(sess).unwrap().a.pose[super::actor::R_FWD]);
+    }
+    assert!(reach > 0.5, "and used: it reaches up instead ({reach})");
+    assert_eq!(cheers.load(Ordering::SeqCst), 1, "written once, then kept");
+    sound(&s);
+}
+
+/// Render LLM-style species (a dragon hugging its rider, a naga, elves and
+/// orcs) to look at.
+#[test]
+#[ignore]
+fn fantasy_lineup_picture() {
+    let out = std::env::var("POCKET_PNG").unwrap_or_else(|_| std::env::temp_dir().join("pocket-fantasy.png").to_string_lossy().into_owned());
+    let w = world("fantasy", 48);
+    add_elves_and_orcs(&w);
+    add_type(&w, &fixture("species/dragon.js"));
+    add_type(&w, &fixture("species/naga.js"));
+    w.db.with(|c| {
+        db::put_species(c, "dragon", r#"{"name":"dragon","body":"dragon","mind":"simple","speech":"sounds","mass":3000}"#)?;
+        db::put_species(c, "naga", r#"{"name":"naga","body":"naga"}"#)
+    })
+    .unwrap();
+    let me = w.spawn;
+    let at = |x: f32, z: f32| ground(&w, me.x + x, me.z + z);
+    let ilsa = add_char(&w, "Ilsa", "brave", &["Vyrm: her dragon"], at(-1.2, 12.0));
+    let vyrm = add_being(&w, "Vyrm", "dragon", &["Ilsa: rider"], at(1.5, 13.0));
+    let _ = add_being(&w, "Sess", "naga", &[], at(-4.5, 9.0));
+    let mk = |name: &str, sp: &str, p: Vec3| {
+        let persona = crate::world::Persona { name: name.into(), species: sp.into(), ..Default::default() };
+        w.db.with(|c| db::add_character(c, crate::world::region_of(p.x, p.z), &serde_json::to_string(&persona)?, p.x, p.z, w.version)).unwrap()
+    };
+    mk("Ael", "elf", at(4.5, 8.0));
+    mk("Grub", "orc", at(6.0, 8.5));
+    let mut s = session(&w, 20, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.a.yaw = std::f32::consts::PI;
+    }
+    if std::env::var("POCKET_GESTURE").is_ok() {
+        let _ = s.sim.act(ActorId::Npc(vyrm), Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(ActorId::Npc(ilsa))) });
+        s.run(8.0, 0.1);
+    }
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 2.2, yaw: 0.0, pitch: -0.08, fov_y: 1.05 };
+    render_png(&mut s, &w, cam, &out);
+}

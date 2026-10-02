@@ -203,6 +203,33 @@ fn mass() -> f32 {
 }
 
 impl Species {
+    /// Keep LLM-written numbers in sensible ranges.
+    pub fn sanitize(&mut self) {
+        let u = |v: &mut f32| *v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 };
+        self.name = self.name.trim().to_lowercase();
+        self.size = if self.size.is_finite() { self.size.clamp(0.2, 12.0) } else { 1.0 };
+        self.mass = if self.mass.is_finite() { self.mass.clamp(0.5, 50_000.0) } else { 70.0 };
+        u(&mut self.diet.plants);
+        u(&mut self.diet.meat);
+        for v in [&mut self.temper.bold, &mut self.temper.wary, &mut self.temper.playful, &mut self.temper.tame] {
+            u(v);
+        }
+        for v in [&mut self.moves.walk, &mut self.moves.run, &mut self.moves.fly, &mut self.moves.swim] {
+            *v = if v.is_finite() { v.clamp(0.0, 40.0) } else { 0.0 };
+        }
+        self.moves.walk = self.moves.walk.max(0.3);
+        self.moves.run = self.moves.run.max(self.moves.walk);
+        for v in [&mut self.needs.hunger, &mut self.needs.fatigue, &mut self.needs.social, &mut self.needs.fun, &mut self.needs.curiosity] {
+            *v = if v.is_finite() { v.clamp(0.1, 4.0) } else { 1.0 };
+        }
+        for h in self.life.sleep.iter_mut() {
+            *h = if h.is_finite() { h.rem_euclid(24.0) } else { 0.0 };
+        }
+        self.sounds.truncate(6);
+        self.varieties.truncate(6);
+        self.description = self.description.chars().take(160).collect();
+    }
+
     pub fn is_human(&self) -> bool {
         self.name == "human"
     }

@@ -36,7 +36,7 @@ pub enum Cmd {
     /// Write a new object type. Answered by `Event::TypeBuilt`.
     BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)> },
     /// Write a gesture's pose keyframes. Answered by `Event::GestureBuilt`.
-    BuildGesture { id: u64, name: String },
+    BuildGesture { id: u64, name: String, body: String },
     /// Rewrite one thing's shape code. Answered by `Event::TypeBuilt`.
     EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
 }
@@ -307,8 +307,13 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             };
             let _ = ctx.events.send(Event::ChatLines { a, b, lines });
         }
-        Cmd::BuildGesture { id, name } => {
-            let mut req = Req::new(Role::Decider, prompts::GESTURE_TASK, format!("The gesture: \"{name}\""));
+        Cmd::BuildGesture { id, name, body } => {
+            let (base, task) = match name.split_once('@') {
+                Some((g, sp)) => (g.to_string(), format!("The gesture: \"{g}\", as a {sp} does it.\nThe body: {body}")),
+                None => (name.clone(), format!("The gesture: \"{name}\"")),
+            };
+            let _ = base;
+            let mut req = Req::new(Role::Decider, prompts::GESTURE_TASK, task);
             req.max_tokens = 600;
             req.effort = Some("low");
             let result = match ctx.llm.complete(&req, "gesture").await {
@@ -413,6 +418,7 @@ async fn build_type(ctx: &Ctx, system: &str, task: String, name: &str, extra_tag
                 let code = add_tags(&code, extra_tags);
                 last_code = code.clone();
                 match validate(code, ctx.known_props()).await {
+                    Ok(t) if extra_tags.contains(&"body") && t.ct.meta.body.is_none() => vec![Diag::new(Stage::Allowlist, 0, "a body needs meta.body (height, eye, radius, reach, grip, roles, gait…); see the body rules above".into())],
                     Ok(t) => return Ok(t),
                     Err(d) => d,
                 }
@@ -459,6 +465,114 @@ fn all_code_blocks(text: &str) -> Vec<String> {
         rest = &body[j + 3..];
     }
     out
+}
+
+/// Names of the body types this universe has (built-in and written).
+fn body_names(db: &Db) -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> = ["figure".to_string(), "quadruped".to_string()].into_iter().collect();
+    for r in db.types().unwrap_or_default() {
+        if (r.status == "ok" || r.status == "builtin") && r.code.contains("body:") {
+            if let Ok(ct) = compile(&r.code) {
+                if ct.meta.body.is_some() {
+                    out.insert(ct.meta.name.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One line per species the universe has, for plans.
+fn species_list(db: &Db) -> String {
+    let book = crate::world::species::SpeciesBook::load(&db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
+    book.list.iter().map(|s| format!("- {} ({}; body {}, {:?} mind, speech {:?})", s.name, if s.description.is_empty() { "people" } else { &s.description }, s.body, s.mind, s.speech).to_lowercase()).collect::<Vec<_>>().join("\n")
+}
+
+/// Species the LLM described (at genesis or in a region plan): any body
+/// nobody has yet is written first, then the species is stored. Returns the
+/// new body types (to commit) and the species' names.
+async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (Vec<NewType>, Vec<String>) {
+    let mut bodies = body_names(&ctx.db);
+    let mut types = Vec::new();
+    let mut names = Vec::new();
+    for v in list.iter().take(max) {
+        let mut v = v.clone();
+        let Some(o) = v.as_object_mut() else { continue };
+        let name = o.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
+        if name.is_empty() || name.len() > 32 {
+            continue;
+        }
+        o.insert("name".into(), Value::String(name.clone()));
+        let sapient = o.get("mind").and_then(|x| x.as_str()).is_none_or(|m| m == "sapient");
+        let mut body = o.get("body").and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
+        if body.is_empty() || body == "human" || body == "person" {
+            body = if sapient { "figure".into() } else { "quadruped".into() };
+        }
+        if !bodies.contains(&body) {
+            let desc = o.get("body_description").or_else(|| o.get("description")).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let task = prompts::body_task(&body, &desc, &v.to_string());
+            match build_type(ctx, system, task, &body, &["body"]).await {
+                Ok(t) => {
+                    body = t.ct.meta.name.clone();
+                    bodies.insert(body.clone());
+                    types.push(t);
+                }
+                Err(e) => {
+                    crate::log::info(format!("body for {name} failed: {e:#}"));
+                    body = if sapient { "figure".into() } else { "quadruped".into() };
+                }
+            }
+        }
+        if let Some(o) = v.as_object_mut() {
+            o.insert("body".into(), Value::String(body));
+            o.remove("body_description");
+        }
+        match serde_json::from_value::<crate::world::species::Species>(v) {
+            Ok(mut sp) => {
+                sp.sanitize();
+                if let Ok(j) = serde_json::to_string(&sp) {
+                    let _ = ctx.db.with(|c| crate::db::put_species(c, &sp.name, &j));
+                    crate::log::info(format!("species: {}", sp.name));
+                    names.push(sp.name.clone());
+                }
+            }
+            Err(e) => crate::log::info(format!("species {name}: unreadable ({e})")),
+        }
+    }
+    (types, names)
+}
+
+/// World-wide species settings from the genesis plan (attitudes, sizes, the
+/// traveller's height).
+fn species_world_from(db: &Db, v: &Value) {
+    let mut w: crate::world::species::SpeciesWorld = db.kv_get("species.world").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut changed = false;
+    if let Some(a) = v.get("attitudes").and_then(|x| serde_json::from_value::<Vec<crate::world::species::Attitude>>(x.clone()).ok()) {
+        w.attitudes = a
+            .into_iter()
+            .take(12)
+            .map(|mut x| {
+                x.a = x.a.trim().to_lowercase();
+                x.b = x.b.trim().to_lowercase();
+                x.affection = x.affection.clamp(-0.8, 0.8);
+                x.trust = x.trust.clamp(-0.8, 0.8);
+                x.rivalry = x.rivalry.clamp(0.0, 0.8);
+                x
+            })
+            .collect();
+        changed = true;
+    }
+    if let Some(s) = v.get("sizes").and_then(|x| serde_json::from_value::<std::collections::BTreeMap<String, f32>>(x.clone()).ok()) {
+        w.sizes = s.into_iter().filter(|(_, v)| v.is_finite()).map(|(k, v)| (k.trim().to_lowercase(), v.clamp(0.2, 6.0))).collect();
+        changed = true;
+    }
+    if let Some(h) = v.get("traveller_height").and_then(|x| x.as_f64()).filter(|h| h.is_finite()) {
+        w.traveller_height = Some((h as f32).clamp(0.3, 12.0));
+        changed = true;
+    }
+    if changed {
+        let _ = db.kv_set("species.world", &serde_json::to_string(&w).unwrap_or_default());
+    }
 }
 
 async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
@@ -516,6 +630,11 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     for t in futures_util::future::join_all(futs).await.into_iter().flatten() {
         types.push(t);
     }
+    // The universe's peoples and beasts.
+    species_world_from(&ctx.db, &v);
+    let specs: Vec<Value> = v.get("species").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let (bodies, _) = species_from(ctx, &system, &specs, 6).await;
+    types.extend(bodies);
     let name = look.name.clone();
     let n = types.len();
     let ok = ctx
@@ -633,6 +752,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         if info.neighbours.is_empty() { "none yet".into() } else { info.neighbours.join("; ") },
         type_list.join("\n")
     );
+    let task = format!("{task}\nSpecies in this universe:\n{}", species_list(&ctx.db));
     let mut req = Req::new(Role::Builder, system.clone(), task);
     req.max_tokens = 16000;
     req.effort = Some("medium");
@@ -675,6 +795,10 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             }
         }
     }
+    // A new species for this region (its body is written first if needed).
+    let specs: Vec<Value> = plan.get("new_species").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let (bodies, _) = species_from(ctx, &system, &specs, 1).await;
+    new_types.extend(bodies);
     let resolve = |name: &str| -> Option<TypeRef> {
         let n = name.trim().to_lowercase();
         if let Some((_, i)) = new_names.iter().find(|(k, _)| *k == n) {
@@ -763,6 +887,45 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             home += Vec3::new(a.cos(), 0.0, a.sin()) * (3.0 + k as f32);
         }
         chars.push((p, home));
+    }
+    // Creatures: herds, packs, pets, beasts. No voice or trade, just a
+    // species, a home, maybe a name and a person they belong to.
+    let mut n_creatures = 0;
+    for c in plan.get("creatures").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
+        let sp = s(c, "species").trim().to_lowercase();
+        if sp.is_empty() || sp == "human" {
+            continue;
+        }
+        let count = (f(c, "count", 1.0) as usize).clamp(1, 8);
+        let names: Vec<String> = c.get("names").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|n| n.as_str().map(|s| s.trim().to_string())).collect()).unwrap_or_default();
+        let owner = s(c, "owner");
+        let cx = ox + clampl(f(c, "x", 128.0));
+        let cz = oz + clampl(f(c, "z", 128.0));
+        for i in 0..count {
+            if n_creatures >= 24 {
+                break;
+            }
+            let name = names.get(i).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| if count > 1 { format!("the {sp} {}", i + 1) } else { format!("the {sp}") });
+            let a = i as f32 * 2.399;
+            let mut home = Vec3::new(cx + a.cos() * (1.5 + i as f32), 0.0, cz + a.sin() * (1.5 + i as f32));
+            for k in 0..30 {
+                if info.terrain.height(home.x, home.z) > WATER_LEVEL + 0.5 {
+                    break;
+                }
+                let b = k as f32 * 2.399;
+                home += Vec3::new(b.cos(), 0.0, b.sin()) * (3.0 + k as f32);
+            }
+            let p = Persona {
+                name,
+                species: sp.clone(),
+                appearance: s(c, "description"),
+                relationships: if owner.is_empty() { vec![] } else { vec![format!("{owner}: owner")] },
+                home: s(c, "home"),
+                ..Default::default()
+            };
+            chars.push((p, home));
+            n_creatures += 1;
+        }
     }
     let n_chars = chars.len();
     let ok = ctx

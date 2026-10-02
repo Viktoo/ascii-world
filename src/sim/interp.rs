@@ -142,6 +142,8 @@ pub struct Interp {
     pub building_names: HashMap<String, u64>,
     /// Gestures being written: request id → (who, toward whom, name).
     pub gestures: HashMap<u64, (ActorId, Option<Target>, String)>,
+    /// Species' own versions of gestures already asked for (name@species).
+    pub variants_asked: std::collections::HashSet<String>,
     pub hits: u64,
 }
 
@@ -493,7 +495,10 @@ impl Sim {
         match g.and_then(|g| super::actor::register_gesture(g.clone()).map(|k| (k, g))) {
             Ok((k, g)) => {
                 super::persist::save_gesture(&self.db, &g);
-                let _ = self.act(who, super::Action::Gesture { kind: k.name(), to });
+                // A species' own version is used from now on; the shared one already played.
+                if !g.name.contains('@') {
+                    let _ = self.act(who, super::Action::Gesture { kind: k.name(), to });
+                }
             }
             Err(e) => {
                 crate::log::info(format!("gesture '{name}' not learned: {e}"));
