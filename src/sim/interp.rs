@@ -37,6 +37,43 @@ pub struct Make {
     pub props: BTreeMap<String, f32>,
 }
 
+/// What a deed does to a being. Its body code is never rewritten: what it
+/// wears, its look sliders, its needs and feelings change, it can learn a
+/// trick, and (where the world has its own forces) become another species.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct BeingFx {
+    /// Added to its needs (hunger, fatigue, social, fun, curiosity).
+    #[serde(default)]
+    pub needs: BTreeMap<String, f32>,
+    /// Added to how it feels about the actor (affection, trust).
+    #[serde(default)]
+    pub feel: BTreeMap<String, f32>,
+    /// Look sliders set (within the body's ranges).
+    #[serde(default)]
+    pub look: BTreeMap<String, f32>,
+    /// Layers put on it (made if nobody has made one yet).
+    #[serde(default)]
+    pub wear: Vec<Make>,
+    /// Layers taken off it, by name.
+    #[serde(default)]
+    pub take_off: Vec<String>,
+    /// A gesture it learns (a trick), done now and when greeting.
+    #[serde(default)]
+    pub learn: Option<String>,
+    /// Another species it turns into.
+    #[serde(default, rename = "become")]
+    pub turn_into: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct NewBeing {
+    pub species: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// Make something new in the world (a well, a lighthouse on that hill, a
 /// stool): handed to the builder, which places it in view.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -96,6 +133,12 @@ pub struct InterpEffect {
     pub cut: Vec<CutFx>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reshape: Vec<ReshapeFx>,
+    /// What it does to a person or creature (the target).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub being: Option<BeingFx>,
+    /// New beings brought into the world (only where the world allows it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub beings: Vec<NewBeing>,
     /// A short line the actor says.
     #[serde(default)]
     pub say: Option<String>,
@@ -131,6 +174,8 @@ pub struct PendingBuild {
     /// them, used up when it is done), and what the change was.
     pub reshape: Vec<(ThingId, ActorId, Option<ThingId>)>,
     pub change: String,
+    /// A layer to put on someone when it exists: (wearer, by whom).
+    pub wear_on: Option<(ActorId, ActorId)>,
 }
 
 #[derive(Default)]
@@ -197,6 +242,30 @@ impl Sim {
         Ok(Outcome { ok: true, msg: format!("{name} tries to {text}…"), pending: Some(id), thing: None })
     }
 
+    /// A person or creature as the interpreter sees it.
+    fn describe_being(&self, a: ActorId, by: ActorId) -> Value {
+        let wears: Vec<String> = self.worn_by(a).into_iter().map(|id| self.thing_name(id)).collect();
+        let mut v = json!({ "person": self.actor_name(a), "wears": wears, "body": self.body_name(a) });
+        if let ActorId::Npc(c) = a {
+            if let Some(n) = self.cast.get(c) {
+                let body = self.snap.type_of(n.body_ty).and_then(|t| t.ct.meta.body.clone());
+                let look: serde_json::Map<String, Value> = body.map(|b| b.look.iter().enumerate().map(|(i, (name, lo, hi))| (name.clone(), json!({ "now": n.sliders.get(i).copied().unwrap_or(0.5), "range": [lo, hi] }))).collect()).unwrap_or_default();
+                v["species"] = json!(n.species.name);
+                v["mind"] = json!(n.species.mind);
+                v["speech"] = json!(n.species.speech);
+                v["look_sliders"] = Value::Object(look);
+                v["tricks"] = json!(n.tricks);
+                v["needs"] = json!({ "hunger": n.needs.hunger, "fatigue": n.needs.fatigue, "social": n.needs.social, "fun": n.needs.fun });
+                v["feels_about_actor"] = json!(self.social.rel(a, by).map(|r| r.describe()).unwrap_or_else(|| "a stranger".into()));
+                v["distance_m"] = json!(self.actor(by).map(|x| ((x.pos - n.a.pos).length() * 10.0).round() / 10.0));
+            }
+        }
+        v["world_has_magic"] = json!(self.world_has_magic());
+        v["beings_can_be_made"] = json!(self.cfg.create_beings);
+        v["species_here"] = json!(self.snap.species.list.iter().map(|s| s.name.clone()).collect::<Vec<_>>());
+        v
+    }
+
     fn describe_thing(&self, id: ThingId) -> Value {
         let Some(t) = self.things.get(id) else { return Value::Null };
         let ty = self.snap.type_of(t.type_id);
@@ -223,7 +292,7 @@ impl Sim {
         });
         if let Some(r) = target {
             let tv = match &r.target {
-                Target::Actor(a) => json!({ "person": self.actor_name(*a) }),
+                Target::Actor(a) => self.describe_being(*a, who),
                 Target::Point(p) => json!({ "ground_or_far_point": p, "distance_m": (glam::Vec3::from(*p) - self.actor(who).map(|a| a.pos).unwrap_or_default()).length().round() }),
                 other => match self.liven(other) {
                     Some(id) => {
@@ -279,6 +348,16 @@ impl Sim {
     /// Apply an interpreter answer. Returns the narration.
     pub fn apply_interp(&mut self, p: &PendingInterp, fx: &InterpEffect) -> String {
         let pos = self.actor(p.actor).map(|a| a.pos).unwrap_or_default();
+        // Changing someone takes their say-so; a refused change changes nothing.
+        let being = match &p.target {
+            Some(Target::Actor(a)) => Some(*a),
+            _ => None,
+        };
+        if let (Some(b), Some(bf)) = (being, &fx.being) {
+            if let Err(why) = self.being_consents(p.actor, b, bf) {
+                return why;
+            }
+        }
         let target_thing = p.target.as_ref().and_then(|t| match t {
             Target::Actor(_) | Target::Point(_) | Target::Name(_) => None,
             other => self.liven(other),
@@ -339,7 +418,7 @@ impl Sim {
                     self.interp.building.insert(id, PendingBuild { name: m.name.clone(), place: Some((at, was_held_by, None)), ..Default::default() });
                     let props: Vec<(String, f32)> = m.props.iter().map(|(k, v)| (k.clone(), *v)).collect();
                     let desc = if m.description.is_empty() { format!("{} (made from {})", m.name, made_from.join(" and ")) } else { m.description.clone() };
-                    self.request_now(Request::BuildType { id, name: m.name.clone(), description: desc, size: m.size_m.unwrap_or([0.5, 0.5, 0.5]), props });
+                    self.request_now(Request::BuildType { id, name: m.name.clone(), description: desc, size: m.size_m.unwrap_or([0.5, 0.5, 0.5]), props, fits: None });
                 }
             }
         }
@@ -375,6 +454,14 @@ impl Sim {
             if let Some(id) = resolve(self, r) {
                 self.release(id);
                 self.things.remove(id);
+            }
+        }
+        if let (Some(b), Some(bf)) = (being, &fx.being) {
+            self.apply_being(p.actor, b, bf);
+        }
+        for nb in fx.beings.iter().take(2) {
+            if let Err(e) = self.make_being(p.actor, nb) {
+                why.push(e);
             }
         }
         if let Some(line) = &fx.say {
@@ -441,6 +528,15 @@ impl Sim {
             self.set_shape_type(thing, tid, &by, &b.change, true);
             if let Some(w) = with {
                 self.use_up(w);
+            }
+        }
+        if let Some((wearer, by)) = b.wear_on {
+            let at = self.actor(wearer).map(|a| a.pos).unwrap_or_default();
+            let origin = Origin { made_by: Some(self.actor_name(by)), ..Default::default() };
+            if let Some(nid) = self.spawn_thing(tid, at, 0.0, 1.0, origin, false) {
+                if let Err(e) = self.wear(by, wearer, nid) {
+                    crate::log::info(format!("couldn't put it on: {e:?}"));
+                }
             }
         }
         if let Some((at, holder, _)) = b.place {

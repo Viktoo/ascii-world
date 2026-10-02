@@ -237,6 +237,6 @@ impl Sim {
         self.interp.building_names.insert(key.clone(), id);
         self.interp.building.insert(id, super::interp::PendingBuild { name: name.to_string(), then: then.into_iter().collect(), ..Default::default() });
         let at = then.and_then(|(t, _)| self.things.get(t).map(|x| x.pos)).unwrap_or(self.player.pos);
-        self.request(Request::BuildType { id, name: name.to_string(), description: description.to_string(), size: [0.6, 0.6, 0.6], props: vec![] }, at);
+        self.request(Request::BuildType { id, name: name.to_string(), description: description.to_string(), size: [0.6, 0.6, 0.6], props: vec![], fits: None }, at);
     }
 }

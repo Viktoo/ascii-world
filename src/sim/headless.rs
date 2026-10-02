@@ -52,8 +52,8 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             brain.send(Cmd::Chat { a, b, context });
             true
         }
-        Request::BuildType { id, name, description, size, props } => {
-            brain.send(Cmd::BuildType { id, name, description, size, props });
+        Request::BuildType { id, name, description, size, props, fits } => {
+            brain.send(Cmd::BuildType { id, name, description, size, props, fits });
             true
         }
         Request::Talk { cid, text, context } => {

@@ -49,6 +49,17 @@ pub struct SavedState {
     /// Their layers were put on once (they may have taken them off since).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dressed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tricks: Vec<String>,
+    /// Game time of birth (born in the world), 0 for everyone else.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub born: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<i64>,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// What a character decided to do about an event: either a legacy single

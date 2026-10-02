@@ -34,7 +34,7 @@ pub enum Cmd {
     /// Two characters talk (the player can hear). Answered by `Event::ChatLines`.
     Chat { a: i64, b: i64, context: String },
     /// Write a new object type. Answered by `Event::TypeBuilt`.
-    BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)> },
+    BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)>, fits: Option<String> },
     /// Write a gesture's pose keyframes. Answered by `Event::GestureBuilt`.
     BuildGesture { id: u64, name: String, body: String },
     /// Rewrite one thing's shape code. Answered by `Event::TypeBuilt`.
@@ -322,9 +322,9 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             };
             let _ = ctx.events.send(Event::GestureBuilt { id, result });
         }
-        Cmd::BuildType { id, name, description, size, props } => {
+        Cmd::BuildType { id, name, description, size, props, fits } => {
             let _ = ctx.events.send(Event::Building(1));
-            let type_id = match build_item_type(&ctx, &name, &description, size, &props).await {
+            let type_id = match build_item_type(&ctx, &name, &description, size, &props, fits.as_deref()).await {
                 Ok(t) => Some(t),
                 Err(e) => {
                     crate::log::error(format!("building type '{name}' failed: {e:#}"));
@@ -1168,7 +1168,7 @@ async fn chat(ctx: &Ctx, a: i64, b: i64, context: &str) -> anyhow::Result<Vec<(i
 }
 
 /// Write a small new object type on demand (for interpretations and spawn()).
-async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3], props: &[(String, f32)]) -> anyhow::Result<u32> {
+async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3], props: &[(String, f32)], fits: Option<&str>) -> anyhow::Result<u32> {
     let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
     let props_s = if props.is_empty() { "choose fitting ones".to_string() } else { props.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ") };
     let task = format!(
@@ -1176,7 +1176,14 @@ async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3
         size,
         prompts::TYPE_TASK
     );
-    let t = build_type(ctx, &system, task, name, &[]).await?;
+    let (task, tags): (String, &[&str]) = match fits {
+        Some(body) => {
+            let src = ctx.db.types().unwrap_or_default().into_iter().rev().find(|t| t.name == body && (t.status == "builtin" || t.status == "ok")).map(|t| t.code).unwrap_or_default();
+            (format!("{task}\n\n{}", prompts::layer_note(body, &src)), &["layer"])
+        }
+        None => (task, &[]),
+    };
+    let t = build_type(ctx, &system, task, name, tags).await?;
     let tname = t.ct.meta.name.clone();
     let ok = ctx
         .commit(CommitRequest { kind: "interp", summary: format!("new kind of thing: {tname}"), new_types: vec![t], placements: vec![], nudge: true, region: None, look: None })

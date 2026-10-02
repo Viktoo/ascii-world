@@ -282,6 +282,8 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
   "make": [ { "text": "what to make and where, in words, e.g. a stone well by the path" } ],
   "cut": [ { "target": "target", "size_m": 0.25, "shape": "round" | "square" } ],
   "reshape": [ { "target": "target", "name": "a new name for the changed thing, different from its current name, e.g. slate cottage with the door open", "change": "what changes about its shape, precisely", "with": "held" | null } ],
+  "being": { "needs": { "hunger": -0.5 }, "feel": { "affection": 0.1, "trust": 0.1 }, "look": { "<slider>": number }, "wear": [ { "name": "red cloak", "description": "…", "props": { "burns": 0.7 } } ], "take_off": [ "helmet" ], "learn": "sit" | null, "become": "toad" | null },
+  "beings": [ { "species": "dog", "name": "…", "description": "…" } ],
   "say": "a few words the actor says, or null",
   "cache": true
 }
@@ -292,7 +294,9 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
 - Changing a thing's shape happens where it was touched ("touched_at", in the thing's own coordinates):
   - "cut": take a piece out (punch a hole, dig, bite, chip, carve a notch). size_m is the radius in metres; a cut deeper than a wall is thick goes right through. It shows at once; the engine places it, you only say how big.
   - "reshape": change the shape itself: remove a part of it (the door cover, a roof tile, a branch), open or bend it, make the roof a dome, add a chimney. With "with": "held", work the held thing into it (add the stick to the wall, mount the wheel on the boat, hang the lantern on the post): it becomes part of the target and is used up. Describe the change precisely, including where.
-- Taking a piece off a thing is two changes: "reshape" the target without the piece, and "create" the piece as a new thing (it lands nearby)."#;
+- Taking a piece off a thing is two changes: "reshape" the target without the piece, and "create" the piece as a new thing (it lands nearby).
+- When the target is a person or creature, use "being" (never "cut" or "reshape" on them): "needs" are added to what they need (feeding lowers hunger), "feel" is added to how they feel about the actor, "look" sets their look sliders within the ranges given, "wear" puts clothing, armour or gear on them (a layer; it is made if nobody has made one, for their body), "take_off" removes what they wear, "learn" teaches a gesture they can do from now on (sit, bow, wave, a new one), "become" turns them into another species listed in species_here, only when world_has_magic is true (a curse, a spell). They may refuse what they don't want from someone they don't trust; the world checks that.
+- "beings" brings new beings of a listed species into the world (a conjured hound, a clay golem), only when beings_can_be_made is true; they belong to the actor."#;
 
 pub const CHAT_TASK: &str = "Two characters in a small living world meet and talk briefly, in their own voices, about what is on their minds (what they saw, what they are doing, each other). 2 to 4 short lines, plain speech, no stage directions. Reply with one JSON object only: {\"lines\": [{\"who\": \"Name\", \"text\": \"…\"}]}";
 

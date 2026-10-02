@@ -160,12 +160,6 @@ pub struct Persona {
     pub layers: Vec<String>,
 }
 
-impl Persona {
-    pub fn look_of(&self, name: &str, default: f32) -> f32 {
-        species::look_value(&self.look, name).unwrap_or(default)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct CharacterDef {
     pub id: i64,

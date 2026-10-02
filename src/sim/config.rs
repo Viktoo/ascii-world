@@ -52,6 +52,10 @@ pub struct SimConfig {
     pub hunting: bool,
     /// At most this many beings of one species are born in a region.
     pub max_creatures: usize,
+    /// Beings can turn into other species even in a world without forces of its own.
+    pub transform: bool,
+    /// Deeds may bring new beings into the world (a golem, a conjured hound).
+    pub create_beings: bool,
 }
 
 impl Default for SimConfig {
@@ -73,6 +77,8 @@ impl Default for SimConfig {
             work_gap_secs: 120.0,
             hunting: false,
             max_creatures: 24,
+            transform: false,
+            create_beings: false,
         }
     }
 }
@@ -118,8 +124,15 @@ impl SimConfig {
                 c.far = FarMode::CatchUp { max_hours: h.clamp(0.1, 24.0 * 30.0) };
             }
         }
-        if let Some(v) = kv("sim.hunting").or_else(|| std::env::var("POCKET_SIM_HUNTING").ok()) {
-            c.hunting = matches!(v.trim(), "1" | "true" | "yes" | "on");
+        let flag = |key: &str, env: &str| kv(&format!("sim.{key}")).or_else(|| std::env::var(env).ok()).map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"));
+        if let Some(v) = flag("hunting", "POCKET_SIM_HUNTING") {
+            c.hunting = v;
+        }
+        if let Some(v) = flag("transform", "POCKET_SIM_TRANSFORM") {
+            c.transform = v;
+        }
+        if let Some(v) = flag("create_beings", "POCKET_SIM_CREATE_BEINGS") {
+            c.create_beings = v;
         }
         let ml = kv("sim.medium_llm").or_else(|| std::env::var("POCKET_SIM_MEDIUM_LLM").ok());
         if let Some(v) = ml {
@@ -145,6 +158,8 @@ impl SimConfig {
             "work_gap_secs" => self.work_gap_secs = v.clamp(0.0, 1e7),
             "max_creatures" => self.max_creatures = v.clamp(1.0, 10_000.0) as usize,
             "hunting" => self.hunting = v > 0.5,
+            "transform" => self.transform = v > 0.5,
+            "create_beings" => self.create_beings = v > 0.5,
             _ => {}
         }
     }

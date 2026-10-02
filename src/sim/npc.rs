@@ -102,6 +102,11 @@ pub struct Npc {
     pub last_greet: f64,
     pub dead: bool,
     pub dressed: bool,
+    /// Gestures it was taught (an animal's tricks), done when greeting.
+    pub tricks: Vec<String>,
+    /// Game time it was born (for the young), or 0.
+    pub born: f64,
+    pub parents: Vec<i64>,
 }
 
 impl Npc {
@@ -115,7 +120,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone() }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -182,83 +187,65 @@ impl Cast {
         if fresh_book {
             for n in self.npcs.iter_mut() {
                 let species = snap.species.of(&n.def.persona.species);
-                let body = snap.body_type(&species.body);
-                let body_ty = body.map(|b| b.id).unwrap_or(0);
-                if species.as_ref() == n.species.as_ref() && body_ty == n.body_ty {
-                    continue;
+                let body_ty = snap.body_type(&species.body).map(|b| b.id).unwrap_or(0);
+                if species.as_ref() != n.species.as_ref() || body_ty != n.body_ty {
+                    fit(n, snap, seed);
                 }
-                let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
-                let variety = species.varieties.iter().find(|v| v.name == n.def.persona.variety);
-                let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
-                n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
-                n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name));
-                n.a.roles = super::actor::role_mask(&bmeta);
-                n.a.species = if species.is_human() { String::new() } else { species.name.clone() };
-                if !species.is_human() {
-                    n.traits = n.traits.with_temper(&species);
-                }
-                n.body_ty = body_ty;
-                n.species = species;
             }
         }
         for def in &snap.characters {
-            if self.index.contains_key(&def.id) {
-                continue;
+            if !self.index.contains_key(&def.id) {
+                self.add(def.clone(), snap, seed);
             }
-            let s = &def.state;
-            let pos = if s.x == 0.0 && s.z == 0.0 { def.home } else { Vec3::new(s.x, 0.0, s.z) };
-            let pos = Vec3::new(pos.x, snap.terrain.height(pos.x, pos.z), pos.z);
-            let rng = crate::noise::pcg(def.id as u32 ^ 0xC0FFEE ^ seed as u32);
-            let mut a = Actor::new(pos, s.yaw);
-            a.asleep = s.asleep;
-            let species = snap.species.of(&def.persona.species);
-            let body = snap.body_type(&species.body);
-            let body_ty = body.map(|b| b.id).unwrap_or(0);
-            let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
-            let variety = species.varieties.iter().find(|v| v.name == def.persona.variety);
-            let sliders = crate::world::species::sliders(&bmeta, &species, variety, &def.persona.look, rng);
-            a.dims = body_dims(&bmeta, &species, &sliders, snap.species.size_of(&species.name));
-            a.roles = super::actor::role_mask(&bmeta);
-            if !species.is_human() {
-                a.species = species.name.clone();
-            }
-            let mut traits = Traits::from_persona(&def.persona, rng);
-            if !species.is_human() {
-                traits = traits.with_temper(&species);
-            }
-            let needs = s.needs.unwrap_or_else(|| {
-                let r = |k: u32| crate::noise::u2f(crate::noise::pcg(rng ^ k)) * 0.4;
-                Needs { hunger: 0.1 + r(1), fatigue: r(2) * 0.5, social: 0.2 + r(3), fun: 0.2 + r(4), curiosity: 0.2 + r(5) }
-            });
-            self.index.insert(def.id, self.npcs.len());
-            self.npcs.push(Npc {
-                def: def.clone(),
-                species,
-                body_ty,
-                sliders,
-                a,
-                needs,
-                traits,
-                doing: "idle".into(),
-                goal: s.goal.clone(),
-                plan: VecDeque::new(),
-                plan_from_llm: false,
-                think_at: 0.0,
-                next_llm: 0.0,
-                rng,
-                witnessed: VecDeque::new(),
-                last_player_near: f64::MIN,
-                acc: 0.0,
-                last_sim: s.t,
-                decisions: VecDeque::new(),
-                bored_since: f64::MAX,
-                last_line: f64::MIN,
-                last_work: f64::MIN,
-                last_greet: f64::MIN,
-                dead: s.dead,
-                dressed: s.dressed,
-            });
         }
+    }
+
+    /// Bring one character into the cast.
+    pub fn add(&mut self, def: Arc<CharacterDef>, snap: &WorldSnapshot, seed: u64) {
+        let s = &def.state;
+        let pos = if s.x == 0.0 && s.z == 0.0 { def.home } else { Vec3::new(s.x, 0.0, s.z) };
+        let pos = Vec3::new(pos.x, snap.terrain.height(pos.x, pos.z), pos.z);
+        let rng = crate::noise::pcg(def.id as u32 ^ 0xC0FFEE ^ seed as u32);
+        let mut a = Actor::new(pos, s.yaw);
+        a.asleep = s.asleep;
+        let traits = Traits::from_persona(&def.persona, rng);
+        let needs = s.needs.unwrap_or_else(|| {
+            let r = |k: u32| crate::noise::u2f(crate::noise::pcg(rng ^ k)) * 0.4;
+            Needs { hunger: 0.1 + r(1), fatigue: r(2) * 0.5, social: 0.2 + r(3), fun: 0.2 + r(4), curiosity: 0.2 + r(5) }
+        });
+        let mut n = Npc {
+            def: def.clone(),
+            species: snap.species.of(""),
+            body_ty: 0,
+            sliders: [0.5; 5],
+            a,
+            needs,
+            traits,
+            doing: "idle".into(),
+            goal: s.goal.clone(),
+            plan: VecDeque::new(),
+            plan_from_llm: false,
+            think_at: 0.0,
+            next_llm: 0.0,
+            rng,
+            witnessed: VecDeque::new(),
+            last_player_near: f64::MIN,
+            acc: 0.0,
+            last_sim: s.t,
+            decisions: VecDeque::new(),
+            bored_since: f64::MAX,
+            last_line: f64::MIN,
+            last_work: f64::MIN,
+            last_greet: f64::MIN,
+            dead: s.dead,
+            dressed: s.dressed,
+            tricks: s.tricks.clone(),
+            born: s.born,
+            parents: s.parents.clone(),
+        };
+        fit(&mut n, snap, seed);
+        self.index.insert(def.id, self.npcs.len());
+        self.npcs.push(n);
     }
 
     pub fn get(&self, id: i64) -> Option<&Npc> {
@@ -268,6 +255,26 @@ impl Cast {
     pub fn get_mut(&mut self, id: i64) -> Option<&mut Npc> {
         self.index.get(&id).copied().map(move |i| &mut self.npcs[i])
     }
+}
+
+/// Fit a character to its species: body, look sliders, size, roles and
+/// temper (on arrival, and again when its species changes).
+pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {
+    let species = snap.species.of(&n.def.persona.species);
+    let body = snap.body_type(&species.body);
+    let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
+    let variety = species.varieties.iter().find(|v| v.name == n.def.persona.variety);
+    let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
+    n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
+    n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name));
+    n.a.roles = super::actor::role_mask(&bmeta);
+    n.a.species = if species.is_human() { String::new() } else { species.name.clone() };
+    n.traits = Traits::from_persona(&n.def.persona, rng);
+    if !species.is_human() {
+        n.traits = n.traits.with_temper(&species);
+    }
+    n.body_ty = body.map(|b| b.id).unwrap_or(0);
+    n.species = species;
 }
 
 /// Size numbers for a character: people draw their own height (a slider);

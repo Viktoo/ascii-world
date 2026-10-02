@@ -1980,3 +1980,116 @@ fn warriors_picture() {
     let cam = crate::render::Camera { pos: me + Vec3::Y * 1.5 + Vec3::new(0.0, 0.0, 0.5), yaw: 0.0, pitch: -0.12, fov_y: 0.9 };
     render_png(&mut s, &w, cam, &out);
 }
+
+/// Phase 6: deeds in words on beings. A guard who doesn't know you won't be
+/// dressed by you; once he trusts you, the cloak (written for his body) goes
+/// on. Feeding a horse makes it fonder of you, a dog learns a trick and
+/// greets with it, a curse turns a man into a toad who still knows you
+/// (only in a world with forces of its own), and a hound can be conjured
+/// only where beings can be made.
+#[test]
+fn deeds_dress_feed_teach_curse_and_conjure_beings() {
+    let w = world("deeds", 51);
+    crate::sim::persist::set_universe_rules(&w.db, &[("cursed".into(), 0.0, "how cursed it is".into())], &[]).unwrap();
+    w.db.with(|c| db::put_species(c, "toad", r#"{"name":"toad","body":"quadruped","size":0.32,"mind":"instinct","speech":"sounds","sounds":["a croak"],"mass":3,"look":{"legs":[0,0.1],"length":[0,0.2],"ears":[0,0.05],"hue":[0.25,0.3],"shade":[0.3,0.5]}}"#)).unwrap();
+    let cloak = fixture("layers/cloak.js");
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |_sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        let fx = |v: serde_json::Value| v.to_string();
+        if user.contains("\"give the guard a red cloak\"") {
+            return fx(serde_json::json!({ "narration": "The traveller drapes a red cloak over the guard.", "being": { "wear": [{ "name": "red cloak", "description": "a red wool cloak", "props": { "burns": 0.8 } }] } }));
+        }
+        if user.contains("\"feed the horse an apple\"") {
+            return fx(serde_json::json!({ "narration": "The horse crunches the apple.", "being": { "needs": { "hunger": -0.5 }, "feel": { "affection": 0.25, "trust": 0.2 } } }));
+        }
+        if user.contains("\"teach Rex to sit\"") {
+            return fx(serde_json::json!({ "narration": "Rex sits.", "being": { "learn": "sit", "feel": { "affection": 0.05 } } }));
+        }
+        if user.contains("\"curse Brann into a toad\"") {
+            return fx(serde_json::json!({ "narration": "Green smoke, and a toad blinks up.", "being": { "become": "toad" }, "cache": false }));
+        }
+        if user.contains("\"conjure a hound\"") {
+            return fx(serde_json::json!({ "narration": "A hound steps out of the mist.", "beings": [{ "species": "dog", "name": "Mist" }] }));
+        }
+        if user.contains("Object type to write: \"red cloak\"") {
+            assert!(user.contains("This is a layer"), "written as a layer");
+            return format!("```js\n{cloak}\n```");
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let p = dry_spot(&w, 9.0, 1.4);
+    let brann = add_char(&w, "Brann", "a stern guard", &[], p);
+    let bram = add_being(&w, "Bram", "horse", &[], p + Vec3::new(4.0, 0.0, 0.0));
+    let rex = add_being(&w, "Rex", "dog", &[], p + Vec3::new(-3.0, 0.0, 1.0));
+    let mut s = session(&w, 24, Some(llm));
+    calm(&mut s);
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -1.5);
+    let (g, h, d) = (ActorId::Npc(brann), ActorId::Npc(bram), ActorId::Npc(rex));
+    let me = ActorId::Player;
+    let deed = |s: &mut Session, text: &str, on: ActorId| {
+        let r = act_once(s, me, Action::Do { text: text.into(), on: Some(Target::Actor(on)), at: None }, 0.3);
+        for _ in 0..200 {
+            s.step(0.05);
+            if s.sim.interp.pending.is_empty() && s.sim.interp.building.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        r
+    };
+    // A stranger can't dress the guard; a friend can.
+    deed(&mut s, "give the guard a red cloak", g);
+    assert!(s.sim.worn_by(g).is_empty(), "he wouldn't let a stranger");
+    assert!(events(&s.sim, "refused").iter().any(|e| e.actor == Some(g)));
+    s.sim.social.bond(g, me, 0.5, s.sim.t);
+    deed(&mut s, "give the guard a red cloak", g);
+    for _ in 0..100 {
+        s.step(0.05);
+        if !s.sim.worn_by(g).is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(s.sim.worn_by(g).iter().map(|id| s.sim.thing_name(*id)).collect::<Vec<_>>(), vec!["red cloak".to_string()], "the cloak went on");
+    // Feeding a horse.
+    s.sim.player.pos = s.sim.actor(h).unwrap().pos + Vec3::new(0.0, 0.0, -1.5);
+    s.sim.cast.get_mut(bram).unwrap().needs.hunger = 0.8;
+    let before = s.sim.social.affection(h, me);
+    deed(&mut s, "feed the horse an apple", h);
+    assert!(s.sim.cast.get(bram).unwrap().needs.hunger < 0.4 && s.sim.social.affection(h, me) > before + 0.2, "the horse is fed and fonder");
+    // Teaching a dog.
+    s.sim.player.pos = s.sim.actor(d).unwrap().pos + Vec3::new(0.0, 0.0, -1.5);
+    deed(&mut s, "teach Rex to sit", d);
+    assert_eq!(s.sim.cast.get(rex).unwrap().tricks, vec!["sit".to_string()]);
+    assert!(!events(&s.sim, "learned").is_empty());
+    // A curse: still Brann, still knows the traveller, now a toad; the cloak falls off.
+    let fond = s.sim.social.affection(g, me);
+    s.sim.player.pos = s.sim.actor(g).unwrap().pos + Vec3::new(0.0, 0.0, -1.5);
+    deed(&mut s, "curse Brann into a toad", g);
+    let b = s.sim.cast.get(brann).unwrap();
+    assert_eq!(b.species.name, "toad");
+    assert!(b.a.dims.height < 0.5 && !b.a.dims.arms, "{:?}", b.a.dims);
+    assert_eq!(b.name(), "Brann");
+    assert!((s.sim.social.affection(g, me) - fond).abs() < 1e-4, "he still knows the traveller");
+    assert!(s.sim.worn_by(g).is_empty(), "the cloak fell off");
+    assert!(!events(&s.sim, "transformed").is_empty());
+    // Conjuring: not in this world, until it allows it.
+    let n0 = s.sim.cast.npcs.len();
+    deed(&mut s, "conjure a hound", me);
+    assert_eq!(s.sim.cast.npcs.len(), n0, "beings can't be made here");
+    s.sim.cfg.create_beings = true;
+    deed(&mut s, "conjure a hound", me);
+    let mist = s.sim.cast.npcs.iter().find(|n| n.name() == "Mist").map(|n| n.def.id).expect("a hound appeared");
+    assert_eq!(s.sim.owner_of(mist), Some(me), "it is the traveller's");
+    s.save();
+    drop(s);
+    let s = session(&w, 25, None);
+    assert_eq!(s.sim.cast.get(brann).unwrap().species.name, "toad", "still a toad after a restart");
+    assert!(s.sim.cast.get(mist).is_some(), "and the hound is still here");
+    sound(&s);
+    // Without forces of its own, a world has no curses.
+    let w2 = world("nocurse", 52);
+    let c = add_char(&w2, "Ola", "kind", &[], dry_spot(&w2, 6.0, 0.3));
+    let mut s2 = session(&w2, 26, None);
+    assert!(s2.sim.transform_being(c, "dog", ActorId::Player).is_err());
+}

@@ -311,6 +311,11 @@ impl Db {
 
 }
 
+pub fn set_persona(c: &Connection, id: i64, persona_json: &str) -> Result<()> {
+    c.execute("UPDATE characters SET persona_json = ?1 WHERE id = ?2", params![persona_json, id])?;
+    Ok(())
+}
+
 /// A universe's own species (by name), replacing a built-in of the same name.
 pub fn put_species(c: &Connection, name: &str, json: &str) -> Result<()> {
     c.execute("INSERT INTO species(name, json) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET json = excluded.json", params![name, json])?;

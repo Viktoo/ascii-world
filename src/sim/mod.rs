@@ -135,7 +135,8 @@ pub enum Request {
     /// Two characters talk; the player is close enough to overhear.
     Chat { a: i64, b: i64, context: String },
     /// Write a new object type (for spawn() of an unknown name).
-    BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)> },
+    /// `fits`: a layer to be worn on this body.
+    BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)>, fits: Option<String> },
     /// The player says something to a character (outside the talk screen).
     Talk { cid: i64, text: String, context: String },
     /// Write the pose keyframes of a gesture nobody knows yet.

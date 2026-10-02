@@ -581,9 +581,10 @@ impl Sim {
                 let o = owner.unwrap_or(ActorId::Player);
                 let last = self.cast.get(cid).map(|n| n.last_greet).unwrap_or(f64::MIN);
                 let mut steps = vec![Action::Goto { target: Target::Actor(o), run: true }];
-                // A greeting after time apart.
+                // A greeting after time apart (with a trick it was taught).
                 if t - last > 120.0 {
-                    steps.push(Action::Gesture { kind: "wag".into(), to: None });
+                    let trick = self.cast.get(cid).and_then(|n| n.tricks.last().cloned());
+                    steps.push(Action::Gesture { kind: trick.unwrap_or_else(|| "wag".into()), to: None });
                     if let Some(n) = self.cast.get_mut(cid) {
                         n.last_greet = t;
                     }
@@ -661,5 +662,251 @@ fn with_article(s: &str) -> String {
         s.to_string()
     } else {
         format!("{} {s}", super::article(s))
+    }
+}
+
+/// Doing things to beings, and bringing new ones into the world.
+impl Sim {
+    /// Would `b` let `actor` do this to them? Needs and feelings are free
+    /// (feeding, kind words); changing what they wear or look like, or what
+    /// they are, needs their trust. Ok, or the refusal to tell.
+    pub fn being_consents(&mut self, actor: ActorId, b: ActorId, fx: &super::interp::BeingFx) -> Result<(), String> {
+        if actor == b {
+            return Ok(());
+        }
+        let need = if fx.turn_into.is_some() {
+            0.0
+        } else if !fx.look.is_empty() {
+            0.3
+        } else if !fx.take_off.is_empty() {
+            0.25
+        } else if !fx.wear.is_empty() {
+            0.15
+        } else {
+            return Ok(());
+        };
+        // A curse needs no consent, but it needs a world with its own forces.
+        if fx.turn_into.is_some() {
+            return Ok(());
+        }
+        let ActorId::Npc(c) = b else { return Ok(()) };
+        let aff = self.social.affection(b, actor) - self.wariness(c);
+        if aff >= need {
+            return Ok(());
+        }
+        let (an, bn) = (self.actor_name(actor), self.actor_name(b));
+        let at = self.actor(b).map(|x| x.pos);
+        self.event("refused", Some(b), Some(actor.key()), format!("{bn} wouldn't let {an} do that"), at, json!({}));
+        if self.speaks(b) {
+            self.say_template(b, "no", &an);
+        } else {
+            self.make_noise(c, false);
+        }
+        Err(format!("{} won't let you.", super::physics::cap(&bn)))
+    }
+
+    /// The parts of a deed that change a being.
+    pub fn apply_being(&mut self, actor: ActorId, b: ActorId, fx: &super::interp::BeingFx) {
+        let t = self.t;
+        if let ActorId::Npc(c) = b {
+            if let Some(n) = self.cast.get_mut(c) {
+                for (k, v) in &fx.needs {
+                    let v = if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 };
+                    let x = match k.as_str() {
+                        "hunger" => &mut n.needs.hunger,
+                        "fatigue" | "tiredness" => &mut n.needs.fatigue,
+                        "social" | "loneliness" => &mut n.needs.social,
+                        "fun" | "boredom" => &mut n.needs.fun,
+                        "curiosity" => &mut n.needs.curiosity,
+                        _ => continue,
+                    };
+                    *x = (*x + v).clamp(0.0, 1.0);
+                }
+            }
+        }
+        if actor != b {
+            for (k, v) in &fx.feel {
+                let v = if v.is_finite() { v.clamp(-0.5, 0.5) } else { 0.0 };
+                let r = self.social.rel_mut(b, actor);
+                match k.as_str() {
+                    "affection" | "love" | "liking" => r.affection = (r.affection + v).clamp(-1.0, 1.0),
+                    "trust" => r.trust = (r.trust + v).clamp(-1.0, 1.0),
+                    "rivalry" | "anger" => r.rivalry = (r.rivalry + v).clamp(0.0, 1.0),
+                    _ => continue,
+                }
+                r.familiarity = (r.familiarity + 0.05).min(1.0);
+                r.last = t;
+            }
+        }
+        for name in fx.take_off.iter().take(3) {
+            let n = name.trim().to_lowercase();
+            if let Some(id) = self.worn_by(b).into_iter().find(|id| { let tn = self.thing_name(*id).to_lowercase(); tn.contains(&n) || n.contains(&tn) }) {
+                let _ = self.take_off(actor, b, id);
+            }
+        }
+        for m in fx.wear.iter().take(2) {
+            let body = self.body_name(b);
+            let at = self.actor(b).map(|a| a.pos).unwrap_or_default();
+            match self.type_by_name(&m.name).filter(|ty| ty.ct.meta.fits.as_deref().is_none_or(|f| f == body)) {
+                Some(ty) => {
+                    let origin = super::things::Origin { made_by: Some(self.actor_name(actor)), ..Default::default() };
+                    if let Some(id) = self.spawn_thing(ty.id, at, 0.0, 1.0, origin, false) {
+                        let _ = self.wear(actor, b, id);
+                    }
+                }
+                None => {
+                    let id = self.next_id();
+                    let key = m.name.trim().to_lowercase();
+                    self.interp.building_names.insert(key, id);
+                    self.interp.building.insert(id, super::interp::PendingBuild { name: m.name.clone(), wear_on: Some((b, actor)), ..Default::default() });
+                    let props: Vec<(String, f32)> = m.props.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                    let desc = if m.description.is_empty() { m.name.clone() } else { m.description.clone() };
+                    self.request_now(super::Request::BuildType { id, name: m.name.clone(), description: desc, size: m.size_m.unwrap_or([0.6, 0.6, 0.6]), props, fits: Some(body) });
+                }
+            }
+        }
+        if let ActorId::Npc(c) = b {
+            if !fx.look.is_empty() {
+                let look = fx.look.clone();
+                self.change_persona(c, |p| {
+                    for (k, v) in look {
+                        if v.is_finite() {
+                            p.look.insert(k.trim().to_lowercase(), v);
+                        }
+                    }
+                });
+            }
+            if let Some(trick) = fx.learn.as_deref().map(|s| s.trim().to_lowercase().replace(['-', ' '], "_")).filter(|s: &String| !s.is_empty()) {
+                if super::actor::GestureKind::parse(&trick).is_some() {
+                    if let Some(n) = self.cast.get_mut(c) {
+                        if !n.tricks.contains(&trick) {
+                            n.tricks.push(trick.clone());
+                            n.tricks.truncate(6);
+                        }
+                    }
+                    let _ = self.act(b, Action::Gesture { kind: trick.clone(), to: None });
+                    let (bn, an) = (self.actor_name(b), self.actor_name(actor));
+                    self.event("learned", Some(b), Some(actor.key()), format!("{bn} learned to {} from {an}", trick.replace('_', " ")), self.actor(b).map(|a| a.pos), json!({ "trick": trick }));
+                    self.social.bond(b, actor, 0.05, t);
+                }
+            }
+            if let Some(sp) = fx.turn_into.as_deref() {
+                let _ = self.transform_being(c, sp, actor);
+            }
+        }
+    }
+
+    /// Whether this world has forces of its own (magic, curses…): its own
+    /// properties, or the `sim.transform` setting.
+    pub fn world_has_magic(&self) -> bool {
+        self.cfg.transform || self.vocab.names.len() > super::props::BUILTIN.len()
+    }
+
+    /// A being turns into another species (a curse, a spell). It keeps its
+    /// name, memories and relationships; what no longer fits falls off.
+    pub fn transform_being(&mut self, cid: i64, species: &str, by: ActorId) -> Result<(), String> {
+        let who = ActorId::Npc(cid);
+        if !self.world_has_magic() {
+            return Err("nothing like that happens in this world".into());
+        }
+        let Some(sp) = self.snap.species.get(species).cloned() else { return Err(format!("there are no {species}s here")) };
+        let from = self.cast.get(cid).map(|n| n.species.name.clone()).unwrap_or_default();
+        if from == sp.name {
+            return Ok(());
+        }
+        let name = sp.name.clone();
+        self.change_persona(cid, |p| {
+            p.species = if name == "human" { String::new() } else { name.clone() };
+            p.variety.clear();
+            p.look.clear();
+        });
+        // Layers made for the old body fall off.
+        let body = self.body_name(who);
+        for id in self.worn_by(who) {
+            let fits = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)).and_then(|ty| ty.ct.meta.fits.clone());
+            if fits.is_some_and(|f| f != body) {
+                if let Some(t) = self.things.get_mut(id) {
+                    t.worn = None;
+                    t.asleep = false;
+                }
+            }
+        }
+        if let Some(h) = self.actor(who).and_then(|a| a.held).filter(|h| self.things.get(*h).is_some_and(|t| t.mass() > self.strength(who))) {
+            self.release(h);
+        }
+        let (n, b) = (self.actor_name(who), self.actor_name(by));
+        let at = self.actor(who).map(|a| a.pos);
+        let msg = format!("{n} turned from {} {from} into {} {}", super::article(&from), super::article(&sp.name), sp.name);
+        self.event("transformed", Some(who), Some(by.key()), msg.clone(), at, json!({ "from": from, "to": sp.name, "by": b }));
+        if let Some(p) = at {
+            self.note_near(p, 30.0, Note::Info(format!("{}!", super::physics::cap(&msg))));
+            self.witness(p, 30.0, &msg, 0.8, &[]);
+        }
+        Ok(())
+    }
+
+    /// Change a character's persona (saved), then fit them to it again.
+    pub fn change_persona(&mut self, cid: i64, f: impl FnOnce(&mut crate::world::Persona)) {
+        let Some(n) = self.cast.get_mut(cid) else { return };
+        let mut def = (*n.def).clone();
+        f(&mut def.persona);
+        let json = serde_json::to_string(&def.persona).unwrap_or_default();
+        n.def = std::sync::Arc::new(def);
+        let snap = self.snap.clone();
+        let seed = self.seed;
+        if let Some(n) = self.cast.get_mut(cid) {
+            super::npc::fit(n, &snap, seed);
+        }
+        let _ = self.db.with(|c| crate::db::set_persona(c, cid, &json));
+    }
+
+    /// Bring a new being into the world (born, made, conjured) next to `at`.
+    pub fn add_being(&mut self, persona: crate::world::Persona, at: Vec3, state: crate::world::characters::SavedState) -> Option<i64> {
+        let home = Vec3::new(at.x, self.snap.terrain.height(at.x, at.z), at.z);
+        let json = serde_json::to_string(&persona).ok()?;
+        let version = self.snap.version.max(1);
+        let id = self.db.with(|c| crate::db::add_character(c, crate::world::region_of(home.x, home.z), &json, home.x, home.z, version)).ok()?;
+        let def = std::sync::Arc::new(crate::world::CharacterDef { id, persona, home, state, version });
+        let snap = self.snap.clone();
+        self.cast.add(def, &snap, self.seed);
+        let book = snap.species.clone();
+        self.social.seed_from_personas(&self.cast, &book);
+        Some(id)
+    }
+
+    /// A deed brings a being into the world (where the world allows it):
+    /// it belongs to whoever made it.
+    pub fn make_being(&mut self, by: ActorId, nb: &super::interp::NewBeing) -> Result<i64, String> {
+        if !self.cfg.create_beings {
+            return Err("beings can't be made in this world".into());
+        }
+        let Some(sp) = self.snap.species.get(&nb.species).cloned() else { return Err(format!("no such species: {}", nb.species)) };
+        let n_of = self.cast.npcs.iter().filter(|n| !n.dead && n.species.name == sp.name).count();
+        if n_of >= self.cfg.max_creatures * 4 {
+            return Err("there are enough of them".into());
+        }
+        let maker = self.actor_name(by);
+        let first = maker.split_whitespace().next().unwrap_or("").to_string();
+        let name = if nb.name.trim().is_empty() { format!("the {}", sp.name) } else { nb.name.trim().chars().take(32).collect() };
+        let persona = crate::world::Persona {
+            name: name.clone(),
+            species: if sp.is_human() { String::new() } else { sp.name.clone() },
+            appearance: nb.description.chars().take(160).collect(),
+            relationships: vec![format!("{}: owner and maker", if first == "the" { "the traveller" } else { &maker })],
+            ..Default::default()
+        };
+        let at = self.actor(by).map(|a| a.pos + a.forward() * 2.5).unwrap_or_default();
+        let state = crate::world::characters::SavedState { x: at.x, z: at.z, born: self.t, ..Default::default() };
+        let id = self.add_being(persona, at, state).ok_or("it didn't take")?;
+        let me = ActorId::Npc(id);
+        let r = self.social.rel_mut(me, by);
+        r.owner = Some(by.code());
+        r.affection = r.affection.max(0.7);
+        r.familiarity = 1.0;
+        let msg = format!("{maker} brought {name} into the world");
+        self.event("made_being", Some(by), Some(me.key()), msg.clone(), Some(at), json!({ "species": sp.name }));
+        self.note_near(at, 30.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+        self.witness(at, 30.0, &msg, 0.7, &[]);
+        Ok(id)
     }
 }
