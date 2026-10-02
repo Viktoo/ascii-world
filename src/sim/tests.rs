@@ -1866,6 +1866,7 @@ fn wolves_chase_a_herd_and_peoples_warm_to_each_other() {
     let ball = add_type(&w, &fixture("sims/ball.js"));
     let ball_id = place(&w, ball, green + Vec3::new(2.0, 0.0, 1.0), 0.0);
     let mut s = session(&w, 13, None);
+    s.sim.cfg.hunting = false;
     calm(&mut s);
     let all = record(&mut s);
     s.sim.t = crate::render::sky::DAY_SECONDS * (16.0 / 24.0);
@@ -2342,7 +2343,8 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
     assert!((s.sim.social.affection(g, me) - fond).abs() < 1e-4, "he still knows the traveller");
     assert!(s.sim.worn_by(g).is_empty(), "the cloak fell off");
     assert!(!events(&s.sim, "transformed").is_empty());
-    // Conjuring: not in this world, until it allows it.
+    // Conjuring: not in a world that forbids it, until it allows it.
+    s.sim.cfg.create_beings = false;
     let n0 = s.sim.cast.npcs.len();
     deed(&mut s, "conjure a hound", me);
     assert_eq!(s.sim.cast.npcs.len(), n0, "beings can't be made here");
@@ -2571,4 +2573,144 @@ fn families_grow_and_a_fed_wolf_line_turns_tame() {
     // Same seed, same history.
     let (again, _, _, _) = wolf_generations(29);
     assert_eq!(born, again, "the same seed gives the same lineage history");
+}
+
+// ------------------------------------------------------------------ work in progress
+
+/// Slow work shows while it goes: the deed while the world decides, then the
+/// new thing while it is written. The deed counts ("interpreted", which
+/// achievements watch) only once that thing exists, or as having come to
+/// nothing when it never does.
+#[test]
+fn a_deed_shows_as_work_and_counts_once_its_making_is_done() {
+    use super::Request;
+    use super::interp::WorkKind;
+    let w = world("work", 41);
+    let stick = builtin_id(&w, "stick");
+    let mut s = session(&w, 8, None);
+    s.sim.has_llm = true;
+    let ask = |s: &mut Session, text: &str| -> u64 {
+        s.sim.act(ActorId::Player, Action::Do { text: text.into(), on: None, at: None }).unwrap();
+        s.sim.drain_requests().into_iter().find_map(|r| if let Request::Interpret { id, .. } = r { Some(id) } else { None }).unwrap()
+    };
+    let built = |s: &mut Session| -> u64 { s.sim.drain_requests().into_iter().find_map(|r| if let Request::BuildType { id, .. } = r { Some(id) } else { None }).unwrap() };
+    let answer = |name: &str| Ok(serde_json::json!({ "narration": format!("A {name} takes shape."), "create": [{ "name": name, "description": "new" }] }));
+
+    let id = ask(&mut s, "whittle a flute");
+    let work = s.sim.work();
+    assert_eq!(work.len(), 1);
+    assert_eq!((work[0].kind, work[0].who, work[0].what.as_str()), (WorkKind::Doing, Some(ActorId::Player), "whittle a flute"));
+    s.sim.on_interpreted(id, answer("reed flute"));
+    let b = built(&mut s);
+    let work = s.sim.work();
+    assert_eq!(work.len(), 1, "the deed became a making");
+    assert_eq!((work[0].kind, work[0].who, work[0].what.as_str()), (WorkKind::Making, Some(ActorId::Player), "reed flute"));
+    assert!(events(&s.sim, "interpreted").is_empty(), "not counted before it exists");
+    s.sim.on_type_built(b, Some(stick));
+    assert!(s.sim.work().is_empty());
+    let done = events(&s.sim, "interpreted");
+    assert_eq!(done.len(), 1);
+    assert!(done[0].data.get("came_to_nothing").is_none() && done[0].data.get("effect").is_some(), "{:?}", done[0]);
+    assert!(!events(&s.sim, "made").is_empty());
+
+    // A making that fails: the deed still counts, as having come to nothing.
+    let id = ask(&mut s, "carve a whistle");
+    s.sim.on_interpreted(id, answer("bone whistle"));
+    let b = built(&mut s);
+    s.sim.on_type_built(b, None);
+    assert!(s.sim.work().is_empty());
+    let done = events(&s.sim, "interpreted");
+    assert_eq!(done.len(), 2);
+    assert_eq!(done[1].data["came_to_nothing"], true);
+}
+
+/// What a deed changed that the eye may miss gets a short line under its
+/// story; a deed that changes nothing hidden gets none.
+#[test]
+fn a_deed_tells_its_hidden_effects() {
+    use super::{Note, Request};
+    let w = world("effects", 42);
+    let stick = builtin_id(&w, "stick");
+    let mut s = session(&w, 9, None);
+    s.sim.has_llm = true;
+    let p = s.sim.player.pos;
+    let id = s.sim.spawn_thing(stick, p + Vec3::new(0.5, 0.0, 0.5), 0.0, 1.0, Default::default(), true).unwrap();
+    let deed = |s: &mut Session, text: &str, answer: serde_json::Value| -> Vec<Note> {
+        s.sim.drain_notes();
+        s.sim.act(ActorId::Player, Action::Do { text: text.into(), on: Some(Target::Thing(id)), at: None }).unwrap();
+        let rid = s.sim.drain_requests().into_iter().find_map(|r| if let Request::Interpret { id, .. } = r { Some(id) } else { None }).unwrap();
+        s.sim.on_interpreted(rid, Ok(answer));
+        s.sim.drain_notes()
+    };
+    let notes = deed(&mut s, "warm the stick", serde_json::json!({ "narration": "It warms.", "changes": [{ "target": "target", "props": { "heat": 80 } }] }));
+    let effect: Vec<&String> = notes.iter().filter_map(|n| if let Note::Effect(e) = n { Some(e) } else { None }).collect();
+    assert_eq!(effect, vec!["the stick: heat ↑"], "{notes:?}");
+    let notes = deed(&mut s, "look at the stick", serde_json::json!({ "narration": "It is a stick.", "cache": false }));
+    assert!(!notes.iter().any(|n| matches!(n, Note::Effect(_))), "{notes:?}");
+}
+
+#[test]
+fn big_things_are_in_reach_from_beside_their_wall() {
+    let w = world("reach", 41);
+    let barn = add_type(&w, r#"
+export const meta = { name: "barn", bounds: [4.0, 3.0, 3.0], tags: ["building"] };
+export function sdf(x, y, z, k) { return roundBox(x, y - 1.5, z, 3.9, 1.5, 2.9, 0.05); }
+export function color(x, y, z, k) { return rgb(150, 60, 40); }
+"#);
+    let at = dry_spot(&w, 20.0, 0.4);
+    let inst = place(&w, barn, at, 0.7);
+    let stone = builtin_id(&w, "stone");
+    let mut s = session(&w, 5, None);
+    let ty = s.sim.snap.type_of(barn).unwrap().clone();
+    let gi = s.sim.snap.instances.iter().find(|p| p.id == inst).unwrap().gpu(&ty, 1.0);
+    // Local -z is a long wall, 3 m from the middle; stand 1.5 m off it, then 4 m off it.
+    let stand = |s: &mut Session, off: f32| {
+        let p = gi.from_local(Vec3::new(0.5, 0.0, -3.0 - off));
+        s.sim.player.pos = ground(&w, p.x, p.z);
+    };
+    stand(&mut s, 1.5);
+    let p = s.sim.player.pos;
+    assert!((p - gi.pos()).length() > 4.0, "the middle is out of reach");
+    let id = s.sim.spawn_thing(stone, p + Vec3::new(0.2, 0.0, 0.2), 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.act(ActorId::Player, Action::Hold { target: Target::Thing(id) }).unwrap();
+    let use_on = Action::Use { target: None, on: Some(Target::Instance(inst)), at: None };
+    match s.sim.act(ActorId::Player, use_on.clone()) {
+        Err(super::ActErr::TooFar { dist, .. }) => panic!("beside the wall but too far ({dist:.1} m)"),
+        _ => {}
+    }
+    stand(&mut s, 4.0);
+    match s.sim.act(ActorId::Player, use_on) {
+        Err(super::ActErr::TooFar { dist, .. }) => assert!((dist - 4.0).abs() < 0.6, "measured to the wall: {dist}"),
+        r => panic!("4 m off the wall is out of reach: {r:?}"),
+    }
+}
+
+#[test]
+fn a_house_out_of_nowhere_frightens_the_timid_and_the_next_one_less() {
+    use super::surprise::{Arrival, News, Sight};
+    let w = world("surprise", 7);
+    let home = dry_spot(&w, 12.0, 0.4);
+    add_char(&w, "Pell", "timid and nervous", &[], home);
+    let mut s = session(&w, 7, None);
+    let cid = s.sim.cast.npcs[0].def.id;
+    let pos = s.sim.cast.npcs[0].a.pos;
+    s.sim.cast.get_mut(cid).unwrap().traits.brave = 0.2;
+    let house = Sight { how: Arrival::FromNowhere, extent: 8.0, strange: 0.0 };
+    let at = pos + Vec3::new(6.0, 0.0, 0.0);
+    let news = |memory: &'static str| News { at, sight: house, memory, importance: 0.5, event: "new_building", tell: "A house just appeared next to you.", what: "the house" };
+    s.sim.out.clear();
+    s.sim.startle_one(cid, &news("A house appeared east of me."));
+    let felt = |s: &Session| -> Vec<(String, f32)> { s.sim.out.iter().filter_map(|r| if let super::Request::Witness { text, importance, .. } = r { Some((text.clone(), *importance)) } else { None }).collect() };
+    let first = felt(&s);
+    assert_eq!(first.len(), 1);
+    assert!(first[0].0.contains("frightened"), "{first:?}");
+    assert!(first[0].1 > 0.95);
+    assert!(s.sim.cast.get(cid).unwrap().doing.starts_with("fleeing"), "{}", s.sim.cast.get(cid).unwrap().doing);
+    // The same news again is not news; another house is, but less of a shock.
+    s.sim.out.clear();
+    s.sim.startle_one(cid, &news("A house appeared east of me."));
+    assert!(felt(&s).is_empty());
+    s.sim.startle_one(cid, &news("Another house appeared east of me."));
+    let second = felt(&s);
+    assert!(second[0].1 < first[0].1, "{second:?}");
 }

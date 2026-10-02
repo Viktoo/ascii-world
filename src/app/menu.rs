@@ -25,13 +25,14 @@ enum Row {
     Fps,
     Shadows,
     Radius,
+    ShowWork,
     Creatures,
     LifeSpeed,
     Hunting,
     Beings,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Radius, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Radius, Row::ShowWork, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
 
 pub struct Menu {
     sel: usize,
@@ -84,7 +85,7 @@ fn purpose(p: &str) -> &str {
         "decide" => "someone deciding what to do",
         "create" => "building something",
         "type" => "a new kind of thing",
-        "interpret" => "a deed",
+        "interpret" => "an action",
         "region" => "a new region",
         "genesis" => "the world",
         "summary" => "a memory",
@@ -164,7 +165,7 @@ impl App {
                             m.details = Some(d);
                         }
                     }
-                    Row::Shadows | Row::Hunting | Row::Beings => self.change(row, 1),
+                    Row::Shadows | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
                     _ => {}
                 }
             }
@@ -205,13 +206,14 @@ impl App {
             Row::Fps => s.fps = step(FPS, s.fps as f64, dir) as f32,
             Row::Shadows => s.shadows = !s.shadows,
             Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
+            Row::ShowWork => s.show_work = s.show_work.next(dir),
             Row::Creatures => self.set_world("max_creatures", step(CREATURES, self.sim.cfg.max_creatures as f64, dir)),
             Row::LifeSpeed => self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, dir)),
             Row::Hunting => self.set_world("hunting", if self.sim.cfg.hunting { 0.0 } else { 1.0 }),
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
             Row::Details => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Radius) {
+        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Radius | Row::ShowWork) {
             self.settings.save();
         }
         if let Some(l) = &self.llm {
@@ -239,10 +241,11 @@ impl App {
             Row::Fps => ("Frame rate cap", format!("{:.0} fps", s.fps)),
             Row::Shadows => ("Shadows", on(s.shadows)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
+            Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
             Row::Creatures => ("Most of one kind of creature", format!("{} per region", self.sim.cfg.max_creatures)),
             Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
             Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),
-            Row::Beings => ("Deeds can bring new beings", on(self.sim.cfg.create_beings)),
+            Row::Beings => ("Actions can bring new beings", on(self.sim.cfg.create_beings)),
         };
         let value = if Self::locked(row) { format!("{value}   (set by env)") } else { value };
         (label.to_string(), value)

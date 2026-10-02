@@ -163,11 +163,19 @@ impl Sim {
                 t.rest_t = 0.0;
             }
         }
-        // Carriers who drift too far apart let go.
-        let pairs: Vec<(ThingId, ActorId, ActorId)> = self.things.live().filter_map(|t| Some((t.id, t.holder?, t.co_holder?))).collect();
-        for (id, a, b) in pairs {
+        // Carriers who drift too far apart let go (a long thing can be held
+        // by its two ends).
+        let pairs: Vec<(ThingId, ActorId, ActorId, f32)> = self
+            .things
+            .live()
+            .filter_map(|t| {
+                let b = self.snap.type_of(t.type_id).map(|ty| ty.ct.meta.bounds).unwrap_or_default();
+                Some((t.id, t.holder?, t.co_holder?, 3.0 + 2.0 * b[0].max(b[2]) * t.scale))
+            })
+            .collect();
+        for (id, a, b, apart) in pairs {
             let (Some(pa), Some(pb)) = (self.actor(a).map(|x| x.pos), self.actor(b).map(|x| x.pos)) else { continue };
-            if (pa - pb).length() > 3.0 {
+            if (pa - pb).length() > apart {
                 let name = self.thing_name(id);
                 self.drop_thing(id, Vec3::ZERO);
                 self.event("dropped", Some(a), Some(format!("thing:{id}")), format!("{} and {} lost their grip on the {name}", self.actor_name(a), self.actor_name(b)), Some(pa), json!({}));

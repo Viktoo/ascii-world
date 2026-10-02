@@ -14,11 +14,39 @@ pub struct Settings {
     pub shadows: bool,
     /// Regions loaded around you (each way).
     pub region_radius: i32,
+    /// Whose slow work (deeds, makings) the "working on" box lists.
+    pub show_work: ShowWork,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2 }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShowWork {
+    /// What you started.
+    Mine,
+    /// Yours, the characters' and the land's.
+    Everyone,
+    Off,
+}
+
+impl ShowWork {
+    pub fn next(self, dir: i32) -> ShowWork {
+        const ALL: [ShowWork; 3] = [ShowWork::Mine, ShowWork::Everyone, ShowWork::Off];
+        let i = ALL.iter().position(|x| *x == self).unwrap_or(0) as i32;
+        ALL[(i + dir).rem_euclid(ALL.len() as i32) as usize]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ShowWork::Mine => "mine",
+            ShowWork::Everyone => "everyone's",
+            ShowWork::Off => "off",
+        }
     }
 }
 
@@ -90,6 +118,7 @@ impl Settings {
         if !env_region_radius() {
             out.region_radius = self.region_radius;
         }
+        out.show_work = self.show_work;
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {
             let _ = std::fs::write(path(), t);

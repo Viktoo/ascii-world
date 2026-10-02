@@ -182,7 +182,7 @@ impl Sim {
         });
         let rid = self.next_id();
         self.interp.building_names.insert(key, rid);
-        self.interp.building.insert(rid, super::interp::PendingBuild { name: name.clone(), reshape: vec![(id, who, with)], change: change.to_string(), ..Default::default() });
+        self.interp.building.insert(rid, super::interp::PendingBuild { name: name.clone(), by: Some(who), reshape: vec![(id, who, with)], change: change.to_string(), ..Default::default() });
         self.request_now(Request::EditType {
             id: rid,
             name: name.clone(),

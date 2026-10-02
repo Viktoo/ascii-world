@@ -60,7 +60,8 @@ pub const ALL: &[Def] = &[
     a("good_boy", "Creatures", "Good Boy", "Throw something and have it brought back.", Silver),
     a("stampede", "Creatures", "Stampede", "See a whole group bolt together.", Silver),
     a("dressed_up", "Creatures", "Dressed Up", "A being agrees to wear something you give it.", Silver),
-    a("makeover", "Creatures", "Makeover", "Change a being with a deed: its looks, its mood or a new trick.", Gold),
+    a("makeover", "Creatures", "Makeover", "Change a being with an action: its looks, a new trick, or what it is.", Gold),
+    a("trust_issues", "Creatures", "Trust Issues", "Do something to a being that makes it trust you less.", Bronze),
     a("saddled", "Creatures", "Saddled", "Ride something much bigger than you.", Gold),
     a("thrown", "Creatures", "Thrown", "Get bucked off by a scared mount.", Silver),
     a("heavy_lifting", "Together", "Heavy Lifting", "Carry something with someone because it's too heavy for one.", Silver),
@@ -316,10 +317,11 @@ fn check(id: &str, cx: &mut Cx, e: Option<&SimEvent>) -> bool {
         }
         "dressed_up" => e.kind == "wore" && by_player && e.data.get("on").and_then(actor).is_some_and(|o| o != ActorId::Player),
         "makeover" => {
-            (e.kind == "deed_on" && by_player && ["looks", "mood"].iter().any(|k| e.data.get(*k).and_then(Value::as_bool) == Some(true)))
+            (e.kind == "deed_on" && by_player && e.data.get("looks").and_then(Value::as_bool) == Some(true))
                 || (e.kind == "learned" && at_player)
                 || (e.kind == "transformed" && at_player && matches!(e.actor, Some(ActorId::Npc(_))))
         }
+        "trust_issues" => e.kind == "deed_on" && by_player && e.data.get("trust").and_then(Value::as_f64).is_some_and(|t| t < 0.0),
         "saddled" => {
             let bulk = |a: ActorId| sim.actor(a).map(|x| x.dims.height * x.dims.radius * x.dims.radius).unwrap_or(0.0);
             e.kind == "mounted" && by_player && e.subject.as_deref().and_then(ActorId::parse).is_some_and(|m| bulk(m) >= 3.0 * bulk(ActorId::Player))
@@ -437,7 +439,7 @@ fn fed_tame(fed: &Value, e: &SimEvent) -> Option<f64> {
 
 /// The player used one thing on another and the world had to work it out.
 fn used_unplanned(e: &SimEvent) -> bool {
-    e.kind == "interpreted" && e.actor == Some(ActorId::Player) && e.data.get("effect").is_some() && e.text.contains(": use the ") && e.text.contains(" on ")
+    e.kind == "interpreted" && e.actor == Some(ActorId::Player) && e.data.get("effect").is_some() && e.data.get("came_to_nothing").is_none() && e.text.contains(": use the ") && e.text.contains(" on ")
 }
 
 /// How many things caught fire near a fire the player started in the last

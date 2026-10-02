@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod loading;
 mod menu;
+mod work;
 
 pub const WALK_SPEED: f32 = 5.0;
 pub const TURN_SPEED: f32 = 1.9;
@@ -162,6 +163,8 @@ pub struct App {
     achievements: crate::achievements::Tracker,
     /// Achievement popups waiting, the first one showing since when.
     toasts: VecDeque<(&'static crate::achievements::Def, Option<Instant>)>,
+    /// The "working on" box: slow work in progress, and just done.
+    work: work::WorkBox,
 }
 
 pub struct Setup {
@@ -244,6 +247,7 @@ impl App {
             loading: None,
             achievements,
             toasts: VecDeque::new(),
+            work: work::WorkBox::default(),
         };
         app.unstick();
         let name = app.snap.look.name.clone();
@@ -946,15 +950,17 @@ impl App {
         }
         for n in self.sim.drain_notes() {
             match n {
-                Note::Line { who, text } => {
-                    if let Some(c) = self.sim.cast.npcs.iter().find(|x| x.name() == who).map(|x| x.def.id) {
+                Note::Line { id, who, text } => {
+                    if let Some(ActorId::Npc(c)) = id {
                         self.conv.entry(c).or_default().push((false, text.clone()));
                     }
                     self.say(Some(&who), &text, TEXT);
                 }
                 Note::Info(t) => self.say(None, &t, [200, 205, 220]),
+                Note::Effect(t) => self.say(None, &format!("  ↳ {t}"), [150, 175, 200]),
             }
         }
+        self.update_work();
         let got = self.achievements.update(&self.sim);
         self.announce(got);
         if !self.toasts.is_empty() {
@@ -1154,6 +1160,7 @@ impl App {
         if self.inspect {
             self.draw_inspect(w, vh);
         }
+        self.draw_work(w, vh);
         self.draw_toast(w, vh);
         // Separator with mode (at the top when the log fills the screen).
         let sep = vh;
@@ -2086,6 +2093,48 @@ mod tests {
     }
 
     #[test]
+    fn work_in_progress_shows_until_done() {
+        let (mut app, _db) = make_app(false);
+        app.sim.has_llm = true;
+        app.sim.act(ActorId::Player, Action::Do { text: "whittle a flute".into(), on: None, at: None }).unwrap();
+        app.update_work();
+        app.compose();
+        let s = screen_text(&app);
+        assert!(s.contains("Working on") && s.contains("◌ doing") && s.contains("whittle a flute"), "{s}");
+        // A long deed is written out in full, wrapped, not cut short.
+        app.sim.act(ActorId::Player, Action::Do { text: "carve a long wooden stick into a sunwheel and set it turning on the mill by the river bend".into(), on: None, at: None }).unwrap();
+        app.update_work();
+        app.compose();
+        let s = screen_text(&app);
+        assert!(s.contains("river bend") && !s.contains('…'), "{s}");
+        // No LLM here, so the world answers "nothing happens" at once.
+        drive(&mut app, 0.5, |a, _| !a.sim.work().is_empty());
+        app.update_work();
+        app.compose();
+        let s = screen_text(&app);
+        assert!(s.contains("✓ done") && s.contains("whittle a flute"), "{s}");
+        // Off: no box.
+        app.settings.show_work = crate::settings::ShowWork::Off;
+        app.update_work();
+        app.compose();
+        assert!(!screen_text(&app).contains("Working on"));
+    }
+
+    #[test]
+    fn a_poke_is_no_makeover() {
+        let (mut app, _db) = make_app(false);
+        let p = app.pos();
+        let deed = |app: &mut App, data: serde_json::Value| app.sim.event("deed_on", Some(ActorId::Player), Some("npc:7".into()), "the traveller did something to the moth", Some(p), data);
+        deed(&mut app, serde_json::json!({ "mood": true, "looks": false, "trust": -0.2 }));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.achievements.earned("trust_issues").is_some());
+        assert!(app.achievements.earned("makeover").is_none(), "a change of feeling is no makeover");
+        deed(&mut app, serde_json::json!({ "mood": false, "looks": true, "trust": 0.0 }));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.achievements.earned("makeover").is_some());
+    }
+
+    #[test]
     fn achievements_follow_the_fire() {
         let (mut app, _db) = make_app(false);
         let p = app.pos();
@@ -2138,7 +2187,7 @@ mod tests {
         assert!(screen_text(&app).contains("Spend details"), "{}", screen_text(&app));
         app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
         // A world setting changes the running sim and is kept with the world.
-        for _ in 0..4 {
+        for _ in 0..5 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));
         }
         let was = app.sim.cfg.max_creatures;

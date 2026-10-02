@@ -28,7 +28,7 @@ impl Decider for RuleDecider {
         Box::pin(async move {
             let action = match ctx.event.as_str() {
                 "night_fell" => "go_home",
-                "new_building" => "watch",
+                "new_building" | "something_made" | "changed" | "new_being" => "watch",
                 "player_near" => "watch",
                 _ => "ignore",
             };
@@ -39,7 +39,7 @@ impl Decider for RuleDecider {
 
 pub struct LlmDecider {
     pub llm: Arc<Llm>,
-    pub bible: String,
+    pub universe: crate::brain::Universe,
 }
 
 impl Decider for LlmDecider {
@@ -48,7 +48,8 @@ impl Decider for LlmDecider {
             if ctx.event == "night_fell" {
                 return Some(Decision { action: "go_home".into(), ..Default::default() });
             }
-            let system = format!("{}\n\nUniverse:\n{}", crate::prompts::DECIDER_TASK, self.bible);
+            let universe = self.universe.read().map(|u| u.clone()).unwrap_or_default();
+            let system = format!("{}\n\nUniverse:\n{}", crate::prompts::DECIDER_TASK, universe);
             let user = serde_json::to_string_pretty(&ctx).ok()?;
             let mut req = Req::new(Role::Decider, system, user);
             req.max_tokens = 700;
@@ -88,14 +89,14 @@ impl Decider for HttpDecider {
     }
 }
 
-pub fn from_env(llm: Option<Arc<Llm>>, bible: &str) -> Arc<dyn Decider> {
+pub fn from_env(llm: Option<Arc<Llm>>, universe: crate::brain::Universe) -> Arc<dyn Decider> {
     if let Ok(url) = std::env::var("POCKET_DECIDER_URL") {
         if !url.is_empty() {
             return Arc::new(HttpDecider { url, http: reqwest::Client::new() });
         }
     }
     match llm {
-        Some(llm) => Arc::new(LlmDecider { llm, bible: bible.to_string() }),
+        Some(llm) => Arc::new(LlmDecider { llm, universe }),
         None => Arc::new(RuleDecider),
     }
 }

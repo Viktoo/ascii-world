@@ -19,8 +19,6 @@ use std::time::{Duration, Instant};
 const SETTLE_DIST: f32 = 110.0;
 /// Metres from you to the map's top and bottom edges.
 const MAP_REACH: f32 = 150.0;
-/// The finished world is shown this long before you step in (any key skips it).
-const HOLD: Duration = Duration::from_millis(1600);
 /// Genesis counts as this many regions on the bar.
 const GENESIS_WEIGHT: f32 = 2.0;
 const BG: [u8; 3] = [10, 11, 15];
@@ -36,6 +34,10 @@ pub(super) struct Loading {
     lines: VecDeque<Line>,
     /// The land's name, once genesis names it.
     title: Option<String>,
+    /// What the world was asked to be (typed or random), shown under the name.
+    prompt: String,
+    /// `q` was pressed: asking whether to leave.
+    leaving: bool,
     /// What the bar shows: eases towards the truth and never goes back.
     shown: f32,
     done_at: Option<Instant>,
@@ -92,6 +94,8 @@ impl App {
             work: HashMap::new(),
             lines: VecDeque::new(),
             title: None,
+            prompt: self.db.universe().map(|u| u.bible).unwrap_or_default(),
+            leaving: false,
             shown: 0.0,
             done_at: None,
             last_draw: Instant::now(),
@@ -190,10 +194,21 @@ impl App {
             self.dirty = true;
             return;
         }
+        let quit = matches!(k.code, KeyCode::Char('q') | KeyCode::Char('Q'));
+        if let Some(l) = self.loading.as_mut().filter(|l| l.leaving) {
+            l.leaving = false;
+            self.quit = quit;
+            self.dirty = true;
+            return;
+        }
         let done = self.loading.as_ref().is_some_and(|l| l.done_at.is_some());
         match k.code {
             KeyCode::Esc | KeyCode::F(10) => self.toggle_menu(),
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.quit = true,
+            _ if quit => {
+                if let Some(l) = self.loading.as_mut() {
+                    l.leaving = true;
+                }
+            }
             _ if done => self.finish_loading(),
             _ => {}
         }
@@ -225,14 +240,11 @@ impl App {
         if settled && l.done_at.is_none() {
             l.done_at = Some(Instant::now());
         }
-        let finished = l.done_at.is_some_and(|t| t.elapsed() > HOLD) && l.shown > 0.999;
         if l.last_draw.elapsed() > Duration::from_millis(66) {
             self.dirty = true;
         }
+        // The world waits for a key: whoever started it may have walked away.
         self.loading = Some(l);
-        if finished && self.menu.is_none() {
-            self.finish_loading();
-        }
     }
 
     pub(super) fn compose_loading(&mut self) {
@@ -255,9 +267,27 @@ impl App {
         let tx = x0 + (cw.saturating_sub(title.chars().count() as u16)) / 2;
         self.screen.text(tx, top, &title, if done || l.title.is_some() || !self.genesis_pending { ACCENT } else { DIM }, BG, true);
 
-        // Map and log between the title and the bar.
+        // What it was asked to be, under the name (at most three lines).
         let bar_y = h.saturating_sub(3);
-        let mid_top = top + 2;
+        let mut lines = crate::term::wrap(&format!("“{}”", l.prompt.trim()), cw as usize);
+        let room = (bar_y.saturating_sub(top + 10) as usize).min(3);
+        if l.prompt.trim().is_empty() || room == 0 {
+            lines.clear();
+        }
+        if lines.len() > room {
+            lines.truncate(room);
+            if let Some(last) = lines.last_mut() {
+                let keep: String = last.chars().take((cw as usize).saturating_sub(2)).collect();
+                *last = format!("{}…", keep.trim_end());
+            }
+        }
+        for (i, line) in lines.iter().enumerate() {
+            let lx = x0 + (cw.saturating_sub(line.chars().count() as u16)) / 2;
+            self.screen.text(lx, top + 1 + i as u16, line, TEXT, BG, false);
+        }
+
+        // Map and log between the title and the bar.
+        let mid_top = top + 2 + if lines.is_empty() { 0 } else { lines.len() as u16 + 1 };
         let mid_h = bar_y.saturating_sub(1).saturating_sub(mid_top);
         if cw >= 72 && mid_h >= 6 {
             let map_w = cw * 58 / 100;
@@ -314,12 +344,45 @@ impl App {
             right = "any key to step in".into();
         }
         let rx = (x0 + cw).saturating_sub(right.chars().count() as u16 + 1);
-        self.screen.text(rx, bar_y + 1, &right, if done { TEXT } else { FAINT }, BG, false);
+        let right_fg = if done { mix(TEXT, ACCENT, (t * 2.0).sin() * 0.5 + 0.5) } else { FAINT };
+        self.screen.text(rx, bar_y + 1, &right, right_fg, BG, false);
+        if !done && bar_y + 2 < h {
+            self.screen.text(x0, bar_y + 2, "q leave · Esc settings", FAINT, BG, false);
+        }
+        if l.leaving {
+            self.draw_leaving();
+        }
 
         if self.menu.is_some() {
             self.draw_menu(w, h);
         }
         self.loading = Some(l);
+    }
+
+    /// Asked after `q`: leaving keeps the world, and the rest is made on return.
+    fn draw_leaving(&mut self) {
+        const PANEL: [u8; 3] = [26, 28, 38];
+        let lines: [(&str, [u8; 3], bool); 5] = [
+            ("Leave this world?", ACCENT, true),
+            ("It is saved. Whatever is still being made", TEXT, false),
+            ("carries on when you open it again (pocket list).", TEXT, false),
+            ("", TEXT, false),
+            ("q leave    any other key stay", DIM, false),
+        ];
+        let (w, h) = (self.screen.w, self.screen.h);
+        let bw = (lines.iter().map(|l| l.0.chars().count()).max().unwrap_or(0) as u16 + 6).min(w);
+        let bh = (lines.len() as u16 + 2).min(h);
+        let (bx, by) = ((w - bw) / 2, (h - bh) / 2);
+        for y in by..by + bh {
+            for x in bx..bx + bw {
+                self.screen.set(x, y, Cell { bg: PANEL, ..Cell::BLANK });
+            }
+        }
+        for (i, (text, fg, bold)) in lines.iter().enumerate() {
+            let text: String = text.chars().take(bw.saturating_sub(2) as usize).collect();
+            let x = bx + (bw.saturating_sub(text.chars().count() as u16)) / 2;
+            self.screen.text(x, by + 1 + i as u16, &text, *fg, PANEL, *bold);
+        }
     }
 
     /// The land seen from above, your view direction up, forming outward from you.
@@ -437,16 +500,27 @@ impl App {
             let fresh = k == 0 && line.at.elapsed() < Duration::from_millis(700);
             let fg = if fresh { ACCENT } else { mix(TEXT, FAINT, age * 1.2) };
             if line.verb.is_empty() {
-                let text: String = line.text.chars().take(w).collect();
-                self.screen.text(x, row, &text, mix(DIM, FAINT, age), BG, false);
+                self.screen.text(x, row, &clip_words(&line.text, w), mix(DIM, FAINT, age), BG, false);
                 continue;
             }
             let verb = format!("{:>9}  ", line.verb);
             let x2 = self.screen.text(x, row, &verb, mix(DIM, FOG, age), BG, false);
-            let text: String = line.text.chars().take(w.saturating_sub(11)).collect();
-            self.screen.text(x2, row, &text, fg, BG, false);
+            self.screen.text(x2, row, &clip_words(&line.text, w.saturating_sub(11)), fg, BG, false);
         }
     }
+}
+
+/// Fits `s` in `n` columns, cutting at the last whole word and ending in `…`.
+fn clip_words(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(n.saturating_sub(1)).collect();
+    let cut = match head.rfind(' ') {
+        Some(i) if head[..i].chars().count() * 2 >= n => &head[..i],
+        _ => &head,
+    };
+    format!("{}…", cut.trim_end_matches([' ', ',', ';', ':', '.']))
 }
 
 impl Loading {
@@ -468,6 +542,13 @@ mod tests {
     use parking_lot::Mutex;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn clip_words_cuts_at_a_word() {
+        assert_eq!(super::clip_words("cairns mend what rests near the fire", 30), "cairns mend what rests near…");
+        assert_eq!(super::clip_words("short", 30), "short");
+        assert_eq!(super::clip_words("abcdefghijklmnop", 8), "abcdefg…");
+    }
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(name)).unwrap()
@@ -513,7 +594,7 @@ mod tests {
         assert!(app.loading.is_some(), "a new world starts behind the loading screen");
         let needed = app.settle_regions();
         assert!(!needed.is_empty());
-        let (mut saw_bar, mut saw_names, mut peak) = (false, false, 0.0f32);
+        let (mut saw_bar, mut saw_names, mut peak, mut waited) = (false, false, 0.0f32, false);
         let stop = AtomicBool::new(false);
         let mut sink = Vec::new();
         let mut t = 0.0;
@@ -526,16 +607,56 @@ mod tests {
                 let row: String = (0..a.screen.w).filter_map(|x| a.screen.get(x, a.screen.h - 3).map(|c| c.ch)).collect();
                 saw_bar |= row.contains('━') && row.contains('%');
             }
+            // Ready, it waits for you; a key steps in.
+            if a.loading.as_ref().and_then(|l| l.done_at).is_some_and(|d| d.elapsed() > std::time::Duration::from_secs(2)) {
+                waited = true;
+                a.loading_key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE));
+            }
             t < 90.0 && a.loading.is_some()
         };
         app.run(false, &mut sink, &stop, Some(&mut f)).unwrap();
         assert!(app.loading.is_none(), "the world opened (after {t:.1} s)");
+        assert!(waited, "a ready world waits for a key");
         assert!(saw_bar && saw_names, "bar {saw_bar}, names {saw_names}");
         assert_eq!(app.snap.look.name, "Greywater Coast");
         for r in needed {
             assert!(app.snap.regions.contains_key(&r) || app.regions_failed.contains(&r), "region {r:?} made before entering");
         }
         assert!(!app.sim.cast.npcs.is_empty(), "people are there when you arrive");
+        app.shutdown();
+    }
+
+    /// `q` asks first, says what happens on return, and only a second `q` leaves.
+    #[test]
+    fn leaving_asks_first() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let dir = std::env::temp_dir().join(format!("pocket-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::create(&dir.join("l.pocket"), 99, "a grey coast where the keeper vanished", &serde_json::to_string(&crate::world::Look::default()).unwrap()).unwrap();
+        let live = Arc::new(Mutex::new(Live::default()));
+        let mut model = WorldModel::load(db.clone(), None, live.clone()).unwrap();
+        let snap = model.snapshot().unwrap();
+        let llm = Llm::scripted(db.clone(), Arc::new(|_: &str, _: &[Msg]| "?".into()));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let brain = Brain::start(model, Some(llm.clone()), tx, false);
+        let render = crate::render::cpu::spawn();
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, enhanced: false, truecolor: true, size: (110, 36), llm: Some(llm), genesis: true });
+        app.start_loading();
+        let screen = |a: &mut App| {
+            a.compose_loading();
+            (0..a.screen.h).map(|y| (0..a.screen.w).filter_map(|x| a.screen.get(x, y).map(|c| c.ch)).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let key = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let shown = screen(&mut app);
+        assert!(shown.contains("a grey coast where the keeper vanished") && shown.contains("q leave · Esc settings"), "{shown}");
+        app.loading_key(key('q'));
+        assert!(!app.quit && screen(&mut app).contains("Leave this world?"));
+        app.loading_key(key('x'));
+        assert!(!app.quit && !screen(&mut app).contains("Leave this world?"), "any other key stays");
+        app.loading_key(key('q'));
+        app.loading_key(key('q'));
+        assert!(app.quit);
         app.shutdown();
     }
 }

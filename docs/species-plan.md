@@ -13,10 +13,10 @@ README lists them). Where the build differs from the plan:
 - **Spooking:** besides predators that would hunt them, plant eaters with any
   wariness keep their distance from meat eaters (a horse from a wolf it could
   kick). That is what makes a mount bolt.
-- **Hunting** is off by default: predators chase, then give up. With
-  `POCKET_SIM_HUNTING=1` they kill what they catch; the dead stay in the save.
-- **Beings made by deeds** sit behind `POCKET_SIM_CREATE_BEINGS` everywhere, not only
-  in earth worlds. Curses need a world with its own properties (or
+- **Hunting** is on by default: predators kill what they catch; the dead stay in
+  the save. With `POCKET_SIM_HUNTING=0` they chase, then give up.
+- **Beings made by deeds** are allowed by default, everywhere;
+  `POCKET_SIM_CREATE_BEINGS=0` turns them off. Curses need a world with its own properties (or
   `POCKET_SIM_TRANSFORM`).
 - **Drift** is judged by a line's three youngest members. Variety and species names
   are made from the drift ("tame wolves"), without an LLM call. A new species keeps
@@ -341,7 +341,7 @@ body code.
   range. Memories and relationships survive a transform.
 - **Create means a new being.** `/make a clay golem` or a wizard's plan can create
   a being of an existing or new species. The universe setting `sim.create_beings`
-  (off by default in earth worlds) gates it, it goes through the species
+  (on by default) gates it, it goes through the species
   pipeline, and it counts against the creature caps. The maker becomes the
   creature's owner or parent.
 

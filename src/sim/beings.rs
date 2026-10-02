@@ -347,11 +347,17 @@ impl Sim {
 
     /// Run from `from`; a herd runs together.
     pub fn flee(&mut self, cid: i64, from: ActorId, at: Vec3) {
+        let what = self.actor_name(from);
+        self.run_from(cid, &what, Some(from.key()), at);
+    }
+
+    /// Run from whatever is at `at` (a being, or a thing that frightened
+    /// them: `what` names it); a herd runs together.
+    pub fn run_from(&mut self, cid: i64, what: &str, subject: Option<String>, at: Vec3) {
         let me = ActorId::Npc(cid);
         let Some(pos) = self.actor(me).map(|a| a.pos) else { return };
         let away = (pos - at).normalize_or_zero();
         let away = if away.length() < 0.5 { Vec3::X } else { away };
-        let what = self.actor_name(from);
         let group = self.species_of(me).is_some_and(|s| s.social == crate::world::species::Social::Herd);
         if let Some(n) = self.cast.get_mut(cid) {
             n.frights = n.frights.saturating_add(1);
@@ -382,7 +388,7 @@ impl Sim {
         if !recent {
             let name = self.actor_name(me);
             let msg = if group { format!("{name} and the herd bolt from {what}") } else { format!("{name} runs from {what}") };
-            self.event("fled", Some(me), Some(from.key()), msg.clone(), Some(pos), json!({ "herd": group }));
+            self.event("fled", Some(me), subject, msg.clone(), Some(pos), json!({ "herd": group }));
             self.note_near(pos, 30.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
             self.witness(pos, 25.0, &msg, 0.35, &[me]);
             if !self.speaks(me) {
@@ -798,7 +804,7 @@ impl Sim {
                     let id = self.next_id();
                     let key = m.name.trim().to_lowercase();
                     self.interp.building_names.insert(key, id);
-                    self.interp.building.insert(id, super::interp::PendingBuild { name: m.name.clone(), wear_on: Some((b, actor)), ..Default::default() });
+                    self.interp.building.insert(id, super::interp::PendingBuild { name: m.name.clone(), by: Some(actor), wear_on: Some((b, actor)), ..Default::default() });
                     let props: Vec<(String, f32)> = m.props.iter().map(|(k, v)| (k.clone(), *v)).collect();
                     let desc = if m.description.is_empty() { m.name.clone() } else { m.description.clone() };
                     self.request_now(super::Request::BuildType { id, name: m.name.clone(), description: desc, size: m.size_m.unwrap_or([0.6, 0.6, 0.6]), props, fits: Some(body) });
@@ -837,7 +843,7 @@ impl Sim {
         if actor != b {
             let fed = fx.needs.get("hunger").is_some_and(|v| *v < 0.0);
             let (an, bn) = (self.actor_name(actor), self.actor_name(b));
-            self.event("deed_on", Some(actor), Some(b.key()), format!("{an} did something to {bn}"), self.actor(b).map(|a| a.pos), json!({ "fed": fed, "mood": !fx.feel.is_empty(), "looks": !fx.look.is_empty() }));
+            self.event("deed_on", Some(actor), Some(b.key()), format!("{an} did something to {bn}"), self.actor(b).map(|a| a.pos), json!({ "fed": fed, "mood": !fx.feel.is_empty(), "looks": !fx.look.is_empty(), "trust": fx.feel.get("trust").copied().unwrap_or(0.0) }));
         }
     }
 
@@ -951,7 +957,10 @@ impl Sim {
         let msg = format!("{maker} brought {name} into the world");
         self.event("made_being", Some(by), Some(me.key()), msg.clone(), Some(at), json!({ "species": sp.name }));
         self.note_near(at, 30.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
-        self.witness(at, 30.0, &msg, 0.7, &[]);
+        let extent = self.actor(me).map(|a| a.dims.height).unwrap_or(1.0);
+        let sight = super::surprise::Sight { how: super::surprise::Arrival::FromNowhere, extent, strange: 0.0 };
+        let tell = format!("{}, near you.", super::physics::cap(&msg));
+        self.startle(30.0, &super::surprise::News { at, sight, memory: &format!("{msg}."), importance: 0.7, event: "new_being", tell: &tell, what: &name }, &[me]);
         Ok(id)
     }
 }

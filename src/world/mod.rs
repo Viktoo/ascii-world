@@ -43,11 +43,20 @@ pub struct Look {
     pub palette: Palette,
     #[serde(default = "crate::terrain::default_biomes")]
     pub biomes: Vec<Biome>,
+    /// The whole land, written at genesis from the player's prompt: what
+    /// every region and request is told the universe is. Empty in older
+    /// worlds, which keep using the prompt itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub land: String,
+    /// The prompt's own situation, where the traveller begins: only the
+    /// starting region is planned around it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub start: String,
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes() }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new() }
     }
 }
 

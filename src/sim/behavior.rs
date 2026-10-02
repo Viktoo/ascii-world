@@ -152,7 +152,7 @@ impl Sim {
         match e {
             Effect::Say => {
                 let Some(line) = meta.says.get(i).cloned() else { return };
-                self.note_near(pos, 20.0, Note::Line { who: super::physics::cap(&name), text: line.clone() });
+                self.note_near(pos, 20.0, Note::Line { id: None, who: super::physics::cap(&name), text: line.clone() });
                 self.event("said", None, Some(format!("thing:{id}")), format!("the {name} said: \"{line}\""), Some(pos), json!({}));
             }
             Effect::Sound => {
@@ -209,7 +209,11 @@ impl Sim {
             }
             self.event("transformed", None, Some(format!("thing:{id}")), format!("the {from_name} became {} {nname}", super::article(&nname)), Some(t.pos), json!({ "into": nname }));
             self.note_near(t.pos, 30.0, Note::Info(format!("The {from_name} becomes {} {nname}.", super::article(&nname))));
-            self.witness(t.pos, 20.0, &format!("I saw the {from_name} turn into {} {nname}.", super::article(&nname)), 0.4, &[]);
+            let sight = self.sight_of(&nty, t.scale, super::surprise::Arrival::Changed);
+            let memory = format!("I saw the {from_name} turn into {} {nname}.", super::article(&nname));
+            let tell = format!("The {from_name} near you just turned into {} {nname}.", super::article(&nname));
+            let what = format!("the {nname}");
+            self.startle(20.0, &super::surprise::News { at: t.pos, sight, memory: &memory, importance: 0.4, event: "changed", tell: &tell, what: &what }, &[]);
         } else {
             let a = self.rand() * std::f32::consts::TAU;
             let at = t.pos + Vec3::new(a.cos(), 0.0, a.sin()) * (0.5 + t.scale * 0.3);

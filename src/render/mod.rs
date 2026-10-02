@@ -143,6 +143,12 @@ impl GpuInst {
         let sc = self.pos_scale[3];
         [(c * d.x - s * d.z) / sc, d.y / sc, (s * d.x + c * d.z) / sc]
     }
+    /// Local → world; inverse of `to_local`.
+    pub fn from_local(&self, l: Vec3) -> Vec3 {
+        let (c, s) = (self.rot[0], self.rot[1]);
+        let l = l * self.pos_scale[3];
+        self.pos() + Vec3::new(c * l.x + s * l.z, l.y, -s * l.x + c * l.z)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

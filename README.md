@@ -20,9 +20,12 @@ line that people keep feeding gets tamer until it has a name of its own.
 
 ```bash
 export ANTHROPIC_API_KEY=...        # or POCKET_LLM_BASE_URL for any OpenAI-compatible endpoint
-pocket new "a rainy coastal valley where the lighthouse keeper vanished"
-pocket                              # reopen your last universe
-pocket list                         # choose a world with the arrow keys, or press n for a new one
+pocket new "a rainy coastal valley where the lighthouse keeper vanished"   # check or edit it, Enter to begin
+pocket new                          # opens on a random prompt: Enter takes it, Tab rolls
+                                    # another, typing replaces it, the arrows edit it
+pocket                              # reopen your last universe (or start one, the first time)
+pocket list                         # choose a world with the arrow keys, d to delete one, or n
+                                    # for a new one (the same new-world screen)
 ```
 
 ## Build
@@ -92,9 +95,9 @@ relationships, recent decisions and memories.
 | `POCKET_SIM_MEDIUM_HZ` | Ticks per second at medium distance (default 2). |
 | `POCKET_SIM_FAR` | `frozen` (default) or `catchup:HOURS`: when you come back, run the missed time quickly with rules only. |
 | `POCKET_LLM_PER_MIN` | Budget of LLM decisions per real minute for the living world (default 12; nearest characters first). |
-| `POCKET_SIM_HUNTING` | `1`: predators kill what they catch (default: they chase, then give up). |
+| `POCKET_SIM_HUNTING` | `0`: predators only chase, then give up (default: they kill what they catch). |
 | `POCKET_SIM_TRANSFORM` | `1`: beings can be turned into other species even in a world without forces of its own. |
-| `POCKET_SIM_CREATE_BEINGS` | `1`: deeds may bring new beings into the world (`/conjure a hound`). |
+| `POCKET_SIM_CREATE_BEINGS` | `0`: actions can't bring new beings into the world (default: they can, `/conjure a hound`). |
 | `POCKET_SIM_LIFE_SPEED` | How fast lives go: births and growing up (default 1; 0 stops births). |
 | `POCKET_SIM_MAX_CREATURES` | How many of one kind a neighbourhood holds before births stop (default 24). |
 | `POCKET_SIM_MAX_AWAKE`, `POCKET_SIM_MAX_FLAMES`, `POCKET_SIM_MAX_THINGS`, `POCKET_SIM_CHAT_RANGE`, `POCKET_SIM_RULES_HZ`, `POCKET_SIM_BEHAVIOR_HZ`, `POCKET_SIM_MEDIUM_LLM` | Further limits. Each can also be set per universe in its `kv` table as `sim.<name>`. |
@@ -142,6 +145,12 @@ region, one call plans it (name, mood, lore facts, landmarks, a settlement, char
 new object types are generated, and the result fades in (dithered) when ready, with a
 log line like *"The fog lifts over Pinewood Vale."* Region planning waits for the
 universe's look (palette, biomes, base types) from the first call at `pocket new`.
+That call also splits the prompt into the whole **land** and where the traveller
+**starts**: every region is planned from the land, and only the first one from the start,
+so a one-village prompt doesn't repeat in every region. Random prompts
+(`src/random_world.rs`) put together one reviewed part from each list in
+`src/builtin/prompts.json` (a land, sometimes its peoples and a force, a mood, a start);
+`pocket prompts --sample 50` prints some to review.
 
 **Object types** (`src/lang/`). The model writes a small module in a strict JS subset:
 
@@ -210,15 +219,23 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   are spheres against the terrain and the signed distance fields of nearby solids, so a
   ball bounces off any shape the LLM wrote. Things at rest sleep. A thing falling through
   an opening (a hoop, a well) is noticed, whatever the shape.
-- *Properties and rules.* 18 built-in properties (`mass`, `bounce`, `burns`, `temp`,
+- *Properties and rules.* 19 built-in properties (`mass`, `bounce`, `burns`, `temp`,
   `wet`, `light`, `edible`, `alive`, `fragile`, `fire`, `fuel`, `heat`, `char`,
-  `health`, `growth`, …). Rules are data (`src/sim/rules.rs`), applied a few times a
+  `health`, `growth`, `strange`, …). Rules are data (`src/sim/rules.rs`), applied a few times a
   second to live things, changed scatter cells and placed objects next to something
   happening: heat spreads and ignites what burns, fire consumes fuel and chars, water
   soaks and douses, living things grow, broken lamps spill burning oil. A universe's
   genesis can add its own properties and rules (a curse that spreads by touch); they
   are tested in a small scene first and rejected if they blow up or spread to
   everything at once. Burnt and eaten plants grow back after a day or so.
+- *Surprise* (`src/sim/surprise.rs`). One number, 0..1, for how much something breaks
+  what an onlooker thinks can happen: from how it came about (made by hand, changed,
+  out of nowhere), its size against theirs, and its `strange` property (how out of place
+  it is in this universe, set by the LLM when the type is written). Each onlooker feels
+  it less the more wonders they have seen lately (that wears off over a couple of days).
+  It sets how much they remember and retell it, whether their planner hears about it,
+  and, past a shock, whether they drop what they are doing; the timid run when there is
+  no planner to think it over. Gossip retells the most surprising news first.
 - *Looks.* Charred, wet, glowing and highlighted are generic per-instance effects in the
   shader; fires get animated flames and up to 8 point lights light the night.
 - *The interpreter.* When an action falls outside the rules and the things' own code,

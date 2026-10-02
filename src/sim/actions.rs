@@ -7,7 +7,10 @@ use super::actor::{GestureKind, GestureRun, Task};
 use super::props::*;
 use super::persist;
 use super::things::{Origin, Thing, ThingId};
+use super::render::thing_inst;
 use super::{ActorId, Note, Request, Sim, Target, article};
+use crate::render::GpuInst;
+use crate::world::TypeEntry;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -225,10 +228,45 @@ pub struct Resolved {
     pub target: Target,
     pub pos: Vec3,
     pub name: String,
+    /// Its placed shape and local bounding box (lo, hi), for reach.
+    pub bounds: Option<(GpuInst, Vec3, Vec3)>,
+}
+
+impl Resolved {
+    fn new(target: Target, pos: Vec3, name: String) -> Self {
+        Resolved { target, pos, name, bounds: None }
+    }
+
+    fn boxed(target: Target, pos: Vec3, name: String, inst: GpuInst, ty: &TypeEntry) -> Self {
+        let b = ty.ct.meta.bounds;
+        let bounds = Some((inst, Vec3::new(-b[0], ty.bottom, -b[2]), Vec3::new(b[0], ty.top.max(ty.bottom), b[2])));
+        Resolved { target, pos, name, bounds }
+    }
+
+    /// The point of it nearest `from`: on its bounding box, so a big
+    /// building is in reach from beside its wall, not just its middle.
+    pub fn nearest(&self, from: Vec3) -> Vec3 {
+        match &self.bounds {
+            Some((inst, lo, hi)) => inst.from_local(Vec3::from(inst.to_local(from)).clamp(*lo, *hi)),
+            None => self.pos,
+        }
+    }
 }
 
 impl Sim {
     // ------------------------------------------------------------ targets
+
+    /// Ok if `who` can reach some part of it; else how far its nearest part is.
+    fn reach(&self, who: ActorId, r: &Resolved) -> Result<(), ActErr> {
+        let me = self.actor(who).map(|a| a.pos).unwrap_or(r.pos);
+        let p = r.nearest(me);
+        if self.in_reach(who, p) {
+            return Ok(());
+        }
+        // Walk towards its middle (characters' plans judge "out of reach"
+        // from there); the distance told is to its nearest part.
+        Err(ActErr::TooFar { at: r.pos, dist: (p - me).length() })
+    }
 
     /// Make a target concrete: names become the nearest match, and the result
     /// carries a position and a display name.
@@ -239,11 +277,11 @@ impl Sim {
                 let th = self.things.get(*id)?;
                 let ty = self.snap.type_of(th.type_id)?;
                 let (c, _) = th.proxy(ty);
-                Some(Resolved { target: t.clone(), pos: c, name: ty.name().to_string() })
+                Some(Resolved::boxed(t.clone(), c, ty.name().to_string(), thing_inst(th, ty, [0.0; 4]), ty))
             }
             Target::Actor(a) => {
                 let p = self.actor(*a)?.pos;
-                Some(Resolved { target: t.clone(), pos: p, name: self.actor_name(*a) })
+                Some(Resolved::new(t.clone(), p, self.actor_name(*a)))
             }
             Target::Instance(i) => {
                 if let Some(id) = self.things.by_instance.get(i).copied() {
@@ -251,7 +289,7 @@ impl Sim {
                 }
                 let p = self.snap.instances.iter().find(|p| p.id == *i)?;
                 let ty = self.snap.type_of(p.type_id)?;
-                Some(Resolved { target: t.clone(), pos: p.pos + Vec3::Y * ty.sphere_cy.min(1.0) * p.scale, name: ty.name().to_string() })
+                Some(Resolved::boxed(t.clone(), p.pos + Vec3::Y * ty.sphere_cy.min(1.0) * p.scale, ty.name().to_string(), p.gpu(ty, 1.0), ty))
             }
             Target::Cell(c) => {
                 let cell = (c[0], c[1]);
@@ -261,9 +299,9 @@ impl Sim {
                 let snap = self.snap.clone();
                 let it = self.cache.item_at(&snap, cell)?;
                 let ty = snap.type_of(it.inst.info[0])?;
-                Some(Resolved { target: t.clone(), pos: it.inst.pos(), name: ty.name().to_string() })
+                Some(Resolved::boxed(t.clone(), it.inst.pos(), ty.name().to_string(), it.inst, ty))
             }
-            Target::Point(p) => Some(Resolved { target: t.clone(), pos: Vec3::from(*p), name: "there".into() }),
+            Target::Point(p) => Some(Resolved::new(t.clone(), Vec3::from(*p), "there".into())),
             Target::Name(n) => {
                 let r = self.find_named(n, origin, from)?;
                 self.resolve(&r, from)
@@ -490,8 +528,8 @@ impl Sim {
                 let id = match target {
                     Some(t) => {
                         let r = self.resolve(&t, who).ok_or_else(|| not_found(&t))?;
-                        if !self.in_reach(who, r.pos) && me.held.is_none_or(|h| Target::Thing(h) != r.target) {
-                            return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
+                        if me.held.is_none_or(|h| Target::Thing(h) != r.target) {
+                            self.reach(who, &r)?;
                         }
                         self.liven(&r.target).ok_or(ActErr::Fail("can't eat that".into()))?
                     }
@@ -532,7 +570,7 @@ impl Sim {
                 } else {
                     self.request(req, me.pos);
                 }
-                self.interp.creating.insert(id, (who, self.t));
+                self.interp.creating.insert(id, (who, self.t, text.clone()));
                 self.event("create", Some(who), None, format!("{name} sets out to make {text}"), Some(me.pos), json!({ "text": text, "id": id }));
                 Ok(Outcome { ok: true, msg: format!("{name} starts making {text}"), pending: Some(id), thing: None })
             }
@@ -615,9 +653,7 @@ impl Sim {
                 let id = match &target {
                     Some(t) => {
                         let r = self.resolve(t, who).ok_or_else(|| not_found(t))?;
-                        if !self.in_reach(who, r.pos) {
-                            return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
-                        }
+                        self.reach(who, &r)?;
                         self.liven(&r.target).ok_or(ActErr::Fail(format!("the {} can't be worn", r.name)))?
                     }
                     None => me.held.ok_or(ActErr::Fail("not holding anything to put on".into()))?,
@@ -724,9 +760,7 @@ impl Sim {
             }
             return fail(format!("hands are full: drop the {} first", self.thing_name(h)));
         }
-        if !self.in_reach(who, r.pos) {
-            return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
-        }
+        self.reach(who, &r)?;
         let id = self.liven(&r.target).ok_or(ActErr::Fail(format!("the {} can't be picked up", r.name)))?;
         let t = self.things.get(id).cloned().ok_or(ActErr::Fail("it's gone".into()))?;
         if t.anchored {
@@ -898,27 +932,27 @@ impl Sim {
         // Which is the tool, which the object.
         let held_t = me.held.map(Target::Thing);
         let (tool, object) = match (rt, ro) {
-            (None, None) => (held_t.clone().map(|t| Resolved { pos: me.pos, name: self.thing_name(me.held.unwrap_or(0)), target: t }).ok_or(ActErr::Fail("use what?".into()))?, None),
+            (None, None) => (held_t.clone().map(|t| Resolved::new(t, me.pos, self.thing_name(me.held.unwrap_or(0)))).ok_or(ActErr::Fail("use what?".into()))?, None),
             (Some(x), None) => {
                 let is_held = held_t.as_ref().is_some_and(|h| self.liven_peek(&x.target).map(Target::Thing).as_ref() == Some(h));
                 match (&held_t, is_held) {
-                    (Some(h), false) if !matches!(x.target, Target::Point(_)) => (Resolved { target: h.clone(), pos: me.pos, name: self.thing_name(me.held.unwrap_or(0)) }, Some(x)),
+                    (Some(h), false) if !matches!(x.target, Target::Point(_)) => (Resolved::new(h.clone(), me.pos, self.thing_name(me.held.unwrap_or(0))), Some(x)),
                     _ => (x, None),
                 }
             }
             (Some(x), Some(y)) => (x, Some(y)),
-            (None, Some(y)) => (held_t.clone().map(|t| Resolved { pos: me.pos, name: self.thing_name(me.held.unwrap_or(0)), target: t }).ok_or(ActErr::Fail("use what on it?".into()))?, Some(y)),
+            (None, Some(y)) => (held_t.clone().map(|t| Resolved::new(t, me.pos, self.thing_name(me.held.unwrap_or(0)))).ok_or(ActErr::Fail("use what on it?".into()))?, Some(y)),
         };
         if let Target::Actor(_) = tool.target {
             return fail("use a thing, not a person");
         }
         let tool_held = held_t.as_ref().is_some_and(|h| self.liven_peek(&tool.target).map(Target::Thing).as_ref() == Some(h));
-        if !tool_held && !self.in_reach(who, tool.pos) {
-            return Err(ActErr::TooFar { at: tool.pos, dist: (tool.pos - me.pos).length() });
+        if !tool_held {
+            self.reach(who, &tool)?;
         }
         if let Some(o) = &object {
-            if !matches!(o.target, Target::Point(_)) && !self.in_reach(who, o.pos) {
-                return Err(ActErr::TooFar { at: o.pos, dist: (o.pos - me.pos).length() });
+            if !matches!(o.target, Target::Point(_)) {
+                self.reach(who, o)?;
             }
         }
         let a = self.liven(&tool.target).ok_or(ActErr::Fail(format!("can't use the {}", tool.name)))?;
@@ -1003,7 +1037,7 @@ impl Sim {
             }
         }
         if who != ActorId::Player {
-            self.note_near(at, 22.0, Note::Line { who: name.clone(), text: text.to_string() });
+            self.note_near(at, 22.0, Note::Line { id: Some(who), who: name.clone(), text: text.to_string() });
         }
         let what = match &to_name {
             Some(n) => format!("{name} said to {n}: \"{text}\""),

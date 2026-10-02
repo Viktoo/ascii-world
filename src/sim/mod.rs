@@ -29,6 +29,7 @@ pub mod render;
 pub mod rules;
 pub mod shape;
 pub mod social;
+pub mod surprise;
 pub mod things;
 
 use crate::db::Db;
@@ -160,10 +161,13 @@ impl Request {
 /// Something for the player's chat log.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Note {
-    /// Someone says something the player hears.
-    Line { who: String, text: String },
+    /// Someone says something the player hears (`id` is who, when it is a being).
+    Line { id: Option<ActorId>, who: String, text: String },
     /// Something the player sees happen.
     Info(String),
+    /// What the player's deed changed that the eye may miss ("the moth:
+    /// trust ↓"), under the deed's story.
+    Effect(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -285,8 +289,8 @@ pub struct Sim {
     pub player_plan: VecDeque<actions::Action>,
     /// Placed objects that appeared in the last flips: (id, when).
     fresh: Vec<(i64, f64)>,
-    /// Placed objects someone is known to have made (told by `on_created`).
-    pub made: std::collections::HashSet<i64>,
+    /// Placed objects someone is known to have made, and who (told by `on_created`).
+    pub made: std::collections::HashMap<i64, ActorId>,
 }
 
 impl Sim {
@@ -328,7 +332,7 @@ impl Sim {
             recent_player: VecDeque::new(),
             player_plan: VecDeque::new(),
             fresh: Vec::new(),
-            made: std::collections::HashSet::new(),
+            made: std::collections::HashMap::new(),
         };
         sim.player.dims = traveller_dims(&snap);
         sim.load_universe_rules();
@@ -675,29 +679,42 @@ impl Sim {
         std::mem::take(&mut self.notes)
     }
 
-    /// People near something that just appeared notice it (unless someone
-    /// they saw made it: that is told by `on_created`).
+    /// People near something that just appeared notice it, as surprised as
+    /// it makes them (unless they saw a character make it: that is told by
+    /// `on_created`). The most striking thing is taken in first.
     pub fn notice_fresh(&mut self) {
         let t = self.t;
         let (due, wait): (Vec<(i64, f64)>, Vec<(i64, f64)>) = self.fresh.drain(..).partition(|(_, at)| t - at >= 0.5);
         self.fresh = wait;
+        let mut seen = Vec::new();
         for (id, _) in due {
-            if self.made.contains(&id) {
+            let by = self.made.get(&id).copied();
+            if by.is_some_and(|w| w != ActorId::Player) {
                 continue;
             }
             let Some(p) = self.snap.instances.iter().find(|p| p.id == id).cloned() else { continue };
             if self.dist_to_player(p.pos) > 70.0 {
                 continue;
             }
-            let Some(name) = self.snap.type_of(p.type_id).map(|t| t.name().to_string()) else { continue };
-            let near: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| !n.dead && (n.a.pos - p.pos).length() < 60.0).map(|n| (n.def.id, n.a.pos)).collect();
-            for (cid, at) in near {
-                let dir = compass(p.pos - at);
-                self.out.push(Request::Witness { cid, text: format!("A {name} appeared {dir} of me, out of nowhere, after the traveller arrived."), importance: 0.6 });
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.curiosity_bump(0.5);
-                }
-                self.ask(cid, "new_building", &format!("A {name} just appeared {dir} of you, out of nowhere."));
+            let Some(ty) = self.snap.type_of(p.type_id).cloned() else { continue };
+            let sight = self.sight_of(&ty, p.scale, surprise::Arrival::FromNowhere);
+            seen.push((self.plain_surprise(sight), p.pos, ty.name().to_string(), sight, by.is_some()));
+        }
+        seen.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, at, name, sight, by_traveller) in seen {
+            // The traveller asked for it out loud, right there: that is seen too.
+            let there = by_traveller && self.dist_to_player(at) < 30.0;
+            let near: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| !n.dead && !n.a.asleep && (n.a.pos - at).length() < 60.0).map(|n| (n.def.id, n.a.pos)).collect();
+            for (cid, pos) in near {
+                let dir = compass(at - pos);
+                let (memory, tell) = if there {
+                    (format!("A {name} appeared {dir} of me, out of nowhere, right where the traveller stood."), format!("A {name} just appeared {dir} of you, out of nowhere, right where the traveller is standing."))
+                } else {
+                    (format!("A {name} appeared {dir} of me, out of nowhere, after the traveller arrived."), format!("A {name} just appeared {dir} of you, out of nowhere."))
+                };
+                let what = format!("the {name}");
+                let news = surprise::News { at, sight, memory: &memory, importance: 0.5, event: "new_building", tell: &tell, what: &what };
+                self.startle_one(cid, &news);
             }
         }
     }

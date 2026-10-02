@@ -16,6 +16,7 @@ mod pace;
 mod picker;
 mod png;
 mod prompts;
+mod random_world;
 mod render;
 mod settings;
 mod sim;
@@ -33,7 +34,9 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
 
-  pocket new \"<prompt>\" [--out FILE]   create a universe and step into it
+  pocket new [\"<prompt>\"] [--out FILE]   create a universe: check or edit the prompt
+                                         (a random one if none given), then step in
+  pocket prompts [--sample N]            print N random prompts (default 20)
   pocket [FILE]                          reopen FILE, or your last universe
   pocket list                            pick one of your worlds (or start a new one)
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR]
@@ -80,7 +83,9 @@ fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Some("new") => {
-            let prompt = args.get(1).filter(|a| !a.starts_with("--")).cloned().context("usage: pocket new \"<prompt>\"")?;
+            // Every new world begins on the new-world screen: the prompt given,
+            // to check, or a random one to keep or change.
+            let Some(prompt) = picker::compose(args.get(1).filter(|a| !a.starts_with("--")).map(String::as_str))? else { return Ok(()) };
             let path = match flag(&args, "--out") {
                 Some(p) => PathBuf::from(p),
                 None => default_path(&prompt),
@@ -97,6 +102,13 @@ fn run(args: Vec<String>) -> Result<()> {
             }
             picker::Choice::Quit => Ok(()),
         },
+        Some("prompts") => {
+            let n = flag(&args, "--sample").and_then(|n| n.parse().ok()).unwrap_or(20);
+            for p in random_world::sample(n) {
+                println!("{p}\n");
+            }
+            Ok(())
+        }
         Some("open") => play(&PathBuf::from(args.get(1).context("usage: pocket open FILE")?), false),
         Some("snapshot") => snapshot(&args[1..]),
         Some("describe") => describe(&args[1..]),
@@ -113,10 +125,15 @@ fn run(args: Vec<String>) -> Result<()> {
             let last = std::fs::read_to_string(log::dir().join("last")).ok().map(|s| PathBuf::from(s.trim()));
             match last {
                 Some(p) if p.exists() => play(&p, false),
-                _ => {
-                    println!("{USAGE}\n\nNo universe yet. Try:  pocket new \"a rainy coastal valley where the lighthouse keeper vanished\"");
-                    Ok(())
-                }
+                // No universe yet: start one.
+                _ => match picker::compose(None)? {
+                    Some(prompt) => {
+                        let path = default_path(&prompt);
+                        create_universe(&path, &prompt)?;
+                        play(&path, true)
+                    }
+                    None => Ok(()),
+                },
             }
         }
     }

@@ -124,6 +124,11 @@ pub struct Npc {
     pub lineage: i64,
     pub last_birth: f64,
     pub frights: u32,
+    /// How used to wonders they are (see `surprise`), as of `habit_at`.
+    pub habit: f32,
+    pub habit_at: f64,
+    /// When something last made them drop everything.
+    pub shock_at: f64,
     /// Grown-up fraction (0.3 newborn … 1 adult).
     pub growth: f32,
 }
@@ -139,7 +144,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, work: self.work() }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work() }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -271,6 +276,9 @@ impl Cast {
             lineage: if s.lineage != 0 { s.lineage } else { def.id },
             last_birth: s.last_birth,
             frights: s.frights,
+            habit: s.habit,
+            habit_at: s.t,
+            shock_at: f64::MIN,
             growth: if s.born > 0.0 { 0.3 } else { 1.0 },
         };
         if let Some(w) = s.work.as_ref() {
@@ -1323,7 +1331,7 @@ impl Sim {
     }
 
     /// Ask the planner what to do about an event. Returns whether it was asked.
-    fn ask_planner(&mut self, cid: i64, event: &str, what: &str, now: bool) -> bool {
+    pub(super) fn ask_planner(&mut self, cid: i64, event: &str, what: &str, now: bool) -> bool {
         if !self.has_llm || self.mind_of(ActorId::Npc(cid)) != crate::world::species::Mind::Sapient {
             return false;
         }

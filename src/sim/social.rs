@@ -339,7 +339,7 @@ impl Sim {
         if to == ActorId::Player {
             self.notes.push(Note::Info(format!("{} asks you: {what}? (y / n)", super::physics::cap(&fname))));
         } else if from != ActorId::Player {
-            self.note_near(at, 20.0, Note::Line { who: fname.clone(), text: format!("{}, {what}?", tname) });
+            self.note_near(at, 20.0, Note::Line { id: Some(from), who: fname.clone(), text: format!("{}, {what}?", tname) });
         }
         Ok(Outcome::ok(format!("{fname} asks {tname} to {what}")))
     }
@@ -1016,9 +1016,18 @@ impl Sim {
         let pa = self.actor(ActorId::Npc(a)).map(|x| x.pos).unwrap_or_default();
         let pb = self.actor(ActorId::Npc(b)).map(|x| x.pos).unwrap_or_default();
         let notable = ["ignited", "broke", "through", "made", "transformed", "burnt_out", "caught", "carry", "hug", "kiss", "spawned"];
-        let seen = self.log.recent.iter().rev().take(400).find(|e| {
-            notable.contains(&e.kind.as_str()) && t - e.t < 600.0 && e.pos.is_some_and(|p| (Vec3::from(p) - pa).length() < 45.0) && e.actor != Some(ActorId::Npc(a)) && e.actor != Some(ActorId::Npc(b))
-        });
+        // The most surprising wins; a shock stays news for longer.
+        let surprise = |e: &super::SimEvent| e.data.get("surprise").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+        let seen = self
+            .log
+            .recent
+            .iter()
+            .rev()
+            .take(400)
+            .filter(|e| {
+                notable.contains(&e.kind.as_str()) && t - e.t < 600.0 * (1.0 + 2.0 * surprise(e) as f64) && e.pos.is_some_and(|p| (Vec3::from(p) - pa).length() < 45.0) && e.actor != Some(ActorId::Npc(a)) && e.actor != Some(ActorId::Npc(b))
+            })
+            .fold(None::<&super::SimEvent>, |best, e| if best.is_none_or(|x| surprise(e) > surprise(x)) { Some(e) } else { best });
         match seen {
             Some(e) => {
                 let both = e.pos.is_some_and(|p| (Vec3::from(p) - pb).length() < 45.0);

@@ -59,7 +59,7 @@ Maths: abs, min (2–8 args), max (2–8 args), clamp(x, lo, hi), floor, ceil, r
 ## Properties (meta.props)
 Every thing has a few numbers the world's rules act on. Give the ones that matter for this object; the rest default sensibly from tags and size:
 __PROPS__
-Examples: a wooden hut { burns: 0.4 }; a lantern { light: 1, heat: 120, fragile: 0.6, burns: 0.6, fuel: 0.5 } (oil inside: if it breaks, it burns); a ball { bounce: 0.8, mass: 0.6 }; an apple { edible: 0.4, mass: 0.2 }; a bucket of water { wet: 1, mass: 8 }; a sapling { alive: 1, growth: 0.1, burns: 0.5 }. Only use the property names listed. The world does the rest: fire spreads to what burns, water puts it out, fragile things break when hit hard, living things grow.
+Examples: a wooden hut { burns: 0.4 }; a lantern { light: 1, heat: 120, fragile: 0.6, burns: 0.6, fuel: 0.5 } (oil inside: if it breaks, it burns); a ball { bounce: 0.8, mass: 0.6 }; an apple { edible: 0.4, mass: 0.2 }; a bucket of water { wet: 1, mass: 8 }; a sapling { alive: 1, growth: 0.1, burns: 0.5 }; a motor car in a world of horse carts { mass: 1200, strange: 0.9 }. Only use the property names listed. The world does the rest: fire spreads to what burns, water puts it out, fragile things break when hit hard, living things grow.
 
 ## Behaviour (optional): tick, use, touch
 An object can act on its own with these optional exports. They run on the CPU a few times a second near people; they never draw anything themselves, but the shape and colour functions can read their state as k.s0 … k.s7.
@@ -113,6 +113,8 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 1. One ```json block:
 {
   "name": "short name of the land",
+  "land": "the whole land in one or two sentences",
+  "start": "where the traveller begins, in one sentence",
   "palette": {
     "sky_day": [r,g,b], "horizon_day": [r,g,b], "sky_dusk": [r,g,b], "horizon_dusk": [r,g,b],
     "sky_night": [r,g,b], "horizon_night": [r,g,b], "sun": [r,g,b], "water": [r,g,b],
@@ -123,6 +125,7 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
       "scatter": { "tree": 0.3, "bush": 0.5, "rock": 0.2, "grass": 2.0 } }
   ]
 }
+- land and start: the description above may name one place or one event; the world is far larger. "land" widens it into a whole country with room for many different places (other villages, wild country, neighbours who live differently): its geography, peoples, ways of life and any strangeness. "start" keeps the particular place and situation the description names (the vanished keeper, the wedding), or "" if it names none. Every region is planned from "land"; only the traveller's first region from "start".
 - 3 to 6 biomes. base = mean ground height in metres (-10..30; below 0 makes lakes and coast), amp = hill height in metres (2..50; keep towns, cities and farmland at 2..6 so buildings stand on level ground, and save big hills for wild land), rough 0 (rolling) .. 1 (craggy), ground/ground2 = two ground colours that blend.
 - scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3). Use the tags of your base types below; "grass" tufts already exist.
 - fog: 1 = clear air, up to 3 = misty.
@@ -131,6 +134,7 @@ Optionally, in the same JSON object, the universe's own nature: properties and r
   "properties": [ { "name": "cursed", "default": 0, "meaning": "how cursed it is, 0..1" } ],
   "rules": [ { "name": "curses spread by touch", "near": 1.5, "when": "self.cursed > 0.5 && other.cursed < self.cursed", "do": ["other.cursed += 0.05 * dt"] } ]
 Rule language: `when` is a condition and `do` a list of assignments (=, +=, -=, *=) on self.<property> or other.<property>; you may use numbers, + - * /, comparisons, && || !, min(a,b), max(a,b), clamp(x,lo,hi), abs(x), dt (seconds), dist (metres apart, with "near"), hour, night (0/1), water (1 when in water), held (1 when held). Without "near" a rule applies to each thing alone; with "near": r (≤ 10 m) to each pair within r. Spread slowly (rates times dt), at most 12 rules.
+Rules only act on things that have the property, and a property of your own shows nothing by itself: give it to some of your base types (in their meta.props) so the force is in the land from the start, and let it change what can be seen (light, fire, char, wet, growth, health: at 0 a thing breaks).
 
 Optionally, the universe's peoples and beasts beyond plain humans (people always exist; dogs, cats, horses, wolves, goats and deer are built in for earthly worlds). Add species only if this universe has them (elves and orcs, a race of giants, dragons, griffins, lizard folk…), up to 5, in the same JSON object:
   "species": [ { "name": "elf", "plural": "elves", "body": "figure", "size": 1.0, "mind": "sapient", "speech": "words", "social": "village",
@@ -250,7 +254,7 @@ and, if "reuse" is null, one ```js block with the new type module.
 - rot = 0 makes the object's front (+z) face away from the viewer; rot = 180 faces the viewer.
 - Objects are set on the ground automatically. Only add "lift": metres if the object must deliberately hover.
 - Keep the player's position free: the target may be close.
-- Give a new type fitting meta.props (a ball bounces, bread is edible, a lamp gives light, a wooden thing burns). Small things (under ~1 m) can be picked up and used.
+- Give a new type fitting meta.props (a ball bounces, bread is edible, a lamp gives light, a wooden thing burns), and "strange" when it doesn't belong in this universe (judge by the universe, not by our world). Small things (under ~1 m) can be picked up and used.
 "#;
 
 pub fn repair(errors: &str) -> String {
@@ -270,6 +274,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveller"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
+When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveller stands may be the traveller's doing.
 Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
 For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveller"}] with "say" set, or nothing."#;
 

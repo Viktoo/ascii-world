@@ -49,6 +49,7 @@ pub struct SimConfig {
     /// each piece of work may add a type, and every type slows shader builds.
     pub work_gap_secs: f32,
     /// Predators kill what they catch (off: they only chase, and give up).
+    /// On by default; births refill what is lost.
     pub hunting: bool,
     /// At most this many beings of one species are born in a region.
     pub max_creatures: usize,
@@ -77,10 +78,10 @@ impl Default for SimConfig {
             max_things: 5000,
             work_secs: 600.0,
             work_gap_secs: 120.0,
-            hunting: false,
+            hunting: true,
             max_creatures: 24,
             transform: false,
-            create_beings: false,
+            create_beings: true,
             life_speed: 1.0,
         }
     }

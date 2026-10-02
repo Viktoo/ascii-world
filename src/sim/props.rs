@@ -26,6 +26,7 @@ pub const P_HEAT: usize = 14;
 pub const P_CHAR: usize = 15;
 pub const P_HEALTH: usize = 16;
 pub const P_GROWTH: usize = 17;
+pub const P_STRANGE: usize = 18;
 
 pub const AMBIENT_TEMP: f32 = 15.0;
 /// What one person can lift (kg); two together lift twice that.
@@ -53,6 +54,7 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("char", 0.0, "how charred it is, 0..1"),
     ("health", 1.0, "how intact it is; at 0 it breaks"),
     ("growth", 1.0, "how grown it is, 0..1 (living things grow)"),
+    ("strange", 0.0, "how out of place it is in this world, 0..1: 0 is everyday here, 1 unheard of (a motor car among horse carts 0.9, a glowing rune stone where there is no magic 0.8); people are surprised by strange things"),
 ];
 
 /// Every property name this universe knows, with defaults.
@@ -255,7 +257,7 @@ pub fn sanitize(p: &mut Props) {
         }
         *v = v.clamp(-1e5, 1e5);
     }
-    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS] {
+    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE] {
         p[i] = p[i].clamp(0.0, 1.0);
     }
     p[P_LIGHT] = p[P_LIGHT].clamp(0.0, 2.0);

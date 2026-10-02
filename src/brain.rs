@@ -79,13 +79,21 @@ struct Info {
     terrain: Arc<Terrain>,
     neighbours: Vec<String>,
     look: Arc<Look>,
+    /// The region the traveller begins in.
+    start: (i32, i32),
 }
+
+/// What every request is told the universe is: the land once genesis has
+/// written it, the player's own prompt before that (and in older worlds).
+pub type Universe = Arc<std::sync::RwLock<String>>;
 
 #[derive(Clone)]
 struct Ctx {
     llm: Arc<Llm>,
     db: Arc<Db>,
-    bible: String,
+    /// The player's own prompt, for genesis.
+    prompt: String,
+    universe: Universe,
     commit: crossbeam_channel::Sender<CMsg>,
     events: crossbeam_channel::Sender<Event>,
     decider: Arc<dyn Decider>,
@@ -108,7 +116,8 @@ impl Brain {
     /// committer builds the full world first and flips to it.
     pub fn start(model: WorldModel, llm: Option<Arc<Llm>>, events: crossbeam_channel::Sender<Event>, full_pending: bool) -> Brain {
         let db = model.db.clone();
-        let bible = model.bible.clone();
+        let prompt = model.bible.clone();
+        let universe: Universe = Arc::new(std::sync::RwLock::new(if model.look.land.is_empty() { prompt.clone() } else { model.look.land.clone() }));
         let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<CMsg>();
         let ev_c = events.clone();
         std::thread::Builder::new()
@@ -130,12 +139,12 @@ impl Brain {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).max_blocking_threads(4).thread_stack_size(8 << 20).enable_all().build().expect("tokio runtime");
         let (tx, mut rx) = mpsc::unbounded_channel::<Cmd>();
         let has_llm = llm.is_some();
-        let decider = crate::decider::from_env(llm.clone(), &bible);
+        let decider = crate::decider::from_env(llm.clone(), universe.clone());
         let ev2 = events.clone();
         let commit2 = ctx_tx.clone();
         let mem_db = db.clone();
         rt.spawn(async move {
-            let ctx = llm.map(|llm| Ctx { llm, db, bible, commit: commit2.clone(), events: ev2.clone(), decider, regions: Arc::new(Semaphore::new(2)) });
+            let ctx = llm.map(|llm| Ctx { llm, db, prompt, universe, commit: commit2.clone(), events: ev2.clone(), decider, regions: Arc::new(Semaphore::new(2)) });
             while let Some(cmd) = rx.recv().await {
                 // Commands that need no model.
                 match cmd {
@@ -213,13 +222,17 @@ fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>) {
                 let _ = reply.send(model.history());
             }
             CMsg::Info(r, reply) => {
-                let _ = reply.send(Info { types: model.type_names(), terrain: model.terrain(), neighbours: model.region_names_near(r), look: model.look.clone() });
+                let _ = reply.send(Info { types: model.type_names(), terrain: model.terrain(), neighbours: model.region_names_near(r), look: model.look.clone(), start: crate::world::region_of(model.spawn.x, model.spawn.z) });
             }
         }
     }
 }
 
 impl Ctx {
+    fn universe(&self) -> String {
+        self.universe.read().map(|u| u.clone()).unwrap_or_default()
+    }
+
     /// Property names this universe knows (built-in and its own).
     fn known_props(&self) -> Vec<String> {
         let mut v: Vec<String> = crate::sim::props::BUILTIN.iter().map(|(n, _, _)| n.to_string()).collect();
@@ -607,7 +620,7 @@ fn species_world_from(db: &Db, v: &Value) {
 }
 
 async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
-    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let system = prompts::builder_system(&ctx.prompt, &ctx.known_props());
     let mut req = Req::new(Role::Builder, system.clone(), prompts::GENESIS_TASK);
     req.max_tokens = 32000;
     req.effort = Some("medium");
@@ -624,6 +637,9 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
         let _ = ctx.events.send(Event::RulesChanged);
     }
     let mut look: Look = serde_json::from_value(v.clone()).unwrap_or_default();
+    look.land = look.land.trim().to_string();
+    look.start = look.start.trim().to_string();
+    let land = look.land.clone();
     if look.biomes.is_empty() {
         look.biomes = crate::terrain::default_biomes();
     }
@@ -683,6 +699,12 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
         .await
         .map_err(|d| anyhow::anyhow!(format_diags(&d)))?;
     ctx.db.kv_set("genesis", "done")?;
+    if !land.is_empty() {
+        crate::log::info(format!("land: {land}"));
+        if let Ok(mut u) = ctx.universe.write() {
+            *u = land;
+        }
+    }
     let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
     ctx.log(if name.is_empty() { "The world settles into its true shape.".to_string() } else { format!("The world settles into its true shape: {name}.") });
     Ok(())
@@ -781,7 +803,7 @@ fn s(v: &Value, k: &str) -> String {
 
 async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let info = ctx.info(r).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
-    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let task = format!(
         "{}\n\nRegion ({}, {}) in the land of {}.\nTerrain notes:\n{}\nNeighbouring regions: {}\nExisting object types:\n{}",
@@ -794,6 +816,13 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         type_list.join("\n")
     );
     let task = format!("{task}\nSpecies in this universe:\n{}", species_list(&ctx.db));
+    let task = if r == info.start && !info.look.start.is_empty() {
+        format!("{task}\n\nThe traveller begins in this region: {}\nPlan the region around it.", info.look.start)
+    } else if !info.look.land.is_empty() {
+        format!("{task}\n\nThe traveller did not begin here: make this region its own place in the land, different from its neighbours.")
+    } else {
+        task
+    };
     let mut req = Req::new(Role::Builder, system.clone(), task);
     req.max_tokens = 16000;
     req.effort = Some("medium");
@@ -974,7 +1003,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             if n_creatures >= 24 {
                 break;
             }
-            let name = names.get(i).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| if count > 1 { format!("the {sp} {}", i + 1) } else { format!("the {sp}") });
+            let name = names.get(i).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("the {}", sp.replace('-', " ")));
             let a = i as f32 * 2.399;
             let mut home = Vec3::new(cx + a.cos() * (1.5 + i as f32), 0.0, cz + a.sin() * (1.5 + i as f32));
             for k in 0..30 {
@@ -1019,7 +1048,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
 
 async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: Option<&(i64, String)>) -> anyhow::Result<Vec<i64>> {
     let info = ctx.info(crate::world::region_of(target.x, target.z)).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
-    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let (who, sees) = match by {
         Some((_, name)) => (format!("Made by: {name}, a character who lives here (not the player)."), format!("What {name} sees")),
@@ -1145,7 +1174,7 @@ pub fn check_universe_rules(props: &[(String, f32, String)], rules: &[crate::sim
 
 /// The interpreter: what does this action do, in primitives.
 async fn interpret(ctx: &Ctx, actor: &str, text: &str, context: &str) -> anyhow::Result<Value> {
-    let system = format!("{}\n\nThe universe:\n{}\n\nProperties this universe knows:\n{}", prompts::INTERPRET_TASK, ctx.bible, known_props_described(&ctx.db));
+    let system = format!("{}\n\nThe universe:\n{}\n\nProperties this universe knows:\n{}", prompts::INTERPRET_TASK, ctx.universe(), known_props_described(&ctx.db));
     let user = format!("{actor} does this: \"{text}\"\n\nThe situation (JSON):\n{context}");
     let mut req = Req::new(Role::Character, system, user);
     req.max_tokens = 1200;
@@ -1168,7 +1197,7 @@ async fn chat(ctx: &Ctx, a: i64, b: i64, context: &str) -> anyhow::Result<Vec<(i
     let persona = |id: i64| chars.iter().find(|c| c.id == id).and_then(|c| serde_json::from_str::<Persona>(&c.persona_json).ok()).unwrap_or_default();
     let (pa, pb) = (persona(a), persona(b));
     let mem = |id: i64| ctx.db.memories(id).unwrap_or_default().iter().rev().take(5).map(|m| m.text.clone()).collect::<Vec<_>>().join(" | ");
-    let system = format!("{}\n\nThe universe:\n{}", prompts::CHAT_TASK, ctx.bible);
+    let system = format!("{}\n\nThe universe:\n{}", prompts::CHAT_TASK, ctx.universe());
     let user = format!(
         "{} ({}; voice: {}) meets {} ({}; voice: {}).\n{}'s recent memories: {}\n{}'s recent memories: {}\n\n{}",
         pa.name, pa.personality, pa.voice, pb.name, pb.personality, pb.voice, pa.name, mem(a), pb.name, mem(b), context
@@ -1195,7 +1224,7 @@ async fn chat(ctx: &Ctx, a: i64, b: i64, context: &str) -> anyhow::Result<Vec<(i
 
 /// Write a small new object type on demand (for interpretations and spawn()).
 async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3], props: &[(String, f32)], fits: Option<&str>) -> anyhow::Result<u32> {
-    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
     let props_s = if props.is_empty() { "choose fitting ones".to_string() } else { props.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ") };
     let task = format!(
         "Object type to write: \"{name}\"\nDescription: {description}\nApproximate size (w × h × d, metres): {:?}\nProperties (meta.props): {props_s}\nIt is a thing people can pick up and use, unless it is clearly too big.\n\n{}",
@@ -1223,7 +1252,7 @@ async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3
 /// Rewrite one thing's shape: the builder edits its current code (working
 /// in another thing's, if given).
 async fn edit_item_type(ctx: &Ctx, name: &str, source: &str, change: &str, spot: &str, cuts: &[[f32; 4]], with: Option<&(String, String, f32)>) -> anyhow::Result<u32> {
-    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
     let task = prompts::edit_task(name, source, change, spot, cuts, with);
     let mut t = build_type(ctx, &system, task, name, &[]).await?;
     // The thing is found again by name: insist on the one asked for.
@@ -1299,7 +1328,7 @@ async fn talk(ctx: &Ctx, cid: i64, text: &str, context: &str, history: &[(bool, 
     let system = format!(
         "{}\n\nThe universe:\n{}\n\nYou are {}{}.\nAppearance: {}\nPersonality: {}\nGoals: {}\nVoice: {}\nHome: {}\nRelationships: {}\n\nWhat people in {} know:\n{}",
         prompts::DIALOGUE_RULES,
-        ctx.bible,
+        ctx.universe(),
         persona.name,
         if persona.age > 0 { format!(", aged {}", persona.age) } else { String::new() },
         persona.appearance,

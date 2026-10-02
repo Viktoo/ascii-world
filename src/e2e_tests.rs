@@ -70,7 +70,7 @@ fn script(sys: &str, msgs: &[Msg], db: &Db, calls: &Mutex<Calls>) -> String {
     }
     if user.contains("Design the base layer") {
         note!("genesis");
-        let look = r#"{"name": "Greywater Coast", "palette": {"sky_day": [120, 140, 160], "horizon_day": [190, 200, 205], "sky_dusk": [70, 70, 110], "horizon_dusk": [220, 150, 120], "sky_night": [8, 10, 20], "horizon_night": [25, 30, 45], "sun": [240, 235, 220], "water": [40, 70, 85], "rock": [110, 110, 105], "snow": [235, 238, 240], "sand": [190, 180, 150], "fog": 1.8},
+        let look = r#"{"name": "Greywater Coast", "land": "a grey coast of fishing villages, pine headlands and tidal flats", "start": "the lighthouse keeper has vanished", "palette": {"sky_day": [120, 140, 160], "horizon_day": [190, 200, 205], "sky_dusk": [70, 70, 110], "horizon_dusk": [220, 150, 120], "sky_night": [8, 10, 20], "horizon_night": [25, 30, 45], "sun": [240, 235, 220], "water": [40, 70, 85], "rock": [110, 110, 105], "snow": [235, 238, 240], "sand": [190, 180, 150], "fog": 1.8},
           "biomes": [{"name": "dune grass", "base": 3, "amp": 6, "rough": 0.1, "ground": [140, 150, 100], "ground2": [180, 170, 130], "scatter": {"rock": 0.3, "grass": 2.5}},
                      {"name": "coastal pines", "base": 8, "amp": 16, "rough": 0.3, "ground": [70, 95, 60], "ground2": [90, 100, 70], "scatter": {"tree": 1.0, "rock": 0.2}},
                      {"name": "tidal flats", "base": -4, "amp": 5, "rough": 0.05, "ground": [120, 120, 100], "ground2": [150, 140, 110], "scatter": {"rock": 0.4}}]}"#;
@@ -168,6 +168,7 @@ fn story_pipeline_end_to_end() {
     let tree_ids = &snap.scatter["tree"];
     assert!(tree_ids.iter().all(|id| snap.type_of(*id).unwrap().name() == "sea pine"), "universe trees replace the built-ins");
     assert!(logs.iter().any(|l| l.contains("true shape")));
+    assert_eq!(snap.look.start, "the lighthouse keeper has vanished");
 
     // A region plan for where we stand.
     let r = region_of(snap.spawn.x, snap.spawn.z);
@@ -181,6 +182,12 @@ fn story_pipeline_end_to_end() {
     assert_eq!(snap.characters.len(), 1);
     assert_eq!(snap.characters[0].persona.name, "Mara");
     let mara = snap.characters[0].id;
+    {
+        let c = calls.lock();
+        let plan = &c.log.iter().find(|(k, _)| k == "region").unwrap().1;
+        assert!(plan.contains("The traveller begins in this region: the lighthouse keeper has vanished"), "the starting region gets the start");
+        assert!(plan.contains("fishing villages") && !plan.contains("rainy coastal valley"), "regions are planned from the land, not the prompt");
+    }
 
     // /a lighthouse: first attempt has a syntax error and is repaired.
     let mut cache = ScatterCache::default();
@@ -252,6 +259,17 @@ fn story_pipeline_end_to_end() {
     let c = calls.lock();
     let last = c.log.iter().rev().find(|(k, _)| k == "dialogue").unwrap();
     assert!(last.1.contains("What happened to the lighthouse keeper"), "memory in prompt");
+    assert!(last.1.contains("fishing villages") && !last.1.contains("rainy coastal valley"), "a reopened world still speaks from the land");
+    drop(c);
+
+    // Any other region is its own place in the land, without the start.
+    let next = (r.0 + 1, r.1);
+    s2.brain.send(Cmd::Region(next));
+    assert!(wait_for(&s2.rx, 60, |e| matches!(e, Event::RegionFinished(rr, _) if *rr == next), &mut snap2, &mut logs));
+    let c = calls.lock();
+    let plan = &c.log.iter().rev().find(|(k, _)| k == "region").unwrap().1;
+    assert!(plan.contains(&format!("Region ({}, {})", next.0, next.1)));
+    assert!(plan.contains("did not begin here") && !plan.contains("keeper has vanished"), "only the first region gets the start");
 
     // Copying the file gives an identical world that diverges independently.
     drop(c);

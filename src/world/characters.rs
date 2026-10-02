@@ -65,6 +65,9 @@ pub struct SavedState {
     /// How often they have run for their lives.
     #[serde(default, skip_serializing_if = "is_zero_u")]
     pub frights: u32,
+    /// How used to wonders they are (fades with time).
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub habit: f32,
     /// What they were in the middle of (plan, mission, favours), in the
     /// simulation's own shape (`sim::needs::Work`), so it carries on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +80,10 @@ fn is_zero_i(v: &i64) -> bool {
 
 fn is_zero_u(v: &u32) -> bool {
     *v == 0
+}
+
+fn is_zero_f(v: &f32) -> bool {
+    *v == 0.0
 }
 
 fn is_zero(v: &f64) -> bool {
