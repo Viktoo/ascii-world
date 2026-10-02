@@ -1,0 +1,39 @@
+[package]
+name = "pocket"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+crossbeam-channel = "0.5.17"
+crossterm = "0.29.0"
+dirs = "7.0.0"
+futures-util = "0.3.34"
+glam = "0.33.11"
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+oxc_allocator = "0.152.0"
+oxc_ast = "0.152.0"
+oxc_parser = "0.152.0"
+oxc_span = "0.152.0"
+oxc_syntax = "0.152.0"
+parking_lot = "0.12.5"
+pollster = "1.0.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json", "http2"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+signal-hook = "0.4.4"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+wgpu = "30.0.1"
+
+[profile.release]
+opt-level = 3
+debug = false
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

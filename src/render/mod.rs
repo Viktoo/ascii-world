@@ -1,0 +1,288 @@
+//! Rendering: GPU compute raymarcher (wgpu) with a CPU fallback. The renderer
+//! knows nothing about terminals; it fills an RGBA pixel buffer of any size.
+
+pub mod cpu;
+pub mod gpu;
+pub mod shader;
+pub mod sky;
+
+use crate::terrain::{MAX_BIOMES, Palette, Terrain, rgbv};
+use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
+use std::sync::Arc;
+
+pub const VIEW_DIST: f32 = 170.0;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+pub struct Globals {
+    pub cam_pos: [f32; 4],
+    pub cam_fwd: [f32; 4],
+    pub cam_right: [f32; 4],
+    pub cam_up: [f32; 4],
+    pub sun_dir: [f32; 4],
+    pub sun_col: [f32; 4],
+    pub sky_zen: [f32; 4],
+    pub sky_hor: [f32; 4],
+    pub water: [f32; 4],
+    pub rock: [f32; 4],
+    pub sand: [f32; 4],
+    pub snow: [f32; 4],
+    pub toff0: [f32; 4],
+    pub toff1: [f32; 4],
+    pub dims: [u32; 4],
+    pub seed: [u32; 4],
+    pub grid0: [f32; 4],
+    pub grid1: [u32; 4],
+    pub probe: [u32; 4],
+    pub hmap: [f32; 4],
+    pub biomes: [[f32; 4]; 18],
+}
+
+pub const FLAG_GRID: u32 = 1;
+pub const FLAG_SHADOWS: u32 = 2;
+
+/// One instance as the shader sees it (80 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
+pub struct GpuInst {
+    pub pos_scale: [f32; 4],
+    pub rot: [f32; 4],
+    pub k0: [f32; 4],
+    pub k1: [f32; 4],
+    pub info: [u32; 4],
+}
+
+impl GpuInst {
+    pub fn k(&self) -> [f32; 8] {
+        [self.k0[0], self.k0[1], self.k0[2], self.k0[3], self.k1[0], self.k1[1], self.k1[2], self.k1[3]]
+    }
+    pub fn pos(&self) -> Vec3 {
+        Vec3::new(self.pos_scale[0], self.pos_scale[1], self.pos_scale[2])
+    }
+    pub fn radius(&self) -> f32 {
+        self.rot[2]
+    }
+    /// Bounding sphere centre (the type's sphere is offset vertically from its origin).
+    pub fn center(&self) -> Vec3 {
+        self.pos() + Vec3::Y * (f32::from_bits(self.info[1]) * self.pos_scale[3])
+    }
+    /// World → local transform; twin of `to_local` in scene.wgsl.
+    pub fn to_local(&self, p: Vec3) -> [f32; 3] {
+        let d = p - self.pos();
+        let (c, s) = (self.rot[0], self.rot[1]);
+        let sc = self.pos_scale[3];
+        [(c * d.x - s * d.z) / sc, d.y / sc, (s * d.x + c * d.z) / sc]
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Camera {
+    pub pos: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    /// Vertical field of view, radians.
+    pub fov_y: f32,
+}
+
+impl Camera {
+    pub fn forward(&self) -> Vec3 {
+        Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos())
+    }
+    /// Unit right/up vectors for a view.
+    pub fn basis(&self) -> (Vec3, Vec3, Vec3) {
+        let f = self.forward();
+        let r = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
+        let u = r.cross(f).normalize() * -1.0;
+        (f, r, u)
+    }
+}
+
+/// Coarse XZ grid of instance indices (used when many instances are visible).
+#[derive(Clone, Debug, Default)]
+pub struct Grid {
+    pub origin: [f32; 2],
+    pub cell: f32,
+    pub w: u32,
+    pub h: u32,
+    pub cells: Vec<[u32; 2]>,
+    pub items: Vec<u32>,
+}
+
+pub const GRID_CELL: f32 = 8.0;
+pub const GRID_THRESHOLD: usize = 64;
+
+impl Grid {
+    pub fn build(insts: &[GpuInst], center: Vec3, half: f32) -> Grid {
+        let cell = GRID_CELL;
+        let n = ((half * 2.0) / cell).ceil() as u32;
+        let origin = [(center.x - half).floor(), (center.z - half).floor()];
+        let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); (n * n) as usize];
+        for (i, inst) in insts.iter().enumerate() {
+            let p = inst.center();
+            let r = inst.radius();
+            let x0 = (((p.x - r) - origin[0]) / cell).floor().max(0.0) as i64;
+            let x1 = (((p.x + r) - origin[0]) / cell).floor().min(n as f32 - 1.0) as i64;
+            let z0 = (((p.z - r) - origin[1]) / cell).floor().max(0.0) as i64;
+            let z1 = (((p.z + r) - origin[1]) / cell).floor().min(n as f32 - 1.0) as i64;
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    if x >= 0 && z >= 0 && x < n as i64 && z < n as i64 {
+                        buckets[(z as u32 * n + x as u32) as usize].push(i as u32);
+                    }
+                }
+            }
+        }
+        let mut cells = Vec::with_capacity(buckets.len());
+        let mut items = Vec::new();
+        for b in buckets {
+            cells.push([items.len() as u32, b.len() as u32]);
+            items.extend(b);
+        }
+        Grid { origin, cell, w: n, h: n, cells, items }
+    }
+}
+
+/// Lighting state for a moment in the day/night cycle.
+#[derive(Clone, Copy, Debug)]
+pub struct Lighting {
+    pub sun_dir: Vec3,
+    pub daylight: f32,
+    pub night: f32,
+    pub sun_col: Vec3,
+    pub zenith: Vec3,
+    pub horizon: Vec3,
+    pub ambient: f32,
+}
+
+pub struct SceneParams<'a> {
+    pub terrain: &'a Terrain,
+    pub palette: &'a Palette,
+    pub camera: Camera,
+    pub width: u32,
+    pub height: u32,
+    /// Width / height of one pixel as displayed (1.0 for half-blocks, ~0.5 for ASCII cells).
+    pub pixel_aspect: f32,
+    pub light: Lighting,
+    pub time: f32,
+    pub frame: u32,
+    pub shadows: bool,
+}
+
+/// Identifies the terrain function (the renderer rebuilds its heightmap when it changes).
+pub fn terrain_epoch(t: &Terrain) -> u32 {
+    let mut h = crate::noise::pcg(t.seed);
+    for b in &t.biomes {
+        for v in [b.base, b.amp, b.rough] {
+            h = crate::noise::pcg(h ^ v.to_bits());
+        }
+    }
+    h.max(1)
+}
+
+pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Globals {
+    let (f, r, u) = sp.camera.basis();
+    let tan = (sp.camera.fov_y * 0.5).tan();
+    let aspect = sp.width as f32 / sp.height.max(1) as f32 * sp.pixel_aspect;
+    let t = sp.terrain;
+    let pal = sp.palette;
+    let l = &sp.light;
+    let mut biomes = [[0.0f32; 4]; 18];
+    for (i, b) in t.biomes.iter().enumerate().take(MAX_BIOMES) {
+        let c = Terrain::center(i);
+        let g1 = rgbv(b.ground);
+        let g2 = rgbv(b.ground2);
+        biomes[i * 3] = [c[0], c[1], b.base, b.amp];
+        biomes[i * 3 + 1] = [b.rough, g1.x, g1.y, g1.z];
+        biomes[i * 3 + 2] = [g2.x, g2.y, g2.z, 0.0];
+    }
+    let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+    let mut flags = 0;
+    if grid.is_some() {
+        flags |= FLAG_GRID;
+    }
+    if sp.shadows {
+        flags |= FLAG_SHADOWS;
+    }
+    if let Ok(v) = std::env::var("POCKET_DEBUG_FLAGS") {
+        flags |= v.parse::<u32>().unwrap_or(0);
+    }
+    let g = grid.cloned().unwrap_or_default();
+    Globals {
+        cam_pos: v4(sp.camera.pos, sp.time),
+        cam_fwd: v4(f, VIEW_DIST),
+        cam_right: v4(r * tan * aspect, 0.0),
+        cam_up: v4(u * tan, 0.0),
+        sun_dir: v4(l.sun_dir, l.daylight),
+        sun_col: v4(l.sun_col, l.night),
+        sky_zen: v4(l.zenith, pal.fog),
+        sky_hor: v4(l.horizon, l.ambient),
+        water: v4(rgbv(pal.water), crate::terrain::WATER_LEVEL),
+        rock: v4(rgbv(pal.rock), 0.0),
+        sand: v4(rgbv(pal.sand), 0.0),
+        snow: v4(rgbv(pal.snow), 0.0),
+        toff0: [t.off[0], t.off[1], t.off[2], t.off[3]],
+        toff1: [t.off[4], t.off[5], 0.0, 0.0],
+        dims: [sp.width, sp.height, n_inst as u32, flags],
+        seed: [t.seed, t.biomes.len().min(MAX_BIOMES) as u32, sp.frame, terrain_epoch(t)],
+        grid0: [g.origin[0], g.origin[1], g.cell.max(1.0), 0.0],
+        grid1: [g.w, g.h, 0, 0],
+        probe: [0; 4],
+        hmap: [0.0; 4],
+        biomes,
+    }
+}
+
+/// Everything one frame needs. The pipeline and the instances come from the
+/// same world snapshot, which is what makes version flips atomic.
+pub struct FrameRequest {
+    pub id: u64,
+    pub width: u32,
+    pub height: u32,
+    pub globals: Globals,
+    pub instances: Vec<GpuInst>,
+    pub grid: Option<Grid>,
+    pub scene: Arc<crate::world::SceneTypes>,
+    /// Used by the CPU renderer (the GPU gets everything via `globals`).
+    pub terrain: Arc<Terrain>,
+    pub look: Arc<crate::world::Look>,
+}
+
+pub struct Frame {
+    pub id: u64,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8 packed little-endian (r in the low byte).
+    pub pixels: Vec<u32>,
+    pub gpu_ms: Option<f32>,
+}
+
+pub enum RenderMsg {
+    Frame(Box<FrameRequest>),
+    Quit,
+}
+
+/// The main thread's view of whichever renderer is running.
+pub struct RenderHandle {
+    pub tx: crossbeam_channel::Sender<RenderMsg>,
+    pub rx: crossbeam_channel::Receiver<Frame>,
+    pub backend: String,
+    pub cpu_fallback: bool,
+    pub thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RenderHandle {
+    pub fn shutdown(&mut self) {
+        let _ = self.tx.send(RenderMsg::Quit);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+pub fn unpack(px: u32) -> [u8; 3] {
+    [(px & 0xff) as u8, ((px >> 8) & 0xff) as u8, ((px >> 16) & 0xff) as u8]
+}
+
+#[cfg(test)]
+mod tests;

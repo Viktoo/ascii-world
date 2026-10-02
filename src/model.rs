@@ -1,0 +1,815 @@
+//! The authoritative world model. Owned by the committer thread, which
+//! serialises every change: placement checks (step 5), shader build + GPU
+//! parity (step 6), the SQLite commit, and producing the next snapshot (flip).
+
+use crate::db::{self, Db};
+use crate::lang::probe::{ProbeReport, default_k, probe, sample_points};
+use crate::lang::{CompiledType, Diag, Stage, compile, format_diags};
+use crate::render::gpu::{Gpu, ScenePipeline};
+use crate::render::{GpuInst, shader};
+use crate::terrain::{Terrain, WATER_LEVEL};
+use crate::world::characters::SavedState;
+use crate::world::{CharacterDef, Look, Persona, Placed, RegionInfo, SceneTypes, TypeEntry, WorldSnapshot};
+use anyhow::Result;
+use glam::Vec3;
+use parking_lot::Mutex;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+pub const BUILTIN_SOURCES: &[&str] = &[
+    include_str!("builtin/figure.js"),
+    include_str!("builtin/tree.js"),
+    include_str!("builtin/pine.js"),
+    include_str!("builtin/rock.js"),
+    include_str!("builtin/bush.js"),
+    include_str!("builtin/grass.js"),
+];
+
+/// Live positions the committer must not build on top of.
+#[derive(Default, Clone)]
+pub struct Live {
+    pub player: Vec3,
+    pub characters: Vec<Vec3>,
+}
+
+pub type LiveRef = Arc<Mutex<Live>>;
+
+#[derive(Clone)]
+struct TypeRec {
+    entry: Arc<TypeEntry>,
+    version: Option<i64>,
+    interior: Vec<[f32; 3]>,
+}
+
+#[derive(Clone)]
+struct InstRec {
+    placed: Placed,
+    removed: Option<i64>,
+}
+
+/// A type that passed steps 1–4.
+#[derive(Clone)]
+pub struct NewType {
+    pub ct: Arc<CompiledType>,
+    pub report: Arc<ProbeReport>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TypeRef {
+    Existing(u32),
+    New(usize),
+}
+
+#[derive(Clone, Debug)]
+pub struct Placement {
+    pub ty: TypeRef,
+    pub x: f32,
+    pub z: f32,
+    /// Explicit height of the instance origin; None = sit on the ground.
+    pub y: Option<f32>,
+    pub rot_y: f32,
+    pub scale: f32,
+    pub params: [f32; 8],
+}
+
+pub struct RegionCommit {
+    pub r: (i32, i32),
+    pub plan_json: String,
+    pub info: RegionInfo,
+    pub characters: Vec<(Persona, Vec3)>,
+}
+
+pub struct CommitRequest {
+    pub kind: &'static str,
+    pub summary: String,
+    pub new_types: Vec<NewType>,
+    pub placements: Vec<Placement>,
+    /// Move placements a little to resolve conflicts instead of failing.
+    pub nudge: bool,
+    pub region: Option<RegionCommit>,
+    pub look: Option<Look>,
+}
+
+pub struct CommitOk {
+    pub snapshot: Arc<WorldSnapshot>,
+    pub placed: usize,
+    pub dropped: Vec<String>,
+}
+
+pub struct WorldModel {
+    pub db: Arc<Db>,
+    pub gpu: Option<Arc<Gpu>>,
+    pub seed: u32,
+    pub bible: String,
+    pub look: Arc<Look>,
+    terrain: Arc<Terrain>,
+    types: BTreeMap<u32, TypeRec>,
+    insts: Vec<InstRec>,
+    reverted: HashSet<i64>,
+    pub current: Option<i64>,
+    chars: Vec<Arc<CharacterDef>>,
+    regions: HashMap<(i32, i32), Arc<RegionInfo>>,
+    pipelines: Vec<Arc<ScenePipeline>>,
+    pub spawn: Vec3,
+    pub live: LiveRef,
+}
+
+fn meta_json(ct: &CompiledType, bottom: f32, top: f32) -> String {
+    serde_json::json!({ "name": ct.meta.name, "bounds": ct.meta.bounds, "tags": ct.meta.tags, "bottom": bottom, "top": top }).to_string()
+}
+
+fn type_entry(id: u32, ct: Arc<CompiledType>, bottom: f32, top: f32, builtin: bool) -> Arc<TypeEntry> {
+    let solid = !ct.meta.tags.iter().any(|t| t == "nonsolid" || t == "grass");
+    let (sphere_cy, sphere_r) = TypeEntry::sphere(ct.meta.bounds, bottom, top);
+    Arc::new(TypeEntry { id, ct, builtin, solid, bottom, sphere_cy, sphere_r })
+}
+
+/// Choose a dry, gentle spawn point near the origin.
+pub fn find_spawn(t: &Terrain) -> Vec3 {
+    let mut best = Vec3::ZERO;
+    let mut best_score = f32::MAX;
+    // Spiral outwards. Past the first ~180 m, take the first dry spot: a world
+    // can open on a wide lake, and spawning on its bed leaves the player stuck.
+    for i in 0..40_000 {
+        if i >= 400 && best_score < 100.0 {
+            break;
+        }
+        let a = i as f32 * 2.399;
+        let r = (i as f32).sqrt() * 9.0;
+        let (x, z) = (a.cos() * r, a.sin() * r);
+        let h = t.height(x, z);
+        let n = t.normal(x, z);
+        let mut score = r * 0.02 + (1.0 - n.y) * 30.0;
+        if h < WATER_LEVEL + 1.5 {
+            score += 100.0;
+        }
+        if score < best_score {
+            best_score = score;
+            best = Vec3::new(x, h, z);
+        }
+    }
+    best
+}
+
+impl WorldModel {
+    /// Load everything from the database and recompile every type from source.
+    pub fn load(db: Arc<Db>, gpu: Option<Arc<Gpu>>, live: LiveRef) -> Result<WorldModel> {
+        let u = db.universe()?;
+        let look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
+        let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()));
+        let mut m = WorldModel {
+            db: db.clone(),
+            gpu,
+            seed: u.seed,
+            bible: u.bible,
+            look: Arc::new(look),
+            terrain,
+            types: BTreeMap::new(),
+            insts: Vec::new(),
+            reverted: HashSet::new(),
+            current: None,
+            chars: Vec::new(),
+            regions: HashMap::new(),
+            pipelines: Vec::new(),
+            spawn: Vec3::ZERO,
+            live,
+        };
+        m.spawn = match db.kv_get("spawn").and_then(|s| serde_json::from_str::<[f32; 3]>(&s).ok()) {
+            Some(s) if m.terrain.height(s[0], s[2]) >= WATER_LEVEL + 0.3 => Vec3::from(s),
+            _ => {
+                let s = find_spawn(&m.terrain);
+                db.kv_set("spawn", &serde_json::to_string(&s.to_array())?)?;
+                s
+            }
+        };
+
+        // Built-in types are stored like any other, on first open.
+        let rows = db.types()?;
+        if !rows.iter().any(|r| r.status == "builtin") {
+            for src in BUILTIN_SOURCES {
+                let ct = compile(src).map_err(|d| anyhow::anyhow!("builtin type failed: {}", format_diags(&d)))?;
+                let rep = probe(&ct).map_err(|d| anyhow::anyhow!("builtin {} failed probe: {}", ct.meta.name, format_diags(&d)))?;
+                db.with(|c| db::add_type(c, None, &ct.meta.name, src, &meta_json(&ct, rep.bottom, rep.top), "builtin", ""))?;
+            }
+        }
+        let versions = db.versions()?;
+        for v in &versions {
+            if let Some(r) = v.reverts {
+                m.reverted.insert(r);
+            }
+        }
+        m.current = versions.last().map(|v| v.id);
+        for r in db.types()? {
+            if r.status != "ok" && r.status != "builtin" {
+                continue;
+            }
+            let ct = match compile(&r.code) {
+                Ok(ct) => Arc::new(ct),
+                Err(d) => {
+                    crate::log::error(format!("stored type {} no longer compiles: {}", r.name, format_diags(&d)));
+                    continue;
+                }
+            };
+            let stored = db
+                .with(|c| Ok(c.query_row("SELECT meta_json FROM types WHERE id = ?1", [r.id], |row| row.get::<_, String>(0))?))
+                .ok()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok());
+            let get = |k: &str| stored.as_ref().and_then(|v| v.get(k)).and_then(|b| b.as_f64()).map(|x| x as f32);
+            let (bottom, top) = match (get("bottom"), get("top")) {
+                (Some(b), Some(t)) => (b, t),
+                _ => probe(&ct).map(|p| (p.bottom, p.top)).unwrap_or((-ct.meta.bounds[1], ct.meta.bounds[1])),
+            };
+            let builtin = r.status == "builtin";
+            let version = if builtin { None } else { r.version };
+            m.types.insert(r.id as u32, TypeRec { entry: type_entry(r.id as u32, ct, bottom, top, builtin), version, interior: Vec::new() });
+        }
+        for r in db.instances()? {
+            m.insts.push(InstRec {
+                placed: Placed { id: r.id, type_id: r.type_id as u32, pos: Vec3::new(r.x, r.y, r.z), rot_y: r.rot_y, scale: r.scale, params: r.params, version: r.version },
+                removed: r.removed,
+            });
+        }
+        for r in db.regions()? {
+            if r.status != "done" {
+                continue;
+            }
+            if r.version.is_some_and(|v| m.reverted.contains(&v)) {
+                continue;
+            }
+            let info = region_info_from_plan(&r.plan_json);
+            m.regions.insert((r.rx, r.rz), Arc::new(info));
+        }
+        for c in db.characters()? {
+            let persona: Persona = serde_json::from_str(&c.persona_json).unwrap_or_default();
+            let state: SavedState = serde_json::from_str(&c.state_json).unwrap_or_default();
+            let mut home = Vec3::new(c.home_x, m.terrain.height(c.home_x, c.home_z), c.home_z);
+            // Older worlds may have homes inside buildings: move them to the doorstep for good.
+            let fixed = m.clear_spot(home, &[]);
+            if (fixed - home).length() > 0.01 {
+                home = fixed;
+                let _ = db.with(|cn| {
+                    cn.execute("UPDATE characters SET home_x = ?1, home_z = ?2 WHERE id = ?3", rusqlite::params![home.x as f64, home.z as f64, c.id])?;
+                    Ok(())
+                });
+            }
+            m.chars.push(Arc::new(CharacterDef { id: c.id, persona, home, state, version: c.version.unwrap_or(0) }));
+        }
+        Ok(m)
+    }
+
+    /// Solid story instances near `p` (plus extra, not yet committed ones).
+    fn story_solids_near(&self, p: Vec3, extra: &[(Placed, Arc<TypeEntry>)]) -> Vec<crate::world::Solid> {
+        let mut out = Vec::new();
+        let near = |pl: &Placed, e: &TypeEntry| (pl.pos - p).length() < e.radius() * pl.scale + 4.0;
+        for i in self.insts.iter().filter(|i| self.inst_active(i)) {
+            if let Some(t) = self.types.get(&i.placed.type_id) {
+                if t.entry.solid && near(&i.placed, &t.entry) {
+                    out.push(crate::world::Solid { inst: i.placed.gpu(&t.entry, 1.0), ty: t.entry.clone() });
+                }
+            }
+        }
+        for (pl, e) in extra {
+            if e.solid && near(pl, e) {
+                out.push(crate::world::Solid { inst: pl.gpu(e, 1.0), ty: e.clone() });
+            }
+        }
+        out
+    }
+
+    /// The nearest spot to `p` where a person can stand (not inside a building).
+    fn clear_spot(&self, p: Vec3, extra: &[(Placed, Arc<TypeEntry>)]) -> Vec3 {
+        let solids = self.story_solids_near(p, extra);
+        if solids.is_empty() {
+            return p;
+        }
+        let obs = crate::world::collide::Obstacles { solids: &solids, bodies: &[] };
+        crate::world::collide::free_spot(&self.terrain, &obs, p, crate::world::collide::NPC_RADIUS + 0.3, 40.0)
+    }
+
+    pub fn terrain(&self) -> Arc<Terrain> {
+        self.terrain.clone()
+    }
+
+    fn type_active(&self, t: &TypeRec, inst_types: &HashSet<u32>) -> bool {
+        match t.version {
+            None => true,
+            Some(v) => !self.reverted.contains(&v) || inst_types.contains(&t.entry.id),
+        }
+    }
+
+    fn inst_active(&self, i: &InstRec) -> bool {
+        if self.reverted.contains(&i.placed.version) {
+            return false;
+        }
+        match i.removed {
+            None => true,
+            Some(r) => self.reverted.contains(&r),
+        }
+    }
+
+    fn active_instances(&self) -> Vec<Placed> {
+        self.insts.iter().filter(|i| self.inst_active(i)).map(|i| i.placed.clone()).collect()
+    }
+
+    fn active_types(&self) -> Vec<&TypeRec> {
+        let used: HashSet<u32> = self.insts.iter().filter(|i| self.inst_active(i)).map(|i| i.placed.type_id).collect();
+        self.types.values().filter(|t| self.type_active(t, &used)).collect()
+    }
+
+    /// Scatter type ids per tag: universe types replace built-ins for a tag.
+    fn scatter_map(&self, types: &[&TypeRec]) -> HashMap<String, Vec<u32>> {
+        let mut tags: HashSet<String> = HashSet::new();
+        for b in &self.look.biomes {
+            tags.extend(b.scatter.keys().cloned());
+        }
+        let mut m = HashMap::new();
+        for tag in tags {
+            let has = |t: &&&TypeRec| t.entry.has_tag(&tag) && t.entry.has_tag("base");
+            let custom: Vec<u32> = types.iter().filter(has).map(|t| t.entry.id).collect();
+            let ids = if !custom.is_empty() {
+                custom
+            } else {
+                types.iter().filter(|t| t.entry.builtin && t.entry.has_tag(&tag)).map(|t| t.entry.id).collect()
+            };
+            if !ids.is_empty() {
+                m.insert(tag, ids);
+            }
+        }
+        m
+    }
+
+    fn pipeline_for(&mut self, types: &[&TypeRec]) -> Result<Option<Arc<ScenePipeline>>, Vec<Diag>> {
+        let Some(gpu) = self.gpu.clone() else { return Ok(None) };
+        let list: Vec<(u32, &CompiledType)> = types.iter().map(|t| (t.entry.id, t.entry.ct.as_ref())).collect();
+        let key = shader::key(&list);
+        if let Some(p) = self.pipelines.iter().find(|p| p.key == key) {
+            let p = p.clone();
+            self.pipelines.retain(|q| q.key != key);
+            self.pipelines.push(p.clone());
+            return Ok(Some(p));
+        }
+        let src = shader::assemble(&list);
+        let t0 = std::time::Instant::now();
+        let p = gpu.build_pipeline(&src, key).map_err(|e| {
+            let _ = std::fs::write(std::env::temp_dir().join("pocket-failed.wgsl"), &src);
+            vec![Diag::new(Stage::Gpu, 0, e)]
+        })?;
+        crate::log::info(format!("built pipeline with {} types in {:.0} ms", list.len(), t0.elapsed().as_secs_f64() * 1000.0));
+        self.pipelines.push(p.clone());
+        if self.pipelines.len() > 8 {
+            self.pipelines.remove(0);
+        }
+        Ok(Some(p))
+    }
+
+    /// A quick first snapshot for big universes: built-in and base types only,
+    /// no story instances or characters. The full one follows via a flip.
+    pub fn snapshot_base(&mut self) -> Result<Arc<WorldSnapshot>, Vec<Diag>> {
+        let types: Vec<TypeRec> = self.active_types().into_iter().filter(|t| t.entry.builtin || t.entry.has_tag("base")).cloned().collect();
+        let refs: Vec<&TypeRec> = types.iter().collect();
+        let pipeline = self.pipeline_for(&refs)?;
+        let full = self.make_snapshot(&refs, pipeline);
+        Ok(Arc::new(WorldSnapshot {
+            version: full.version,
+            scene: full.scene.clone(),
+            terrain: full.terrain.clone(),
+            look: full.look.clone(),
+            instances: Vec::new(),
+            by_chunk: Default::default(),
+            characters: Vec::new(),
+            regions: full.regions.clone(),
+            scatter_epoch: full.scatter_epoch,
+            scatter: full.scatter.clone(),
+            figure_type: full.figure_type,
+            spawn: full.spawn,
+        }))
+    }
+
+    /// Number of active types (decides whether startup uses `snapshot_base`).
+    pub fn active_type_count(&self) -> usize {
+        self.active_types().len()
+    }
+
+    /// Build the snapshot for the current state (building/caching the pipeline).
+    pub fn snapshot(&mut self) -> Result<Arc<WorldSnapshot>, Vec<Diag>> {
+        let types: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
+        let refs: Vec<&TypeRec> = types.iter().collect();
+        let pipeline = self.pipeline_for(&refs)?;
+        Ok(self.make_snapshot(&refs, pipeline))
+    }
+
+    fn make_snapshot(&self, types: &[&TypeRec], pipeline: Option<Arc<ScenePipeline>>) -> Arc<WorldSnapshot> {
+        let scene = Arc::new(SceneTypes { types: types.iter().map(|t| (t.entry.id, t.entry.clone())).collect(), pipeline });
+        let instances = self.active_instances();
+        let by_chunk = WorldSnapshot::index(&instances);
+        let scatter = self.scatter_map(types);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(self.look.as_ref()).unwrap_or_default().hash(&mut h);
+        let mut sm: Vec<_> = scatter.iter().collect();
+        sm.sort();
+        sm.hash(&mut h);
+        let figure_type = types.iter().find(|t| t.entry.builtin && t.entry.has_tag("figure")).map(|t| t.entry.id);
+        let characters = self.chars.iter().filter(|c| !self.reverted.contains(&c.version)).cloned().collect();
+        Arc::new(WorldSnapshot {
+            version: self.current.unwrap_or(0),
+            scene,
+            terrain: self.terrain.clone(),
+            look: self.look.clone(),
+            instances,
+            by_chunk,
+            characters,
+            regions: self.regions.clone(),
+            scatter_epoch: h.finish(),
+            scatter,
+            figure_type,
+            spawn: self.spawn,
+        })
+    }
+
+    pub fn type_names(&self) -> Vec<(u32, String, Vec<String>, [f32; 3])> {
+        self.active_types().iter().filter(|t| !t.entry.has_tag("figure")).map(|t| (t.entry.id, t.entry.name().to_string(), t.entry.ct.meta.tags.clone(), t.entry.ct.meta.bounds)).collect()
+    }
+
+    fn interior_of(&mut self, id: u32) -> Vec<[f32; 3]> {
+        let Some(t) = self.types.get_mut(&id) else { return Vec::new() };
+        if t.interior.is_empty() {
+            if let Ok(rep) = probe(&t.entry.ct) {
+                t.interior = rep.interior;
+            }
+        }
+        t.interior.clone()
+    }
+
+    // ---- step 5: placement ----
+
+    /// Check one placement against the terrain, the player, characters, the
+    /// spawn point and existing instances. Returns the resolved instance.
+    fn check_place(&mut self, pl: &Placement, entry: &Arc<TypeEntry>, interior: &[[f32; 3]], extra: &[(Placed, Arc<TypeEntry>)], label: &str) -> Result<Placed, String> {
+        let t = self.terrain.clone();
+        let scale = pl.scale.clamp(0.2, 6.0);
+        let b = entry.ct.meta.bounds;
+        // footprint corners under the object
+        let (c, s) = (pl.rot_y.cos(), pl.rot_y.sin());
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        for (fx, fz) in [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            let lx = fx * b[0] * scale * 0.7;
+            let lz = fz * b[2] * scale * 0.7;
+            // local → world is the inverse of to_local
+            let wx = pl.x + c * lx + s * lz;
+            let wz = pl.z - s * lx + c * lz;
+            let h = t.height(wx, wz);
+            lo = lo.min(h);
+            hi = hi.max(h);
+        }
+        let ground = t.height(pl.x, pl.z);
+        let y = match pl.y {
+            None => lo.min(ground) - entry.bottom * scale - 0.12,
+            Some(y) => {
+                let base = y + entry.bottom * scale;
+                if base - hi > 0.5 {
+                    return Err(format!("{label} floats {:.1} m above the ground (its base is at y={:.1}, the terrain at y={:.1}); omit y to sit it on the ground", base - hi, base, hi));
+                }
+                if lo - base > 3.0 {
+                    return Err(format!("{label} is buried {:.1} m below the ground", lo - base));
+                }
+                y
+            }
+        };
+        let water_ok = entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
+        if ground < WATER_LEVEL - 0.6 && !water_ok {
+            return Err(format!("{label} would stand in deep water at ({:.0}, {:.0})", pl.x, pl.z));
+        }
+        let mut params = pl.params;
+        params[1] = scale;
+        let placed = Placed { id: 0, type_id: entry.id, pos: Vec3::new(pl.x, y, pl.z), rot_y: pl.rot_y, scale, params, version: 0 };
+        let gi = placed.gpu(entry, 1.0);
+        let sdf_at = |p: Vec3| entry.ct.sdf(gi.to_local(p), &gi.k()) * scale;
+        let live = self.live.lock().clone();
+        if entry.solid {
+            let pp = live.player;
+            for h in [0.4, 1.0, 1.6] {
+                if sdf_at(Vec3::new(pp.x, t.height(pp.x, pp.z) + h, pp.z)) < 0.6 {
+                    return Err(format!("{label} would overlap the player"));
+                }
+            }
+            for cpos in &live.characters {
+                if sdf_at(*cpos + Vec3::Y * 0.9) < 0.4 {
+                    return Err(format!("{label} would overlap a character"));
+                }
+            }
+            let sp = self.spawn + Vec3::Y * 0.9;
+            if sdf_at(sp) < 1.0 {
+                return Err(format!("{label} would block the spawn point"));
+            }
+        }
+        // Existing story instances (and earlier placements in this commit).
+        let world_pts: Vec<Vec3> = interior
+            .iter()
+            .map(|p| {
+                let lx = p[0] * scale;
+                let lz = p[2] * scale;
+                Vec3::new(pl.x + c * lx + s * lz, y + p[1] * scale, pl.z - s * lx + c * lz)
+            })
+            .collect();
+        let r_new = entry.radius() * scale;
+        let others: Vec<(Placed, Arc<TypeEntry>)> = self
+            .insts
+            .iter()
+            .filter(|i| self.inst_active(i))
+            .filter_map(|i| self.types.get(&i.placed.type_id).map(|t| (i.placed.clone(), t.entry.clone())))
+            .chain(extra.iter().cloned())
+            .collect();
+        for (o, oe) in &others {
+            if !oe.solid || !entry.solid {
+                continue;
+            }
+            let ro = oe.radius() * o.scale;
+            if (o.pos - placed.pos).length() > ro + r_new {
+                continue;
+            }
+            let og = o.gpu(oe, 1.0);
+            let ok_k = og.k();
+            for p in &world_pts {
+                let d = oe.ct.sdf(og.to_local(*p), &ok_k) * o.scale;
+                if d < -0.3 {
+                    return Err(format!("{label} would overlap the existing {} at ({:.0}, {:.0})", oe.name(), o.pos.x, o.pos.z));
+                }
+            }
+        }
+        Ok(placed)
+    }
+
+    // ---- step 6 + commit + flip ----
+
+    pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
+        // Provisional entries for new types (ids assigned after the DB insert).
+        // Provisional ids match what SQLite will assign (failed types also take ids).
+        let db_max = self.db.with(|c| Ok(c.query_row("SELECT COALESCE(MAX(id), 0) FROM types", [], |r| r.get::<_, i64>(0))?)).unwrap_or(0) as u32;
+        let mut next_id = db_max.max(self.types.keys().max().copied().unwrap_or(0)) + 1;
+        let mut new_entries: Vec<Arc<TypeEntry>> = Vec::new();
+        for nt in &req.new_types {
+            new_entries.push(type_entry(next_id, nt.ct.clone(), nt.report.bottom, nt.report.top, false));
+            next_id += 1;
+        }
+        // Step 5: placement.
+        let mut placed: Vec<(Placed, Arc<TypeEntry>)> = Vec::new();
+        let mut dropped = Vec::new();
+        let mut diags = Vec::new();
+        for (i, pl) in req.placements.iter().enumerate() {
+            let (entry, interior) = match &pl.ty {
+                TypeRef::New(k) => match (new_entries.get(*k), req.new_types.get(*k)) {
+                    (Some(e), Some(nt)) => (e.clone(), nt.report.interior.clone()),
+                    _ => {
+                        diags.push(Diag::new(Stage::Place, 0, format!("placement {} refers to a missing type", i + 1)));
+                        continue;
+                    }
+                },
+                TypeRef::Existing(id) => match self.types.get(id) {
+                    Some(t) => {
+                        let e = t.entry.clone();
+                        (e, self.interior_of(*id))
+                    }
+                    None => {
+                        diags.push(Diag::new(Stage::Place, 0, format!("placement {} refers to unknown type id {id}", i + 1)));
+                        continue;
+                    }
+                },
+            };
+            let label = format!("the {} (placement {})", entry.name(), i + 1);
+            let mut result = self.check_place(pl, &entry, &interior, &placed, &label);
+            if result.is_err() && req.nudge {
+                let r = entry.radius() * pl.scale;
+                for k in 1..=14 {
+                    let a = k as f32 * 2.399;
+                    let d = (1.0 + k as f32 * 0.5) * r.max(2.0);
+                    let mut p2 = pl.clone();
+                    p2.x += a.cos() * d;
+                    p2.z += a.sin() * d;
+                    p2.y = None;
+                    if let Ok(ok) = self.check_place(&p2, &entry, &interior, &placed, &label) {
+                        result = Ok(ok);
+                        break;
+                    }
+                }
+            }
+            match result {
+                Ok(p) => placed.push((p, entry)),
+                Err(e) if req.nudge => dropped.push(e),
+                Err(e) => diags.push(Diag::new(Stage::Place, 0, e)),
+            }
+        }
+        if !diags.is_empty() {
+            return Err(diags);
+        }
+
+        // Step 6: build the next full shader and check GPU/CPU parity.
+        let mut look = self.look.clone();
+        let mut terrain = self.terrain.clone();
+        if let Some(l) = &req.look {
+            look = Arc::new(l.clone());
+            terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()));
+        }
+        let cur: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
+        let mut all: Vec<TypeRec> = cur.clone();
+        for e in &new_entries {
+            all.push(TypeRec { entry: e.clone(), version: Some(-1), interior: Vec::new() });
+        }
+        let refs: Vec<&TypeRec> = all.iter().collect();
+        let pipeline = self.pipeline_for(&refs)?;
+        if let (Some(gpu), Some(pipe)) = (&self.gpu, &pipeline) {
+            for (e, nt) in new_entries.iter().zip(&req.new_types) {
+                gpu_parity(gpu, pipe, &terrain, e.id, &nt.ct)?;
+            }
+        }
+
+        // A new look changes the terrain: pick a new dry spawn point.
+        let new_spawn = req.look.as_ref().map(|_| find_spawn(&terrain));
+
+        // Commit to SQLite as one new version.
+        let parent = self.current;
+        // Characters live beside their houses, never inside them.
+        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(_, h)| self.clear_spot(Vec3::new(h.x, terrain.height(h.x, h.z), h.z), &placed)).collect()).unwrap_or_default();
+        let region = req.region.as_ref();
+        let res = self.db.tx(|tx| {
+            let v = db::add_version(tx, parent, req.kind, &req.summary, None)?;
+            let mut ids = Vec::new();
+            for (nt, e) in req.new_types.iter().zip(&new_entries) {
+                let id = db::add_type(tx, Some(v), &nt.ct.meta.name, &nt.ct.source, &meta_json(&nt.ct, nt.report.bottom, nt.report.top), "ok", "")?;
+                ids.push((e.id, id as u32));
+            }
+            let mut inst_ids = Vec::new();
+            for (p, _) in &placed {
+                let tid = ids.iter().find(|(prov, _)| *prov == p.type_id).map(|x| x.1).unwrap_or(p.type_id);
+                let id = db::add_instance(tx, tid as i64, v, p.pos.x, p.pos.y, p.pos.z, p.rot_y, p.scale, &p.params)?;
+                inst_ids.push((id, tid));
+            }
+            let mut char_ids = Vec::new();
+            if let Some(rc) = region {
+                for ((persona, _), home) in rc.characters.iter().zip(&homes) {
+                    let id = db::add_character(tx, rc.r, &serde_json::to_string(persona)?, home.x, home.z, v)?;
+                    char_ids.push(id);
+                }
+                db::set_region(tx, rc.r.0, rc.r.1, "done", &rc.plan_json, Some(v))?;
+            }
+            if let Some(l) = &req.look {
+                tx.execute("UPDATE universe SET palette = ?1 WHERE id = 1", [serde_json::to_string(l)?])?;
+            }
+            if let Some(s) = new_spawn {
+                db::kv_set(tx, "spawn", &serde_json::to_string(&s.to_array())?)?;
+            }
+            Ok((v, ids, inst_ids, char_ids))
+        });
+        let (v, ids, inst_ids, char_ids) = res.map_err(|e| vec![Diag::new(Stage::Gpu, 0, format!("database commit failed: {e}"))])?;
+
+        // Apply to memory. Provisional type ids may differ from the DB's; if so,
+        // the pipeline must be rebuilt with the real ids.
+        let mut remap = false;
+        for ((prov, real), e) in ids.iter().zip(&new_entries) {
+            if prov != real {
+                remap = true;
+            }
+            let entry = Arc::new(TypeEntry { id: *real, ct: e.ct.clone(), builtin: false, solid: e.solid, bottom: e.bottom, sphere_cy: e.sphere_cy, sphere_r: e.sphere_r });
+            self.types.insert(*real, TypeRec { entry, version: Some(v), interior: Vec::new() });
+        }
+        for ((p, _), (id, tid)) in placed.iter().zip(&inst_ids) {
+            let mut p = p.clone();
+            p.id = *id;
+            p.type_id = *tid;
+            p.version = v;
+            self.insts.push(InstRec { placed: p, removed: None });
+        }
+        if let Some(rc) = req.region {
+            for (((persona, _), home), id) in rc.characters.into_iter().zip(&homes).zip(char_ids) {
+                let h = Vec3::new(home.x, terrain.height(home.x, home.z), home.z);
+                self.chars.push(Arc::new(CharacterDef { id, persona, home: h, state: SavedState::default(), version: v }));
+            }
+            self.regions.insert(rc.r, Arc::new(rc.info));
+        }
+        if req.look.is_some() {
+            self.look = look;
+            self.terrain = terrain;
+        }
+        if let Some(s) = new_spawn {
+            self.spawn = s;
+        }
+        self.current = Some(v);
+        let snapshot = if remap {
+            self.snapshot()?
+        } else {
+            let types: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
+            let refs: Vec<&TypeRec> = types.iter().collect();
+            self.make_snapshot(&refs, pipeline)
+        };
+        Ok(CommitOk { snapshot, placed: placed.len(), dropped })
+    }
+
+    /// Revert the most recent create that is still in effect.
+    pub fn undo(&mut self) -> Result<(Arc<WorldSnapshot>, String), String> {
+        let versions = self.db.versions().map_err(|e| e.to_string())?;
+        let target = versions.iter().rev().find(|v| v.kind == "create" && !self.reverted.contains(&v.id));
+        let Some(target) = target else { return Err("nothing to undo".into()) };
+        let tid = target.id;
+        let summary = target.summary.clone();
+        let parent = self.current;
+        let v = self.db.tx(|tx| db::add_version(tx, parent, "undo", &format!("undo: {summary}"), Some(tid))).map_err(|e| e.to_string())?;
+        self.reverted.insert(tid);
+        self.current = Some(v);
+        match self.snapshot() {
+            Ok(s) => Ok((s, summary)),
+            Err(d) => Err(format_diags(&d)),
+        }
+    }
+
+    pub fn history(&self) -> Vec<String> {
+        let Ok(vs) = self.db.versions() else { return vec![] };
+        vs.iter()
+            .rev()
+            .take(30)
+            .map(|v| {
+                let mark = if self.reverted.contains(&v.id) { " (undone)" } else { "" };
+                let cur = if Some(v.id) == self.current { "▸" } else { " " };
+                let age = crate::db::now() - v.created_at;
+                let ago = if age < 90.0 {
+                    format!("{age:.0}s ago")
+                } else if age < 5400.0 {
+                    format!("{:.0}m ago", age / 60.0)
+                } else if age < 172800.0 {
+                    format!("{:.0}h ago", age / 3600.0)
+                } else {
+                    format!("{:.0}d ago", age / 86400.0)
+                };
+                format!("{cur}#{} {:<7} {}{}  ({ago})", v.id, v.kind, v.summary, mark)
+            })
+            .collect()
+    }
+
+    pub fn region_names_near(&self, r: (i32, i32)) -> Vec<String> {
+        let mut v = Vec::new();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                if let Some(i) = self.regions.get(&(r.0 + dx, r.1 + dz)) {
+                    v.push(format!("{} ({})", i.name, i.mood));
+                }
+            }
+        }
+        v
+    }
+
+}
+
+pub fn region_info_from_plan(plan_json: &str) -> RegionInfo {
+    let v: serde_json::Value = serde_json::from_str(plan_json).unwrap_or_default();
+    RegionInfo {
+        name: v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        mood: v.get("mood").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        facts: v.get("facts").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+    }
+}
+
+/// Globals sufficient for probe dispatches.
+pub fn probe_globals(terrain: &Terrain) -> crate::render::Globals {
+    let pal = crate::terrain::Palette::default();
+    let light = crate::render::sky::lighting(400.0, &pal);
+    let sp = crate::render::SceneParams {
+        terrain,
+        palette: &pal,
+        camera: crate::render::Camera { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, fov_y: 1.0 },
+        width: 1,
+        height: 1,
+        pixel_aspect: 1.0,
+        light,
+        time: 0.0,
+        frame: 0,
+        shadows: false,
+    };
+    crate::render::build_globals(&sp, 1, None)
+}
+
+pub const PARITY_TOL: f32 = 1e-3;
+
+/// Step 6b: the type's sdf must agree on GPU and CPU at the probe points.
+pub fn gpu_parity(gpu: &Gpu, pipe: &ScenePipeline, terrain: &Terrain, tid: u32, ct: &CompiledType) -> Result<(), Vec<Diag>> {
+    let pts = sample_points(ct.meta.bounds);
+    let k = default_k(0.37);
+    let inst = GpuInst { k0: [k[0], k[1], k[2], k[3]], k1: [k[4], k[5], k[6], k[7]], ..Default::default() };
+    let input: Vec<[f32; 4]> = pts.iter().map(|p| [p[0], p[1], p[2], 0.0]).collect();
+    let out = gpu.probe(pipe, &probe_globals(terrain), 0, tid, &inst, &input).map_err(|e| vec![Diag::new(Stage::Gpu, 0, format!("GPU probe failed: {e}"))])?;
+    let mut worst = 0.0f32;
+    let mut at = [0.0; 3];
+    for (p, g) in pts.iter().zip(&out) {
+        let c = ct.sdf(*p, &k);
+        let err = (g[0] - c).abs() / c.abs().max(1.0);
+        if !(err <= PARITY_TOL) {
+            if !(err <= worst) {
+                worst = err;
+                at = *p;
+            }
+        }
+    }
+    if worst > 0.0 {
+        return Err(vec![Diag::new(Stage::Gpu, 0, format!("GPU/CPU sdf mismatch for {}: relative error {worst:.2e} at ({:.2}, {:.2}, {:.2})", ct.meta.name, at[0], at[1], at[2]))]);
+    }
+    Ok(())
+}

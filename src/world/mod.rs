@@ -1,0 +1,274 @@
+//! The world as the main thread sees it: an immutable snapshot of one world
+//! version (types + pipeline + story instances + characters + look), plus
+//! procedural scatter derived from it.
+
+pub mod characters;
+pub mod collide;
+pub mod cull;
+pub mod describe;
+pub mod scatter;
+
+use crate::lang::CompiledType;
+use crate::render::GpuInst;
+use crate::render::gpu::ScenePipeline;
+use crate::terrain::{Biome, Palette, Terrain};
+use glam::Vec3;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+pub const CHUNK: f32 = 64.0;
+pub const REGION_CHUNKS: i32 = 4;
+pub const REGION: f32 = CHUNK * REGION_CHUNKS as f32;
+
+pub fn chunk_of(x: f32, z: f32) -> (i32, i32) {
+    ((x / CHUNK).floor() as i32, (z / CHUNK).floor() as i32)
+}
+
+pub fn region_of(x: f32, z: f32) -> (i32, i32) {
+    ((x / REGION).floor() as i32, (z / REGION).floor() as i32)
+}
+
+pub fn region_center(r: (i32, i32)) -> Vec3 {
+    Vec3::new((r.0 as f32 + 0.5) * REGION, 0.0, (r.1 as f32 + 0.5) * REGION)
+}
+
+/// Universe-wide look: palette and biome table. Produced at `pocket new`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Look {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub palette: Palette,
+    #[serde(default = "crate::terrain::default_biomes")]
+    pub biomes: Vec<Biome>,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes() }
+    }
+}
+
+/// A validated, active object type.
+#[derive(Debug)]
+pub struct TypeEntry {
+    pub id: u32,
+    pub ct: Arc<CompiledType>,
+    pub builtin: bool,
+    pub solid: bool,
+    /// Lowest solid point in local space (for ground placement).
+    pub bottom: f32,
+    /// Bounding sphere: centre height (local) and radius (unscaled).
+    pub sphere_cy: f32,
+    pub sphere_r: f32,
+}
+
+impl TypeEntry {
+    pub fn name(&self) -> &str {
+        &self.ct.meta.name
+    }
+    pub fn has_tag(&self, t: &str) -> bool {
+        self.ct.meta.tags.iter().any(|x| x == t)
+    }
+    pub fn radius(&self) -> f32 {
+        self.sphere_r
+    }
+
+    /// Shader `info`: type id, sphere centre height, box half-extents x/z (f32 bits).
+    pub fn gpu_info(&self) -> [u32; 4] {
+        let b = self.ct.meta.bounds;
+        [self.id, self.sphere_cy.to_bits(), b[0].to_bits(), b[2].to_bits()]
+    }
+
+    /// Tight bounding sphere from the bounds box and the probed vertical extent.
+    pub fn sphere(bounds: [f32; 3], bottom: f32, top: f32) -> (f32, f32) {
+        let b = bounds;
+        let spacing = (b[1] * 1.5 + 0.3) * 2.0 / 12.0;
+        let lo = (bottom - spacing).max(-b[1]);
+        let hi = (top + spacing).min(b[1]).max(lo + 0.01);
+        let half = (hi - lo) * 0.5;
+        ((lo + hi) * 0.5, (b[0] * b[0] + b[2] * b[2] + half * half).sqrt() + 0.02)
+    }
+}
+
+/// The types (CPU) and compiled pipeline (GPU) of one world version.
+#[derive(Debug, Default)]
+pub struct SceneTypes {
+    pub types: HashMap<u32, Arc<TypeEntry>>,
+    pub pipeline: Option<Arc<ScenePipeline>>,
+}
+
+/// A stored, placed instance (story layer).
+#[derive(Clone, Debug)]
+pub struct Placed {
+    pub id: i64,
+    pub type_id: u32,
+    pub pos: Vec3,
+    pub rot_y: f32,
+    pub scale: f32,
+    pub params: [f32; 8],
+    pub version: i64,
+}
+
+impl Placed {
+    pub fn gpu(&self, ty: &TypeEntry, fade: f32) -> GpuInst {
+        let mut k = self.params;
+        k[1] = self.scale;
+        GpuInst {
+            pos_scale: [self.pos.x, self.pos.y, self.pos.z, self.scale],
+            rot: [self.rot_y.cos(), self.rot_y.sin(), ty.sphere_r * self.scale, fade],
+            k0: [k[0], k[1], k[2], k[3]],
+            k1: [k[4], k[5], k[6], k[7]],
+            info: ty.gpu_info(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct Persona {
+    pub name: String,
+    #[serde(default)]
+    pub age: u32,
+    #[serde(default)]
+    pub appearance: String,
+    #[serde(default)]
+    pub personality: String,
+    #[serde(default)]
+    pub goals: String,
+    #[serde(default)]
+    pub voice: String,
+    #[serde(default)]
+    pub relationships: Vec<String>,
+    #[serde(default)]
+    pub home: String,
+    /// Figure params: height m, build, skin 0..1, shirt hue, trousers hue.
+    #[serde(default)]
+    pub look: FigureLook,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct FigureLook {
+    pub height: f32,
+    pub build: f32,
+    pub skin: f32,
+    pub shirt_hue: f32,
+    pub trousers_hue: f32,
+}
+
+impl Default for FigureLook {
+    fn default() -> Self {
+        FigureLook { height: 1.75, build: 1.0, skin: 0.3, shirt_hue: 0.6, trousers_hue: 0.1 }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CharacterDef {
+    pub id: i64,
+    pub persona: Persona,
+    pub home: Vec3,
+    /// Saved dynamic state (position etc.) at load time.
+    pub state: characters::SavedState,
+    pub version: i64,
+}
+
+/// One region's story metadata (for status bar and prompts).
+#[derive(Clone, Debug, Default)]
+pub struct RegionInfo {
+    pub name: String,
+    pub mood: String,
+    pub facts: Vec<String>,
+}
+
+/// One immutable world version, everything the main thread needs.
+pub struct WorldSnapshot {
+    pub version: i64,
+    pub scene: Arc<SceneTypes>,
+    pub terrain: Arc<Terrain>,
+    pub look: Arc<Look>,
+    pub instances: Vec<Placed>,
+    pub by_chunk: HashMap<(i32, i32), Vec<usize>>,
+    pub characters: Vec<Arc<CharacterDef>>,
+    pub regions: HashMap<(i32, i32), Arc<RegionInfo>>,
+    /// Changes only when scatter inputs (terrain/look/scatter types) change.
+    pub scatter_epoch: u64,
+    /// Scatter type ids per tag.
+    pub scatter: HashMap<String, Vec<u32>>,
+    pub figure_type: Option<u32>,
+    pub spawn: Vec3,
+}
+
+impl WorldSnapshot {
+    pub fn index(instances: &[Placed]) -> HashMap<(i32, i32), Vec<usize>> {
+        let mut m: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, p) in instances.iter().enumerate() {
+            m.entry(chunk_of(p.pos.x, p.pos.z)).or_default().push(i);
+        }
+        m
+    }
+
+    #[cfg(test)]
+    /// Invariant behind atomic flips: everything this snapshot references is in
+    /// it, and its pipeline was built from exactly its types.
+    pub fn check_consistent(&self) -> Result<(), String> {
+        for p in &self.instances {
+            if !self.scene.types.contains_key(&p.type_id) {
+                return Err(format!("instance {} uses type {} missing from the snapshot", p.id, p.type_id));
+            }
+        }
+        for ids in self.scatter.values() {
+            for id in ids {
+                if !self.scene.types.contains_key(id) {
+                    return Err(format!("scatter type {id} missing"));
+                }
+            }
+        }
+        if let Some(pipe) = &self.scene.pipeline {
+            let mut list: Vec<(u32, &crate::lang::CompiledType)> = self.scene.types.values().map(|t| (t.id, t.ct.as_ref())).collect();
+            list.sort_by_key(|x| x.0);
+            if crate::render::shader::key(&list) != pipe.key {
+                return Err("pipeline was built from a different type set".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn type_of(&self, id: u32) -> Option<&Arc<TypeEntry>> {
+        self.scene.types.get(&id)
+    }
+
+    pub fn region_name(&self, r: (i32, i32)) -> Option<&str> {
+        self.regions.get(&r).map(|x| x.name.as_str()).filter(|s| !s.is_empty())
+    }
+
+    /// Story instances in a chunk and its neighbours.
+    pub fn near_chunk(&self, c: (i32, i32)) -> impl Iterator<Item = &Placed> {
+        let mut out = Vec::new();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                if let Some(v) = self.by_chunk.get(&(c.0 + dx, c.1 + dz)) {
+                    out.extend(v.iter().map(|i| &self.instances[*i]));
+                }
+            }
+        }
+        out.into_iter()
+    }
+}
+
+/// Instance with everything the CPU needs to evaluate it.
+#[derive(Clone)]
+pub struct Solid {
+    pub inst: GpuInst,
+    pub ty: Arc<TypeEntry>,
+}
+
+impl Solid {
+    pub fn sdf(&self, p: Vec3) -> f32 {
+        let c = self.inst.center();
+        let ds = (p - c).length() - self.inst.radius();
+        if ds > 0.5 {
+            return ds;
+        }
+        self.ty.ct.sdf(self.inst.to_local(p), &self.inst.k()) * self.inst.pos_scale[3]
+    }
+}
