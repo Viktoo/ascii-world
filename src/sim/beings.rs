@@ -80,7 +80,7 @@ impl Sim {
     /// How much more an animal must like someone before it lets them close.
     pub fn wariness(&self, cid: i64) -> f32 {
         match self.cast.get(cid) {
-            Some(n) if n.species.mind != Mind::Sapient => (n.species.temper.wary - 0.5) * 0.5 - (n.species.temper.tame - 0.5) * 0.2,
+            Some(n) if n.species.mind != Mind::Sapient => (n.temper.wary - 0.5) * 0.5 - (n.temper.tame - 0.5) * 0.2,
             _ => 0.0,
         }
     }
@@ -225,7 +225,7 @@ impl Sim {
     pub fn animals_notice_throw(&mut self, at: Vec3) {
         let t = self.t;
         for n in self.cast.npcs.iter_mut() {
-            if !n.dead && n.species.mind != Mind::Sapient && n.species.temper.playful > 0.5 && !n.a.asleep && (n.a.pos - at).length() < 30.0 && n.plan.is_empty() {
+            if !n.dead && n.species.mind != Mind::Sapient && n.temper.playful > 0.5 && !n.a.asleep && (n.a.pos - at).length() < 30.0 && n.plan.is_empty() {
                 n.think_at = n.think_at.min(t + 0.3);
                 if matches!(n.a.task, Some(super::actor::Task::Follow { .. }) | Some(super::actor::Task::Wait { .. }) | None) {
                     n.a.task = None;
@@ -238,6 +238,14 @@ impl Sim {
         match who {
             ActorId::Player => None,
             ActorId::Npc(c) => self.cast.get(c).map(|n| &n.species),
+        }
+    }
+
+    /// A being's own temper (its line's, or its species').
+    pub fn temper_of(&self, who: ActorId) -> Option<crate::world::species::Temper> {
+        match who {
+            ActorId::Npc(c) => self.cast.get(c).map(|n| n.temper),
+            ActorId::Player => None,
         }
     }
 
@@ -273,7 +281,7 @@ impl Sim {
         if sa.diet.meat <= 0.5 || sa.name == sb.name || sa.mind == Mind::Sapient {
             return false;
         }
-        if sb.mind == Mind::Sapient && sa.temper.bold < 0.85 {
+        if sb.mind == Mind::Sapient && self.temper_of(a).map(|t| t.bold).unwrap_or(0.5) < 0.85 {
             return false;
         }
         if self.kin(a, b) {
@@ -305,7 +313,7 @@ impl Sim {
         let a = self.actor(me)?;
         let pos = a.pos;
         let sp = self.species_of(me);
-        let wary = sp.map(|s| s.temper.wary).unwrap_or(0.4);
+        let wary = self.temper_of(me).map(|t| t.wary).unwrap_or(0.4);
         let animal = sp.is_some_and(|s| s.mind != Mind::Sapient);
         let my_mass = self.mass_of(me);
         let mut best: Option<(f32, ActorId, Vec3)> = None;
@@ -345,6 +353,9 @@ impl Sim {
         let away = if away.length() < 0.5 { Vec3::X } else { away };
         let what = self.actor_name(from);
         let group = self.species_of(me).is_some_and(|s| s.social == crate::world::species::Social::Herd);
+        if let Some(n) = self.cast.get_mut(cid) {
+            n.frights = n.frights.saturating_add(1);
+        }
         let mut who = vec![(me, pos)];
         if group {
             who.extend(self.kind_near(me, pos, 25.0));
@@ -481,7 +492,7 @@ impl Sim {
         let Some(n) = self.cast.get(cid) else { return };
         let pos = n.a.pos;
         let needs = n.needs;
-        let temper = n.species.temper;
+        let temper = n.temper;
         let home = n.def.home;
         let held = n.a.held;
         let next = |s: &mut Sim, secs: f64| {
@@ -561,7 +572,8 @@ impl Sim {
             next(self, 3.0);
             return;
         }
-        let owner = self.owner_of(cid);
+        // The young keep to a parent; others to their person.
+        let owner = self.parent_of(cid).or_else(|| self.owner_of(cid));
         let owner_at = owner.and_then(|o| self.actor(o).filter(|a| !a.asleep).map(|a| a.pos));
         let mut best: (f32, &str) = (0.15 + 0.1 * self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0), "wander");
         fn consider(best: &mut (f32, &'static str), score: f32, what: &'static str) {

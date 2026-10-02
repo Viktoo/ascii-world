@@ -2224,3 +2224,82 @@ fn riders_picture() {
     let cam = crate::render::Camera { pos: me + Vec3::Y * 2.0, yaw: 0.0, pitch: 0.02, fov_y: 1.05 };
     render_png(&mut s, &w, cam, &out);
 }
+
+/// One run of a wolf valley: two pairs whose villagers feed them; their young
+/// grow up together and pair across the two lines. Returns who was born, in
+/// order, and the session.
+fn wolf_generations(seed: u64) -> (Vec<String>, Session, Arc<Mutex<Vec<SimEvent>>>, i64) {
+    let w = world("wolfline", 55);
+    let den = dry_spot(&w, 14.0, 2.6);
+    let ola = add_char(&w, "Ola", "a kind villager who feeds the wolves", &[], den + Vec3::new(-4.0, 0.0, 0.0));
+    let founders: Vec<i64> = (0..4).map(|i| add_being(&w, &format!("Wolf {i}"), "wolf", &[], den + Vec3::new((i % 2) as f32 * 1.5, 0.0, (i / 2) as f32 * 6.0))).collect();
+    let mut s = session(&w, seed, None);
+    s.sim.cfg.life_speed = 8.0;
+    s.sim.cfg.max_creatures = 30;
+    let all = record(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * (15.0 / 24.0);
+    s.sim.player.pos = den + Vec3::new(-15.0, 0.0, -15.0);
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.think_at = 0.0;
+    }
+    let o = ActorId::Npc(ola);
+    let (a, b) = (ActorId::Npc(founders[0]), ActorId::Npc(founders[1]));
+    let (c, d) = (ActorId::Npc(founders[2]), ActorId::Npc(founders[3]));
+    s.sim.social.bond(a, b, 0.8, 0.0);
+    s.sim.social.bond(c, d, 0.8, 0.0);
+    for _ in 0..140 {
+        // The villager feeds the wolves; the young who grow up together pair up.
+        let t = s.sim.t;
+        let wolves: Vec<i64> = s.sim.cast.npcs.iter().filter(|n| n.species.name.contains("wolf") && !n.dead).map(|n| n.def.id).collect();
+        for wf in &wolves {
+            if let Some(n) = s.sim.cast.get_mut(*wf) {
+                n.needs.hunger = 0.0;
+            }
+            s.sim.social.bond(ActorId::Npc(*wf), o, 0.05, t);
+        }
+        let adults: Vec<(i64, i64)> = s.sim.cast.npcs.iter().filter(|n| n.born > 0.0 && n.growth >= 1.0 && !n.dead).map(|n| (n.def.id, n.lineage)).collect();
+        for (x, lx) in &adults {
+            for (y, ly) in &adults {
+                if x < y && lx != ly && s.sim.social.affection(ActorId::Npc(*x), ActorId::Npc(*y)) < 0.7 {
+                    s.sim.social.bond(ActorId::Npc(*x), ActorId::Npc(*y), 0.8, t);
+                }
+            }
+        }
+        s.run(60.0, 0.25);
+    }
+    let born: Vec<String> = of(&all, "born").into_iter().map(|e| e.text).collect();
+    (born, s, all, ola)
+}
+
+/// Phase 8: wolves have young, who start small, keep to a parent and grow
+/// up; the valley fills only so far; a line that villagers keep feeding gets
+/// tamer with each generation until people call it by its own name. The
+/// same seed gives the same family history.
+#[test]
+fn families_grow_and_a_fed_wolf_line_turns_tame() {
+    let (born, s, all, _) = wolf_generations(29);
+    assert!(born.len() >= 3, "young were born: {born:?}");
+    let young: Vec<&super::npc::Npc> = s.sim.cast.npcs.iter().filter(|n| n.born > 0.0).collect();
+    assert!(young.iter().any(|n| n.growth >= 1.0), "and grew up");
+    let wolves = s.sim.cast.npcs.iter().filter(|n| n.species.name.contains("wolf") && !n.dead).count();
+    assert!(wolves <= s.sim.cfg.max_creatures, "the valley keeps to its limit ({wolves})");
+    // Newborns are small and keep close to a parent.
+    let first = of(&all, "born").into_iter().next().unwrap();
+    let kid = young.iter().find(|n| first.actor == Some(ActorId::Npc(n.def.id))).unwrap();
+    assert_eq!(kid.parents.len(), 2);
+    assert!(s.sim.social.rel(ActorId::Npc(kid.def.id), ActorId::Npc(kid.parents[0])).is_some_and(|r| r.family));
+    // A fed line drifts tame, generation by generation, and gets a name.
+    let tames: Vec<f32> = of(&all, "born").iter().map(|e| e.data["tame"].as_f64().unwrap_or(0.0) as f32).collect();
+    let base = s.sim.snap.species.get("wolf").unwrap().temper.tame;
+    let last = tames.iter().rev().take(2).sum::<f32>() / 2.0;
+    assert!(last > base + 0.08, "later young are tamer ({base:.2} → {last:.2}): {tames:?}");
+    let named = of(&all, "new_variety");
+    assert!(!named.is_empty() || !of(&all, "new_species").is_empty(), "the line got its own name: {:?}", tames);
+    if let Some(v) = named.first() {
+        assert!(v.data["variety"].as_str().unwrap_or("").contains("tame"), "{v:?}");
+    }
+    sound(&s);
+    // Same seed, same history.
+    let (again, _, _, _) = wolf_generations(29);
+    assert_eq!(born, again, "the same seed gives the same lineage history");
+}

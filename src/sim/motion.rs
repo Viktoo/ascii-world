@@ -123,7 +123,7 @@ impl Sim {
             return Err(ActErr::TooFar { at: m.pos, dist: d });
         }
         if let ActorId::Npc(c) = mount {
-            let tame = self.cast.get(c).map(|n| n.species.temper.tame).unwrap_or(0.5);
+            let tame = self.cast.get(c).map(|n| n.temper.tame).unwrap_or(0.5);
             let aff = self.social.affection(mount, who) - self.wariness(c);
             if aff < 0.25 || tame < 0.2 {
                 self.event("refused", Some(mount), Some(who.key()), format!("{mname} shies away from {name}"), Some(m.pos), json!({ "ride": true }));

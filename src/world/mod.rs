@@ -158,6 +158,10 @@ pub struct Persona {
     /// What they wear (layer type names), besides their variety's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<String>,
+    /// Their own temper, when it differs from their species' (born into a
+    /// line that drifted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temper: Option<species::Temper>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +183,7 @@ pub struct RegionInfo {
 }
 
 /// One immutable world version, everything the main thread needs.
+#[derive(Clone)]
 pub struct WorldSnapshot {
     pub version: i64,
     pub scene: Arc<SceneTypes>,

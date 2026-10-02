@@ -56,6 +56,8 @@ pub struct SimConfig {
     pub transform: bool,
     /// Deeds may bring new beings into the world (a golem, a conjured hound).
     pub create_beings: bool,
+    /// How fast lives go (births, growing up), 1 = as designed.
+    pub life_speed: f32,
 }
 
 impl Default for SimConfig {
@@ -79,6 +81,7 @@ impl Default for SimConfig {
             max_creatures: 24,
             transform: false,
             create_beings: false,
+            life_speed: 1.0,
         }
     }
 }
@@ -111,6 +114,7 @@ impl SimConfig {
             ("work_secs", "POCKET_SIM_WORK_SECS"),
             ("work_gap_secs", "POCKET_SIM_WORK_GAP"),
             ("max_creatures", "POCKET_SIM_MAX_CREATURES"),
+            ("life_speed", "POCKET_SIM_LIFE_SPEED"),
         ] {
             set(key, env, &mut c);
         }
@@ -157,6 +161,7 @@ impl SimConfig {
             "work_secs" => self.work_secs = v.clamp(10.0, 1e7),
             "work_gap_secs" => self.work_gap_secs = v.clamp(0.0, 1e7),
             "max_creatures" => self.max_creatures = v.clamp(1.0, 10_000.0) as usize,
+            "life_speed" => self.life_speed = v.clamp(0.0, 1000.0),
             "hunting" => self.hunting = v > 0.5,
             "transform" => self.transform = v > 0.5,
             "create_beings" => self.create_beings = v > 0.5,

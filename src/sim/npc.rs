@@ -50,9 +50,8 @@ impl Traits {
 impl Traits {
     /// A species' temper sets the starting point; the persona's words still
     /// nudge it (a timid dragon is possible).
-    pub fn with_temper(self, sp: &Species) -> Traits {
+    pub fn with_temper(self, sp: &Species, t: crate::world::species::Temper) -> Traits {
         use crate::world::species::{Mind, Social};
-        let t = sp.temper;
         let blend = |own: f32, base: f32| (own - 0.5) * 0.5 + base;
         let sociable = match sp.social {
             Social::Solitary => 0.2,
@@ -75,6 +74,8 @@ impl Traits {
 pub struct Npc {
     pub def: Arc<CharacterDef>,
     pub species: Arc<Species>,
+    /// Its own temper (its species', or its line's).
+    pub temper: crate::world::species::Temper,
     /// The body type it is drawn with.
     pub body_ty: u32,
     /// Look sliders (k.a … k.e).
@@ -107,6 +108,11 @@ pub struct Npc {
     /// Game time it was born (for the young), or 0.
     pub born: f64,
     pub parents: Vec<i64>,
+    pub lineage: i64,
+    pub last_birth: f64,
+    pub frights: u32,
+    /// Grown-up fraction (0.3 newborn … 1 adult).
+    pub growth: f32,
 }
 
 impl Npc {
@@ -120,7 +126,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone() }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -216,6 +222,7 @@ impl Cast {
         let mut n = Npc {
             def: def.clone(),
             species: snap.species.of(""),
+            temper: Default::default(),
             body_ty: 0,
             sliders: [0.5; 5],
             a,
@@ -242,6 +249,10 @@ impl Cast {
             tricks: s.tricks.clone(),
             born: s.born,
             parents: s.parents.clone(),
+            lineage: if s.lineage != 0 { s.lineage } else { def.id },
+            last_birth: s.last_birth,
+            frights: s.frights,
+            growth: if s.born > 0.0 { 0.3 } else { 1.0 },
         };
         fit(&mut n, snap, seed);
         self.index.insert(def.id, self.npcs.len());
@@ -266,12 +277,14 @@ pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {
     let variety = species.varieties.iter().find(|v| v.name == n.def.persona.variety);
     let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
     n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
-    n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name));
+    // The young are smaller, all over.
+    n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name) * n.growth.clamp(0.2, 1.0));
     n.a.roles = super::actor::role_mask(&bmeta);
     n.a.species = if species.is_human() { String::new() } else { species.name.clone() };
     n.traits = Traits::from_persona(&n.def.persona, rng);
+    n.temper = n.def.persona.temper.unwrap_or(species.temper);
     if !species.is_human() {
-        n.traits = n.traits.with_temper(&species);
+        n.traits = n.traits.with_temper(&species, n.temper);
     }
     n.body_ty = body.map(|b| b.id).unwrap_or(0);
     n.species = species;
@@ -778,6 +791,7 @@ impl Sim {
                 self.think(cid);
             }
         }
+        self.grow(cid);
         let held_big = self.held_size(ActorId::Npc(cid));
         let me = ActorId::Npc(cid);
         // A flyer with nothing to do comes down.

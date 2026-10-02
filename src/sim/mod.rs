@@ -17,6 +17,7 @@ pub mod env;
 pub mod headless;
 pub mod inspect;
 pub mod interp;
+pub mod life;
 pub mod motion;
 pub mod npc;
 pub mod persist;
@@ -272,6 +273,7 @@ pub struct Sim {
     acc_rules: f32,
     acc_behavior: f32,
     acc_regions: f32,
+    acc_life: f32,
     /// Highlighted (hovered) target, drawn brighter.
     pub hover: Option<Target>,
     pub region_seen: HashMap<(i32, i32), f64>,
@@ -318,6 +320,7 @@ impl Sim {
             acc_rules: 0.0,
             acc_behavior: 0.0,
             acc_regions: 1.0,
+            acc_life: 0.0,
             hover: None,
             region_seen: HashMap::new(),
             next_req: 1,
@@ -648,6 +651,11 @@ impl Sim {
             let d = self.acc_rules.min(1.0);
             self.acc_rules = 0.0;
             self.step_rules(d);
+        }
+        self.acc_life += dt;
+        if self.acc_life >= 60.0 {
+            self.acc_life = 0.0;
+            self.step_life();
         }
         self.acc_regions += dt;
         if self.acc_regions >= 1.0 {

@@ -196,6 +196,9 @@ pub struct Species {
     pub mass: f32,
     #[serde(default)]
     pub description: String,
+    /// The species it descends from (a line that drifted into its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kin_of: Option<String>,
 }
 
 fn mass() -> f32 {
@@ -228,6 +231,11 @@ impl Species {
         self.sounds.truncate(6);
         self.varieties.truncate(6);
         self.description = self.description.chars().take(160).collect();
+    }
+
+    /// The oldest species of its family (itself, unless it descends from one).
+    pub fn root(&self) -> &str {
+        self.kin_of.as_deref().unwrap_or(&self.name)
     }
 
     pub fn is_human(&self) -> bool {

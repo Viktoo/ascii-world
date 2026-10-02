@@ -56,6 +56,23 @@ pub struct SavedState {
     pub born: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parents: Vec<i64>,
+    /// The founder of their line (their own id for founders; 0 = unknown).
+    #[serde(default, skip_serializing_if = "is_zero_i")]
+    pub lineage: i64,
+    /// When they last had young.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_birth: f64,
+    /// How often they have run for their lives.
+    #[serde(default, skip_serializing_if = "is_zero_u")]
+    pub frights: u32,
+}
+
+fn is_zero_i(v: &i64) -> bool {
+    *v == 0
+}
+
+fn is_zero_u(v: &u32) -> bool {
+    *v == 0
 }
 
 fn is_zero(v: &f64) -> bool {
