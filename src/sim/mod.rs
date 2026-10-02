@@ -17,6 +17,7 @@ pub mod env;
 pub mod headless;
 pub mod inspect;
 pub mod interp;
+pub mod motion;
 pub mod npc;
 pub mod persist;
 pub mod physics;
@@ -536,7 +537,14 @@ impl Sim {
         let Some(from) = self.actor(id).map(|a| a.pos) else { return };
         let own = self.actor(id).map(|a| a.dims.radius).unwrap_or(0.35);
         let solids = self.solids_near(from, 4.0 + own);
-        let bodies: Vec<Vec3> = self.actor_ids().into_iter().filter(|o| *o != id).filter_map(|o| self.actor(o).map(|a| a.pos)).filter(|p| (*p - from).length() < 4.0).collect();
+        let mine = self.actor(id).and_then(|a| a.riding);
+        let bodies: Vec<Vec3> = self
+            .actor_ids()
+            .into_iter()
+            .filter(|o| *o != id && Some(*o) != mine)
+            .filter_map(|o| self.actor(o).filter(|a| a.riding != Some(id) && a.alt < 1.0).map(|a| a.pos))
+            .filter(|p| (*p - from).length() < 4.0)
+            .collect();
         let obs = Obstacles { solids: &solids, bodies: &bodies };
         let r = match id {
             ActorId::Player => crate::world::collide::PLAYER_RADIUS,
@@ -624,6 +632,7 @@ impl Sim {
         let dt = dt.clamp(0.0, 0.25);
         self.t += dt as f64;
         self.step_actors(dt);
+        self.update_riders();
         self.step_social(dt);
         self.step_physics(dt);
         self.acc_behavior += dt;

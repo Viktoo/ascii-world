@@ -596,6 +596,7 @@ impl App {
                     "e use · g pick up / put down · f throw · y/n answer",
                     "/wave /bow /nod /cheer /dance /sit /hug NAME /kiss NAME /handshake NAME /highfive NAME · /gesture ANY [NAME]",
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
+                    "/ride NAME · /dismount · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
                     "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ or PgUp/PgDn look, Tab ascii/blocks, F1 stats, F2 inspect, q quit",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
@@ -621,6 +622,14 @@ impl App {
                 self.player_act(Action::Gesture { kind: kind.to_string(), to });
             }
             "drop" if rest.is_empty() => self.player_act(Action::Drop),
+            "ride" | "mount" if self.person(rest).is_some() => {
+                if let Some(t) = self.person(rest) {
+                    self.player_act(Action::Ride { target: t });
+                }
+            }
+            "dismount" | "getdown" if rest.is_empty() => self.player_act(Action::Dismount),
+            "wear" | "puton" if rest.is_empty() && self.sim.player.held.is_some() => self.player_act(Action::Wear { target: None, on: None }),
+            "takeoff" if rest.is_empty() => self.player_act(Action::TakeOff { target: None, from: None }),
             "inspect" if rest.is_empty() => {
                 self.inspect = !self.inspect;
             }
@@ -821,7 +830,13 @@ impl App {
             if dir.length() > 1.0 {
                 dir = dir.normalize();
             }
-            if dir != Vec3::ZERO {
+            if self.sim.player.riding.is_some() && !self.noclip {
+                // Riding: the walk keys steer the mount.
+                self.sim.drive(dir, self.pitch, dt);
+                if dir != Vec3::ZERO {
+                    self.sim.player.task = None;
+                }
+            } else if dir != Vec3::ZERO {
                 let delta = dir * WALK_SPEED * dt;
                 if self.noclip {
                     let p = self.pos() + delta;
@@ -835,7 +850,9 @@ impl App {
             }
         }
         let p = self.pos();
-        self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
+        if self.sim.player.riding.is_none() {
+            self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
+        }
         let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + self.sim.player.dims.eye;
         self.cam_y += (eye - self.cam_y) * (dt * 10.0).min(1.0);
 

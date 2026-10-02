@@ -318,6 +318,8 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "make" | "build" | "craft" | "create" => "do",
         "hand" | "offer" => "give",
         "put_on" | "dress" | "don" => "wear",
+        "mount" | "ride_on" | "climb_on" => "ride",
+        "get_down" | "get_off" | "dismount" => "dismount",
         "take_off" | "undress" | "doff" => "take_off",
         "home" | "go_home" => "go_home",
         v => v,
@@ -532,7 +534,23 @@ impl Sim {
     /// Advance an actor's current task. True while it is still running.
     pub fn run_task(&mut self, who: ActorId, dt: f32) -> bool {
         let Some(task) = self.actor(who).and_then(|a| a.task.clone()) else { return false };
-        let (speed_walk, speed_run) = self.speeds(who);
+        // A long way to go: characters take their own mount if it is near.
+        if let (ActorId::Npc(_), Task::Goto { target, .. }) = (who, &task) {
+            if self.actor(who).is_some_and(|a| a.riding.is_none()) {
+                let far = self.resolve(target, who).map(|r| r.pos).zip(self.actor(who).map(|a| a.pos)).is_some_and(|(p, m)| Vec3::new(p.x - m.x, 0.0, p.z - m.z).length() > 50.0);
+                if far {
+                    if let Some(m) = self.own_mount(who, 15.0) {
+                        let _ = self.ride(who, m);
+                    }
+                }
+            }
+        }
+        // What carries them: their own legs (or wings), or their mount.
+        let mover = self.actor(who).and_then(|a| a.riding).unwrap_or(who);
+        let (speed_walk, speed_run) = self.speeds(mover);
+        let flyer = self.can_fly(mover);
+        let fly = self.fly_speed(mover);
+        let airborne = self.actor(mover).is_some_and(|a| a.alt > 0.3);
         let now = self.t;
         let me = self.actor(who).map(|a| a.pos).unwrap_or_default();
         let mut done = false;
@@ -545,15 +563,22 @@ impl Sim {
                     Some(p) => {
                         let flat = Vec3::new(p.x - me.x, 0.0, p.z - me.z);
                         if flat.length() <= *stop {
-                            done = true;
-                            if let Some(a) = self.actor_mut(who) {
-                                a.face(flat, 6.0);
+                            if airborne {
+                                // Come down first.
+                                self.fly_toward(mover, p, fly, dt, true);
+                            } else {
+                                done = true;
+                                if let Some(a) = self.actor_mut(who) {
+                                    a.face(flat, 6.0);
+                                }
                             }
                         } else if now > *deadline {
                             failed = true;
+                        } else if flyer && (airborne || flat.length() > 20.0) {
+                            self.fly_toward(mover, p, fly, dt, true);
                         } else {
                             let sp = if *run { speed_run.max(speed_walk) } else { speed_walk };
-                            if !self.step_toward(who, p, sp, dt) {
+                            if !self.step_toward(mover, p, sp, dt) {
                                 failed = true;
                             }
                         }
@@ -565,7 +590,7 @@ impl Sim {
                     done = true;
                 } else {
                     let p = me + *dir * 5.0;
-                    self.step_toward(who, p, speed_walk, dt);
+                    self.step_toward(mover, p, speed_walk, dt);
                 }
             }
             Task::Wait { until } => done = now >= *until,
@@ -574,9 +599,11 @@ impl Sim {
                     done = true;
                 } else if let Some(p) = self.actor(*other).map(|a| a.pos) {
                     let d = (p - me).length();
-                    if d > *dist {
+                    if flyer && (airborne || d > 20.0) && d > *dist {
+                        self.fly_toward(mover, p, fly, dt, true);
+                    } else if d > *dist {
                         let sp = if d > 6.0 { speed_run.max(speed_walk) } else { speed_walk.max(1.6) };
-                        self.step_toward(who, p, sp, dt);
+                        self.step_toward(mover, p, sp, dt);
                     } else if let Some(a) = self.actor_mut(who) {
                         a.face(p - me, dt * 4.0);
                     }
@@ -598,6 +625,12 @@ impl Sim {
             if let Some(a) = self.actor_mut(who) {
                 if a.task.as_ref() == Some(&task) {
                     a.task = None;
+                }
+            }
+            // Characters get down when they get there.
+            if let (Task::Goto { .. }, ActorId::Npc(c)) = (&task, who) {
+                if done && mover != who && self.cast.get(c).is_some_and(|n| !matches!(n.plan.front(), Some(Action::Goto { .. }))) {
+                    let _ = self.dismount(who);
                 }
             }
             if failed {
@@ -746,9 +779,14 @@ impl Sim {
             }
         }
         let held_big = self.held_size(ActorId::Npc(cid));
+        let me = ActorId::Npc(cid);
+        // A flyer with nothing to do comes down.
+        if self.actor(me).is_some_and(|a| a.alt > 0.0 && a.task.is_none() && a.riding.is_none()) && self.rider_of(me).is_none() {
+            self.settle(me, dt);
+        }
         if let Some(n) = self.cast.get_mut(cid) {
             n.a.update_pose(t, dt, held_big);
-            if n.a.moved < 1e-4 {
+            if n.a.moved < 1e-4 && n.a.alt <= 0.0 && n.a.riding.is_none() {
                 n.a.pos.y = self.snap.terrain.height(n.a.pos.x, n.a.pos.z);
             }
         }

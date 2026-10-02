@@ -400,6 +400,10 @@ pub struct Actor {
     pub species: String,
     /// Roles the body answers to (bit i = k.s<i>).
     pub roles: u8,
+    /// In the air (bodies that fly), this high above the ground (m).
+    pub alt: f32,
+    /// Sitting on another body that carries it.
+    pub riding: Option<ActorId>,
 }
 
 /// Bit mask of the roles a body lists.
@@ -418,7 +422,7 @@ pub const HUMAN_ROLES: u8 = 0b0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new() }
+        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None }
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -516,6 +520,18 @@ impl Actor {
         if self.asleep {
             goal[CROUCH] = 1.0;
             goal[NOD] = 0.8;
+        }
+        if self.riding.is_some() {
+            goal[CROUCH] = 0.55;
+            goal[L_FWD] = goal[L_FWD].max(0.35);
+            goal[R_FWD] = goal[R_FWD].max(0.35);
+        }
+        if self.alt > 0.5 && self.dims.flies {
+            // Wings (or what serves) beat in flight.
+            let beat = (t as f32 * 5.0).sin();
+            goal[L_RAISE] = 0.5 + 0.45 * beat;
+            goal[R_RAISE] = 0.5 + 0.45 * beat;
+            goal[SPREAD] = 0.8;
         }
         if let Some(g) = &self.gesture {
             let u = ((t - g.t0) as f32 / g.dur).clamp(0.0, 1.0);

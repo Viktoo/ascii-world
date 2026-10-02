@@ -2093,3 +2093,134 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
     let mut s2 = session(&w2, 26, None);
     assert!(s2.sim.transform_being(c, "dog", ActorId::Player).is_err());
 }
+
+/// Phase 7: a griffin flies over a house to its person and lands; the
+/// traveller rides a horse that knows them and steers it with the walk keys
+/// until a wolf spooks it and it throws them; a stranger's horse won't be
+/// ridden; a character rides her griffin to a far place and gets down there.
+#[test]
+fn griffins_fly_horses_carry_and_bolt() {
+    let w = world("riding", 53);
+    add_type(&w, &fixture("species/dragon.js"));
+    w.db.with(|c| db::put_species(c, "griffin", r#"{"name":"griffin","body":"dragon","size":0.55,"mind":"simple","speech":"sounds","sounds":["a shrill cry"],"social":"pair",
+        "diet":{"meat":0.7,"plants":0.3},"temper":{"bold":0.7,"wary":0.3,"playful":0.4,"tame":0.9},"move":{"walk":1.8,"run":6,"fly":12},"mass":400}"#)).unwrap();
+    let hut = add_type(&w, &fixture("sims/hut.js"));
+    let a = dry_spot(&w, 10.0, 0.6);
+    let far = dry_spot(&w, 70.0, 0.6);
+    let ilsa = add_char(&w, "Ilsa", "brave and warm", &["Gale: her griffin"], far);
+    let gale = add_being(&w, "Gale", "griffin", &["Ilsa: rider"], a);
+    let mid = (a + far) * 0.5;
+    let hut_id = place(&w, hut, ground(&w, mid.x, mid.z), 0.0);
+    let _ = hut_id;
+    let bram = add_being(&w, "Bram", "horse", &[], a + Vec3::new(-12.0, 0.0, 0.0));
+    let nell = add_being(&w, "Nell", "horse", &[], a + Vec3::new(-12.0, 0.0, 8.0));
+    let wolf = add_being(&w, "Grey", "wolf", &[], a + Vec3::new(-60.0, 0.0, -40.0));
+    let mut s = session(&w, 27, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * (16.0 / 24.0);
+    let (i, g, b, n, wf) = (ActorId::Npc(ilsa), ActorId::Npc(gale), ActorId::Npc(bram), ActorId::Npc(nell), ActorId::Npc(wolf));
+    s.sim.player.pos = a + Vec3::new(-10.0, 0.0, -2.0);
+    assert!(s.sim.can_fly(g) && s.sim.actor(g).unwrap().dims.seat.is_some());
+    // The griffin flies to Ilsa, over the house.
+    let solids: Vec<crate::world::Solid> = s.sim.solids_near(mid, 20.0);
+    assert!(!solids.is_empty(), "the house stands between them");
+    s.sim.act(g, Action::Goto { target: Target::Actor(i), run: false }).unwrap();
+    let mut top: f32 = 0.0;
+    for _ in 0..400 {
+        s.step(0.05);
+        let x = s.sim.actor(g).unwrap();
+        top = top.max(x.alt);
+        for sd in &solids {
+            assert!(sd.inst.sdf(&sd.ty.ct, x.pos + Vec3::Y * x.dims.height * 0.5) > 0.0, "never through the house");
+        }
+        if x.task.is_none() {
+            break;
+        }
+    }
+    let x = s.sim.actor(g).unwrap();
+    assert!(top > 3.0, "it flew ({top:.1} m up)");
+    assert!((x.pos - s.sim.actor(i).unwrap().pos).length() < 6.0 && x.alt < 0.2, "and landed by Ilsa ({:.1} m, {:.1} up)", (x.pos - s.sim.actor(i).unwrap().pos).length(), x.alt);
+    // The traveller rides a horse that knows them.
+    s.sim.social.bond(b, ActorId::Player, 0.6, s.sim.t);
+    s.sim.player.pos = s.sim.actor(b).unwrap().pos + Vec3::new(1.2, 0.0, 0.0);
+    let r = s.sim.act(ActorId::Player, Action::Ride { target: Target::Actor(b) });
+    assert!(r.is_ok(), "{r:?}");
+    let start = s.sim.actor(b).unwrap().pos;
+    let dir = Vec3::new(0.0, 0.0, 1.0);
+    for _ in 0..30 {
+        s.sim.drive(dir, 0.0, 0.1);
+        s.step(0.1);
+    }
+    let hp = s.sim.actor(b).unwrap().pos;
+    assert!((hp - start).length() > 5.0, "the horse carried them ({:.1} m)", (hp - start).length());
+    let me = s.sim.player.pos;
+    assert!(me.y > s.sim.snap.terrain.height(me.x, me.z) + 0.5 && Vec3::new(me.x - hp.x, 0.0, me.z - hp.z).length() < 1.0, "sitting on its back");
+    // A wolf: the horse bolts and throws them.
+    s.sim.cast.get_mut(wolf).unwrap().a.pos = hp + Vec3::new(5.0, 0.0, 2.0);
+    s.sim.cast.get_mut(bram).unwrap().think_at = 0.0;
+    s.run(1.0, 0.1);
+    assert!(s.sim.player.riding.is_none(), "thrown off");
+    assert!(!events(&s.sim, "thrown").is_empty() && !events(&s.sim, "fled").is_empty(), "the horse bolted");
+    let _ = wf;
+    // A horse that doesn't know them won't have them.
+    s.sim.player.pos = s.sim.actor(n).unwrap().pos + Vec3::new(1.2, 0.0, 0.0);
+    assert!(s.sim.act(ActorId::Player, Action::Ride { target: Target::Actor(n) }).is_err(), "a stranger's horse shies away");
+    // Ilsa rides Gale to a far place, and gets down there.
+    s.sim.cast.get_mut(wolf).unwrap().a.pos = a + Vec3::new(-200.0, 0.0, -200.0);
+    let dest = dry_spot(&w, 170.0, 0.6);
+    s.sim.act(i, Action::Goto { target: Target::Point(dest.to_array()), run: false }).unwrap();
+    let mut high: f32 = 0.0;
+    for _ in 0..600 {
+        s.step(0.1);
+        high = high.max(s.sim.actor(g).unwrap().alt);
+        if s.sim.actor(i).unwrap().task.is_none() {
+            break;
+        }
+    }
+    assert!(high > 3.0, "they flew ({high:.1} m up)");
+    assert!(!events(&s.sim, "mounted").iter().all(|e| e.actor != Some(i)), "Ilsa climbed onto Gale");
+    let ip = s.sim.actor(i).unwrap().pos;
+    let gp = s.sim.actor(g).unwrap().pos;
+    assert!(Vec3::new(ip.x - dest.x, 0.0, ip.z - dest.z).length() < 8.0 && (gp - ip).length() < 6.0, "both got there ({:.1} m, {:.1} m apart)", Vec3::new(ip.x - dest.x, 0.0, ip.z - dest.z).length(), (gp - ip).length());
+    assert!(s.sim.actor(i).unwrap().riding.is_none(), "and she got down");
+    sound(&s);
+}
+
+/// Render riders: one on a horse, one on a griffin in the air (look at it).
+#[test]
+#[ignore]
+fn riders_picture() {
+    let out = std::env::var("POCKET_PNG").unwrap_or_else(|_| std::env::temp_dir().join("pocket-riders.png").to_string_lossy().into_owned());
+    let w = world("ridepic", 54);
+    add_type(&w, &fixture("species/dragon.js"));
+    w.db.with(|c| db::put_species(c, "griffin", r#"{"name":"griffin","body":"dragon","size":0.55,"mind":"simple","speech":"sounds","temper":{"tame":0.9},"move":{"fly":12},"mass":400}"#)).unwrap();
+    let me = w.spawn;
+    let at = |x: f32, z: f32| ground(&w, me.x + x, me.z + z);
+    let ola = add_char(&w, "Ola", "kind", &["Bram: her horse"], at(-2.5, 9.0));
+    let bram = add_being(&w, "Bram", "horse", &["Ola: rider"], at(-2.5, 9.0));
+    let ilsa = add_char(&w, "Ilsa", "brave", &["Gale: her griffin"], at(3.0, 12.0));
+    let gale = add_being(&w, "Gale", "griffin", &["Ilsa: rider"], at(3.0, 12.0));
+    let mut s = session(&w, 28, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    s.sim.cast.get_mut(bram).unwrap().a.yaw = -1.4;
+    s.sim.cast.get_mut(gale).unwrap().a.yaw = 1.2;
+    s.sim.ride(ActorId::Npc(ola), ActorId::Npc(bram)).unwrap();
+    s.sim.ride(ActorId::Npc(ilsa), ActorId::Npc(gale)).unwrap();
+    {
+        let g = s.sim.cast.get_mut(gale).unwrap();
+        g.a.pos.y += 3.5;
+        g.a.alt = 3.5;
+    }
+    s.sim.update_riders();
+    for _ in 0..8 {
+        for id in [ola, bram, ilsa, gale] {
+            let t = s.sim.t;
+            let n = s.sim.cast.get_mut(id).unwrap();
+            n.a.update_pose(t, 0.1, None);
+        }
+        s.sim.t += 0.1;
+    }
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 2.0, yaw: 0.0, pitch: 0.02, fov_y: 1.05 };
+    render_png(&mut s, &w, cam, &out);
+}

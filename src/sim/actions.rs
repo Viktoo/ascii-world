@@ -101,6 +101,10 @@ pub enum Action {
         #[serde(default)]
         on: Option<Target>,
     },
+    /// Climb onto someone who can carry you (a horse, a griffin), if they agree.
+    Ride { target: Target },
+    /// Get down from what you ride.
+    Dismount,
     /// Take a layer off yourself or someone (`from`), into your hands.
     TakeOff {
         #[serde(default)]
@@ -142,6 +146,8 @@ impl Action {
             Action::Answer { .. } => "answer",
             Action::Give { .. } => "give",
             Action::Wear { .. } => "wear",
+            Action::Ride { .. } => "ride",
+            Action::Dismount => "dismount",
             Action::TakeOff { .. } => "take_off",
             Action::Follow { .. } => "follow",
             Action::Wait { .. } => "wait",
@@ -559,6 +565,12 @@ impl Sim {
                 };
                 self.answer(who, from, yes)
             }
+            Action::Ride { target } => {
+                let r = self.resolve(&target, who).ok_or_else(|| not_found(&target))?;
+                let Target::Actor(m) = r.target else { return fail("you can only ride a living body") };
+                self.ride(who, m)
+            }
+            Action::Dismount => self.dismount(who),
             Action::Wear { target, on } => {
                 let wearer = match &on {
                     Some(t) => match self.resolve(t, who).map(|r| (r.target, r.pos)) {

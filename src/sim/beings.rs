@@ -319,8 +319,12 @@ impl Sim {
             }
             let d = (x.pos - pos).length();
             let ratio = (self.mass_of(o) / my_mass.max(0.1)).sqrt().min(3.0);
+            let spooks = animal && sp.is_some_and(|s| s.diet.meat < 0.3 && wary >= 0.5) && self.species_of(o).is_some_and(|s| s.diet.meat > 0.5 && s.mind != Mind::Sapient) && !self.kin(me, o);
             let keep = if self.hunts(o, me) {
                 (6.0 + 30.0 * wary * ratio).min(60.0)
+            } else if spooks {
+                // Prey animals shy from any meat eater, however small.
+                6.0 + 10.0 * wary
             } else if animal && wary > 0.65 && self.social.affection(me, o) < 0.3 && sp.map(|s| &s.name) != self.species_of(o).map(|s| &s.name) && self.mass_of(o) > 0.4 * my_mass {
                 4.0 + 10.0 * wary
             } else {
@@ -485,6 +489,21 @@ impl Sim {
                 n.think_at = s.t + secs;
             }
         };
+        // Carrying someone: it goes where it is steered, unless it takes fright
+        // (then a mount that isn't fully tame throws its rider and bolts).
+        if let Some(rider) = self.rider_of(me) {
+            if let Some((from, at)) = self.threat(me) {
+                if temper.tame < 0.85 {
+                    self.throw_rider(me);
+                }
+                self.flee(cid, from, at);
+                return;
+            }
+            let rn = self.actor_name(rider);
+            self.set_doing(cid, &format!("carrying {rn}"));
+            next(self, 1.0);
+            return;
+        }
         // Danger first.
         if let Some((from, at)) = self.threat(me) {
             self.flee(cid, from, at);
