@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+
+# Local app data (if POCKET_HOME points inside the repo)
+.pocket/
+*.log
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets
+.env
+.env.*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
