@@ -305,6 +305,13 @@ pub struct Metrics {
     pub live_things: usize,
     pub active_cells: usize,
     pub invariants_broken: usize,
+    /// Events between beings of different species (a chase, a hug with a dog).
+    pub cross_species: u64,
+    pub chases: u64,
+    pub pets_following: usize,
+    pub births: u64,
+    /// Beings alive, by species.
+    pub population: BTreeMap<String, usize>,
 }
 
 /// The longest run of events where each follows the last within 15 s and
@@ -354,6 +361,25 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
     for e in events {
         *by_kind.entry(e.kind.clone()).or_insert(0) += 1;
     }
+    let species_of = |a: ActorId| match a {
+        ActorId::Player => Some("human".to_string()),
+        ActorId::Npc(c) => sim.cast.get(c).map(|n| n.species.name.clone()),
+    };
+    let cross = events
+        .iter()
+        .filter(|e| {
+            let other = e.subject.as_deref().and_then(ActorId::parse);
+            match (e.actor, other) {
+                (Some(a), Some(b)) => species_of(a).zip(species_of(b)).is_some_and(|(x, y)| x != y),
+                _ => false,
+            }
+        })
+        .count() as u64;
+    let mut population = BTreeMap::new();
+    for n in sim.cast.npcs.iter().filter(|n| !n.dead) {
+        *population.entry(n.species.name.clone()).or_insert(0) += 1;
+    }
+    let following = sim.cast.npcs.iter().filter(|n| !n.dead && n.doing.starts_with("following")).count();
     Metrics {
         game_hours: hours,
         events: events.len() as u64,
@@ -366,6 +392,11 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
         live_things: sim.things.len(),
         active_cells: sim.field.active(),
         invariants_broken: sim.check_invariants().len(),
+        cross_species: cross,
+        chases: events.iter().filter(|e| e.kind == "chase").count() as u64,
+        pets_following: following,
+        births: events.iter().filter(|e| e.kind == "born").count() as u64,
+        population,
     }
 }
 

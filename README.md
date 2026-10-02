@@ -11,6 +11,13 @@ up, carry them home, play catch, carry logs together, hug, gossip, and, with an 
 make new things for their own reasons. You, the characters and a test agent all act
 through the same small set of verbs.
 
+Not everyone is a person. Dogs follow their people and fetch, goats keep together and
+bolt from wolves, a griffin flies its rider to the next village, and elves and orcs
+who start out cold warm to each other one shared game at a time. Every species is a
+body plus a few numbers on shared axes (size, mind, speech, diet, social, temper), so
+an LLM can write new ones and they behave without new code. Families have young, and a
+line that people keep feeding gets tamer until it has a name of its own.
+
 ```bash
 export ANTHROPIC_API_KEY=...        # or POCKET_LLM_BASE_URL for any OpenAI-compatible endpoint
 pocket new "a rainy coastal valley where the lighthouse keeper vanished"
@@ -33,7 +40,7 @@ cargo build --release      # → target/release/pocket
 |---|---|---|
 | Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down (or `PgUp`/`PgDn`), `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
 | Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
-| Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk |
+| Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body) |
 | Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |
 
 You point with the middle of the view (the small `+`). Whatever you type after `/`
@@ -43,7 +50,9 @@ whether you change that thing or make something new.
 System commands: `/undo`, `/history`, `/help`, `/day`, `/night`, `/time HOUR`, `/inspect`.
 Shortcuts, taken only in exactly this form: `/wave`, `/bow`, `/nod`, `/cheer`, `/dance`,
 `/sit`, `/hug NAME`, `/kiss NAME`, `/handshake NAME`, `/highfive NAME`, `/give NAME`,
-`/say TEXT`, `/propose NAME catch|carry|dance|walk|…`, `/drop`, `/gesture ANY [NAME]`.
+`/say TEXT`, `/propose NAME catch|carry|dance|walk|…`, `/drop`, `/gesture ANY [NAME]`,
+`/ride NAME`, `/dismount`, `/wear` (what you hold), `/takeoff`. Riding, the walk keys
+steer the mount; on a flyer, look up or down to climb or dive.
 Contact gestures need the other person's consent: characters decide by how they feel
 about you. A gesture nobody knows yet (`/gesture salute`) is written once by the LLM as
 key poses, kept with the world, and anyone can do it after.
@@ -79,6 +88,11 @@ relationships, recent decisions and memories.
 | `POCKET_SIM_MEDIUM_HZ` | Ticks per second at medium distance (default 2). |
 | `POCKET_SIM_FAR` | `frozen` (default) or `catchup:HOURS`: when you come back, run the missed time quickly with rules only. |
 | `POCKET_LLM_PER_MIN` | Budget of LLM decisions per real minute for the living world (default 12; nearest characters first). |
+| `POCKET_SIM_HUNTING` | `1`: predators kill what they catch (default: they chase, then give up). |
+| `POCKET_SIM_TRANSFORM` | `1`: beings can be turned into other species even in a world without forces of its own. |
+| `POCKET_SIM_CREATE_BEINGS` | `1`: deeds may bring new beings into the world (`/conjure a hound`). |
+| `POCKET_SIM_LIFE_SPEED` | How fast lives go: births and growing up (default 1; 0 stops births). |
+| `POCKET_SIM_MAX_CREATURES` | How many of one kind a neighbourhood holds before births stop (default 24). |
 | `POCKET_SIM_MAX_AWAKE`, `POCKET_SIM_MAX_FLAMES`, `POCKET_SIM_MAX_THINGS`, `POCKET_SIM_CHAT_RANGE`, `POCKET_SIM_RULES_HZ`, `POCKET_SIM_BEHAVIOR_HZ`, `POCKET_SIM_MEDIUM_LLM` | Further limits. Each can also be set per universe in its `kv` table as `sim.<name>`. |
 
 Defaults on the Claude API: `claude-opus-5-5` for the builder (region plans and object
@@ -223,11 +237,47 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
 - *Range.* Full simulation near you, a reduced rate at medium distance, frozen or
   caught up (rules only) further out. Every limit is a setting.
 
-**Characters** (`src/sim/npc.rs`, `src/brain.rs`). Built from one parametric figure type
-with poses (arms, lean, nod, crouch) driven by the simulation. Every exchange is stored
-as a memory, with a rolling summary refreshed by the summariser; the dialogue prompt is
-bible + persona + summary + the most relevant and most recent memories + region facts +
-what is around right now.
+**Characters** (`src/sim/npc.rs`, `src/brain.rs`). Every exchange is stored as a memory,
+with a rolling summary refreshed by the summariser; the dialogue prompt is bible +
+persona + summary + the most relevant and most recent memories + region facts + what
+is around right now.
+
+**Species** (`src/world/species.rs`, `src/sim/beings.rs`, `motion.rs`, `life.rs`; the
+design is `docs/species-plan.md`). A species is a body plus numbers on shared axes:
+size, mind (`instinct`, `simple`, `sapient`), speech (`none`, `sounds`, `words`), diet,
+social (`solitary` … `village`), temper (bold, wary, playful, tame), speeds (walk, run,
+fly, swim), sleep hours and need rates. Built in: people, dogs, cats, horses, wolves,
+goats and deer; genesis and region plans add more, and the builder writes any body
+nobody has yet.
+- *Bodies* are object types with `meta.body` (height, eye, radius, reach, grip, seat,
+  roles, gait, flies, look sliders). The pose has eight *roles* instead of limbs
+  (`raise_l/r`, `reach_l/r`, `lean`, `head`, `crouch`, `spread`), and each body gives
+  them its own meaning, so every gesture plays on every body: a dragon's hug is its
+  wings wrapping through `reach`. A gesture that needs parts a body lacks is written
+  once for that species (`cheer@naga`) and kept. The probe checks that every listed
+  role moves the shape and that extreme poses stay sound.
+- *Looks* are the body's sliders (k.a … k.e), chosen per being from its species' or
+  variety's ranges. *Layers* (clothing, armour, a saddle) are types written against a
+  body's code and drawn in its frame and pose; they are live things, so a cloak burns
+  and armour slows you. The world can scale species ("everyone is a giant") and the
+  traveller's own height.
+- *Behaviour* reads only the axes: a meat eater hunts what is clearly smaller than it
+  and its pack, never its kin or the traveller; prey keeps its distance (wary animals
+  from any bigger stranger), herds run together, packs hunt together, pets follow
+  their person, greet them and fetch what they throw. Animals answer in noises and
+  gestures and never use the LLM; only shared words carry talk and gossip. Peoples
+  start from the universe's attitudes, then each pair's history takes over.
+- *Riding* puts one body in another's seat: the mount must be much bigger and agree;
+  a frightened mount that isn't fully tame throws its rider. Flyers cruise over the
+  land and what stands on it, and land to do anything else. Characters take their own
+  mount for long trips.
+- *Deeds* (`/` in words) on a being change what it wears (with its consent), its
+  sliders, needs, feelings and tricks; in a world with forces of its own a curse can
+  turn it into another species, and it keeps its memories.
+- *Lives*: bonded pairs of one body have young (blended looks, a little drift), who
+  grow up beside a parent; numbers stay under a limit. A line drifts with what happens
+  to it (fed by people: tamer; hunted: warier) and, far enough, is named as a variety,
+  then a species of its own.
 
 **Storage** (`src/db.rs`). The tables from the spec (`universe`, `versions`, `types`,
 `instances`, `regions`, `characters`, `memories`, `summaries`, `player`, `llm_usage`),
@@ -262,14 +312,15 @@ If these stay flat, nothing is emerging.
 
 Actions (for `pocket act`, LLM plans and the game) are JSON with a `do` field: `move`,
 `turn`, `goto`, `hold`, `drop`, `place`, `throw`, `use`, `eat`, `do`, `create`, `say`,
-`gesture`, `propose`, `answer`, `give`, `follow`, `wait`, `sleep`, `wake`, `go_home`.
+`gesture`, `propose`, `answer`, `give`, `wear`, `take_off`, `ride`, `dismount`, `follow`,
+`wait`, `sleep`, `wake`, `go_home`.
 Targets are `{"thing": ID}`, `{"actor": "player" | ID}`, `{"instance": ID}`,
 `{"cell": [X, Z]}`, `{"point": [X, Y, Z]}` or `{"name": "ball"}` (the nearest match).
 
 ## Tests
 
 ```bash
-cargo test --release                          # 58 tests, ~8 s
+cargo test --release                          # 75 tests, ~9 s
 cargo test --release -- --ignored --nocapture # + 1.5 km walk with live generation, compile-time scaling, rendered PNGs
 ```
 
@@ -300,6 +351,14 @@ How the acceptance criteria are covered:
 | The interpreter decides, and the second time the cache does | `sim::tests::interpreter_lights_the_lantern_and_caches_the_answer` |
 | Unscripted: a bored character makes a ball; it is thrown at (and through) a hoop | `sim::tests::a_made_ball_ends_up_thrown_at_a_hoop`, `a_ball_thrown_at_a_hoop_goes_through` |
 | Catch between people who love each other; two carry a log; a hug; a kiss refused | `sim::tests::people_play_catch_carry_together_and_hug` |
+| A dog plays the same gestures with its own body, holds things in its mouth | `sim::tests::a_dog_plays_the_same_gestures_with_its_own_body` |
+| A dog follows its person, fetches and gives back; a wary cat won't be hugged; a dog answers in noises | `sim::tests::a_dog_follows_and_fetches_and_a_wary_cat_keeps_its_distance` |
+| Wolves chase goats (never people), the herd bolts together; elves and orcs warm by playing | `sim::tests::wolves_chase_a_herd_and_peoples_warm_to_each_other` |
+| LLM-written species and bodies; a dragon's wing hug; a naga's own cheer, written once | `sim::tests::llm_written_species_live_hug_and_learn_their_own_gestures` |
+| A warrior village wears its armour; the cloak burns, the plate doesn't; giants and a small traveller | `sim::tests::a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller` |
+| Dressing needs consent; feeding, teaching, a curse into a toad, conjuring where allowed | `sim::tests::deeds_dress_feed_teach_curse_and_conjure_beings` |
+| A griffin flies over a house; riding a horse until a wolf spooks it; a long ride on a griffin | `sim::tests::griffins_fly_horses_carry_and_bolt` |
+| Young are born and grow up; a fed wolf line turns tame and gets a name; same seed, same history | `sim::tests::families_grow_and_a_fed_wolf_line_turns_tame` |
 | 1,000 things and 50 people at over 10× real time | `sim::tests::a_thousand_things_and_fifty_people_run_fast` (~29×) |
 | A village left two game days ago has changed | `sim::tests::a_village_left_for_two_days_has_changed` |
 | Live things, cells, relationships survive a restart; eaten plants grow back | `sim::tests::live_things_cells_and_relationships_persist`, `eaten_plants_stay_gone_then_grow_back` |
@@ -317,7 +376,9 @@ The LLM-dependent tests use a scripted model in-process (no network).
 - The terrain makes lakes and coasts, not brooks: water stops fire because no fuel
   stands in it and heat reaches about 6 m.
 - Physics is deliberately a toy: spheres against shapes, no stacking or joints.
-- Characters' figures are one shape with a few pose channels; gestures are stylised.
+- Bodies are one shape each with eight pose roles; gestures are stylised. Nothing
+  smaller than a cat: at terminal resolution it would be a pixel.
+- Layers can't change what a body can do (wings on a saddle); see the plan's parking lot.
 - The LLM paths (plans, interpretation, overheard talk, new types on demand, universe
   rules at genesis) are tested with a scripted model; tune the prompts in
   `src/prompts.rs` against a real one with `pocket sim FILE --hours 1`.

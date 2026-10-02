@@ -166,6 +166,15 @@ impl Sim {
                 v["persona"] = json!({ "age": n.def.persona.age, "personality": n.def.persona.personality, "goals": n.def.persona.goals, "home": n.def.persona.home });
                 v["needs"] = json!({ "hunger": r2(n.needs.hunger), "tiredness": r2(n.needs.fatigue), "loneliness": r2(n.needs.social), "boredom": r2(n.needs.fun), "curiosity": r2(n.needs.curiosity) });
                 v["traits"] = serde_json::to_value(n.traits).unwrap_or_default();
+                v["species"] = json!({
+                    "name": n.species.name, "body": self.snap.type_of(n.body_ty).map(|t| t.name().to_string()),
+                    "variety": n.def.persona.variety, "mind": n.species.mind, "speech": n.species.speech, "temper": n.temper,
+                    "height_m": r2(n.a.dims.height), "mass_kg": r1(n.a.dims.mass), "growth": r2(n.growth),
+                    "wears": self.worn_by(a).into_iter().map(|id| self.thing_name(id)).collect::<Vec<_>>(),
+                    "tricks": n.tricks, "parents": n.parents.iter().map(|p| self.actor_name(ActorId::Npc(*p))).collect::<Vec<_>>(),
+                    "owner": self.owner_of(c).map(|o| self.actor_name(o)), "riding": x.riding.map(|m| self.actor_name(m)), "rider": self.rider_of(a).map(|r| self.actor_name(r)),
+                    "altitude_m": r1(x.alt),
+                });
                 v["doing"] = json!(n.doing);
                 v["goal"] = json!(n.goal);
                 v["plan"] = json!(n.plan.iter().map(|s| serde_json::to_value(s).unwrap_or_default()).collect::<Vec<_>>());

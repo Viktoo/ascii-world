@@ -1,5 +1,31 @@
 # Plan: species
 
+## Status
+
+All eight phases are built. Each phase's proof is a test in `src/sim/tests.rs` (the
+README lists them). Where the build differs from the plan:
+
+- **Sliders:** a body has at most five (they are k.a … k.e). The human figure keeps
+  its five (height, build, skin, shirt, trousers).
+- **One shared four-legged body** (`src/builtin/quadruped.js`) serves dogs, cats,
+  horses, wolves, goats and deer, with different sliders and sizes.
+- **Mounts** need three times the rider's mass (not 1.8× the size) and a `seat`.
+- **Spooking:** besides predators that would hunt them, plant eaters with any
+  wariness keep their distance from meat eaters (a horse from a wolf it could
+  kick). That is what makes a mount bolt.
+- **Hunting** is off by default: predators chase, then give up. With
+  `POCKET_SIM_HUNTING=1` they kill what they catch; the dead stay in the save.
+- **Beings made by deeds** sit behind `POCKET_SIM_CREATE_BEINGS` everywhere, not only
+  in earth worlds. Curses need a world with its own properties (or
+  `POCKET_SIM_TRANSFORM`).
+- **Drift** is judged by a line's three youngest members. Variety and species names
+  are made from the drift ("tame wolves"), without an LLM call. A new species keeps
+  `kin_of`, so it shares its ancestor's population limit.
+- **Population limits** count kin within 150 m, not per region: a den on a region
+  border would leak otherwise.
+- **Births** happen between any two of one body who are bonded (people: partners), so
+  mixing is open, as decided.
+
 ## Vision
 
 The world has more than people. A dog follows its owner and brings back a
