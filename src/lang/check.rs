@@ -197,6 +197,7 @@ impl<'s> Cx<'s> {
         let mut props: Vec<(String, f32)> = Vec::new();
         let mut lists: [Vec<String>; 3] = Default::default();
         let mut body = None;
+        let mut fits = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -244,6 +245,10 @@ impl<'s> Cx<'s> {
                 "body" => match &p.value {
                     Expression::ObjectExpression(bo) => body = self.meta_body(bo),
                     _ => self.err(p.span, "meta.body must be an object"),
+                },
+                "fits" => match &p.value {
+                    Expression::StringLiteral(s) => fits = Some(s.value.as_str().trim().to_lowercase().chars().take(48).collect::<String>()),
+                    _ => self.err(p.span, "meta.fits must be the name of the body this layer is worn on"),
                 },
                 "props" => match &p.value {
                     Expression::ObjectExpression(po) => props = self.meta_props(po),
@@ -299,7 +304,7 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.body.height and radius must fit inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, body })
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, body, fits })
     }
 
     fn meta_body(&mut self, o: &js::ObjectExpression) -> Option<Body> {

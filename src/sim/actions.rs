@@ -93,6 +93,21 @@ pub enum Action {
     },
     /// Hand the held thing to someone.
     Give { to: Target },
+    /// Put on a layer (clothing, armour, a collar, a saddle): the held one or
+    /// `target`, on yourself or on someone (`on`), who must agree.
+    Wear {
+        #[serde(default)]
+        target: Option<Target>,
+        #[serde(default)]
+        on: Option<Target>,
+    },
+    /// Take a layer off yourself or someone (`from`), into your hands.
+    TakeOff {
+        #[serde(default)]
+        target: Option<Target>,
+        #[serde(default)]
+        from: Option<Target>,
+    },
     Follow {
         target: Target,
         #[serde(default)]
@@ -126,6 +141,8 @@ impl Action {
             Action::Propose { .. } => "propose",
             Action::Answer { .. } => "answer",
             Action::Give { .. } => "give",
+            Action::Wear { .. } => "wear",
+            Action::TakeOff { .. } => "take_off",
             Action::Follow { .. } => "follow",
             Action::Wait { .. } => "wait",
             Action::Sleep => "sleep",
@@ -541,6 +558,48 @@ impl Sim {
                     None => None,
                 };
                 self.answer(who, from, yes)
+            }
+            Action::Wear { target, on } => {
+                let wearer = match &on {
+                    Some(t) => match self.resolve(t, who).map(|r| (r.target, r.pos)) {
+                        Some((Target::Actor(a), p)) => {
+                            if (p - me.pos).length() > self.reach_of(who) + 0.6 {
+                                return Err(ActErr::TooFar { at: p, dist: (p - me.pos).length() });
+                            }
+                            a
+                        }
+                        _ => return fail("put it on whom?"),
+                    },
+                    None => who,
+                };
+                let id = match &target {
+                    Some(t) => {
+                        let r = self.resolve(t, who).ok_or_else(|| not_found(t))?;
+                        if !self.in_reach(who, r.pos) {
+                            return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
+                        }
+                        self.liven(&r.target).ok_or(ActErr::Fail(format!("the {} can't be worn", r.name)))?
+                    }
+                    None => me.held.ok_or(ActErr::Fail("not holding anything to put on".into()))?,
+                };
+                self.wear(who, wearer, id)
+            }
+            Action::TakeOff { target, from } => {
+                let wearer = match &from {
+                    Some(t) => match self.resolve(t, who).map(|r| r.target) {
+                        Some(Target::Actor(a)) => a,
+                        _ => return fail("take it off whom?"),
+                    },
+                    None => who,
+                };
+                let id = match &target {
+                    Some(t) => match self.resolve(t, who).map(|r| r.target) {
+                        Some(Target::Thing(id)) => id,
+                        _ => return Err(not_found(t)),
+                    },
+                    None => self.worn_by(wearer).last().copied().ok_or(ActErr::Fail(format!("{} isn't wearing anything to take off", self.actor_name(wearer))))?,
+                };
+                self.take_off(who, wearer, id)
             }
             Action::Give { to } => {
                 let id = me.held.ok_or(ActErr::Fail("not holding anything to give".into()))?;
@@ -980,6 +1039,128 @@ impl Sim {
         self.social.bond(who, to, 0.12, self.t);
         self.on_gift(to, who, id);
         Ok(Outcome::ok(format!("{name} gives the {tname} to {other}")).thing(id))
+    }
+
+    /// Layers someone wears, oldest first.
+    pub fn worn_by(&self, who: ActorId) -> Vec<ThingId> {
+        self.things.live().filter(|t| t.worn == Some(who)).map(|t| t.id).collect()
+    }
+
+    /// The name of the body an actor lives in.
+    pub fn body_name(&self, who: ActorId) -> String {
+        match who {
+            ActorId::Npc(c) => self.cast.get(c).and_then(|n| self.snap.type_of(n.body_ty)).map(|t| t.name().to_string()).unwrap_or_else(|| "figure".into()),
+            ActorId::Player => "figure".into(),
+        }
+    }
+
+    /// Put a layer on someone (yourself, or someone who agrees).
+    pub fn wear(&mut self, who: ActorId, wearer: ActorId, id: ThingId) -> Result<Outcome, ActErr> {
+        let name = self.actor_name(who);
+        let wname = self.actor_name(wearer);
+        let tname = self.thing_name(id);
+        let t = self.things.get(id).cloned().ok_or(ActErr::Fail("it's gone".into()))?;
+        let ty = self.type_entry(t.type_id).ok_or(ActErr::Fail("it's gone".into()))?;
+        if !(ty.has_tag("layer") || ty.ct.meta.fits.is_some()) {
+            return fail(format!("the {tname} isn't something to wear"));
+        }
+        if t.worn.is_some() {
+            return fail(format!("the {tname} is already being worn"));
+        }
+        let body = self.body_name(wearer);
+        if let Some(f) = ty.ct.meta.fits.as_deref().filter(|f| *f != body) {
+            return fail(format!("the {tname} is made for a {f} body, not {wname}'s"));
+        }
+        if self.worn_by(wearer).len() >= 3 {
+            return fail(format!("{wname} already wears three things"));
+        }
+        if t.holder.is_some_and(|h| h != who) {
+            return fail(format!("{} is holding the {tname}", self.actor_name(t.holder.unwrap_or(who))));
+        }
+        if wearer != who {
+            if let ActorId::Npc(c) = wearer {
+                let aff = self.social.affection(wearer, who) - self.wariness(c);
+                if aff < 0.15 {
+                    self.event("refused", Some(wearer), Some(format!("thing:{id}")), format!("{wname} wouldn't let {name} put the {tname} on them"), self.actor(wearer).map(|a| a.pos), json!({}));
+                    if !self.speaks(wearer) {
+                        self.make_noise(c, false);
+                    } else {
+                        self.say_template(wearer, "no", &name);
+                    }
+                    return fail(format!("{wname} won't let you"));
+                }
+            }
+        }
+        self.release(id);
+        let at = self.actor(wearer).map(|a| (a.pos, a.yaw));
+        if let Some(t) = self.things.get_mut(id) {
+            t.worn = Some(wearer);
+            t.holder = None;
+            t.co_holder = None;
+            if let Some((p, yaw)) = at {
+                t.pos = p;
+                t.yaw = yaw;
+            }
+            t.vel = Vec3::ZERO;
+            t.asleep = true;
+            t.dirty = true;
+        }
+        let msg = if wearer == who { format!("{name} puts on the {tname}") } else { format!("{name} puts the {tname} on {wname}") };
+        let p = at.map(|x| x.0);
+        self.event("wore", Some(who), Some(format!("thing:{id}")), msg.clone(), p, json!({ "on": wearer }));
+        if let Some(p) = p {
+            self.note_near(p, 20.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            self.witness(p, 15.0, &msg, 0.3, &[]);
+        }
+        if wearer != who {
+            self.social.bond(who, wearer, 0.06, self.t);
+        }
+        Ok(Outcome::ok(msg).thing(id))
+    }
+
+    /// Take a layer off (yourself, or someone who agrees): into the hands,
+    /// or to the ground when they are full.
+    pub fn take_off(&mut self, who: ActorId, wearer: ActorId, id: ThingId) -> Result<Outcome, ActErr> {
+        let name = self.actor_name(who);
+        let wname = self.actor_name(wearer);
+        let tname = self.thing_name(id);
+        if self.things.get(id).is_none_or(|t| t.worn != Some(wearer)) {
+            return fail(format!("{wname} isn't wearing the {tname}"));
+        }
+        if wearer != who {
+            let Some(p) = self.actor(wearer).map(|a| a.pos) else { return fail("they're gone") };
+            let me = self.actor(who).map(|a| a.pos).unwrap_or(p);
+            if (p - me).length() > self.reach_of(who) + 0.6 {
+                return Err(ActErr::TooFar { at: p, dist: (p - me).length() });
+            }
+            if let ActorId::Npc(c) = wearer {
+                if self.social.affection(wearer, who) - self.wariness(c) < 0.25 {
+                    self.event("refused", Some(wearer), Some(format!("thing:{id}")), format!("{wname} wouldn't let {name} take the {tname}"), Some(p), json!({}));
+                    return fail(format!("{wname} won't let you"));
+                }
+            }
+        }
+        let hands_free = self.actor(who).is_some_and(|a| a.held.is_none());
+        if let Some(t) = self.things.get_mut(id) {
+            t.worn = None;
+            t.asleep = false;
+            t.dirty = true;
+            if hands_free {
+                t.holder = Some(who);
+            }
+        }
+        if hands_free {
+            if let Some(a) = self.actor_mut(who) {
+                a.held = Some(id);
+            }
+        }
+        let msg = if wearer == who { format!("{name} takes off the {tname}") } else { format!("{name} takes the {tname} off {wname}") };
+        let p = self.actor(wearer).map(|a| a.pos);
+        self.event("took_off", Some(who), Some(format!("thing:{id}")), msg.clone(), p, json!({ "from": wearer }));
+        if let Some(p) = p {
+            self.note_near(p, 20.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+        }
+        Ok(Outcome::ok(msg).thing(id))
     }
 
     /// Start a gesture, alone or with someone.

@@ -134,6 +134,51 @@ impl Sim {
         }
     }
 
+    /// Put on what characters wear (their own layers and their variety's)
+    /// the first time they are in the world, once the layer types exist.
+    pub fn dress_new(&mut self) {
+        let todo: Vec<(i64, Vec<String>)> = self
+            .cast
+            .npcs
+            .iter()
+            .filter(|n| !n.dressed && !n.dead)
+            .map(|n| {
+                let mut v = n.def.persona.layers.clone();
+                if let Some(var) = n.species.varieties.iter().find(|v| v.name == n.def.persona.variety) {
+                    v.extend(var.layers.iter().cloned());
+                }
+                (n.def.id, v)
+            })
+            .collect();
+        for (cid, layers) in todo {
+            let who = ActorId::Npc(cid);
+            let types: Vec<u32> = layers.iter().filter_map(|l| self.type_by_name(l).map(|t| t.id)).collect();
+            if types.len() < layers.len() && !layers.is_empty() {
+                // Not all written yet: try again after the next flip.
+                continue;
+            }
+            if let Some(n) = self.cast.get_mut(cid) {
+                n.dressed = true;
+            }
+            if !self.worn_by(who).is_empty() {
+                continue;
+            }
+            let Some((p, yaw)) = self.actor(who).map(|a| (a.pos, a.yaw)) else { continue };
+            for ty in types.into_iter().take(3) {
+                let origin = super::things::Origin { made_by: Some(self.actor_name(who)), ..Default::default() };
+                let Some(id) = self.spawn_thing(ty, p, yaw, 1.0, origin, false) else { continue };
+                if let Some(t) = self.things.get_mut(id) {
+                    t.worn = Some(who);
+                    t.pos = p;
+                    t.yaw = yaw;
+                    t.vel = Vec3::ZERO;
+                    t.asleep = true;
+                    t.dirty = true;
+                }
+            }
+        }
+    }
+
     /// A gesture that moves parts this body doesn't have: ask once for this
     /// species' own version (the shared one plays meanwhile, with fallbacks).
     pub fn ask_body_gesture(&mut self, who: ActorId, k: super::actor::GestureKind) {

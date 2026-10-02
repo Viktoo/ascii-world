@@ -542,6 +542,32 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
     (types, names)
 }
 
+/// Varieties a plan describes, added to (or replacing ones of) their species.
+fn varieties_from(db: &Db, list: &[Value]) {
+    if list.is_empty() {
+        return;
+    }
+    let book = crate::world::species::SpeciesBook::load(&db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
+    for v in list.iter().take(4) {
+        let sp = s(v, "species").trim().to_lowercase();
+        let sp = if sp.is_empty() { "human".to_string() } else { sp };
+        let Some(base) = book.get(&sp) else { continue };
+        let Ok(mut var) = serde_json::from_value::<crate::world::species::Variety>(v.clone()) else { continue };
+        var.name = var.name.trim().to_lowercase();
+        if var.name.is_empty() {
+            continue;
+        }
+        var.layers.truncate(3);
+        let mut species = (**base).clone();
+        species.varieties.retain(|x| x.name != var.name);
+        species.varieties.push(var);
+        species.sanitize();
+        if let Ok(j) = serde_json::to_string(&species) {
+            let _ = db.with(|c| crate::db::put_species(c, &species.name, &j));
+        }
+    }
+}
+
 /// World-wide species settings from the genesis plan (attitudes, sizes, the
 /// traveller's height).
 fn species_world_from(db: &Db, v: &Value) {
@@ -766,6 +792,15 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let specs: Vec<Value> = plan.get("new_types").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().take(3).collect();
     let futs = specs.iter().map(|spec| {
         let name = s(spec, "name");
+        // Clothing and gear are written for a body, against its code.
+        let is_layer = spec.get("tags").and_then(|t| t.as_array()).is_some_and(|t| t.iter().any(|x| x.as_str() == Some("layer")));
+        let layer_note = if is_layer {
+            let fits = Some(s(spec, "fits").trim().to_lowercase()).filter(|f| !f.is_empty()).unwrap_or_else(|| "figure".into());
+            let src = ctx.db.types().unwrap_or_default().into_iter().rev().find(|t| t.name == fits && (t.status == "builtin" || t.status == "ok")).map(|t| t.code).unwrap_or_default();
+            prompts::layer_note(&fits, &src)
+        } else {
+            String::new()
+        };
         let task = format!(
             "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): {}\nIt appears in the region \"{rname}\" ({}).\n\n{}",
             s(spec, "description"),
@@ -775,8 +810,10 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             s(&plan, "mood"),
             prompts::TYPE_TASK
         );
+        let task = if layer_note.is_empty() { task } else { format!("{task}\n\n{layer_note}") };
         let system = system.clone();
-        async move { (name.clone(), build_type(ctx, &system, task, &name, &[]).await) }
+        let tags: &[&str] = if is_layer { &["layer"] } else { &[] };
+        async move { (name.clone(), build_type(ctx, &system, task, &name, tags).await) }
     });
     for (name, res) in futures_util::future::join_all(futs).await {
         match res {
@@ -795,6 +832,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             }
         }
     }
+    // Varieties of species (a warrior village's people, hill folk).
+    varieties_from(&ctx.db, plan.get("varieties").and_then(|x| x.as_array()).map(|a| a.as_slice()).unwrap_or(&[]));
+    let settlement_variety = plan.get("settlement").map(|st| s(st, "variety").trim().to_lowercase()).unwrap_or_default();
     // A new species for this region (its body is written first if needed).
     let specs: Vec<Value> = plan.get("new_species").and_then(|x| x.as_array()).cloned().unwrap_or_default();
     let (bodies, _) = species_from(ctx, &system, &specs, 1).await;
@@ -853,6 +893,11 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
                 }
             }
         }
+        p.variety = p.variety.trim().to_lowercase();
+        if p.variety.is_empty() {
+            p.variety = settlement_variety.clone();
+        }
+        p.layers.truncate(3);
         if p.species.trim().is_empty() || p.species.eq_ignore_ascii_case("human") {
             p.species.clear();
             let hue = |x: Option<f32>| x.map(|v| v.rem_euclid(1.0));
@@ -864,15 +909,13 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
                 ("shirt", hue(get("shirt"))),
                 ("trousers", hue(get("trousers"))),
             ];
+            // What the plan leaves out is chosen from the species (or
+            // variety) range for each person.
             p.look.clear();
             for (k, v) in fixed {
-                p.look.insert(k.into(), v.unwrap_or(match k {
-                    "height" => 1.75,
-                    "build" => 1.0,
-                    "skin" => 0.3,
-                    "shirt" => 0.6,
-                    _ => 0.1,
-                }));
+                if let Some(v) = v {
+                    p.look.insert(k.into(), v);
+                }
             }
         } else {
             p.species = p.species.trim().to_lowercase();

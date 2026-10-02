@@ -71,6 +71,8 @@ pub struct Thing {
     pub holder: Option<ActorId>,
     /// A second holder carrying it together with the first.
     pub co_holder: Option<ActorId>,
+    /// Worn as a layer (clothing, armour) by someone.
+    pub worn: Option<ActorId>,
     pub asleep: bool,
     /// Never moves (buildings, very heavy things).
     pub anchored: bool,
@@ -111,6 +113,7 @@ impl Thing {
             props,
             holder: None,
             co_holder: None,
+            worn: None,
             asleep: true,
             anchored,
             origin: Origin::default(),
@@ -148,8 +151,9 @@ impl Thing {
         out
     }
 
+    /// Held or worn: not lying about.
     pub fn held(&self) -> bool {
-        self.holder.is_some()
+        self.holder.is_some() || self.worn.is_some()
     }
 
     pub fn mass(&self) -> f32 {

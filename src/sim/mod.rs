@@ -330,6 +330,7 @@ impl Sim {
         sim.cast.sync(&snap, seed);
         persist::load(&mut sim);
         sim.social.seed_from_personas(&sim.cast, &snap.species);
+        sim.dress_new();
         sim.sync_overlay();
         sim
     }
@@ -572,6 +573,7 @@ impl Sim {
         self.cast.sync(&snap, self.seed);
         self.player.dims = traveller_dims(&snap);
         self.social.seed_from_personas(&self.cast, &snap.species);
+        self.dress_new();
         self.sync_overlay();
     }
 

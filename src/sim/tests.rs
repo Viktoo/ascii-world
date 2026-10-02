@@ -1826,3 +1826,157 @@ fn fantasy_lineup_picture() {
     let cam = crate::render::Camera { pos: me + Vec3::Y * 2.2, yaw: 0.0, pitch: -0.08, fov_y: 1.05 };
     render_png(&mut s, &w, cam, &out);
 }
+
+/// Phase 5: a warrior village. The region plan gives its people a variety
+/// (broad, armoured) and two layers the builder writes for the human body.
+/// They wear them from the start, drawn in their own pose; armour slows them,
+/// the wool cloak catches fire and the iron doesn't; friends let each other
+/// dress them, strangers don't; what they wear is kept across a restart. In
+/// a world of giants, the small traveller is small.
+#[test]
+fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
+    use super::actor::LEAN;
+    let w = world("warriors", 49);
+    let plate = fixture("layers/breastplate.js");
+    let cloak = fixture("layers/cloak.js");
+    let pine = fixture("mock/seapine.js");
+    let db2 = w.db.clone();
+    let saw_body = Arc::new(Mutex::new(false));
+    let saw2 = saw_body.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |_sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if user.contains("Design the base layer") {
+            return format!("```json\n{}\n```\n```js\n{pine}\n```", serde_json::json!({ "name": "Giantsholm", "biomes": [], "sizes": { "human": 1.8 }, "traveller_height": 0.9 }));
+        }
+        if user.contains("Plan the story layer") {
+            let spawn: [f32; 3] = serde_json::from_str(&db2.kv_get("spawn").unwrap()).unwrap();
+            let caps: Vec<i32> = user.split("Region (").nth(1).unwrap().split(')').next().unwrap().split(", ").map(|v| v.parse().unwrap()).collect();
+            let (lx, lz) = (spawn[0] - caps[0] as f32 * 256.0, spawn[2] - caps[1] as f32 * 256.0);
+            let cl = |v: f32| v.clamp(10.0, 246.0);
+            return format!("```json\n{}\n```", serde_json::json!({ "name": "Ironhold", "mood": "proud", "facts": [],
+                "new_types": [
+                    { "name": "iron breastplate", "description": "plate armour", "tags": ["layer"], "fits": "figure", "props": { "mass": 12 } },
+                    { "name": "red cloak", "description": "a wool cloak", "tags": ["layer"], "fits": "figure", "props": { "burns": 0.8 } }
+                ],
+                "varieties": [{ "species": "human", "name": "warrior", "look": { "build": [1.15, 1.35] }, "layers": ["iron breastplate", "red cloak"] }],
+                "settlement": { "name": "Ironhold", "x": cl(lx + 40.0), "z": cl(lz + 40.0), "variety": "warrior", "buildings": [] },
+                "characters": [
+                    { "name": "Brann", "personality": "proud", "home_x": cl(lx + 12.0), "home_z": cl(lz + 14.0), "relationships": ["Tova: friend"] },
+                    { "name": "Tova", "personality": "stern", "home_x": cl(lx + 14.0), "home_z": cl(lz + 14.0), "relationships": ["Brann: friend"], "layers": [] },
+                    { "name": "Pell", "variety": "farmer", "personality": "gentle", "home_x": cl(lx + 16.0), "home_z": cl(lz + 20.0) }
+                ] }));
+        }
+        if user.contains("Object type to write: \"iron breastplate\"") {
+            *saw2.lock() = user.contains("This is a layer") && user.contains("name: \"figure\"");
+            return format!("```js\n{plate}\n```");
+        }
+        if user.contains("Object type to write: \"red cloak\"") {
+            return format!("```js\n{cloak}\n```");
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let mut s = session(&w, 21, Some(llm));
+    s.brain.send(crate::brain::Cmd::Genesis);
+    for _ in 0..600 {
+        s.step(0.05);
+        if s.sim.snap.species.traveller_height.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // A world of giants, and a small traveller.
+    let me = s.sim.player.dims;
+    assert!((me.eye - 0.85).abs() < 0.05, "the traveller's eyes are low ({:.2} m)", me.eye);
+    let r = crate::world::region_of(s.sim.snap.spawn.x, s.sim.snap.spawn.z);
+    s.brain.send(crate::brain::Cmd::Region(r));
+    for _ in 0..800 {
+        s.step(0.05);
+        if s.sim.cast.npcs.len() >= 3 && s.sim.things.live().filter(|t| t.worn.is_some()).count() >= 4 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(*saw_body.lock(), "the layer was written against the body's code");
+    calm(&mut s);
+    let find = |s: &Session, n: &str| s.sim.cast.npcs.iter().find(|x| x.name() == n).map(|x| x.def.id).unwrap();
+    let (brann, tova, pell) = (find(&s, "Brann"), find(&s, "Tova"), find(&s, "Pell"));
+    let (b, t, p) = (ActorId::Npc(brann), ActorId::Npc(tova), ActorId::Npc(pell));
+    let giant = s.sim.cast.get(brann).unwrap().a.dims;
+    assert!(giant.height > 2.8, "the people here are giants ({:.1} m)", giant.height);
+    assert!(s.sim.strength(ActorId::Player) < 10.0 && s.sim.strength(b) > 50.0);
+    assert_eq!(s.sim.cast.get(brann).unwrap().def.persona.variety, "warrior", "the settlement's people are warriors");
+    assert_eq!(s.sim.cast.get(pell).unwrap().def.persona.variety, "farmer", "unless they are something else");
+    let build = s.sim.cast.get(brann).unwrap().sliders[1];
+    assert!((1.15..=1.35).contains(&build), "broad warriors ({build})");
+    assert_eq!(s.sim.worn_by(b).len(), 2, "Brann wears his armour and cloak");
+    assert!(s.sim.worn_by(p).is_empty(), "Pell, a farmer, wears neither");
+    // Armour slows a body.
+    assert!(s.sim.speeds(b).0 < s.sim.speeds(p).0 * 0.99, "armour is heavy");
+    // Drawn in his pose: the plate leans with him.
+    s.sim.cast.get_mut(brann).unwrap().a.pose[LEAN] = 0.4;
+    let plate_ty = s.sim.type_by_name("iron breastplate").unwrap().id;
+    let drawn = s.sim.draw(s.sim.actor(b).unwrap().pos, 50.0);
+    let li = drawn.insts.iter().find(|g| g.info[0] == plate_ty).expect("the plate is drawn");
+    assert!((li.s1[0] - 0.4).abs() < 1e-4 && (li.pos() - s.sim.actor(b).unwrap().pos).length() < 1e-3, "in Brann's place and pose");
+    // A fire beside him: the wool burns, the iron doesn't.
+    let stick = s.sim.type_by_name("stick").unwrap().id;
+    let bp = s.sim.actor(b).unwrap().pos;
+    for i in 0..3 {
+        let f = s.sim.spawn_thing(stick, bp + Vec3::new(0.3 + i as f32 * 0.2, 0.0, 0.3), 0.0, 1.0, Default::default(), true).unwrap();
+        s.sim.things.get_mut(f).unwrap().props[P_FIRE] = 1.0;
+    }
+    let cloak_id = s.sim.worn_by(b).into_iter().find(|id| s.sim.thing_name(*id) == "red cloak").unwrap();
+    let plate_id = s.sim.worn_by(b).into_iter().find(|id| s.sim.thing_name(*id) == "iron breastplate").unwrap();
+    s.run(15.0, 0.1);
+    let (cl, pl) = (s.sim.things.get(cloak_id).map(|t| t.props.clone()), s.sim.things.get(plate_id).unwrap().props.clone());
+    assert!(cl.is_none_or(|c| c[P_FIRE] > 0.0 || c[P_CHAR] > 0.0), "the cloak caught fire");
+    assert!(pl[P_FIRE] == 0.0, "the plate didn't");
+    // Friends dress each other; strangers don't get to.
+    s.sim.cast.get_mut(tova).unwrap().a.pos = s.sim.actor(b).unwrap().pos + Vec3::new(1.0, 0.0, 0.0);
+    let r = s.sim.act(b, Action::TakeOff { target: Some(Target::Thing(plate_id)), from: None });
+    assert!(r.is_ok() && s.sim.actor(b).unwrap().held == Some(plate_id), "{r:?}");
+    let r = s.sim.act(b, Action::Wear { target: None, on: Some(Target::Actor(t)) });
+    assert!(r.is_ok(), "Tova lets her friend put it on her: {r:?}");
+    assert!(s.sim.worn_by(t).contains(&plate_id));
+    s.sim.player.pos = s.sim.actor(t).unwrap().pos + Vec3::new(0.0, 0.0, 1.0);
+    let r = s.sim.act(ActorId::Player, Action::TakeOff { target: Some(Target::Thing(plate_id)), from: Some(Target::Actor(t)) });
+    assert!(r.is_err(), "a stranger can't undress her");
+    // Kept across a restart.
+    s.save();
+    drop(s);
+    let s = session(&w, 22, None);
+    assert!(s.sim.worn_by(ActorId::Npc(tova)).contains(&plate_id), "still wearing it after a restart");
+    sound(&s);
+}
+
+/// Render warriors in plate and cloaks next to a farmer (look at it).
+#[test]
+#[ignore]
+fn warriors_picture() {
+    let out = std::env::var("POCKET_PNG").unwrap_or_else(|_| std::env::temp_dir().join("pocket-warriors.png").to_string_lossy().into_owned());
+    let w = world("warpic", 50);
+    add_type(&w, &fixture("layers/breastplate.js"));
+    add_type(&w, &fixture("layers/cloak.js"));
+    let mut human: serde_json::Value = serde_json::from_str(crate::world::species::BUILTIN_SPECIES).unwrap();
+    let mut h = human.as_array_mut().unwrap().remove(0);
+    h["varieties"] = serde_json::json!([{ "name": "warrior", "look": { "build": [1.15, 1.35] }, "layers": ["iron breastplate", "red cloak"] }]);
+    w.db.with(|c| db::put_species(c, "human", &h.to_string())).unwrap();
+    let me = w.spawn;
+    let mut ids = Vec::new();
+    for (i, v) in ["warrior", "warrior", "", "warrior"].iter().enumerate() {
+        let p = ground(&w, me.x + (i as f32 - 1.5) * 1.6, me.z + 5.0);
+        let persona = crate::world::Persona { name: format!("P{i}"), variety: v.to_string(), ..Default::default() };
+        ids.push(w.db.with(|c| db::add_character(c, crate::world::region_of(p.x, p.z), &serde_json::to_string(&persona)?, p.x, p.z, w.version)).unwrap());
+    }
+    let mut s = session(&w, 23, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    for (i, id) in ids.iter().enumerate() {
+        let n = s.sim.cast.get_mut(*id).unwrap();
+        n.a.yaw = if i == 1 { 0.0 } else { std::f32::consts::PI + 0.4 * (i as f32 - 1.5) };
+    }
+    let _ = s.sim.act(ActorId::Npc(ids[3]), Action::Gesture { kind: "bow".into(), to: None });
+    s.run(0.8, 0.05);
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.5 + Vec3::new(0.0, 0.0, 0.5), yaw: 0.0, pitch: -0.12, fov_y: 0.9 };
+    render_png(&mut s, &w, cam, &out);
+}

@@ -46,6 +46,9 @@ pub struct SavedState {
     /// Killed (by a predator, when the universe hunts): no longer in the world.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dead: bool,
+    /// Their layers were put on once (they may have taken them off since).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dressed: bool,
 }
 
 /// What a character decided to do about an event: either a legacy single

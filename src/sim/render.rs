@@ -31,6 +31,21 @@ pub fn thing_inst(t: &Thing, ty: &TypeEntry, fx: [f32; 4]) -> GpuInst {
     g
 }
 
+/// A worn layer: the wearer's instance (place, size, look sliders, pose)
+/// drawing the layer's shape instead.
+pub fn layer_inst(wearer: &GpuInst, body: &TypeEntry, layer: &TypeEntry, fx: [f32; 4]) -> GpuInst {
+    let factor = wearer.rot[2] / body.sphere_r.max(1e-3);
+    let mut g = *wearer;
+    g.info = layer.gpu_info();
+    // It lies on the body: centred where the body is, at least as big.
+    g.info[1] = wearer.info[1];
+    g.rot[2] = (layer.sphere_r * factor).max(wearer.rot[2] * 1.1);
+    g.fx = fx;
+    g.fx[FX_HIGHLIGHT] = wearer.fx[FX_HIGHLIGHT];
+    g.cuts = Default::default();
+    g
+}
+
 /// Generic looks from properties.
 pub fn look(p: &Props) -> [f32; 4] {
     let mut fx = [0.0; 4];
@@ -70,6 +85,12 @@ impl Sim {
             _ => None,
         };
         let figure = self.snap.figure_type.and_then(|f| self.snap.type_of(f));
+        let mut worn: std::collections::HashMap<ActorId, Vec<&Thing>> = std::collections::HashMap::new();
+        for t in self.things.live() {
+            if let Some(w) = t.worn {
+                worn.entry(w).or_default().push(t);
+            }
+        }
         for n in &self.cast.npcs {
             let Some(body) = self.snap.type_of(n.body_ty).or(figure) else { continue };
             if n.dead {
@@ -82,11 +103,16 @@ impl Sim {
                         g.fx[FX_HIGHLIGHT] = 0.5;
                     }
                     insts.push(g);
+                    // What they wear, drawn in their frame and pose.
+                    for t in worn.get(&ActorId::Npc(n.def.id)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                        let Some(ty) = self.snap.type_of(t.type_id) else { continue };
+                        insts.push(layer_inst(&g, body, ty, look(&t.props)));
+                    }
                 }
             }
         }
         for t in self.things.live() {
-            if !near(t.pos) {
+            if !near(t.pos) || t.worn.is_some() {
                 continue;
             }
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };

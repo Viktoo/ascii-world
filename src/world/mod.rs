@@ -155,6 +155,9 @@ pub struct Persona {
     pub species: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub variety: String,
+    /// What they wear (layer type names), besides their variety's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<String>,
 }
 
 impl Persona {

@@ -169,6 +169,9 @@ pub struct Meta {
     /// Present when the type is a body that a being can live in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Body>,
+    /// For a layer (clothing, armour, gear): the body it is written for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fits: Option<String>,
 }
 
 /// The pose roles a body can answer to (k.s0 … k.s7).

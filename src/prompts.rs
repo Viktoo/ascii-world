@@ -158,9 +158,10 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
       "look": { "height": 1.75, "build": 1.0, "skin": 0.0-1.0, "shirt_hue": 0.0-1.0, "trousers_hue": 0.0-1.0 },
       "personality": "…", "goals": "…", "voice": "how they speak",
       "home": "where they live", "home_x": 0-256, "home_z": 0-256,
-      "relationships": ["Name: relation"], "species": "human" } ],
+      "relationships": ["Name: relation"], "species": "human", "variety": "", "layers": [] } ],
   "creatures": [ { "species": "goat", "count": 4, "x": 0-256, "z": 0-256, "names": [], "owner": "Name of their person, or empty", "description": "…" } ],
-  "new_species": [ ]
+  "new_species": [ ],
+  "varieties": [ ]
 }
 Rules:
 - Coordinates are local to the region: x and z from 0 to 256.
@@ -172,10 +173,23 @@ Rules:
 - Small things people use (tools, balls, food, lamps) are welcome as new_types too, placed as landmarks near where they belong.
 - Characters are people by default; give "species" (one of the species listed below) for anyone else who talks and plans (an elf, an orc). Their "look" uses their body's sliders.
 - creatures: 0–4 groups of beings that don't talk (herds by farms, a dog or cat with its person, wild packs, a beast in its lair), from the species listed below. Pets and working animals name their "owner" (a character of this plan). Wilderness may have wild herds or predators; villages, pets and livestock.
+- Clothing and gear that shows (armour, cloaks, robes, hats, a saddle or collar for an animal) are layers: new_types with tags ["layer"], "fits": the body they are worn on ("figure" for people, "quadruped" for four-legged animals, or a species' own body) and their props (armour { mass: 12 }, a wool cloak { burns: 0.7, mass: 2 }). A character's "layers" lists what they wear (at most 3, by type name).
+- varieties: what a people looks like in this place, when it differs: { "species": "human", "name": "warrior", "look": { "build": [1.1, 1.35] }, "layers": ["iron breastplate"] }. Give a settlement a "variety" to dress and shape everyone living there (a warrior village, monks in robes, hill folk); a character's own "variety" overrides it.
 - new_species: at most one, only if this region really holds a people or beast the universe doesn't have yet, in the species format of genesis (with "body_description" if no existing body fits).
 "#;
 
 pub const TYPE_TASK: &str = "Write this object type as one ```js block containing the complete module.";
+
+/// Extra rules for a layer: it is drawn in the body's frame and pose.
+pub fn layer_note(body: &str, body_source: &str) -> String {
+    format!(
+        r#"This is a layer (clothing, armour or gear) worn on the "{body}" body: add `fits: "{body}"` to meta and keep "layer" in its tags. It is drawn in exactly the body's local frame with the same k (look sliders k.a … k.e, walk phase k.f, pose roles k.s0 … k.s7), so follow the body's own maths for where its parts are in every pose (scale with its height, lean with its torso, swing with its legs). Make the layer a thin shell just outside the body's surface where it covers it (about 1–3 cm), not a solid block, and only where it is worn. Its bounds should match the body's bounds.
+The body's code:
+```js
+{body_source}
+```"#
+    )
+}
 
 /// Writing the body of a species: a type with `meta.body` that answers to
 /// pose roles, drawn at its natural size.

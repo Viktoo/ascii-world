@@ -101,6 +101,7 @@ pub struct Npc {
     /// When an animal last greeted its person.
     pub last_greet: f64,
     pub dead: bool,
+    pub dressed: bool,
 }
 
 impl Npc {
@@ -114,7 +115,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -255,6 +256,7 @@ impl Cast {
                 last_work: f64::MIN,
                 last_greet: f64::MIN,
                 dead: s.dead,
+                dressed: s.dressed,
             });
         }
     }
@@ -308,6 +310,8 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         // Making is something you do, in words, like everything else.
         "make" | "build" | "craft" | "create" => "do",
         "hand" | "offer" => "give",
+        "put_on" | "dress" | "don" => "wear",
+        "take_off" | "undress" | "doff" => "take_off",
         "home" | "go_home" => "go_home",
         v => v,
     }
@@ -604,6 +608,14 @@ impl Sim {
     /// Walking and running speeds (m/s): the traveller's stride, or the
     /// species' own.
     pub fn speeds(&self, who: ActorId) -> (f32, f32) {
+        // Armour and loads slow a body down.
+        let worn: f32 = self.things.live().filter(|t| t.worn == Some(who)).map(|t| t.mass()).sum();
+        let k = (1.0 - worn / (self.strength(who) * 3.0)).clamp(0.5, 1.0);
+        let (w, r) = self.base_speeds(who);
+        (w * k, r * k)
+    }
+
+    fn base_speeds(&self, who: ActorId) -> (f32, f32) {
         match who {
             ActorId::Player => {
                 let s = PLAYER_SPEED * (self.player.dims.height / 1.75).sqrt();
@@ -753,6 +765,23 @@ impl Sim {
                 n.think_at = s.t + secs;
             }
         };
+        // 0. What they wear is on fire: off with it.
+        if self.mind_of(me) == crate::world::species::Mind::Sapient {
+            if let Some(id) = self.worn_by(me).into_iter().find(|id| self.things.get(*id).is_some_and(|t| t.props[P_FIRE] > 0.05)) {
+                let line = template_line("fire", "", self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
+                self.say(me, &line, None);
+                let mut steps = Vec::new();
+                if held.is_some() {
+                    steps.push(Action::Drop);
+                }
+                steps.push(Action::TakeOff { target: Some(Target::Thing(id)), from: None });
+                steps.push(Action::Drop);
+                self.plan(me, steps, "get the burning thing off", false);
+                self.set_doing(cid, "tearing off something burning");
+                next_think(self, 2.0);
+                return;
+            }
+        }
         // 1. Fire close by: get away (the brave stay to watch).
         let fires: Vec<super::env::Burning> = self.burning().into_iter().filter(|f| !f.held).collect();
         if let Some(f) = fires.iter().filter(|f| (f.pos - pos).length() < 9.0 + f.size).min_by(|a, b| (a.pos - pos).length().total_cmp(&(b.pos - pos).length())) {

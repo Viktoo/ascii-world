@@ -67,7 +67,7 @@ impl Sim {
         let mut ids: Vec<(f32, ThingId)> = self
             .things
             .live()
-            .filter(|t| !t.asleep && !t.anchored && t.holder.is_none())
+            .filter(|t| !t.asleep && !t.anchored && t.holder.is_none() && t.worn.is_none())
             .map(|t| (self.dist_to_player(t.pos), t.id))
             .collect();
         if ids.is_empty() {
@@ -96,8 +96,32 @@ impl Sim {
         self.things.moved();
     }
 
+    /// Worn layers go where their wearer goes (drawn in the wearer's pose).
+    fn update_worn(&mut self) {
+        let worn: Vec<(ThingId, ActorId)> = self.things.live().filter_map(|t| t.worn.map(|w| (t.id, w))).collect();
+        for (id, w) in worn {
+            match self.actor(w).map(|a| (a.pos, a.yaw)) {
+                Some((p, yaw)) => {
+                    if let Some(t) = self.things.get_mut(id) {
+                        t.pos = p;
+                        t.yaw = yaw;
+                        t.vel = Vec3::ZERO;
+                        t.asleep = true;
+                    }
+                }
+                None => {
+                    if let Some(t) = self.things.get_mut(id) {
+                        t.worn = None;
+                        t.asleep = false;
+                    }
+                }
+            }
+        }
+    }
+
     /// Held things follow their holders' hands.
     fn update_held(&mut self) {
+        self.update_worn();
         let held: Vec<(ThingId, ActorId, Option<ActorId>)> = self.things.live().filter_map(|t| t.holder.map(|h| (t.id, h, t.co_holder))).collect();
         for (id, h, co) in held {
             let Some(t) = self.things.get(id) else { continue };

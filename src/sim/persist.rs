@@ -171,7 +171,11 @@ pub fn load(sim: &mut Sim) {
         t.asleep = true;
         t.anchored = anchored;
         t.origin = origin;
-        t.holder = parse_actor(holder);
+        // A worn layer is saved as holder "worn:<who>".
+        match holder.as_deref().and_then(|h| h.strip_prefix("worn:")) {
+            Some(w) => t.worn = ActorId::parse(w),
+            None => t.holder = parse_actor(holder),
+        }
         t.co_holder = parse_actor(co_holder);
         t.shape = shapes.get(&id).cloned().unwrap_or_default();
         t.dirty = false;
@@ -275,7 +279,7 @@ pub fn save(sim: &mut Sim) {
             serde_json::to_string(&t.params.to_vec()).unwrap_or_default(),
             serde_json::to_string(&t.state.to_vec()).unwrap_or_default(),
             serde_json::Value::Object(diff(&vocab, &t.props, &base)).to_string(),
-            actor_str(t.holder),
+            t.worn.map(|w| format!("worn:{}", w.key())).or_else(|| actor_str(t.holder)),
             actor_str(t.co_holder),
             t.asleep,
             t.anchored,
