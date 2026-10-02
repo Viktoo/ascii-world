@@ -53,6 +53,7 @@ pub enum Api {
     Hash,
     Rgb,
     Hsv,
+    Glow,
     Mix,
     MixV,
     Abs,
@@ -82,7 +83,7 @@ pub enum Api {
 pub const NAMES: &[&str] = &[
     "sphere", "box", "roundBox", "cylinder", "cappedCone", "capsule", "torus", "plane", "ellipsoid",
     "union", "smoothUnion", "subtract", "smoothSubtract", "intersect", "rotX", "rotY", "rotZ",
-    "noise3", "hash", "rgb", "hsv", "mix", "abs", "min", "max", "clamp", "floor", "ceil", "round",
+    "noise3", "hash", "rgb", "hsv", "glow", "mix", "abs", "min", "max", "clamp", "floor", "ceil", "round",
     "fract", "sin", "cos", "tan", "atan2", "sqrt", "pow", "exp", "sign", "step", "smoothstep",
     "length2", "length3", "mod",
 ];
@@ -98,6 +99,8 @@ pub enum Resolved {
     Fold(Api),
     /// hash(a) / hash(a, b): pad missing arguments with zeros.
     PadHash,
+    /// glow(c): full strength.
+    PadGlow,
 }
 
 pub fn resolve(name: &str, args: &[Ty]) -> Result<Resolved, String> {
@@ -157,6 +160,11 @@ pub fn resolve(name: &str, args: &[Ty]) -> Result<Resolved, String> {
         }
         "rgb" => need(Rgb, 3),
         "hsv" => need(Hsv, 3),
+        "glow" => match args {
+            [V] => Ok(Resolved::PadGlow),
+            [V, F] => Ok(Resolved::Call(Glow, V)),
+            _ => Err("glow(colour) or glow(colour, amount) marks a colour as giving off light".into()),
+        },
         "mix" => {
             if n != 3 {
                 return Err(format!("mix() takes 3 arguments, got {n}"));
@@ -193,7 +201,7 @@ pub fn resolve(name: &str, args: &[Ty]) -> Result<Resolved, String> {
 pub fn ret_ty(api: Api) -> Ty {
     use Api::*;
     match api {
-        RotX | RotY | RotZ | Rgb | Hsv | MixV => Ty::V,
+        RotX | RotY | RotZ | Rgb | Hsv | MixV | Glow => Ty::V,
         _ => Ty::F,
     }
 }
@@ -215,7 +223,7 @@ pub fn arg_width(api: Api) -> usize {
         Ellipsoid => 6,
         Union | Subtract | Intersect | Min | Max | Atan2 | Pow | Step | Length2 | Mod => 2,
         SmoothUnion | SmoothSubtract | Clamp | Smoothstep | Length3 | Noise3 | Hash | Rgb | Hsv | Mix => 3,
-        RotX | RotY | RotZ => 4,
+        RotX | RotY | RotZ | Glow => 4,
         MixV => 7,
         Abs | Floor | Ceil | Round | Fract | Sin | Cos | Tan | Sqrt | Exp | Sign => 1,
     }
@@ -247,6 +255,7 @@ pub fn wgsl_name(api: Api) -> &'static str {
         Hash => "api_hash",
         Rgb => "api_rgb",
         Hsv => "api_hsv",
+        Glow => "api_glow",
         Mix => "api_mix",
         MixV => "api_mix_v",
         Abs => "abs",
@@ -385,6 +394,11 @@ pub fn eval(api: Api, a: &[f32], out: &mut [f32; 3]) {
             *out = [v * mixf(1.0, ch(0.0), s), v * mixf(1.0, ch(4.0), s), v * mixf(1.0, ch(2.0), s)];
             return;
         }
+        Glow => {
+            let off = glow_offset(g(3));
+            *out = [clampf(g(0), 0.0, 1.0) + off, clampf(g(1), 0.0, 1.0) + off, clampf(g(2), 0.0, 1.0) + off];
+            return;
+        }
         Mix => mixf(g(0), g(1), g(2)),
         MixV => {
             let t = g(6);
@@ -429,6 +443,26 @@ pub fn eval(api: Api, a: &[f32], out: &mut [f32; 3]) {
         Mod => fmod(g(0), g(1)),
     };
     out[0] = r;
+}
+
+/// Glow levels a colour can carry.
+const GLOW_LEVELS: f32 = 8.0;
+
+/// glow() lifts a colour (0..1) by an even whole number that encodes how
+/// strongly it shines, so color() can still return one vec3.
+fn glow_offset(amount: f32) -> f32 {
+    let q = (clampf(amount, 0.0, 1.0) * GLOW_LEVELS).round();
+    if q > 0.0 { 2.0 * (1.0 + q) } else { 0.0 }
+}
+
+/// Split what color() returned into the plain colour and its glow (0..1).
+pub fn split_glow(c: [f32; 3]) -> ([f32; 3], f32) {
+    if !(c[0] >= 1.5) {
+        return (c, 0.0);
+    }
+    let m = (c[0] * 0.5).floor();
+    let off = 2.0 * m;
+    ([c[0] - off, c[1] - off, c[2] - off], ((m - 1.0) / GLOW_LEVELS).clamp(0.0, 1.0))
 }
 
 fn sd_box(x: f32, y: f32, z: f32, bx: f32, by: f32, bz: f32) -> f32 {
@@ -534,6 +568,17 @@ fn api_noise3(x: f32, y: f32, z: f32) -> f32 { return vnoise3(x, y, z, 1234u); }
 fn api_hash(a: f32, b: f32, c: f32) -> f32 { return hash3f(a, b, c); }
 fn api_rgb(r: f32, g: f32, b: f32) -> vec3f {
   return vec3f(api_clamp(r / 255.0, 0.0, 1.0), api_clamp(g / 255.0, 0.0, 1.0), api_clamp(b / 255.0, 0.0, 1.0));
+}
+fn api_glow(c: vec3f, amount: f32) -> vec3f {
+  let q = round(api_clamp(amount, 0.0, 1.0) * 8.0);
+  var off = 0.0; if (q > 0.0) { off = 2.0 * (1.0 + q); }
+  return clamp(c, vec3f(0.0), vec3f(1.0)) + vec3f(off);
+}
+// Undo api_glow: xyz the plain colour, w the glow 0..1.
+fn api_split_glow(c: vec3f) -> vec4f {
+  if (!(c.x >= 1.5)) { return vec4f(c, 0.0); }
+  let m = floor(c.x * 0.5);
+  return vec4f(c - vec3f(2.0 * m), api_clamp((m - 1.0) / 8.0, 0.0, 1.0));
 }
 fn api_hsv_ch(h: f32, o: f32) -> f32 { return api_clamp(abs(api_mod(h * 6.0 + o, 6.0) - 3.0) - 1.0, 0.0, 1.0); }
 fn api_hsv(h: f32, s0: f32, v0: f32) -> vec3f {

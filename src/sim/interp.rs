@@ -142,9 +142,25 @@ pub struct InterpEffect {
     /// A short line the actor says.
     #[serde(default)]
     pub say: Option<String>,
+    /// A character couldn't do it as things are: the one thing it needs
+    /// (a place, a thing, someone, a time), for them to go and meet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<super::needs::Need>,
     /// false for one-off results that should not be reused.
     #[serde(default = "yes")]
     pub cache: bool,
+}
+
+impl InterpEffect {
+    /// Something is still to be built before it all shows (a new thing, a reshape).
+    fn builds(&self) -> bool {
+        !self.make.is_empty() || !self.create.is_empty() || !self.reshape.is_empty()
+    }
+
+    /// Nothing in the world changes: a refusal or a "nothing happens".
+    fn changes_nothing(&self) -> bool {
+        self.changes.is_empty() && self.create.is_empty() && self.remove.is_empty() && self.make.is_empty() && self.cut.is_empty() && self.reshape.is_empty() && self.being.is_none() && self.beings.is_empty()
+    }
 }
 
 fn yes() -> bool {
@@ -185,6 +201,9 @@ pub struct Interp {
     pub creating: HashMap<u64, (ActorId, f64)>,
     pub building: HashMap<u64, PendingBuild>,
     pub building_names: HashMap<String, u64>,
+    /// What a deed's story says, held back until the build it waits on is
+    /// done (build or creation id → (who, line)), so it isn't told too soon.
+    pub stories: HashMap<u64, Vec<(ActorId, String)>>,
     /// Gestures being written: request id → (who, toward whom, name).
     pub gestures: HashMap<u64, (ActorId, Option<Target>, String)>,
     /// Species' own versions of gestures already asked for (name@species).
@@ -205,10 +224,12 @@ fn pieces_without_change(fx: &InterpEffect, p: &PendingInterp) -> bool {
     on_thing && loose && !reshaped
 }
 
-/// The cache key: the words, normalised, and the kinds of things involved.
-fn cache_key(text: &str, held: &str, target: &str) -> String {
+/// The cache key: who acts (the traveller makes outright, characters by the
+/// world's laws), the words, normalised, and the kinds of things involved.
+fn cache_key(who: ActorId, text: &str, held: &str, target: &str) -> String {
     let t: String = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty() && !matches!(*w, "the" | "a" | "an" | "my" | "i" | "to")).collect::<Vec<_>>().join(" ");
-    format!("{t}|{}|{}", held.to_lowercase(), target.to_lowercase())
+    let by = if who == ActorId::Player { "traveller" } else { "character" };
+    format!("{by}|{t}|{}|{}", held.to_lowercase(), target.to_lowercase())
 }
 
 impl Sim {
@@ -217,14 +238,19 @@ impl Sim {
         let held = self.actor(who).and_then(|a| a.held);
         let held_name = held.map(|h| self.thing_name(h)).unwrap_or_default();
         let target_name = target.as_ref().map(|r| r.name.clone()).unwrap_or_default();
-        let key = cache_key(text, &held_name, &target_name);
+        let key = cache_key(who, text, &held_name, &target_name);
         let name = self.actor_name(who);
+        self.deed_started(who, text, target.as_ref().map(|r| r.target.clone()));
         if let Some(fx) = super::persist::cached_interp(&self.db, &key) {
             self.interp.hits += 1;
             let p = PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t };
-            let msg = self.apply_interp(&p, &fx);
+            let (msg, held_back) = self.apply_interp(&p, &fx);
+            if !fx.builds() {
+                self.deed_landed(who);
+            }
+            self.deed_done(who, text);
             self.event("interpreted", Some(who), None, format!("{name}: {text} → {msg}"), self.actor(who).map(|a| a.pos), json!({ "cached": true }));
-            return Ok(Outcome::ok(msg));
+            return Ok(if held_back { Outcome { ok: true, msg: format!("{name} tries to {text}…"), pending: None, thing: None } } else { Outcome::ok(msg) });
         }
         if !self.has_llm {
             let at = self.actor(who).map(|a| a.pos);
@@ -289,6 +315,7 @@ impl Sim {
         let me = self.actor(who).cloned();
         let mut v = json!({
             "actor": self.actor_name(who),
+            "actor_is": if who == ActorId::Player { "the traveller" } else { "a character" },
             "time": crate::render::sky::time_label(self.t),
             "held": held.map(|h| self.describe_thing(h)),
         });
@@ -318,6 +345,14 @@ impl Sim {
                 near.push(self.thing_name(id));
             }
             v["nearby"] = json!(near);
+            if let ActorId::Npc(c) = who {
+                if let Some(n) = self.cast.get(c) {
+                    let pe = &n.def.persona;
+                    let about: String = format!("{} {}", pe.personality, pe.goals).chars().take(300).collect();
+                    v["actor_about"] = json!({ "species": n.species.name, "who_they_are": about.trim() });
+                }
+                v["around"] = self.around(m.pos);
+            }
         }
         v["properties"] = json!(self.vocab.names);
         v.to_string()
@@ -329,26 +364,73 @@ impl Sim {
         let name = self.actor_name(p.actor);
         match result.and_then(|v| serde_json::from_value::<InterpEffect>(v).map_err(|e| e.to_string())) {
             Ok(fx) => {
-                let msg = self.apply_interp(&p, &fx);
-                if fx.cache && pieces_without_change(&fx, &p) {
-                    // A piece came off the target, but its shape stayed: that
-                    // answer would show nothing, so don't make it the rule.
-                    crate::log::info(format!("not caching '{}': it makes new things from the target but leaves the target's shape as it was", p.text));
-                } else if fx.cache {
-                    super::persist::cache_interp(&self.db, &p.key, &fx);
+                let (msg, _) = self.apply_interp(&p, &fx);
+                if !fx.builds() {
+                    self.deed_landed(p.actor);
+                }
+                if fx.changes_nothing() {
+                    // A "no" depends on the moment; never make it the rule.
+                    match &fx.needs {
+                        Some(need) => self.on_need(p.actor, &p.text, need, &fx.narration),
+                        None => self.deed_fell_through(p.actor, &p.text, &fx.narration),
+                    }
+                } else {
+                    self.deed_done(p.actor, &p.text);
+                    if fx.cache && pieces_without_change(&fx, &p) {
+                        // A piece came off the target, but its shape stayed: that
+                        // answer would show nothing, so don't make it the rule.
+                        crate::log::info(format!("not caching '{}': it makes new things from the target but leaves the target's shape as it was", p.text));
+                    } else if fx.cache {
+                        super::persist::cache_interp(&self.db, &p.key, &fx);
+                    }
                 }
                 let at = self.actor(p.actor).map(|a| a.pos);
                 self.event("interpreted", Some(p.actor), None, format!("{name}: {} → {msg}", p.text), at, json!({ "effect": fx }));
             }
             Err(e) => {
+                self.deed_landed(p.actor);
                 crate::log::error(format!("interpretation failed: {e}"));
                 self.note_near(self.actor(p.actor).map(|a| a.pos).unwrap_or_default(), 30.0, Note::Info("Nothing seems to happen.".into()));
             }
         }
     }
 
-    /// Apply an interpreter answer. Returns the narration.
-    pub fn apply_interp(&mut self, p: &PendingInterp, fx: &InterpEffect) -> String {
+    /// What is around a character, by name, for the interpreter to pick a
+    /// need from: places and big things, loose things, and people.
+    fn around(&self, at: glam::Vec3) -> Value {
+        let mut places: Vec<(f32, String)> = Vec::new();
+        for i in &self.snap.instances {
+            let d = (i.pos - at).length();
+            if d < 150.0 {
+                if let Some(t) = self.snap.type_of(i.type_id) {
+                    let tags = t.ct.meta.tags.join(", ");
+                    places.push((d, if tags.is_empty() { t.name().to_string() } else { format!("{} ({tags})", t.name()) }));
+                }
+            }
+        }
+        places.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut seen = std::collections::HashSet::new();
+        let places: Vec<String> = places.into_iter().filter(|(_, n)| seen.insert(n.clone())).take(24).map(|(d, n)| format!("{n}, {d:.0} m")).collect();
+        let mut things: Vec<(f32, String)> = self.things.live().filter(|t| t.holder.is_none()).filter_map(|t| {
+            let d = (t.pos - at).length();
+            (d < 40.0).then(|| (d, self.snap.type_of(t.type_id).map(|ty| ty.name().to_string()).unwrap_or_default()))
+        }).collect();
+        things.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut seen = std::collections::HashSet::new();
+        let things: Vec<String> = things.into_iter().filter(|(_, n)| !n.is_empty() && seen.insert(n.clone())).take(12).map(|(d, n)| format!("{n}, {d:.0} m")).collect();
+        let mut people: Vec<(f32, String)> = self.cast.npcs.iter().filter(|n| !n.dead).map(|n| {
+            let d = (n.a.pos - at).length();
+            let about: String = n.def.persona.personality.chars().take(80).collect();
+            (d, format!("{} ({}, {d:.0} m): {}", n.def.persona.name, n.species.name, about.trim()))
+        }).filter(|(d, _)| *d > 0.5 && *d < 300.0).collect();
+        people.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let people: Vec<String> = people.into_iter().take(10).map(|(_, s)| s).collect();
+        json!({ "places": places, "things": things, "people": people })
+    }
+
+    /// Apply an interpreter answer. Returns the narration, and whether it is
+    /// held back until what it waits on is built.
+    pub fn apply_interp(&mut self, p: &PendingInterp, fx: &InterpEffect) -> (String, bool) {
         let pos = self.actor(p.actor).map(|a| a.pos).unwrap_or_default();
         // Changing someone takes their say-so; a refused change changes nothing.
         let being = match &p.target {
@@ -357,9 +439,11 @@ impl Sim {
         };
         if let (Some(b), Some(bf)) = (being, &fx.being) {
             if let Err(why) = self.being_consents(p.actor, b, bf) {
-                return why;
+                return (why, false);
             }
         }
+        // Builds this deed waits on: its story is told when the first is done.
+        let mut waits: Vec<u64> = Vec::new();
         let target_thing = p.target.as_ref().and_then(|t| match t {
             Target::Actor(_) | Target::Point(_) | Target::Name(_) => None,
             other => self.liven(other),
@@ -410,6 +494,8 @@ impl Sim {
                         self.apply_make_props(nid, m);
                         if let Some(h) = was_held_by {
                             self.hand_to(h, nid);
+                        } else if p.actor != ActorId::Player && self.things.get(nid).is_some_and(|t| t.liftable(1)) {
+                            self.made_into_hands(p.actor, nid, true);
                         }
                     }
                 }
@@ -421,6 +507,7 @@ impl Sim {
                     let props: Vec<(String, f32)> = m.props.iter().map(|(k, v)| (k.clone(), *v)).collect();
                     let desc = if m.description.is_empty() { format!("{} (made from {})", m.name, made_from.join(" and ")) } else { m.description.clone() };
                     self.request_now(Request::BuildType { id, name: m.name.clone(), description: desc, size: m.size_m.unwrap_or([0.5, 0.5, 0.5]), props, fits: None });
+                    waits.push(id);
                 }
             }
         }
@@ -437,15 +524,18 @@ impl Sim {
         for r in fx.reshape.iter().take(1) {
             if let Some(id) = resolve(self, &r.target) {
                 let with = r.with.as_deref().and_then(|w| resolve(self, w));
-                if let Err(e) = self.reshape(p.actor, id, &r.name, &r.change, with, p.hit) {
-                    why.push(e);
+                match self.reshape(p.actor, id, &r.name, &r.change, with, p.hit) {
+                    Ok(Some(rid)) => waits.push(rid),
+                    Ok(None) => {}
+                    Err(e) => why.push(e),
                 }
             }
         }
         for m in fx.make.iter().take(1) {
             if !m.text.trim().is_empty() {
-                if let Err(e) = self.act(p.actor, super::Action::Create { text: m.text.trim().to_string() }) {
-                    why.push(e.to_string());
+                match self.act(p.actor, super::Action::Create { text: m.text.trim().to_string() }) {
+                    Ok(o) => waits.extend(o.pending),
+                    Err(e) => why.push(e.to_string()),
                 }
             }
         }
@@ -472,9 +562,28 @@ impl Sim {
             }
         }
         let msg = if fx.narration.trim().is_empty() { format!("{} {}.", super::physics::cap(&self.actor_name(p.actor)), p.text) } else { fx.narration.trim().to_string() };
-        self.note_near(pos, 30.0, Note::Info(msg.clone()));
-        self.witness(pos, 15.0, &format!("I saw {}: {msg}", self.actor_name(p.actor)), 0.35, &[p.actor]);
-        msg
+        if let Some(first) = waits.first() {
+            self.interp.stories.entry(*first).or_default().push((p.actor, msg.clone()));
+            return (msg, true);
+        }
+        self.tell_story(pos, p.actor, &msg);
+        (msg, false)
+    }
+
+    /// A deed's story, told to those near and remembered by who saw it.
+    fn tell_story(&mut self, pos: glam::Vec3, who: ActorId, msg: &str) {
+        self.note_near(pos, 30.0, Note::Info(msg.to_string()));
+        self.witness(pos, 15.0, &format!("I saw {}: {msg}", self.actor_name(who)), 0.35, &[who]);
+    }
+
+    /// Tell the stories held back for a build that is done (at `at`), if
+    /// any. Returns whether there were any.
+    fn tell_held_stories(&mut self, id: u64, at: glam::Vec3) -> bool {
+        let Some(stories) = self.interp.stories.remove(&id) else { return false };
+        for (who, msg) in &stories {
+            self.tell_story(at, *who, msg);
+        }
+        !stories.is_empty()
     }
 
     fn apply_make_props(&mut self, id: ThingId, m: &Make) {
@@ -507,12 +616,44 @@ impl Sim {
         }
     }
 
+    /// A character's own small make goes into their hands (when it appeared
+    /// `near` them), and on to whoever they made it for: fetched first if it
+    /// appeared further off.
+    fn made_into_hands(&mut self, who: ActorId, id: ThingId, near: bool) {
+        if near {
+            self.hand_to(who, id);
+        }
+        let ActorId::Npc(c) = who else { return };
+        self.need_made(who, Target::Thing(id), true);
+        let t = self.t;
+        let Some(n) = self.cast.get_mut(c) else { return };
+        let Some((to, until)) = n.deliver.take() else { return };
+        if t > until {
+            return;
+        }
+        let give = super::Action::Give { to: Target::Actor(to) };
+        let steps = match n.a.held {
+            Some(h) if h == id => vec![give],
+            Some(_) => vec![super::Action::Drop, super::Action::Hold { target: Target::Thing(id) }, give],
+            None => vec![super::Action::Hold { target: Target::Thing(id) }, give],
+        };
+        self.plan(who, steps, "hand it over", true);
+    }
+
     /// A type the world asked for was written (or failed).
     pub fn on_type_built(&mut self, id: u64, type_id: Option<u32>) {
         let Some(b) = self.interp.building.remove(&id) else { return };
+        for who in b.place.iter().filter_map(|p| p.1).chain(b.reshape.iter().map(|r| r.1)) {
+            self.deed_landed(who);
+        }
         self.interp.building_names.remove(&b.name.trim().to_lowercase());
         let Some(tid) = type_id else {
             crate::log::info(format!("no type for '{}'", b.name));
+            if self.interp.stories.remove(&id).is_some() && b.reshape.is_empty() {
+                if let Some((at, _, _)) = b.place {
+                    self.note_near(at, 30.0, Note::Info("Nothing comes of it.".into()));
+                }
+            }
             for (thing, _, _) in &b.reshape {
                 if let Some(at) = self.things.get(*thing).map(|t| t.pos) {
                     let name = self.thing_name(*thing);
@@ -525,9 +666,11 @@ impl Sim {
             let from = self.thing_name(thing);
             self.spawn_or_transform(thing, tid, transform, &from);
         }
+        let mut told = false;
         for (thing, who, with) in b.reshape {
-            let by = self.actor_name(who);
-            self.set_shape_type(thing, tid, &by, &b.change, true);
+            let at = self.things.get(thing).map(|t| t.pos).unwrap_or_default();
+            told = told || self.tell_held_stories(id, at);
+            self.set_shape_type(thing, tid, who, &b.change, true, !told);
             if let Some(w) = with {
                 self.use_up(w);
             }
@@ -550,7 +693,9 @@ impl Sim {
                     self.hand_to(h, nid);
                 }
                 self.event("made", holder, Some(format!("thing:{nid}")), format!("{} {name} came into being", super::physics::cap(super::article(&name))), Some(at), json!({}));
-                self.note_near(at, 30.0, Note::Info(format!("{} {name} appears.", super::physics::cap(super::article(&name)))));
+                if !self.tell_held_stories(id, at) {
+                    self.note_near(at, 30.0, Note::Info(format!("{} {name} appears.", super::physics::cap(super::article(&name)))));
+                }
             }
         }
     }
@@ -558,6 +703,7 @@ impl Sim {
     /// A creation request finished: `instances` are the new placed objects.
     pub fn on_created(&mut self, id: u64, instances: &[i64]) {
         let Some((who, _)) = self.interp.creating.remove(&id) else { return };
+        self.deed_landed(who);
         let maker = self.actor_name(who);
         for i in instances {
             super::persist::set_made_by(&self.db, *i, &maker);
@@ -566,19 +712,29 @@ impl Sim {
             }
         }
         let Some(first) = instances.first().copied() else {
+            if self.interp.stories.remove(&id).is_some() {
+                let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
+                self.note_near(at, 30.0, Note::Info("Nothing comes of it.".into()));
+            }
             self.event("create_failed", Some(who), None, format!("{maker} couldn't make it"), None, json!({}));
             return;
         };
         let (name, pos) = self.snap.instances.iter().find(|p| p.id == first).and_then(|p| self.snap.type_of(p.type_id).map(|t| (t.name().to_string(), p.pos))).unwrap_or(("thing".into(), self.player.pos));
         self.event("made", Some(who), Some(format!("instance:{first}")), format!("{maker} made {} {name}", super::article(&name)), Some(pos), json!({ "instances": instances }));
+        let told = self.tell_held_stories(id, pos);
         if who != ActorId::Player {
-            self.note_near(pos, 40.0, Note::Info(format!("{} made {} {name}.", super::physics::cap(&maker), super::article(&name))));
+            if !told {
+                self.note_near(pos, 40.0, Note::Info(format!("{} made {} {name}.", super::physics::cap(&maker), super::article(&name))));
+            }
             self.witness(pos, 40.0, &format!("{maker} made {} {name}.", super::article(&name)), 0.5, &[who]);
             // Small things go straight into the maker's hands.
-            if let Some(tid) = self.promote_instance(first) {
-                if self.things.get(tid).is_some_and(|t| t.liftable(1)) && self.actor(who).is_some_and(|a| (a.pos - pos).length() < 8.0) {
-                    self.hand_to(who, tid);
+            match self.promote_instance(first) {
+                Some(tid) if self.things.get(tid).is_some_and(|t| t.liftable(1)) => {
+                    let near = self.actor(who).is_some_and(|a| (a.pos - pos).length() < 8.0);
+                    self.made_into_hands(who, tid, near);
                 }
+                Some(tid) => self.need_made(who, Target::Thing(tid), false),
+                None => self.need_made(who, Target::Instance(first), false),
             }
         }
     }
@@ -611,5 +767,7 @@ impl Sim {
         let now = self.t;
         self.interp.pending.retain(|_, p| now - p.at < 300.0);
         self.interp.creating.retain(|_, c| now - c.1 < 600.0);
+        let Interp { stories, creating, building, .. } = &mut self.interp;
+        stories.retain(|id, _| creating.contains_key(id) || building.contains_key(id));
     }
 }

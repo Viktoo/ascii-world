@@ -98,6 +98,14 @@ impl CompiledType {
     pub fn color_checked(&self, p: [f32; 3], k: &[f32; 16], fuel: u32) -> Result<([f32; 3], u32), vm::VmError> {
         REGS.with(|r| self.color.run(&mut r.borrow_mut(), p, k, fuel))
     }
+    /// The colour and how much it glows (0..1), from glow() in color().
+    pub fn color_glow(&self, p: [f32; 3], k: &[f32; 16]) -> ([f32; 3], f32) {
+        api::split_glow(self.color(p, k))
+    }
+    /// Whether color() marks which parts give off light.
+    pub fn marks_glow(&self) -> bool {
+        self.color.calls(api::Api::Glow)
+    }
     pub fn behavior(&self, b: Behavior) -> Option<&vm::Program> {
         match b {
             Behavior::Tick => self.tick.as_ref(),

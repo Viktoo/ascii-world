@@ -26,6 +26,13 @@ pub fn assemble(types: &[(u32, &CompiledType)]) -> String {
         let _ = writeln!(s, "    case {id}u: {{ return color_T{id}(p, k); }}");
     }
     s.push_str("    default: { return vec3f(1.0, 0.0, 1.0); }\n  }\n}\n");
+    // Types that mark their lit parts with glow(); the rest glow all over.
+    s.push_str("fn type_marks_glow(tid: u32) -> bool {\n  switch tid {\n");
+    let marked: Vec<String> = types.iter().filter(|(_, t)| t.marks_glow()).map(|(id, _)| format!("{id}u")).collect();
+    if !marked.is_empty() {
+        let _ = writeln!(s, "    case {}: {{ return true; }}", marked.join(", "));
+    }
+    s.push_str("    default: { return false; }\n  }\n}\n");
     s.push_str(SCENE);
     s
 }

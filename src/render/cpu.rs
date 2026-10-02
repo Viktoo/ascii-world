@@ -136,12 +136,14 @@ impl Scene<'_> {
                         )
                         .normalize_or_zero();
                         let (gi, ty) = &self.insts[i];
-                        let base = Vec3::from(ty.ct.color(gi.to_local(p), &gi.k())).clamp(Vec3::ZERO, Vec3::ONE);
+                        let (c, g) = ty.ct.color_glow(gi.to_local(p), &gi.k());
+                        let base = Vec3::from(c).clamp(Vec3::ZERO, Vec3::ONE);
+                        let lit = if ty.ct.marks_glow() { g } else { 1.0 };
                         let fx = gi.fx;
                         let mut a = base.lerp(Vec3::new(0.07, 0.06, 0.055), fx[0].clamp(0.0, 1.0));
                         a *= 1.0 - 0.35 * fx[1].clamp(0.0, 1.0);
                         a = a.lerp(Vec3::new(1.0, 0.97, 0.8), fx[3].clamp(0.0, 1.0) * 0.28);
-                        self.shade(p, n, a) + base * fx[2].clamp(0.0, 2.0)
+                        self.shade(p, n, a) + base * fx[2].clamp(0.0, 2.0) * lit
                     }
                 }
             }

@@ -79,7 +79,8 @@ pub struct Llm {
     models: [String; 4],
     db: Arc<Db>,
     pub spent: Mutex<f64>,
-    pub budget: Option<f64>,
+    /// Spending cap for this session (POCKET_BUDGET_USD, or the settings screen).
+    pub budget: Mutex<Option<f64>>,
 }
 
 /// (input, output, cache read) USD per million tokens.
@@ -142,13 +143,13 @@ impl Llm {
         };
         let models = [default_model(Role::Builder), default_model(Role::Character), default_model(Role::Decider), default_model(Role::Summarizer)];
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(600)).build().ok()?;
-        let budget = std::env::var("POCKET_BUDGET_USD").ok().and_then(|s| s.parse::<f64>().ok()).filter(|b| *b > 0.0);
-        Some(Arc::new(Llm { http, provider, models, db, spent: Mutex::new(0.0), budget }))
+        let budget = crate::settings::Settings::load().budget();
+        Some(Arc::new(Llm { http, provider, models, db, spent: Mutex::new(0.0), budget: Mutex::new(budget) }))
     }
 
     #[cfg(test)]
     pub fn scripted(db: Arc<Db>, f: Script) -> Arc<Llm> {
-        Arc::new(Llm { http: reqwest::Client::new(), provider: Provider::Script(f), models: std::array::from_fn(|_| "script".to_string()), db, spent: Mutex::new(0.0), budget: None })
+        Arc::new(Llm { http: reqwest::Client::new(), provider: Provider::Script(f), models: std::array::from_fn(|_| "script".to_string()), db, spent: Mutex::new(0.0), budget: Mutex::new(None) })
     }
 
     pub fn model(&self, r: Role) -> &str {
@@ -165,7 +166,7 @@ impl Llm {
     }
 
     pub fn over_budget(&self) -> bool {
-        self.budget.is_some_and(|b| *self.spent.lock() >= b)
+        self.budget.lock().is_some_and(|b| *self.spent.lock() >= b)
     }
 
     fn account(&self, purpose: &str, model: &str, u: Usage) {

@@ -91,8 +91,9 @@ fn spec_lighthouse_passes() {
     assert!(t.sdf([0.0, 3.0, 0.0], &k) < 0.0);
     assert!(t.sdf([0.0, 12.5, 0.0], &k) < 0.0);
     assert!(t.sdf([5.0, 3.0, 0.0], &k) > 0.0);
-    let c = t.color([0.0, 12.0, 0.0], &k);
-    assert!((c[0] - 1.0).abs() < 1e-6 && (c[1] - 230.0 / 255.0).abs() < 1e-6);
+    let (c, g) = t.color_glow([0.0, 12.0, 0.0], &k);
+    assert!((c[0] - 1.0).abs() < 1e-6 && (c[1] - 230.0 / 255.0).abs() < 1e-6 && g == 1.0);
+    assert!(t.marks_glow());
     let stripe_a = t.color([1.0, 0.5, 0.0], &k);
     let stripe_b = t.color([1.0, 2.5, 0.0], &k);
     assert_ne!(stripe_a, stripe_b);
@@ -383,4 +384,46 @@ export function tick(s, w, k) { s.s2 = 1 / (w.dt - w.dt); }
     let t = compile(src).unwrap();
     let d = probe(&t).expect_err("nan");
     assert!(d[0].msg.contains("s.s2"), "{}", format_diags(&d));
+}
+
+#[test]
+fn glow_marks_lit_parts() {
+    let src = r#"
+export const meta = { name: "neon sign", bounds: [1, 1, 0.2], tags: ["prop"], props: { light: 1 } };
+export function sdf(x, y, z, k) { return box(x, y, z, 0.9, 0.9, 0.1); }
+export function color(x, y, z, k) {
+  if (y > 0.5) return glow(rgb(255, 60, 170));
+  if (y > 0) return glow(rgb(255, 230, 90), 0.5);
+  return rgb(40, 40, 40);
+}
+"#;
+    let t = compile(src).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    assert!(t.marks_glow());
+    probe(&t).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    let (c, g) = t.color_glow([0.0, 0.7, 0.1], &default_k(0.0));
+    assert!((c[0] - 1.0).abs() < 1e-5 && (c[1] - 60.0 / 255.0).abs() < 1e-5 && g == 1.0, "{c:?} {g}");
+    let (c, g) = t.color_glow([0.0, 0.2, 0.1], &default_k(0.0));
+    assert!((c[2] - 90.0 / 255.0).abs() < 1e-5 && g == 0.5, "{c:?} {g}");
+    let (c, g) = t.color_glow([0.0, -0.5, 0.1], &default_k(0.0));
+    assert!((c[0] - 40.0 / 255.0).abs() < 1e-5 && g == 0.0, "{c:?} {g}");
+    // A type without glow() marks nothing.
+    let plain = compile(&src.replace("glow(rgb(255, 60, 170))", "rgb(255, 60, 170)").replace("glow(rgb(255, 230, 90), 0.5)", "rgb(255, 230, 90)")).unwrap();
+    assert!(!plain.marks_glow());
+}
+
+#[test]
+fn glow_misuse_is_caught() {
+    let src = r#"
+export const meta = { name: "bad sign", bounds: [1, 1, 0.2], tags: ["prop"] };
+export function sdf(x, y, z, k) { return box(x, y, z, 0.9, 0.9, 0.1); }
+export function color(x, y, z, k) { return glow(rgb(255, 60, 170)) * 0.5; }
+"#;
+    let t = compile(src).unwrap();
+    let d = probe(&t).expect_err("scaled glow");
+    assert!(format_diags(&d).contains("glow()"), "{}", format_diags(&d));
+    assert!(check::check(&src.replace("glow(rgb(255, 60, 170)) * 0.5", "glow(1)")).is_err());
+    // Saved types often name a local `glow`; they still compile.
+    let local = src.replace("return glow(rgb(255, 60, 170)) * 0.5;", "const glow = smoothstep(0, 1, y); return mix(rgb(255, 60, 170), rgb(0, 0, 0), glow);");
+    let t = compile(&local).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    assert!(!t.marks_glow());
 }

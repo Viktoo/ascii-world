@@ -365,9 +365,12 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       let idx = cand[u32(h.id)];
       n = inst_normal(idx, p, h.t);
       let i = insts[idx];
-      let base = clamp(type_color(i.info.x, to_local(i, p), inst_params(i)), vec3f(0.0), vec3f(1.0));
+      let raw = api_split_glow(type_color(i.info.x, to_local(i, p), inst_params(i)));
+      let base = clamp(raw.xyz, vec3f(0.0), vec3f(1.0));
       albedo = apply_fx(base, i.fx);
-      glow = base * clamp(i.fx.z, 0.0, 2.0);
+      // Only the parts marked with glow() shine, unless the type marks none.
+      let lit = select(1.0, raw.w, type_marks_glow(i.info.x));
+      glow = base * clamp(i.fx.z, 0.0, 2.0) * lit;
       let o1 = map_scene(p + n * 0.15).z;
       let o2 = map_scene(p + n * 0.5).z;
       ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);

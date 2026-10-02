@@ -19,6 +19,7 @@ pub mod inspect;
 pub mod interp;
 pub mod life;
 pub mod motion;
+pub mod needs;
 pub mod npc;
 pub mod persist;
 pub mod physics;

@@ -21,6 +21,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+mod loading;
+mod menu;
+
 pub const WALK_SPEED: f32 = 5.0;
 pub const TURN_SPEED: f32 = 1.9;
 /// Radians per second while ↑/↓ is held.
@@ -136,7 +139,14 @@ pub struct App {
     pub noclip: bool,
     llm_note: Option<String>,
     budget_paused: bool,
-    target_fps: f32,
+    /// Saved settings (budget, frame rate, shadows, how far the world loads).
+    settings: crate::settings::Settings,
+    /// The settings screen, when open.
+    menu: Option<menu::Menu>,
+    /// The log: 0 a few lines, 1 half the screen, 2 the whole screen (key 1 cycles).
+    log_view: u8,
+    /// Log lines scrolled back from the newest (PgUp / PgDn).
+    log_scroll: usize,
     dirty: bool,
     llm: Option<Arc<crate::llm::Llm>>,
     /// Region plans wait until the universe's look (and so its terrain) exists.
@@ -146,6 +156,12 @@ pub struct App {
     /// What the middle of the view points at.
     pub pointed: Option<Picked>,
     last_pick: Instant,
+    /// The loading screen, until the world around you is made.
+    loading: Option<loading::Loading>,
+    /// What this world has seen the player do (achievements).
+    achievements: crate::achievements::Tracker,
+    /// Achievement popups waiting, the first one showing since when.
+    toasts: VecDeque<(&'static crate::achievements::Def, Option<Instant>)>,
 }
 
 pub struct Setup {
@@ -174,6 +190,7 @@ impl App {
         let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
         sim.has_llm = s.brain.has_llm;
+        let achievements = crate::achievements::Tracker::load(&s.db, &sim);
         let eye = sim.player.dims.eye;
         let mut app = App {
             db: s.db,
@@ -214,17 +231,23 @@ impl App {
             noclip: false,
             llm_note: None,
             budget_paused: false,
-            target_fps: std::env::var("POCKET_FPS").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0f32).clamp(5.0, 240.0),
+            settings: crate::settings::Settings::load(),
+            menu: None,
+            log_view: 0,
+            log_scroll: 0,
             dirty: true,
             llm: s.llm.clone(),
             genesis_pending: false,
             inspect: false,
             pointed: None,
             last_pick: Instant::now(),
+            loading: None,
+            achievements,
+            toasts: VecDeque::new(),
         };
         app.unstick();
         let name = app.snap.look.name.clone();
-        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use, g grab, f throw, q quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
+        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use, g grab, f throw, Esc settings, q quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
             None => {
@@ -280,7 +303,7 @@ impl App {
 
     fn say(&mut self, speaker: Option<&str>, text: &str, color: [u8; 3]) {
         self.log.push_back(LogLine { speaker: speaker.map(str::to_string), text: text.to_string(), color, streaming: None });
-        while self.log.len() > 300 {
+        while self.log.len() > 1000 {
             self.log.pop_front();
         }
         self.dirty = true;
@@ -303,9 +326,24 @@ impl App {
     fn layout(&self) -> (u16, u16, u16) {
         let h = self.screen.h;
         let log_rows: u16 = if h >= 44 { 6 } else if h >= 30 { 5 } else if h >= 22 { 4 } else { 3 };
+        // Half or whole screen: the view keeps half (the whole log is drawn over it).
+        let log_rows = if self.log_view > 0 { log_rows.max(h.saturating_sub(3) / 2) } else { log_rows };
         let ui = log_rows + 3; // separator, log, input, status
         let vh = h.saturating_sub(ui).max(4);
         (self.screen.w, vh, log_rows)
+    }
+
+    fn set_log_view(&mut self, v: u8) {
+        self.log_view = v;
+        self.log_scroll = 0;
+        self.last_frame = None;
+        self.dirty = true;
+    }
+
+    /// Rows of log on screen: over the whole view when it is full screen.
+    fn log_rows_shown(&self) -> usize {
+        let (_, vh, log_rows) = self.layout();
+        if self.log_view == 2 { (vh + 1 + log_rows) as usize } else { log_rows as usize }
     }
 
     fn pixel_size(&self) -> (u32, u32, f32) {
@@ -334,6 +372,15 @@ impl App {
             }
             return;
         }
+        if self.loading.is_some() {
+            return self.loading_key(k);
+        }
+        if k.code == KeyCode::F(10) {
+            if k.kind == KeyEventKind::Press {
+                self.toggle_menu();
+            }
+            return;
+        }
         if k.code == KeyCode::F(1) {
             if k.kind == KeyEventKind::Press {
                 self.debug = !self.debug;
@@ -346,6 +393,24 @@ impl App {
                 self.inspect = !self.inspect;
                 self.dirty = true;
             }
+            return;
+        }
+        if k.code == KeyCode::F(3) && self.menu.is_none() {
+            if k.kind == KeyEventKind::Press {
+                self.open_menu(true);
+            }
+            return;
+        }
+        if self.menu.is_some() {
+            if k.kind == KeyEventKind::Press {
+                self.menu_key(k);
+            }
+            return;
+        }
+        if matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) {
+            let page = self.log_rows_shown().saturating_sub(1).max(1);
+            self.log_scroll = if k.code == KeyCode::PageUp { self.log_scroll + page } else { self.log_scroll.saturating_sub(page) };
+            self.dirty = true;
             return;
         }
         match self.mode {
@@ -370,6 +435,8 @@ impl App {
         }
         match k.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.quit = true,
+            KeyCode::Esc if self.log_view > 0 => self.set_log_view(0),
+            KeyCode::Esc => self.toggle_menu(),
             KeyCode::Tab => {
                 self.ascii = !self.ascii;
                 self.screen.resize(self.screen.w, self.screen.h);
@@ -402,8 +469,7 @@ impl App {
                     self.say(None, &format!("You approach {name}. (Esc to leave)"), DIM);
                 }
             }
-            KeyCode::PageUp => self.pitch = (self.pitch + 0.08).min(PITCH_MAX),
-            KeyCode::PageDown => self.pitch = (self.pitch - 0.08).max(PITCH_MIN),
+            KeyCode::Char('1') => self.set_log_view((self.log_view + 1) % 3),
             _ => {}
         }
     }
@@ -598,13 +664,18 @@ impl App {
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/ride NAME · /dismount · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
-                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ or PgUp/PgDn look, Tab ascii/blocks, F1 stats, F2 inspect, q quit",
+                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings, q quit",
+                    "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
                 ] {
                     self.say(None, l, DIM);
                 }
             }
-            "undo" => self.brain.send(Cmd::Undo),
+            "undo" => {
+                self.brain.send(Cmd::Undo);
+                let got = self.achievements.grant("fresh_start");
+                self.announce(got);
+            }
             "history" => self.brain.send(Cmd::History),
             "day" | "noon" => self.set_hour(12.0),
             "night" | "midnight" => self.set_hour(0.0),
@@ -706,6 +777,9 @@ impl App {
     // ------------------------------------------------------------------ events
 
     fn on_event(&mut self, ev: Event) {
+        if self.loading_event(&ev) {
+            return;
+        }
         match ev {
             Event::Flip { snap, region } => self.flip(snap, region),
             Event::Log(s) => {
@@ -744,7 +818,13 @@ impl App {
                     l.streaming = None;
                     if ok {
                         let reply = l.text.clone();
-                        self.conv.entry(cid).or_default().push((false, reply));
+                        let h = self.conv.entry(cid).or_default();
+                        let said = h.last().filter(|x| x.0).map(|x| x.1.clone());
+                        h.push((false, reply.clone()));
+                        // What was asked may now be done, not only talked about.
+                        if let Some(said) = said.filter(|_| self.replying == Some(cid)) {
+                            self.sim.asked(cid, &said, reply.trim());
+                        }
                     }
                 }
                 if let Some(line) = self.sim_talk.remove(&cid) {
@@ -875,6 +955,11 @@ impl App {
                 Note::Info(t) => self.say(None, &t, [200, 205, 220]),
             }
         }
+        let got = self.achievements.update(&self.sim);
+        self.announce(got);
+        if !self.toasts.is_empty() {
+            self.dirty = true;
+        }
         // Leave talk mode if they walked off.
         if let Mode::Talk(id) = self.mode {
             let me = self.pos();
@@ -940,7 +1025,9 @@ impl App {
         let uu = 2.0 * cx / w as f32 - 1.0;
         let vv = 1.0 - 2.0 * cy / vh as f32;
         let rd = (f + r * uu * tan * aspect + u * vv * tan).normalize();
-        let picked = self.sim.pick(cam.pos, rd, 40.0, Some(ActorId::Player));
+        // Half a reticle cell, as a slope off the ray.
+        let cone = (tan / vh as f32).max(tan * aspect / w as f32);
+        let picked = self.sim.pick(cam.pos, rd, 40.0, cone, Some(ActorId::Player));
         let hover = picked.as_ref().filter(|p| p.dist < 12.0 && !matches!(p.target, Target::Point(_))).map(|p| p.target.clone());
         if hover != self.sim.hover {
             self.sim.hover = hover;
@@ -954,6 +1041,7 @@ impl App {
 
     pub fn save_player(&mut self) {
         self.last_save = Instant::now();
+        self.achievements.touch();
         let p = self.pos();
         let _ = self.db.save_player(PlayerRow { x: p.x, z: p.z, yaw: self.yaw(), t_game: self.sim.t });
     }
@@ -973,7 +1061,7 @@ impl App {
         let pr = region_of(me.x, me.z);
         let f = Vec3::new(self.yaw().sin(), 0.0, self.yaw().cos());
         let mut best: Option<(f32, (i32, i32))> = None;
-        let rr: i32 = std::env::var("POCKET_REGION_RADIUS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).clamp(0, 4);
+        let rr = self.settings.region_radius;
         for dz in -rr..=rr {
             for dx in -rr..=rr {
                 let r = (pr.0 + dx, pr.1 + dz);
@@ -1026,7 +1114,7 @@ impl App {
             light,
             time: self.start.elapsed().as_secs_f32(),
             frame: self.next_frame_id as u32,
-            shadows: !self.render.cpu_fallback && std::env::var("POCKET_NO_SHADOWS").is_err(),
+            shadows: !self.render.cpu_fallback && self.settings.shadows,
             lights: &drawn.lights,
         };
         let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
@@ -1066,16 +1154,20 @@ impl App {
         if self.inspect {
             self.draw_inspect(w, vh);
         }
-        // Separator with mode.
+        self.draw_toast(w, vh);
+        // Separator with mode (at the top when the log fills the screen).
         let sep = vh;
-        self.screen.fill_row(sep, Cell { ch: '─', fg: [60, 64, 80], bg: PANEL_BG, bold: false });
+        let full = self.log_view == 2;
+        let top = if full { 0 } else { sep };
+        let rows = self.log_rows_shown() as u16 - full as u16;
+        self.screen.fill_row(top, Cell { ch: '─', fg: [60, 64, 80], bg: PANEL_BG, bold: false });
         let tag = match self.mode {
             Mode::Walk => " walk ".to_string(),
             Mode::Talk(id) => format!(" talking to {} ", self.sim.cast.get(id).map(|n| n.name()).unwrap_or("?")),
             Mode::Command => " do ".to_string(),
         };
-        self.screen.text(2, sep, &tag, ACCENT, PANEL_BG, true);
-        // Log.
+        let x = self.screen.text(2, top, &tag, ACCENT, PANEL_BG, true);
+        // Log, scrolled back `log_scroll` lines.
         let width = w as usize - 2;
         let mut lines: Vec<(Option<String>, String, [u8; 3], bool)> = Vec::new();
         for l in self.log.iter().rev() {
@@ -1085,14 +1177,18 @@ impl App {
             for (i, wl) in wrapped.into_iter().enumerate().rev() {
                 lines.push((if i == 0 { l.speaker.clone() } else { None }, wl, l.color, l.streaming.is_some()));
             }
-            if lines.len() >= log_rows as usize {
+            if lines.len() >= rows as usize + self.log_scroll {
                 break;
             }
         }
-        lines.truncate(log_rows as usize);
+        self.log_scroll = self.log_scroll.min(lines.len().saturating_sub(rows as usize));
+        if self.log_scroll > 0 {
+            self.screen.text(x + 1, top, &format!(" ↑ {} lines back · PgDn ", self.log_scroll), DIM, PANEL_BG, false);
+        }
+        let mut lines: Vec<_> = lines.into_iter().skip(self.log_scroll).take(rows as usize).collect();
         lines.reverse();
-        for i in 0..log_rows {
-            let y = sep + 1 + i;
+        for i in 0..rows {
+            let y = top + 1 + i;
             self.screen.fill_row(y, Cell { bg: PANEL_BG, ..Cell::BLANK });
             if let Some((speaker, text, color, _)) = lines.get(i as usize) {
                 match speaker {
@@ -1107,6 +1203,9 @@ impl App {
                 }
             }
         }
+        if self.menu.is_some() && !full {
+            self.draw_menu(w, vh);
+        }
         // Input line.
         let iy = sep + 1 + log_rows;
         self.screen.fill_row(iy, Cell { bg: PANEL_BG, ..Cell::BLANK });
@@ -1118,7 +1217,7 @@ impl App {
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
-                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  F1 stats  F2 inspect  q quit".into(),
+                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 log  Esc settings  q quit".into(),
                 };
                 self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
             }
@@ -1170,7 +1269,7 @@ impl App {
             right = n.clone();
         }
         if self.budget_paused {
-            right = "budget reached: generation paused".into();
+            right = "budget reached: generation paused (Esc to change)".into();
         }
         if self.render.cpu_fallback {
             right = format!("{right}{}CPU renderer", if right.is_empty() { "" } else { " · " });
@@ -1188,7 +1287,7 @@ impl App {
     fn over_budget(&mut self) -> bool {
         if self.llm.as_ref().is_some_and(|l| l.over_budget()) {
             self.budget_paused = true;
-            self.say(None, "Budget reached (POCKET_BUDGET_USD): generation and dialogue are paused; walking still works.", ACCENT);
+            self.say(None, "Budget reached: generation and dialogue are paused; walking still works. Esc opens settings to raise it.", ACCENT);
             return true;
         }
         false
@@ -1196,6 +1295,107 @@ impl App {
 
     fn spent(&self) -> f64 {
         self.llm.as_ref().map(|l| *l.spent.lock()).unwrap_or(0.0)
+    }
+
+    /// Tell of achievements just earned: a line in the log and a popup.
+    fn announce(&mut self, got: Vec<&'static crate::achievements::Def>) {
+        for d in got {
+            self.say(None, &format!("{} Achievement: {}. {}", menu::icon(d.tier), d.title, d.text), menu::tier_color(d.tier));
+            self.toasts.push_back((d, None));
+        }
+    }
+
+    /// The achievement popup: slides in at the top right, stays a while,
+    /// slides out. Its frame grows more ornate with the tier.
+    fn draw_toast(&mut self, w: u16, vh: u16) {
+        const IN: f32 = 0.35;
+        const HOLD: f32 = 5.0;
+        const OUT: f32 = 0.4;
+        let Some((d, since)) = self.toasts.front_mut() else { return };
+        let since = *since.get_or_insert_with(Instant::now);
+        let d: &'static crate::achievements::Def = d;
+        let age = since.elapsed().as_secs_f32();
+        if age > IN + HOLD + OUT {
+            self.toasts.pop_front();
+            self.dirty = true;
+            return;
+        }
+        use crate::achievements::Tier;
+        let color = menu::tier_color(d.tier);
+        let bg = [20, 20, 30];
+        let inner = 42.min((w as usize).saturating_sub(10)).max(16);
+        let body = term::wrap(d.text, inner - 6);
+        let head = format!("Achievement · {}", menu::tier_name(d.tier));
+        let bw = inner + 2;
+        let bh = body.len().min(3) + 4;
+        if (vh as usize) < bh + 2 {
+            return;
+        }
+        // Slide: eased in from the right, then back out.
+        let ease = |p: f32| 1.0 - (1.0 - p.clamp(0.0, 1.0)).powi(3);
+        let shown = if age < IN { ease(age / IN) } else if age > IN + HOLD { 1.0 - ease((age - IN - HOLD) / OUT) } else { 1.0 };
+        let x0 = w as i32 - 2 - (bw as f32 * shown) as i32;
+        let y0 = 1u16;
+        let t = self.start.elapsed().as_secs_f32();
+        // Diamond shimmers: a bright band sweeps along the frame.
+        let shade = |x: usize| -> [u8; 3] {
+            if d.tier != Tier::Diamond {
+                return color;
+            }
+            let k = ((x as f32 * 0.35 - t * 6.0).sin() * 0.5 + 0.5).powi(6);
+            [0, 1, 2].map(|i| (color[i] as f32 + (255.0 - color[i] as f32) * k) as u8)
+        };
+        let (tl, tr, bl, br, h, v) = match d.tier {
+            Tier::Bronze => ('┌', '┐', '└', '┘', '─', '│'),
+            Tier::Silver => ('╭', '╮', '╰', '╯', '─', '│'),
+            _ => ('╔', '╗', '╚', '╝', '═', '║'),
+        };
+        // Ornaments along the top and bottom edges.
+        let edge = |i: usize| -> char {
+            match d.tier {
+                Tier::Gold if i == 2 || i == bw - 3 || i == bw / 2 => '◆',
+                Tier::Diamond if i == bw / 2 => '◆',
+                Tier::Diamond if i % 4 == 2 => '◇',
+                _ => h,
+            }
+        };
+        for row in 0..bh {
+            let y = y0 + row as u16;
+            for col in 0..bw {
+                let x = x0 + col as i32;
+                if x < 0 || x >= w as i32 {
+                    continue;
+                }
+                let last = row == bh - 1;
+                let ch = match (row, col) {
+                    (0, 0) => tl,
+                    (0, c) if c == bw - 1 => tr,
+                    (r, 0) if r == bh - 1 => bl,
+                    (r, c) if r == bh - 1 && c == bw - 1 => br,
+                    (0, c) => edge(c),
+                    (_, c) if last => edge(c),
+                    (_, 0) => v,
+                    (_, c) if c == bw - 1 => v,
+                    _ => ' ',
+                };
+                self.screen.set(x as u16, y, Cell { ch, fg: shade(col + row), bg, bold: false });
+            }
+        }
+        // Medal, heading, title, what you did.
+        let put = |s: &mut Screen, col: usize, row: usize, text: &str, fg: [u8; 3], bold: bool| {
+            for (i, ch) in text.chars().enumerate() {
+                let x = x0 + (col + i) as i32;
+                if x >= 0 && x < w as i32 && col + i < bw - 1 {
+                    s.set(x as u16, y0 + row as u16, Cell { ch: term::narrow(ch), fg, bg, bold });
+                }
+            }
+        };
+        put(&mut self.screen, 2, 1, menu::icon(d.tier), shade(2), true);
+        put(&mut self.screen, 6, 1, &head, DIM, false);
+        put(&mut self.screen, 6, 2, d.title, color, true);
+        for (i, l) in body.iter().take(3).enumerate() {
+            put(&mut self.screen, 6, 3 + i, l, TEXT, false);
+        }
     }
 
     fn draw_labels(&mut self, w: u16, vh: u16) {
@@ -1300,11 +1500,11 @@ impl App {
 
     pub fn run(&mut self, input: bool, out: &mut dyn Write, stop: &AtomicBool, mut script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
         let mut last = Instant::now();
-        let frame_interval = Duration::from_secs_f32(1.0 / self.target_fps);
         // Test hook: prove the terminal survives a panic.
         let panic_at = std::env::var("POCKET_TEST_PANIC_MS").ok().and_then(|v| v.parse::<u64>().ok()).map(|ms| Instant::now() + Duration::from_millis(ms));
         loop {
             let loop_start = Instant::now();
+            let frame_interval = Duration::from_secs_f32(1.0 / self.settings.fps);
             if panic_at.is_some_and(|t| loop_start > t) {
                 panic!("test panic (POCKET_TEST_PANIC_MS)");
             }
@@ -1348,7 +1548,11 @@ impl App {
                     break;
                 }
             }
-            self.tick(dt);
+            if self.loading.is_some() {
+                self.tick_loading(dt);
+            } else {
+                self.tick(dt);
+            }
 
             // Frames in flight: at most two; keep only the newest result.
             let mut got = false;
@@ -1370,10 +1574,18 @@ impl App {
                 self.last_frame = Some(f);
                 got = true;
             }
-            if self.outstanding < 2 && now.duration_since(self.last_request) >= frame_interval.mul_f32(0.9) {
+            // While loading, a slow trickle of frames keeps the renderer warm for the world flipping in.
+            let interval = if self.loading.is_some() { Duration::from_millis(500) } else { frame_interval.mul_f32(0.9) };
+            if self.outstanding < 2 && now.duration_since(self.last_request) >= interval {
                 self.request_frame();
             }
-            if got || self.dirty {
+            if self.loading.is_some() {
+                if self.dirty {
+                    self.compose_loading();
+                    self.screen.flush(out)?;
+                    self.dirty = false;
+                }
+            } else if got || self.dirty {
                 self.compose();
                 self.screen.flush(out)?;
                 self.dirty = false;
@@ -1801,6 +2013,140 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn log_opens_half_and_full_and_scrolls_back() {
+        let (mut app, _db) = make_app(false);
+        for i in 0..80 {
+            app.say(None, &format!("line number {i}"), TEXT);
+        }
+        app.compose();
+        let small = screen_text(&app);
+        assert!(small.contains("line number 79") && !small.contains("line number 60"));
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        assert_eq!(app.log_view, 2);
+        app.compose();
+        let full = screen_text(&app);
+        assert!(full.contains("line number 79") && full.contains("line number 60"), "{full}");
+        app.on_key(key(KeyCode::PageUp, KeyEventKind::Press));
+        app.compose();
+        let back = screen_text(&app);
+        assert!(back.contains("lines back") && !back.contains("line number 79"), "{back}");
+        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        assert_eq!(app.log_view, 0);
+        assert!(app.menu.is_none(), "Esc closes the log first");
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        assert_eq!(app.log_view, 1);
+        assert!(app.layout().1 < app.screen.h / 2 + 2);
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        assert_eq!(app.log_view, 0, "1 cycles back to small");
+    }
+
+    #[test]
+    fn achievements_pop_up_are_kept_and_listed() {
+        let (mut app, db) = make_app(false);
+        let p = app.pos();
+        app.sim.event("made", Some(ActorId::Player), Some("instance:1".into()), "the traveller made a lamp", Some(p), serde_json::json!({}));
+        drive(&mut app, 0.2, |_, _| true);
+        assert!(app.achievements.earned("word_made_real").is_some());
+        assert!(app.achievements.earned("first_spark").is_none());
+        app.compose();
+        let s = screen_text(&app);
+        assert!(s.contains("Word Made Real") && s.contains("Achievement"), "{s}");
+        // Kept for you by this world's id, not in the world's file.
+        let t = crate::achievements::Tracker::load(&db, &app.sim);
+        assert!(t.earned("word_made_real").is_some());
+        assert_eq!(t.count(), 1);
+        assert!(db.kv_get("world_id").is_some());
+        let (other, other_db) = make_app(false);
+        assert_ne!(other_db.world_id(), db.world_id());
+        assert_eq!(other.achievements.count(), 0, "another world starts with none");
+        // Each is earned once.
+        app.toasts.clear();
+        app.sim.event("made", Some(ActorId::Player), Some("instance:2".into()), "the traveller made a cup", Some(p), serde_json::json!({}));
+        drive(&mut app, 0.2, |_, _| true);
+        assert!(app.toasts.is_empty());
+        // F3 opens the list; 1 and 2 switch pages.
+        app.on_key(key(KeyCode::F(3), KeyEventKind::Press));
+        app.compose();
+        let s = screen_text(&app);
+        assert!(s.contains("Achievements 1/") && s.contains("Second Draft") && s.contains("earned just now"), "{s}");
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        app.compose();
+        assert!(screen_text(&app).contains("Budget per session"));
+        app.on_key(key(KeyCode::Char('2'), KeyEventKind::Press));
+        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        assert!(app.menu.is_none());
+        // /undo is noticed by the app itself.
+        app.command("/undo");
+        assert!(app.achievements.earned("fresh_start").is_some());
+    }
+
+    #[test]
+    fn achievements_follow_the_fire() {
+        let (mut app, _db) = make_app(false);
+        let p = app.pos();
+        let t = app.sim.t;
+        let ev = |app: &mut App, kind: &str, actor: Option<ActorId>, subject: &str, at: Vec3| app.sim.event(kind, actor, Some(subject.into()), kind, Some(at), serde_json::json!({}));
+        // Fire far away, nobody near: nothing.
+        ev(&mut app, "ignited", None, "thing:90", p + Vec3::new(200.0, 0.0, 0.0));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.achievements.earned("first_spark").is_none());
+        // The player uses something, and fire starts beside them, then spreads.
+        ev(&mut app, "used", Some(ActorId::Player), "thing:1", p);
+        ev(&mut app, "ignited", None, "thing:2", p + Vec3::new(2.0, 0.0, 0.0));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.achievements.earned("first_spark").is_some());
+        assert!(app.achievements.earned("tinkerer").is_some());
+        assert!(app.achievements.earned("chain_reaction").is_none());
+        for i in 3..6 {
+            ev(&mut app, "ignited", None, &format!("thing:{i}"), p + Vec3::new(i as f32 * 3.0, 0.0, 0.0));
+        }
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.achievements.earned("chain_reaction").is_some());
+        assert!(app.sim.t - t < 120.0);
+        // Thrown by a mount.
+        ev(&mut app, "thrown", Some(ActorId::Npc(7)), "player", p);
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.achievements.earned("thrown").is_some());
+        assert_eq!(app.toasts.len(), 4, "one popup each, queued");
+    }
+
+    #[test]
+    fn settings_screen_opens_changes_and_closes() {
+        let (mut app, _db) = make_app(false);
+        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        assert!(app.menu.is_some(), "Esc in walk opens settings");
+        app.compose();
+        assert!(screen_text(&app).contains("Settings"));
+        // Budget: no limit by default; ← steps down to $50.
+        app.on_key(key(KeyCode::Left, KeyEventKind::Press));
+        assert_eq!(app.settings.budget(), Some(50.0));
+        // Walking keys do nothing while it is open.
+        let before = app.pos();
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
+        drive(&mut app, 0.3, |_, _| true);
+        assert_eq!(app.pos(), before);
+        // The spend page, and back.
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        app.compose();
+        assert!(screen_text(&app).contains("Spend details"), "{}", screen_text(&app));
+        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        // A world setting changes the running sim and is kept with the world.
+        for _ in 0..4 {
+            app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        }
+        let was = app.sim.cfg.max_creatures;
+        app.on_key(key(KeyCode::Right, KeyEventKind::Press));
+        assert!(app.sim.cfg.max_creatures > was);
+        assert_eq!(app.db.kv_get("sim.max_creatures"), Some(app.sim.cfg.max_creatures.to_string()));
+        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        assert!(app.menu.is_none());
     }
 
     #[test]

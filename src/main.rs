@@ -1,5 +1,6 @@
 //! Pocket Universe: an infinite, colour 3D world in your terminal.
 
+mod achievements;
 mod app;
 mod brain;
 mod db;
@@ -11,10 +12,12 @@ mod llm;
 mod log;
 mod model;
 mod noise;
+mod pace;
 mod picker;
 mod png;
 mod prompts;
 mod render;
+mod settings;
 mod sim;
 mod term;
 mod terrain;
@@ -204,6 +207,7 @@ fn play(path: &Path, fresh: bool) -> Result<()> {
         llm,
         genesis,
     });
+    app.start_loading();
     let mut out = std::io::stdout();
     let r = app.run(true, &mut out, &stop, None);
     app.shutdown();

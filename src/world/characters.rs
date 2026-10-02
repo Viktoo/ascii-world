@@ -65,6 +65,10 @@ pub struct SavedState {
     /// How often they have run for their lives.
     #[serde(default, skip_serializing_if = "is_zero_u")]
     pub frights: u32,
+    /// What they were in the middle of (plan, mission, favours), in the
+    /// simulation's own shape (`sim::needs::Work`), so it carries on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<serde_json::Value>,
 }
 
 fn is_zero_i(v: &i64) -> bool {

@@ -16,9 +16,16 @@ pub struct Picked {
     pub name: String,
 }
 
-/// Things smaller than this (bounding radius, m) get a halo of HALO metres.
+/// Things smaller than this (bounding radius, m) get a halo around them.
 const SMALL: f32 = 0.35;
 const HALO: f32 = 0.22;
+
+/// How far past its bounding radius a small thing can be pointed at, `t`
+/// metres away: whichever is more of 1.25 times radius + HALO, or most of the
+/// reticle (`cone`: half its size, as a slope) at that distance.
+fn halo(r: f32, cone: f32, t: f32) -> f32 {
+    ((r + HALO) * 1.25 - r).max(cone * 0.6 * t)
+}
 
 enum Cand {
     Shape(Target, GpuInst, Arc<TypeEntry>),
@@ -35,8 +42,10 @@ fn sdf(c: &Cand, p: Vec3) -> f32 {
             g.sdf(&ty.ct, p)
         }
         Cand::Body(_, feet, h) => {
-            let y = p.y.clamp(feet.y + 0.3, feet.y + h - 0.2);
-            (p - Vec3::new(feet.x, y, feet.z)).length() - 0.3
+            // A person's capsule, in proportion for smaller and bigger bodies.
+            let s = h / 1.75;
+            let y = p.y.clamp(feet.y + 0.3 * s, feet.y + h - 0.2 * s);
+            (p - Vec3::new(feet.x, y, feet.z)).length() - 0.3 * s
         }
     }
 }
@@ -52,8 +61,9 @@ fn ray_hits(ro: Vec3, rd: Vec3, c: Vec3, r: f32, max: f32) -> bool {
 
 impl Sim {
     /// The first thing a ray from `ro` along `rd` meets within `max` metres.
-    /// `except` is never picked (the one looking).
-    pub fn pick(&mut self, ro: Vec3, rd: Vec3, max: f32, except: Option<ActorId>) -> Option<Picked> {
+    /// `except` is never picked (the one looking). `cone` widens what counts
+    /// as pointing at a small thing to the reticle's size (see `halo`).
+    pub fn pick(&mut self, ro: Vec3, rd: Vec3, max: f32, cone: f32, except: Option<ActorId>) -> Option<Picked> {
         let rd = rd.normalize_or_zero();
         let snap = self.snap.clone();
         let mut cands: Vec<Cand> = Vec::new();
@@ -73,7 +83,7 @@ impl Sim {
                 }
                 let Some(ty) = snap.type_of(t.type_id) else { continue };
                 let g = super::render::thing_inst(t, ty, [0.0; 4]);
-                if ray_hits(ro, rd, g.center(), g.radius() + HALO, max) {
+                if ray_hits(ro, rd, g.center(), g.radius() + halo(g.radius(), cone, max), max) {
                     cands.push(Cand::Shape(Target::Thing(id), g, ty.clone()));
                 }
             }
@@ -96,7 +106,7 @@ impl Sim {
                     continue;
                 }
                 let g = it.inst;
-                if ray_hits(ro, rd, g.center(), g.radius() + HALO, max) {
+                if ray_hits(ro, rd, g.center(), g.radius() + halo(g.radius(), cone, max), max) {
                     cands.push(Cand::Shape(Target::Cell([it.cell.0, it.cell.1]), g, ty.clone()));
                 }
             }
@@ -122,7 +132,7 @@ impl Sim {
                 if let Cand::Shape(_, g, _) = c {
                     if g.radius() < SMALL {
                         // Small things are hard to point at: a halo around them counts.
-                        dc = dc.min((p - g.center()).length() - g.radius() - HALO);
+                        dc = dc.min((p - g.center()).length() - g.radius() - halo(g.radius(), cone, t));
                     }
                 }
                 if dc < d {

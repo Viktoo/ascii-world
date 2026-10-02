@@ -308,6 +308,11 @@ fn build(f: &Func, first_local: u16, nprops: u16, tail: Op) -> Result<Program, S
 }
 
 impl Program {
+    /// Whether this program calls `api` anywhere.
+    pub fn calls(&self, api: Api) -> bool {
+        self.ops.iter().any(|o| matches!(o, Op::Call { api: a, .. } if *a == api))
+    }
+
     /// Check every register index and jump target, so `run` cannot go out of bounds.
     fn verify(&self) -> Result<(), String> {
         let n = self.nregs;

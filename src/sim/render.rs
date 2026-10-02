@@ -55,6 +55,19 @@ pub fn look(p: &Props) -> [f32; 4] {
     fx
 }
 
+/// Largest thing (bounding radius, m) that glows all over when its type
+/// doesn't mark lit parts with glow(); a building would glare as one block.
+const WHOLE_GLOW_MAX_R: f32 = 2.0;
+
+/// `look` for a thing of this type: unmarked big things keep only their light.
+fn thing_look(p: &Props, ty: &TypeEntry, scale: f32) -> [f32; 4] {
+    let mut fx = look(p);
+    if !ty.ct.marks_glow() && ty.radius() * scale > WHOLE_GLOW_MAX_R {
+        fx[FX_GLOW] = 0.0;
+    }
+    fx
+}
+
 pub struct Drawn {
     pub insts: Vec<GpuInst>,
     pub lights: Vec<PointLight>,
@@ -116,7 +129,7 @@ impl Sim {
                 continue;
             }
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };
-            let mut fx = look(&t.props);
+            let mut fx = thing_look(&t.props, ty, t.scale);
             if hover_thing == Some(t.id) {
                 fx[FX_HIGHLIGHT] = 0.7;
             }

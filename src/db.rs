@@ -309,6 +309,35 @@ impl Db {
         })
     }
 
+    /// Everything this world has spent on the LLM, in dollars.
+    pub fn usage_total(&self) -> f64 {
+        self.with(|c| Ok(c.query_row("SELECT COALESCE(SUM(cost), 0) FROM llm_usage", [], |r| r.get(0))?)).unwrap_or(0.0)
+    }
+
+    /// This world's own id, made the first time it's asked for. Things kept
+    /// about a world outside its file (your achievements) are kept by it.
+    pub fn world_id(&self) -> String {
+        if let Some(id) = self.kv_get("world_id") {
+            return id;
+        }
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let id = format!("{:016x}", h.finish());
+        let _ = self.kv_set("world_id", &id);
+        id
+    }
+
+    /// The latest paid calls, newest first: (unix time, purpose, cost).
+    pub fn usage_recent(&self, n: usize) -> Vec<(f64, String, f64)> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT t, purpose, cost FROM llm_usage ORDER BY t DESC LIMIT ?1")?;
+            let rows = st.query_map([n as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .unwrap_or_default()
+    }
+
 }
 
 pub fn set_persona(c: &Connection, id: i64, persona_json: &str) -> Result<()> {

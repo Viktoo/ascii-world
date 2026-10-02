@@ -13,6 +13,6 @@ export function sdf(x, y, z, k) {            // k = instance params {seed, scale
 
 // Called once per hit pixel.
 export function color(x, y, z, k) {
-  if (y > 11.5) return rgb(255, 230, 160);
+  if (y > 11.5) return glow(rgb(255, 230, 160));
   return (floor(y / 2) % 2 == 0) ? rgb(220, 60, 50) : rgb(240, 240, 235);
 }

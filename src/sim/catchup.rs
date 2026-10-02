@@ -54,6 +54,7 @@ impl Sim {
         let t = self.t;
         let day = crate::render::sky::DAY_SECONDS;
         let mut changed = false;
+        let mut regrown = 0;
         let snap = self.snap.clone();
         let mut back = Vec::new();
         for (c, at) in &self.things.spent_cells {
@@ -69,6 +70,7 @@ impl Sim {
                     self.things.taken.remove(&c);
                 }
                 changed = true;
+                regrown += 1;
             }
         }
         let healed: Vec<(i32, i32)> = self
@@ -79,12 +81,16 @@ impl Sim {
             .filter(|(_, cell)| snap.type_of(cell.type_id).is_some_and(|ty| self.type_props.get(&self.vocab, ty)[P_ALIVE] > 0.0))
             .map(|(c, _)| *c)
             .collect();
+        regrown += healed.len();
         for c in healed {
             self.field.cells.remove(&c);
             changed = true;
         }
         if changed {
             self.sync_overlay();
+        }
+        if regrown > 0 {
+            self.event("regrown", None, None, format!("{regrown} plants grew back"), None, json!({ "count": regrown }));
         }
     }
 

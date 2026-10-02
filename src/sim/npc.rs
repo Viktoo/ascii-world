@@ -101,6 +101,19 @@ pub struct Npc {
     pub last_work: f64,
     /// When an animal last greeted its person.
     pub last_greet: f64,
+    /// Someone to hand the next thing they make to, until this game time.
+    pub deliver: Option<(ActorId, f64)>,
+    /// A deed they set out to do and what it waits on (see `needs`).
+    pub mission: Option<super::needs::Mission>,
+    /// Someone who asked them a favour and awaits the answer, until this game time.
+    pub asked_by: Option<(ActorId, f64)>,
+    /// Someone they agreed to help, until this game time.
+    pub helping: Option<(ActorId, f64)>,
+    /// The deed in words they are in the middle of (asked, or being made),
+    /// so it can be done again if the session ends before it lands.
+    pub deed: Option<(String, Option<Target>, f64)>,
+    /// Loaded with work under way: fix up what was waiting on an answer.
+    pub restored: bool,
     pub dead: bool,
     pub dressed: bool,
     /// Gestures it was taught (an animal's tricks), done when greeting.
@@ -126,7 +139,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, work: self.work() }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -244,6 +257,12 @@ impl Cast {
             last_line: f64::MIN,
             last_work: f64::MIN,
             last_greet: f64::MIN,
+            deliver: None,
+            mission: None,
+            asked_by: None,
+            helping: None,
+            deed: None,
+            restored: false,
             dead: s.dead,
             dressed: s.dressed,
             tricks: s.tricks.clone(),
@@ -254,6 +273,9 @@ impl Cast {
             frights: s.frights,
             growth: if s.born > 0.0 { 0.3 } else { 1.0 },
         };
+        if let Some(w) = s.work.as_ref() {
+            n.restore_work(w);
+        }
         fit(&mut n, snap, seed);
         self.index.insert(def.id, self.npcs.len());
         self.npcs.push(n);
@@ -368,6 +390,26 @@ pub fn parse_step(v: &Value) -> Option<Action> {
     if verb == "do" && !obj.contains_key("text") {
         if let Some(x) = obj.remove("what").or_else(|| obj.remove("thing")) {
             obj.insert("text".into(), x);
+        }
+    }
+    // {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}: names into targets.
+    if verb == "ask" {
+        let who = obj.remove("who").or_else(|| obj.remove("to")).or_else(|| obj.remove("target")).unwrap_or(Value::Null);
+        let list: Vec<Value> = match who {
+            Value::Array(v) => v.into_iter().filter_map(|x| match x {
+                Value::String(s) => Some(json!({ "name": s })),
+                Value::Object(_) => Some(x),
+                _ => None,
+            }).collect(),
+            Value::String(s) => vec![json!({ "name": s })],
+            o @ Value::Object(_) => vec![o],
+            _ => vec![],
+        };
+        obj.insert("who".into(), Value::Array(list));
+        if !obj.contains_key("what") && !obj.contains_key("for") {
+            if let Some(x) = obj.remove("text").or_else(|| obj.remove("thing")) {
+                obj.insert("what".into(), x);
+            }
         }
     }
     // {"do": "create", "text": "a wooden ball"} → "make a wooden ball".
@@ -766,7 +808,7 @@ impl Sim {
         }
         // Night: home and to bed.
         let Some(n) = self.cast.get_mut(cid) else { return };
-        if night && !n.a.asleep && n.a.task.is_none() && !n.plan.iter().any(|a| matches!(a, Action::Sleep)) && !self.social.busy(ActorId::Npc(cid)) {
+        if night && !n.a.asleep && n.a.task.is_none() && n.mission.is_none() && !n.plan.iter().any(|a| matches!(a, Action::Sleep)) && !self.social.busy(ActorId::Npc(cid)) {
             let home = n.def.home;
             n.plan = vec![Action::GoHome, Action::Sleep].into();
             n.goal = "go home to sleep".into();
@@ -784,6 +826,10 @@ impl Sim {
                 }
             }
         }
+        if self.cast.get(cid).is_some_and(|n| n.restored) {
+            self.after_load(cid);
+        }
+        self.need_tick(cid);
         let asleep = self.cast.get(cid).is_some_and(|n| n.a.asleep);
         if !asleep {
             let me = ActorId::Npc(cid);
@@ -1264,21 +1310,40 @@ impl Sim {
 
     /// Ask the planner about an event (rate-limited per character).
     pub fn ask(&mut self, cid: i64, event: &str, what: &str) {
+        self.ask_planner(cid, event, what, false);
+    }
+
+    /// The traveller said something to a character and they answered: they
+    /// may now do what was asked (make it and hand it over, show the way…).
+    pub fn asked(&mut self, cid: i64, said: &str, replied: &str) {
+        let what = format!(
+            "The traveller just said to you: \"{said}\". You answered: \"{replied}\". If they asked you to do, make, fetch, give or show something and you agreed, do it now: to make something for them, a \"do\" step that makes it, then a \"give\" step to the traveller (it is handed over once made). If you refused, or nothing was asked, reply with no steps. Set \"say\" to null: you have already answered."
+        );
+        self.ask_planner(cid, "asked", &what, true);
+    }
+
+    /// Ask the planner what to do about an event. Returns whether it was asked.
+    fn ask_planner(&mut self, cid: i64, event: &str, what: &str, now: bool) -> bool {
         if !self.has_llm || self.mind_of(ActorId::Npc(cid)) != crate::world::species::Mind::Sapient {
-            return;
+            return false;
         }
         let t = self.t;
-        let Some(n) = self.cast.get_mut(cid) else { return };
-        if t < n.next_llm {
-            return;
+        let Some(n) = self.cast.get_mut(cid) else { return false };
+        if t < n.next_llm && !now {
+            return false;
         }
         n.next_llm = t + 60.0;
         let pos = n.a.pos;
         if self.dist_to_player(pos) > self.cfg.near && !self.cfg.medium_llm {
-            return;
+            return false;
         }
         let context = self.decide_context(cid, what);
         self.request(Request::Decide { cid, event: event.into(), context }, pos);
+        true
+    }
+
+    pub fn ask_planner_now(&mut self, cid: i64, event: &str, what: &str) -> bool {
+        self.ask_planner(cid, event, what, true)
     }
 
     /// What a character knows right now, for the planner.
@@ -1360,6 +1425,21 @@ impl Sim {
         let summary = d.goal.clone().unwrap_or_else(|| d.action.clone());
         n.log_decision(t, format!("decided: {summary}"));
         let mut steps: Vec<Action> = d.steps.iter().filter_map(parse_step).take(10).collect();
+        let said = d.say.as_ref().is_some_and(|s| !s.trim().is_empty());
+        let mut steps = self.need_decision(cid, std::mem::take(&mut steps), said);
+        // Making something and then giving it: the thing takes a while to be
+        // made, so the giving waits until it is in their hands.
+        if let Some(i) = steps.iter().position(|a| matches!(a, Action::Do { .. })) {
+            if let Some(j) = steps.iter().skip(i + 1).position(|a| matches!(a, Action::Give { .. })).map(|j| j + i + 1) {
+                if let Action::Give { to } = steps.remove(j) {
+                    if let Some(Target::Actor(other)) = self.resolve(&to, me).map(|r| r.target) {
+                        if let Some(n) = self.cast.get_mut(cid) {
+                            n.deliver = Some((other, t + 300.0));
+                        }
+                    }
+                }
+            }
+        }
         let line = d.say.clone().or(d.line.clone()).filter(|l| !l.trim().is_empty());
         if steps.is_empty() {
             match d.action.as_str() {

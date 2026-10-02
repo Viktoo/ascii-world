@@ -22,7 +22,7 @@ export function sdf(x, y, z, k) {
 
 // Colour at a surface point (local space). Must return a colour on every path.
 export function color(x, y, z, k) {
-  if (y > 11.5) return rgb(255, 230, 160);
+  if (y > 11.5) return glow(rgb(255, 230, 160));   // the lamp is what shines
   return (floor(y / 2) % 2 == 0) ? rgb(220, 60, 50) : rgb(240, 240, 235);
 }
 ```
@@ -53,6 +53,7 @@ Shapes (return a distance):
 Combining: union(a, b, ...) (2–8 args), intersect(a, b, ...), subtract(a, b) (a minus b), smoothUnion(a, b, k), smoothSubtract(a, b, k)
 Rotation (return a vec3 point): rotX(x, y, z, angle), rotY(x, y, z, angle), rotZ(x, y, z, angle)
 Noise and colour: noise3(x, y, z) in [0,1); hash(a [, b [, c]]) in [0,1); rgb(r, g, b) with 0–255 channels; hsv(h, s, v) all 0–1; mix(a, b, t) for numbers or colours
+Light: glow(colour) or glow(colour, amount 0–1) marks the parts that give off light (lamps, neon, lit windows, signs, screens). Wrap the colour you return with it, e.g. `return glow(rgb(255, 60, 170));`; don't mix or scale its result. When a thing has the light property, only the parts marked this way shine; unmarked big things don't shine at all, so mark the lit parts of any building or large object that gives light.
 Maths: abs, min (2–8 args), max (2–8 args), clamp(x, lo, hi), floor, ceil, round, fract, mod(a, b), sin, cos, tan, atan2(y, x), sqrt, pow(a, b) (uses |a|), exp, sign, step(edge, x), smoothstep(e0, e1, x), length2(x, y), length3(x, y, z)
 
 ## Properties (meta.props)
@@ -256,7 +257,7 @@ pub fn repair(errors: &str) -> String {
     format!("That failed validation:\n{errors}\n\nFix every problem and reply again in the same format, with the complete corrected answer.")
 }
 
-pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveller (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would.";
+pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveller (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. What you agree to do (make something, give it, show the way, follow) you really do right after you speak, so say you will do it or are starting on it, never that it is already done or already in their hands.";
 
 pub const DECIDER_TASK: &str = r#"You decide what a character in a small simulated world does next, given an event and what they know. Reply with one JSON object only:
 {"goal": "a few words", "say": "what they say now (one short sentence in their voice) or null", "steps": [ ... ]}
@@ -268,6 +269,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveller"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
+  {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
 Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
 For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveller"}] with "say" set, or nothing."#;
 
@@ -285,10 +287,19 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
   "being": { "needs": { "hunger": -0.5 }, "feel": { "affection": 0.1, "trust": 0.1 }, "look": { "<slider>": number }, "wear": [ { "name": "red cloak", "description": "…", "props": { "burns": 0.7 } } ], "take_off": [ "helmet" ], "learn": "sit" | null, "become": "toad" | null },
   "beings": [ { "species": "dog", "name": "…", "description": "…" } ],
   "say": "a few words the actor says, or null",
+  "needs": { "kind": "place" | "thing" | "someone" | "time", "what": "…", "hour": null } or null (only for a character, when it can't be done as things are),
   "cache": true
 }
 - "held" is what the actor holds; "target" is what the middle of their view points at (a thing with its distance, or the ground or a far point). Use only property names from the list. Set "cache": false if the result depends on chance or the moment.
 - Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). If nothing would happen, say so in the narration and change nothing.
+- The world only holds things about the size of a cat and up. Smaller inputs that are common in this world (ingredients, tortillas, foil, thread, nails, paint, seeds, small tools) are never there to see but are always at hand: never refuse or fail for lack of them. Rare or special small things (a phoenix feather, a dragon's scale, a royal seal) are not at hand. Real things that are there (the held thing, the target, wood, stone, a building) are used when the words name them.
+- "actor_is" says who acts. The traveller makes what they ask outright, from nothing if need be: a burrito, a lantern, a tree, a house. Always do it, in the universe's own style, and never refuse it.
+- A character follows the world's laws: they can make or do what someone like them ("actor_about") could, in this world, as things are. When it can't be done as things are, change nothing, say why in the narration, and name the one thing it needs in "needs":
+  - "place": where the work is done (cooking needs a grill or kitchen, forging a forge, a blessing an altar)
+  - "thing": something real it is made from or needs (a big log for a canoe, a rare small thing, a key)
+  - "someone": a person with a skill they lack (a herbalist for a potion, a smith for a blade)
+  - "time": an hour it can only be done at (at night, at dawn); give "hour" 0–23
+  If something in "around" fits (a taco truck has a grill, a smithy has a forge), give its exact name from the list, without the distance or tags; otherwise say what it is in a few words. Nearby is fine: the character walks there.
 - Decide from the words whether they change what they point at or make something new; the target is only a hint. "Make a stool", "a lighthouse on that hill", "build a fence here" are "make" (it is placed where they look), even when a thing is pointed at. "Fix the roof", "open it", "remove the cover", "add this stick to the wall" change the target. "Carve a bowl from this log" makes from it: "create" with "replace": "target". "make" is for things that stand in the world (buildings, furniture, structures, landmarks); "create" is for small loose things that come from the deed (a piece that comes off, a carving, a spark).
 - The world only shows what your changes do, never what the narration says. If the target visibly changes form (something on it is removed, opened, broken off, added, bent, dug), you must change its shape with "cut" or "reshape"; props alone change nothing you can see.
 - Changing a thing's shape happens where it was touched ("touched_at", in the thing's own coordinates):

@@ -124,6 +124,22 @@ pub enum Action {
     Sleep,
     Wake,
     GoHome,
+    /// Ask people, best first, to make or give something; one at a time until one agrees.
+    Ask {
+        #[serde(default)]
+        who: Vec<Target>,
+        #[serde(default, alias = "for")]
+        what: String,
+    },
+    /// Put the ask to the person stood by (the second half of `Ask`).
+    Plea { to: Target },
+    /// Wait until the hour of the day comes round.
+    WaitUntil { hour: f32 },
+    /// Go back to the deed a need held up.
+    Resume {
+        #[serde(default)]
+        on: Option<Target>,
+    },
 }
 
 impl Action {
@@ -154,6 +170,10 @@ impl Action {
             Action::Sleep => "sleep",
             Action::Wake => "wake",
             Action::GoHome => "go_home",
+            Action::Ask { .. } => "ask",
+            Action::Plea { .. } => "plea",
+            Action::WaitUntil { .. } => "wait_until",
+            Action::Resume { .. } => "resume",
         }
     }
 }
@@ -417,10 +437,18 @@ impl Sim {
             }
             Action::Goto { target, run } => {
                 let r = self.resolve(&target, who).ok_or_else(|| not_found(&target))?;
+                // A thing is reached at its edge, not its middle (a house is
+                // walked up to, not into).
+                let half = |ty: Option<&std::sync::Arc<crate::world::TypeEntry>>, scale: f32| ty.map(|t| t.ct.meta.bounds[0].max(t.ct.meta.bounds[2]) * scale).unwrap_or(0.0);
+                let edge = match &r.target {
+                    Target::Thing(id) => self.things.get(*id).map(|t| half(self.snap.type_of(t.type_id), t.scale)).unwrap_or(0.0),
+                    Target::Instance(i) => self.snap.instances.iter().find(|p| p.id == *i).map(|p| half(self.snap.type_of(p.type_id), p.scale)).unwrap_or(0.0),
+                    _ => 0.0,
+                };
                 let stop = match r.target {
                     Target::Actor(_) => 1.4,
                     Target::Point(_) => 0.6,
-                    _ => self.reach_of(who) * 0.7,
+                    _ => self.reach_of(who) * 0.7 + edge,
                 };
                 let deadline = self.t + 120.0;
                 self.set_task(who, Task::Goto { target: r.target.clone(), stop, run, deadline });
@@ -634,6 +662,21 @@ impl Sim {
                 self.set_task(who, Task::Wait { until });
                 Ok(Outcome::ok(format!("{name} waits")))
             }
+            Action::WaitUntil { hour } => {
+                let hours = (hour.rem_euclid(24.0) - self.hour()).rem_euclid(24.0) as f64;
+                let until = self.t + hours * crate::render::sky::DAY_SECONDS / 24.0;
+                self.set_task(who, Task::Wait { until });
+                Ok(Outcome::ok(format!("{name} waits for the hour")))
+            }
+            Action::Ask { who: names, what } => self.ask_step(who, &names, &what),
+            Action::Plea { to } => {
+                let r = self.resolve(&to, who).ok_or_else(|| not_found(&to))?;
+                if (r.pos - me.pos).length() > 3.0 {
+                    return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
+                }
+                self.plea_step(who, &to)
+            }
+            Action::Resume { on } => self.resume_step(who, on),
             Action::Sleep => {
                 if let Some(a) = self.actor_mut(who) {
                     a.asleep = true;
@@ -1050,6 +1093,7 @@ impl Sim {
         }
         self.social.bond(who, to, 0.12, self.t);
         self.on_gift(to, who, id);
+        self.need_given(who, to);
         Ok(Outcome::ok(format!("{name} gives the {tname} to {other}")).thing(id))
     }
 

@@ -796,7 +796,9 @@ impl<'c, 's> Lower<'c, 's> {
             self.err(span, format!("'{name}' shadows a parameter"));
             return None;
         }
-        if api::is_api_name(name) || matches!(name, "PI" | "Math" | "sdf" | "color" | "meta") {
+        // glow() came after many saved types had named a local `glow`; calls
+        // resolve by name, so the two never mix.
+        if (api::is_api_name(name) && name != "glow") || matches!(name, "PI" | "Math" | "sdf" | "color" | "meta") {
             self.err(span, format!("'{name}' is a reserved name"));
             return None;
         }
@@ -1638,6 +1640,10 @@ impl<'c, 's> Lower<'c, 's> {
                     args.push(ex(ExprKind::Num(0.0), Ty::F));
                 }
                 Some(ex(ExprKind::Call(api::Api::Hash, args), Ty::F))
+            }
+            Ok(Resolved::PadGlow) => {
+                args.push(ex(ExprKind::Num(1.0), Ty::F));
+                Some(ex(ExprKind::Call(api::Api::Glow, args), Ty::V))
             }
             Ok(Resolved::Fold(api)) => {
                 let mut it = args.into_iter();

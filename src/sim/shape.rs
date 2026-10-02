@@ -146,7 +146,8 @@ impl Sim {
     /// it is used up when the new shape arrives). A type that already has
     /// the new name is reused at once; otherwise the builder edits this
     /// thing's code, and until it is done the thing keeps its old shape (and cuts).
-    pub fn reshape(&mut self, who: ActorId, id: ThingId, name: &str, change: &str, with: Option<ThingId>, at: Option<Vec3>) -> Result<String, String> {
+    /// Returns the build it waits on, if it isn't done at once.
+    pub fn reshape(&mut self, who: ActorId, id: ThingId, name: &str, change: &str, with: Option<ThingId>, at: Option<Vec3>) -> Result<Option<u64>, String> {
         let old = self.thing_name(id);
         let with = with.filter(|w| *w != id && self.things.get(*w).is_some());
         let name = name.trim();
@@ -154,12 +155,12 @@ impl Sim {
         // its old shape again, and nothing would change.
         let name = if name.is_empty() || name.eq_ignore_ascii_case(&old) { format!("{old} (changed {})", self.next_id()) } else { name.to_string() };
         if let Some(ty) = self.type_by_name(&name).filter(|ty| self.things.get(id).is_some_and(|t| t.type_id != ty.id)) {
-            let by = self.actor_name(who);
-            self.set_shape_type(id, ty.id, &by, change, false);
+            // The deed's own story says what happened.
+            self.set_shape_type(id, ty.id, who, change, false, false);
             if let Some(w) = with {
                 self.use_up(w);
             }
-            return Ok(format!("The {old} becomes {} {name}.", super::article(&name)));
+            return Ok(None);
         }
         if !self.has_llm {
             return Err("reshaping needs an LLM".into());
@@ -172,7 +173,7 @@ impl Sim {
             if let Some(b) = self.interp.building.get_mut(&rid) {
                 b.reshape.push((id, who, with));
             }
-            return Ok(format!("The {old} begins to change…"));
+            return Ok(Some(rid));
         }
         let ingredient = with.and_then(|w| {
             let wt = self.things.get(w)?;
@@ -191,7 +192,7 @@ impl Sim {
             cuts: t.shape.cuts.clone(),
             with: ingredient,
         });
-        Ok(format!("The {old} begins to change…"))
+        Ok(Some(rid))
     }
 
     /// A thing worked into another one is gone (from the hands, too).
@@ -202,7 +203,9 @@ impl Sim {
 
     /// Give a thing a new shape type, keeping where it is, what it is made
     /// of and its history. `baked`: the new code already includes its cuts.
-    pub fn set_shape_type(&mut self, id: ThingId, type_id: u32, by: &str, change: &str, baked: bool) {
+    /// `tell`: say so to those near (unless a story already did).
+    pub fn set_shape_type(&mut self, id: ThingId, type_id: u32, who: ActorId, change: &str, baked: bool, tell: bool) {
+        let by = self.actor_name(who);
         let Some(nty) = self.snap.type_of(type_id).cloned() else { return };
         let old = self.thing_name(id);
         let nname = nty.name().to_string();
@@ -214,10 +217,12 @@ impl Sim {
         }
         x.anchored = x.anchored || x.props[P_MASS] >= ANCHOR_MASS || nty.has_tag("building");
         x.asleep = false;
-        x.note_edit(t, by, &format!("reshaped: {change}"));
+        x.note_edit(t, &by, &format!("reshaped: {change}"));
         let pos = x.pos;
-        self.event("reshaped", None, Some(format!("thing:{id}")), format!("the {old} became {} {nname}", super::article(&nname)), Some(pos), json!({ "into": nname, "change": change }));
-        self.note_near(pos, 30.0, Note::Info(format!("The {old} becomes {} {nname}.", super::article(&nname))));
+        self.event("reshaped", Some(who), Some(format!("thing:{id}")), format!("the {old} became {} {nname}", super::article(&nname)), Some(pos), json!({ "into": nname, "change": change }));
+        if tell {
+            self.note_near(pos, 30.0, Note::Info(format!("The {old} becomes {} {nname}.", super::article(&nname))));
+        }
         self.witness(pos, 20.0, &format!("I saw the {old} change: {change}."), 0.35, &[]);
     }
 }

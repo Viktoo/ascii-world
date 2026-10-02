@@ -554,6 +554,270 @@ fn a_made_ball_ends_up_thrown_at_a_hoop() {
     sound(&s);
 }
 
+/// Asked in conversation for a ball, a character makes one and hands it over
+/// once it is made (the giving waits for the making).
+#[test]
+fn asked_for_a_ball_they_make_it_and_hand_it_over() {
+    let w = world("asked", 38);
+    let spot = dry_spot(&w, 10.0, 0.4);
+    let a = add_char(&w, "Tam", "a kind toymaker", &[], spot);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let ball = fixture("sims/ball.js");
+    let c2 = calls.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("You decide what a character") {
+            if user.contains("The traveller just said") {
+                c2.lock().push("asked".to_string());
+                return r#"{"goal": "make the traveller a ball", "say": null, "steps": [{"do": "create", "text": "a leather ball"}, {"do": "give", "to": "the traveller"}]}"#.into();
+            }
+            return r#"{"goal": "", "steps": []}"#.into();
+        }
+        if sys.contains("physics and common sense") && user.contains("ball") {
+            return r#"{"narration": "", "make": [{"text": "a leather ball"}]}"#.into();
+        }
+        if user.contains("is making something in the world") {
+            return format!("```json\n{{\"summary\": \"a leather ball\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 1}}]}}\n```\n```js\n{ball}\n```");
+        }
+        r#"{"lines": []}"#.into()
+    }));
+    let mut s = session(&w, 8, Some(llm));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    s.sim.asked(a, "Could you make me a ball?", "Of course, I'll make you one.");
+    let mut got = None;
+    for _ in 0..(120.0 / 0.1) as usize {
+        s.step(0.1);
+        if let Some(h) = s.sim.player.held {
+            got = Some(h);
+            break;
+        }
+    }
+    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    assert_eq!(calls.lock().as_slice(), ["asked"], "{}", log.join("\n"));
+    let h = got.unwrap_or_else(|| panic!("the traveller was handed the ball:\n{}", log.join("\n")));
+    assert!(s.sim.thing_name(h).contains("ball"), "{}", s.sim.thing_name(h));
+    sound(&s);
+}
+
+/// A cook asked for a burrito with no grill at hand walks to the grill,
+/// makes it there and hands it over; the "not here" answer isn't kept.
+#[test]
+fn a_deed_that_needs_a_place_is_done_there() {
+    let w = world("grill", 38);
+    let spot = dry_spot(&w, 10.0, 0.4);
+    let a = add_char(&w, "Vic", "a cook who makes burritos for everyone", &[], spot);
+    let grill_src = fixture("sims/hut.js").replacen("name: \"wooden hut\"", "name: \"grill\"", 1);
+    let grill = add_type(&w, &grill_src);
+    let far = spot + Vec3::new(30.0, 0.0, 0.0);
+    place(&w, grill, far, 0.0);
+    let burrito = fixture("sims/ball.js").replacen("name: \"leather ball\"", "name: \"burrito\"", 1);
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("You decide what a character") {
+            if user.contains("The traveller just said") {
+                return r#"{"goal": "make the traveller a burrito", "say": null, "steps": [{"do": "create", "text": "a burrito"}, {"do": "give", "to": "the traveller"}]}"#.into();
+            }
+            return r#"{"goal": "", "steps": []}"#.into();
+        }
+        if sys.contains("physics and common sense") && user.contains("burrito") {
+            if user.contains("\"name\":\"grill\"") {
+                return r#"{"narration": "Vic grills one.", "make": [{"text": "a burrito"}]}"#.into();
+            }
+            return r#"{"narration": "No grill here.", "needs": {"kind": "place", "what": "grill"}}"#.into();
+        }
+        if user.contains("is making something in the world") {
+            return format!("```json\n{{\"summary\": \"a burrito\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 1}}]}}\n```\n```js\n{burrito}\n```");
+        }
+        r#"{"lines": []}"#.into()
+    }));
+    let mut s = session(&w, 8, Some(llm));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    s.sim.asked(a, "Could you make me a burrito?", "Sure, coming up.");
+    let mut got = None;
+    for _ in 0..(240.0 / 0.1) as usize {
+        s.step(0.1);
+        if let Some(h) = s.sim.player.held {
+            got = Some(h);
+            break;
+        }
+    }
+    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    let h = got.unwrap_or_else(|| panic!("the traveller was handed a burrito:\n{}", log.join("\n")));
+    assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
+    let refusals: i64 = w.db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM interp_cache WHERE effect_json LIKE '%No grill%'", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(refusals, 0, "the refusal was not cached");
+    sound(&s);
+}
+
+/// The cook, a busy carpenter and a handy welder; no grill anywhere.
+fn cooks_town(name: &str) -> (W, Vec3, i64) {
+    let w = world(name, 38);
+    let spot = dry_spot(&w, 10.0, 0.4);
+    let vic = add_char(&w, "Vic", "a cook who makes burritos for everyone", &[], spot);
+    add_char(&w, "Rosa", "a busy carpenter", &[], spot + Vec3::new(6.0, 0.0, 0.0));
+    add_char(&w, "Ben", "a handy, generous welder", &[], spot + Vec3::new(-6.0, 0.0, 0.0));
+    (w, spot, vic)
+}
+
+/// Rosa says no to anything; Ben builds a grill; Vic cooks at a grill.
+fn cooks_llm(w: &W) -> Arc<Llm> {
+    let grill_src = fixture("sims/hut.js").replacen("name: \"wooden hut\"", "name: \"grill\"", 1);
+    let burrito = fixture("sims/ball.js").replacen("name: \"leather ball\"", "name: \"burrito\"", 1);
+    Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("You decide what a character") {
+            if user.contains("The traveller just said") {
+                return r#"{"goal": "make the traveller a burrito", "say": null, "steps": [{"do": "create", "text": "a burrito"}, {"do": "give", "to": "the traveller"}]}"#.into();
+            }
+            if user.contains("You set out to") {
+                return r#"{"goal": "get a grill", "say": "I need a grill.", "steps": [{"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}]}"#.into();
+            }
+            if user.contains("asks you for") && user.contains("\"character\": \"Rosa\"") {
+                return r#"{"goal": "", "say": "Sorry, I'm busy.", "steps": []}"#.into();
+            }
+            if user.contains("asks you for") && user.contains("\"character\": \"Ben\"") {
+                return r#"{"goal": "build Vic a grill", "say": "Sure thing.", "steps": [{"do": "make", "what": "a grill"}, {"do": "give", "to": "Vic"}]}"#.into();
+            }
+            return r#"{"goal": "", "steps": []}"#.into();
+        }
+        if sys.contains("physics and common sense") {
+            if user.contains("does this: \"make a burrito") {
+                if user.contains("\"name\":\"grill\"") {
+                    return r#"{"narration": "Vic grills one.", "make": [{"text": "a burrito"}]}"#.into();
+                }
+                return r#"{"narration": "No grill here.", "needs": {"kind": "place", "what": "a grill"}}"#.into();
+            }
+            if user.contains("does this: \"make a grill") {
+                return r#"{"narration": "Ben welds a grill.", "make": [{"text": "a grill"}]}"#.into();
+            }
+        }
+        if user.contains("is making something in the world") {
+            // The burrito on the cook's side of the (hut-sized) grill, the grill out in front of the welder.
+            let (src, right, fwd) = if user.contains("burrito") { (&burrito, 0, -3) } else { (&grill_src, 0, 4) };
+            return format!("```json\n{{\"summary\": \"it\", \"reuse\": null, \"placements\": [{{\"right\": {right}, \"forward\": {fwd}}}]}}\n```\n```js\n{src}\n```");
+        }
+        r#"{"lines": []}"#.into()
+    }))
+}
+
+/// With no grill anywhere, the cook asks people in turn: the first says no,
+/// the second builds one, and the cook makes the burrito there and hands it over.
+#[test]
+fn a_need_nobody_has_is_asked_for_in_turn() {
+    let (w, spot, vic) = cooks_town("askround");
+    let llm = cooks_llm(&w);
+    let mut s = session(&w, 8, Some(llm));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    s.sim.asked(vic, "Could you make me a burrito?", "Sure, coming up.");
+    let mut got = None;
+    for _ in 0..(400.0 / 0.1) as usize {
+        s.step(0.1);
+        if let Some(h) = s.sim.player.held {
+            got = Some(h);
+            break;
+        }
+    }
+    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    let h = got.unwrap_or_else(|| panic!("the traveller was handed a burrito:\n{}", log.join("\n")));
+    assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
+    assert!(log.iter().any(|l| l.contains("Rosa wouldn't help Vic")), "Rosa was asked first and said no:\n{}", log.join("\n"));
+    assert!(log.iter().any(|l| l.contains("Ben agreed to help Vic")), "{}", log.join("\n"));
+    assert!(s.sim.cast.get(vic).unwrap().mission.is_none(), "the mission is over");
+    sound(&s);
+}
+
+/// Quitting mid-mission and coming back: the cook still asks, gets the grill
+/// built, and hands the burrito over.
+#[test]
+fn a_mission_carries_on_after_a_restart() {
+    let (w, spot, vic) = cooks_town("restart");
+    let mut s = session(&w, 8, Some(cooks_llm(&w)));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    s.sim.asked(vic, "Could you make me a burrito?", "Sure, coming up.");
+    let mut asking = false;
+    for _ in 0..(120.0 / 0.1) as usize {
+        s.step(0.1);
+        if s.sim.cast.get(vic).unwrap().mission.as_ref().is_some_and(|m| matches!(m.stage, super::needs::Stage::Asking(_))) {
+            asking = true;
+            break;
+        }
+    }
+    assert!(asking, "Vic set out to ask someone");
+    s.save();
+    drop(s);
+    let mut s = session(&w, 8, Some(cooks_llm(&w)));
+    assert!(s.sim.cast.get(vic).unwrap().mission.is_some(), "the mission was kept");
+    let mut got = None;
+    for _ in 0..(400.0 / 0.1) as usize {
+        s.step(0.1);
+        if let Some(h) = s.sim.player.held {
+            got = Some(h);
+            break;
+        }
+    }
+    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    let h = got.unwrap_or_else(|| panic!("the traveller was handed a burrito after the restart:\n{}", log.join("\n")));
+    assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
+    sound(&s);
+}
+
+/// A deed that can only be done at an hour waits for it, then is done.
+#[test]
+fn a_deed_for_a_later_hour_waits_for_it() {
+    let w = world("hour", 38);
+    let spot = dry_spot(&w, 10.0, 0.4);
+    let a = add_char(&w, "Ysolde", "a hedge witch", &[], spot);
+    let water = fixture("sims/ball.js").replacen("name: \"leather ball\"", "name: \"moon water\"", 1);
+    let tries = Arc::new(Mutex::new(0));
+    let t2 = tries.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("physics and common sense") && user.contains("moon water") {
+            let mut n = t2.lock();
+            *n += 1;
+            if *n == 1 {
+                return r#"{"narration": "Only when the sun is low.", "needs": {"kind": "time", "what": "late afternoon", "hour": 16}}"#.into();
+            }
+            return r#"{"narration": "She draws it.", "make": [{"text": "moon water"}]}"#.into();
+        }
+        if user.contains("is making something in the world") {
+            return format!("```json\n{{\"summary\": \"moon water\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 1}}]}}\n```\n```js\n{water}\n```");
+        }
+        if sys.contains("You decide what a character") {
+            return r#"{"goal": "", "steps": []}"#.into();
+        }
+        r#"{"lines": []}"#.into()
+    }));
+    let mut s = session(&w, 8, Some(llm));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    let me = ActorId::Npc(a);
+    // An hour before it can be done, still up and about.
+    s.sim.t = crate::render::sky::DAY_SECONDS * 15.0 / 24.0;
+    s.sim.plan(me, vec![Action::Do { text: "make moon water".into(), on: None, at: None }], "moon water", true);
+    let mut made_at = None;
+    for _ in 0..(200.0 / 0.1) as usize {
+        s.step(0.1);
+        if s.sim.log.recent.iter().any(|e| e.kind == "made") {
+            made_at = Some(s.sim.hour());
+            break;
+        }
+    }
+    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    let h = made_at.unwrap_or_else(|| panic!("the moon water was made:\n{}", log.join("\n")));
+    assert_eq!(*tries.lock(), 2, "tried once, then again at the hour");
+    assert!(h >= 15.95, "made at the hour, at {h:.1}");
+    sound(&s);
+}
+
+#[test]
+fn ask_steps_parse() {
+    assert_eq!(
+        crate::sim::npc::parse_step(&serde_json::json!({"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"})),
+        Some(Action::Ask { who: vec![Target::Name("Rosa".into()), Target::Name("Ben".into())], what: "a grill".into() })
+    );
+    assert_eq!(crate::sim::npc::parse_step(&serde_json::json!({"do": "ask", "to": "Rosa", "what": "a ladder"})), Some(Action::Ask { who: vec![Target::Name("Rosa".into())], what: "a ladder".into() }));
+}
+
 // ------------------------------------------------------------------ phase 7
 
 /// Two characters who love each other play catch; two others carry a log
@@ -1189,6 +1453,11 @@ fn the_interpreter_cuts_and_reshapes_at_the_spot_touched() {
     assert_eq!(r["ok"], true, "{r}");
     s.pump(std::time::Duration::from_secs(60));
     s.run(0.5, 0.05);
+    // The deed's story is told once, when the new shape is there.
+    let mut heard: Vec<String> = r["heard"].as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    heard.extend(s.sim.drain_notes().into_iter().filter_map(|n| if let super::Note::Info(t) = n { Some(t) } else { None }));
+    assert_eq!(heard.iter().filter(|t| t.contains("grows a chimney")).count(), 1, "{heard:?}");
+    assert!(!heard.iter().any(|t| t.contains("becomes")), "and not told twice: {heard:?}");
     let t = s.sim.things.get(h).unwrap();
     assert_eq!(s.sim.thing_name(h), "wooden hut with a chimney", "calls: {:?}", calls.lock());
     assert!(t.shape.cuts.is_empty(), "the hole is baked into the new code");

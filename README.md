@@ -38,9 +38,11 @@ cargo build --release      # → target/release/pocket
 
 | Mode | Enter with | Keys |
 |---|---|---|
-| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down (or `PgUp`/`PgDn`), `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
+| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
+| Log | (any time) | `PgUp`/`PgDn` scroll back; in walk `1` makes it bigger: half the screen, the whole screen, then back to small (`Esc` closes) |
+| Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
 | Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
-| Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body) |
+| Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
 | Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |
 
 You point with the middle of the view (the small `+`). Whatever you type after `/`
@@ -65,7 +67,9 @@ relationships, recent decisions and memories.
   key releases, so holding `W` walks at constant speed and stops the moment you let go.
   Elsewhere every press/repeat event takes one short step.
 - Truecolor is used when `COLORTERM` says so; otherwise 256 colours.
-- The world saves continuously into one `.pocket` file (SQLite). Copy it to fork a world.
+- The world saves continuously into one `.pocket` file (SQLite), including what characters
+  are in the middle of (plans, missions, favours), which carries on when you come back.
+  Copy it to fork a world.
 - Universes live in `~/.pocket/universes/` unless you pass `--out FILE`; the debug log
   is `~/.pocket/pocket.log`.
 
@@ -77,7 +81,7 @@ relationships, recent decisions and memories.
 | `ANTHROPIC_WORKSPACE_ID` | Workspace for user-scoped keys (`sk-ant-usr-…`), sent as `anthropic-workspace-id`. |
 | `POCKET_LLM_BASE_URL`, `POCKET_LLM_API_KEY` | Any OpenAI-compatible endpoint (Ollama, LM Studio, vLLM…), e.g. `http://localhost:11434/v1`. |
 | `POCKET_MODEL_BUILDER` / `_CHARACTER` / `_DECIDER` / `_SUMMARIZER` | Model per role. `POCKET_MODEL` sets all. |
-| `POCKET_BUDGET_USD` | Pause generation and dialogue when this session has spent this much. Walking keeps working. |
+| `POCKET_BUDGET_USD` | Pause generation and dialogue when this session has spent this much. Walking keeps working. Also set in game (Esc). |
 | `POCKET_REGION_RADIUS` | How many regions ahead to plan (default 2, as specified; each plan is one builder call plus one call per new object type). |
 | `POCKET_DECIDER_URL` | Plug in an external decision model (e.g. Jev): it receives the event JSON and returns `{"action", "line"}`. |
 | `POCKET_PRICE_IN` / `POCKET_PRICE_OUT` | $/M tokens for models the built-in table doesn't know. |
@@ -219,8 +223,16 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   shader; fires get animated flames and up to 8 point lights light the night.
 - *The interpreter.* When an action falls outside the rules and the things' own code,
   the LLM decides what happens, but must answer as property changes, state, new things
-  (written by the builder if new) and removals. Answers are cached by (what, with what,
-  on what), so the same cause gives the same effect.
+  (written by the builder if new) and removals. Answers are cached by (who, what, with
+  what, on what), so the same cause gives the same effect; answers that change nothing
+  are never cached. The traveller's `/` makes things outright; characters follow the
+  world's laws. Small inputs common in the world (ingredients, foil, nails) are always at
+  hand; rare ones aren't.
+- *Needs* (`src/sim/needs.rs`). When a character's deed can't be done as things are, the
+  interpreter names one need: a place, a thing, someone, or a time, picked by name from
+  what is around. The character uses what is there, waits for the hour, makes it, asks
+  up to three people in turn (who decide by their own lives; one hop, they never ask
+  on), or gives up and says why. Then they go back to the deed and hand on the result.
 - *Minds* (`src/sim/npc.rs`). Needs (hunger, tiredness, loneliness, boredom, curiosity)
   drift; traits come from the persona's words. When idle, a character scores a few
   options (eat, rest, seek company, play, look at something new, flee a fire, gather
@@ -328,7 +340,7 @@ How the acceptance criteria are covered:
 
 | Criterion | Where |
 |---|---|
-| Spawn and walk before story content exists | `pocket new` shows the first frame in under 0.1 s (plus the terminal's keyboard-protocol reply); genesis runs in the background |
+| Enter only once the world around you exists | `pocket new` shows a loading screen at once: a map forming outward from you, a log naming what is made (streamed from genesis and region replies), and a bar; you step in once genesis and every region within ~110 m are done (`app::loading::tests`) |
 | ≥ 60 fps at 120×40, ≥ 30 fps at 250×70, GPU < 2 ms | `pocket bench` / `gpubench`; F1 overlay shows fps, worst frame, GPU time (timestamp queries) |
 | 2 km walk without a frame over 50 ms, regions keep appearing | `app::tests::long_walk_with_generation_has_no_hitches` (ignored, long) and `pocket bench` |
 | Generation never blocks rendering or input | same test: 35+ regions and pipeline rebuilds during the walk |
@@ -349,6 +361,7 @@ How the acceptance criteria are covered:
 | A universe's own rule (a spreading curse); explosive rules rejected | `sim::tests::universe_rules_spread_cursed_and_explosive_rules_are_rejected`, `brain_round_trip_rules_chat_and_new_types` |
 | Behaviour code: an acorn on the ground becomes a sapling, which grows | `sim::tests::an_acorn_on_the_ground_becomes_a_sapling_and_grows` |
 | The interpreter decides, and the second time the cache does | `sim::tests::interpreter_lights_the_lantern_and_caches_the_answer` |
+| A deed needing a place is done there; nobody has one, so people are asked in turn; a deed for a later hour waits | `sim::tests::a_deed_that_needs_a_place_is_done_there`, `a_need_nobody_has_is_asked_for_in_turn`, `a_deed_for_a_later_hour_waits_for_it` |
 | Unscripted: a bored character makes a ball; it is thrown at (and through) a hoop | `sim::tests::a_made_ball_ends_up_thrown_at_a_hoop`, `a_ball_thrown_at_a_hoop_goes_through` |
 | Catch between people who love each other; two carry a log; a hug; a kiss refused | `sim::tests::people_play_catch_carry_together_and_hug` |
 | A dog plays the same gestures with its own body, holds things in its mouth | `sim::tests::a_dog_plays_the_same_gestures_with_its_own_body` |

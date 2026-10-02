@@ -219,10 +219,10 @@ pub fn probe_with(t: &CompiledType, k: &[f32; 16]) -> Result<ProbeReport, Vec<Di
     // Colour must be valid wherever the surface can be hit.
     for (p, d) in pts.iter().zip(&vals) {
         if *d < 0.25 {
-            match t.color_checked(*p, k, PROBE_FUEL_LIMIT) {
+            match t.color_checked(*p, k, PROBE_FUEL_LIMIT).map(|(c, u)| (super::api::split_glow(c).0, u)) {
                 Ok((c, _)) if c.iter().all(|v| v.is_finite() && (-1e-4..=1.0001).contains(v)) => {}
                 Ok((c, _)) => {
-                    return Err(vec![Diag::new(Stage::Probe, 0, format!("color returns an invalid colour ({}, {}, {}) at {}", c[0], c[1], c[2], fmt_p(*p)))]);
+                    return Err(vec![Diag::new(Stage::Probe, 0, format!("color returns an invalid colour ({}, {}, {}) at {}; glow() must wrap the colour you return, not be mixed or scaled", c[0], c[1], c[2], fmt_p(*p)))]);
                 }
                 Err(VmError::OutOfFuel) => return Err(vec![Diag::new(Stage::Probe, 0, "color is too expensive".into())]),
                 Err(VmError::NoReturn) => return Err(vec![Diag::new(Stage::Probe, 0, "color finished without returning a colour".into())]),

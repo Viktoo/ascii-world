@@ -834,6 +834,11 @@ impl Sim {
                 let _ = self.transform_being(c, sp, actor);
             }
         }
+        if actor != b {
+            let fed = fx.needs.get("hunger").is_some_and(|v| *v < 0.0);
+            let (an, bn) = (self.actor_name(actor), self.actor_name(b));
+            self.event("deed_on", Some(actor), Some(b.key()), format!("{an} did something to {bn}"), self.actor(b).map(|a| a.pos), json!({ "fed": fed, "mood": !fx.feel.is_empty(), "looks": !fx.look.is_empty() }));
+        }
     }
 
     /// Whether this world has forces of its own (magic, curses…): its own

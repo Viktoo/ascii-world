@@ -8,6 +8,7 @@ use crate::lang::probe::probe;
 use crate::lang::{Diag, Stage, compile, format_diags};
 use crate::llm::{Llm, Msg, Req, Role, extract_code, extract_json};
 use crate::model::{CommitOk, CommitRequest, NewType, Placement, RegionCommit, TypeRef, WorldModel, region_info_from_plan};
+use crate::pace::{self, Pacer, Task};
 use crate::prompts;
 use crate::terrain::{Terrain, WATER_LEVEL};
 use crate::world::characters::Decision;
@@ -60,6 +61,10 @@ pub enum Event {
     /// The universe's own properties and rules changed (genesis).
     RulesChanged,
     GestureBuilt { id: u64, result: Result<Value, String> },
+    /// How far along genesis or a region is (0..1), for the loading screen.
+    Progress { task: Task, frac: f32 },
+    /// Something named as the world is made: ("shaping", "lighthouse").
+    Made { task: Task, verb: &'static str, name: String },
 }
 
 enum CMsg {
@@ -606,7 +611,9 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     let mut req = Req::new(Role::Builder, system.clone(), prompts::GENESIS_TASK);
     req.max_tokens = 32000;
     req.effort = Some("medium");
-    let reply = ctx.llm.complete(&req, "genesis").await?;
+    let mut pacer = Pacer::new(ctx.events.clone(), Task::Genesis, pace::GENESIS_CHARS, 0.0, 0.7);
+    let reply = ctx.llm.stream(&req, "genesis", |t| pacer.text(t)).await?;
+    pacer.finish();
     let v = extract_json(&reply)?;
     // The universe's own properties and rules come first: base types may use them.
     let (uprops, urules) = universe_rules_from(&v);
@@ -625,14 +632,18 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     }
     crate::terrain::add_litter(&mut look.biomes);
     // Validate each base type; repair failures one at a time.
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let done = &done;
     let mut types = Vec::new();
     let mut futs = Vec::new();
     let system_ref = &system;
-    for code in all_code_blocks(&reply).into_iter().take(8) {
+    let blocks: Vec<String> = all_code_blocks(&reply).into_iter().take(8).collect();
+    let n_blocks = blocks.len().max(1);
+    for code in blocks {
         let code = add_tags(&code, &["base"]);
         let system = system_ref;
         futs.push(async move {
-            match validate(code.clone(), ctx.known_props()).await {
+            let t = match validate(code.clone(), ctx.known_props()).await {
                 Ok(t) => Some(t),
                 Err(d) if d.iter().all(|x| x.stage.repairable()) => {
                     let name = code.split("name:").nth(1).and_then(|s| s.split('"').nth(1)).unwrap_or("object").to_string();
@@ -650,7 +661,10 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
                     ctx.record_failure("base type", &code, &d);
                     None
                 }
-            }
+            };
+            let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            pace::step(&ctx.events, Task::Genesis, 0.7 + 0.2 * k as f32 / n_blocks as f32);
+            t
         });
     }
     for t in futures_util::future::join_all(futs).await.into_iter().flatten() {
@@ -661,6 +675,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     let specs: Vec<Value> = v.get("species").and_then(|x| x.as_array()).cloned().unwrap_or_default();
     let (bodies, _) = species_from(ctx, &system, &specs, 6).await;
     types.extend(bodies);
+    pace::step(&ctx.events, Task::Genesis, 0.96);
     let name = look.name.clone();
     let n = types.len();
     let ok = ctx
@@ -782,7 +797,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let mut req = Req::new(Role::Builder, system.clone(), task);
     req.max_tokens = 16000;
     req.effort = Some("medium");
-    let reply = ctx.llm.complete(&req, "region").await?;
+    let mut pacer = Pacer::new(ctx.events.clone(), Task::Region(r), pace::REGION_CHARS, 0.0, 0.6);
+    let reply = ctx.llm.stream(&req, "region", |t| pacer.text(t)).await?;
+    pacer.finish();
     let plan = extract_json(&reply)?;
     let rname = s(&plan, "name");
 
@@ -790,6 +807,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let mut new_types: Vec<NewType> = Vec::new();
     let mut new_names: Vec<(String, usize)> = Vec::new();
     let specs: Vec<Value> = plan.get("new_types").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().take(3).collect();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let done = &done;
+    let n_specs = specs.len().max(1);
     let futs = specs.iter().map(|spec| {
         let name = s(spec, "name");
         // Clothing and gear are written for a body, against its code.
@@ -813,7 +833,12 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let task = if layer_note.is_empty() { task } else { format!("{task}\n\n{layer_note}") };
         let system = system.clone();
         let tags: &[&str] = if is_layer { &["layer"] } else { &[] };
-        async move { (name.clone(), build_type(ctx, &system, task, &name, tags).await) }
+        async move {
+            let res = build_type(ctx, &system, task, &name, tags).await;
+            let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            pace::step(&ctx.events, Task::Region(r), 0.6 + 0.3 * k as f32 / n_specs as f32);
+            (name.clone(), res)
+        }
     });
     for (name, res) in futures_util::future::join_all(futs).await {
         match res {
@@ -839,6 +864,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let specs: Vec<Value> = plan.get("new_species").and_then(|x| x.as_array()).cloned().unwrap_or_default();
     let (bodies, _) = species_from(ctx, &system, &specs, 1).await;
     new_types.extend(bodies);
+    pace::step(&ctx.events, Task::Region(r), 0.95);
     let resolve = |name: &str| -> Option<TypeRef> {
         let n = name.trim().to_lowercase();
         if let Some((_, i)) = new_names.iter().find(|(k, _)| *k == n) {
