@@ -322,6 +322,7 @@ impl Sim {
             fresh: Vec::new(),
             made: std::collections::HashSet::new(),
         };
+        sim.player.dims = traveller_dims(&snap);
         sim.load_universe_rules();
         persist::load_gestures(&sim.db);
         sim.cast.sync(&snap, seed);
@@ -409,12 +410,14 @@ impl Sim {
         }
     }
 
+    /// How far an actor can reach to pick something up or use it.
+    pub fn reach_of(&self, id: ActorId) -> f32 {
+        self.actor(id).map(|a| a.dims.reach).unwrap_or(actor::REACH)
+    }
+
     /// Body height of an actor (m).
     pub fn actor_height(&self, id: ActorId) -> f32 {
-        match id {
-            ActorId::Player => 1.75,
-            ActorId::Npc(c) => self.cast.get(c).map(|n| n.def.persona.look.height).unwrap_or(1.75),
-        }
+        self.actor(id).map(|a| a.dims.height).unwrap_or(1.75)
     }
 
     pub fn thing_name(&self, id: ThingId) -> String {
@@ -527,10 +530,16 @@ impl Sim {
     /// Move an actor by `delta` with collisions (terrain, solids, other bodies).
     pub fn walk(&mut self, id: ActorId, delta: Vec3) {
         let Some(from) = self.actor(id).map(|a| a.pos) else { return };
-        let solids = self.solids_near(from, 4.0);
+        let own = self.actor(id).map(|a| a.dims.radius).unwrap_or(0.35);
+        let solids = self.solids_near(from, 4.0 + own);
         let bodies: Vec<Vec3> = self.actor_ids().into_iter().filter(|o| *o != id).filter_map(|o| self.actor(o).map(|a| a.pos)).filter(|p| (*p - from).length() < 4.0).collect();
         let obs = Obstacles { solids: &solids, bodies: &bodies };
-        let r = if id == ActorId::Player { crate::world::collide::PLAYER_RADIUS } else { crate::world::collide::NPC_RADIUS };
+        let r = match id {
+            ActorId::Player => crate::world::collide::PLAYER_RADIUS,
+            // People keep the walking radius they always had; other bodies their own.
+            ActorId::Npc(_) if self.actor(id).is_some_and(|a| a.dims.arms) => crate::world::collide::NPC_RADIUS,
+            ActorId::Npc(_) => own.clamp(0.12, 4.0),
+        };
         let to = move_body(&self.snap.terrain, &obs, from, delta, r);
         if let Some(a) = self.actor_mut(id) {
             a.moved = (to - from).length();
@@ -559,6 +568,7 @@ impl Sim {
         self.snap = snap.clone();
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
+        self.player.dims = traveller_dims(&snap);
         self.social.seed_from_personas(&self.cast);
         self.sync_overlay();
     }
@@ -721,6 +731,20 @@ impl Sim {
 }
 
 /// Short compass word for a direction.
+/// The traveller's body: a person of the universe's chosen height (1.75 m
+/// unless the world says otherwise).
+pub fn traveller_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
+    let human = snap.species.of("human");
+    let Some(body) = snap.body_type(&human.body).and_then(|t| t.ct.meta.body.clone()) else { return Default::default() };
+    let h = snap.species.traveller_height.filter(|h| h.is_finite()).unwrap_or(1.75).clamp(0.3, 12.0);
+    let own = h.clamp(1.3, 2.0);
+    let mut sliders = [own, 1.0, 0.3, 0.6, 0.1];
+    if let Some(i) = body.slider("height") {
+        sliders[i] = own;
+    }
+    npc::body_dims(&body, &human, &sliders, h / own)
+}
+
 pub fn compass(d: Vec3) -> &'static str {
     let a = d.x.atan2(d.z).to_degrees().rem_euclid(360.0);
     ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][((a + 22.5) / 45.0) as usize % 8]

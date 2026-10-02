@@ -166,6 +166,58 @@ pub struct Meta {
     /// Type names for `spawn(i)` / `transform(i)`.
     #[serde(default)]
     pub spawns: Vec<String>,
+    /// Present when the type is a body that a being can live in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Body>,
+}
+
+/// The pose roles a body can answer to (k.s0 … k.s7).
+pub const ROLES: [&str; 8] = ["raise_l", "raise_r", "reach_l", "reach_r", "lean", "head", "crouch", "spread"];
+
+/// Look sliders a body may declare: k.a … k.e, in order.
+pub const MAX_SLIDERS: usize = 5;
+
+/// What a body type says about itself (`meta.body`). Lengths are metres at
+/// the body's default look and scale 1; the engine scales them with size.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Body {
+    /// Standing height.
+    pub height: f32,
+    pub eye: f32,
+    /// Collision radius on the ground.
+    pub radius: f32,
+    pub reach: f32,
+    /// Where a held thing sits (x right, y up, z forward).
+    pub grip: [f32; 3],
+    /// Where a rider sits, if it can be ridden.
+    #[serde(default)]
+    pub seat: Option<[f32; 3]>,
+    /// Roles the shape answers to (names from ROLES).
+    pub roles: Vec<String>,
+    /// biped | quad | slither | hover
+    pub gait: String,
+    pub flies: bool,
+    /// Two arms with the built-in figure's proportions (shoulders 1.42 m up
+    /// and 0.29 m out, arms 0.56 m, for a 1.75 m body): hands follow them.
+    pub arms: bool,
+    /// Look sliders (name, lo, hi), read as k.a … k.e.
+    pub look: Vec<(String, f32, f32)>,
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new() }
+    }
+}
+
+impl Body {
+    pub fn has_role(&self, r: &str) -> bool {
+        self.roles.iter().any(|x| x == r)
+    }
+    /// Slider index (0 = k.a) by name.
+    pub fn slider(&self, name: &str) -> Option<usize> {
+        self.look.iter().position(|l| l.0 == name)
+    }
 }
 
 /// Behaviour entry points a type may export.

@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/figure.js"),
+    include_str!("builtin/quadruped.js"),
     include_str!("builtin/tree.js"),
     include_str!("builtin/pine.js"),
     include_str!("builtin/rock.js"),
@@ -117,6 +118,7 @@ pub struct WorldModel {
     pub seed: u32,
     pub bible: String,
     pub look: Arc<Look>,
+    pub species: Arc<crate::world::species::SpeciesBook>,
     terrain: Arc<Terrain>,
     types: BTreeMap<u32, TypeRec>,
     insts: Vec<InstRec>,
@@ -194,6 +196,7 @@ impl WorldModel {
             seed: u.seed,
             bible: u.bible,
             look: Arc::new(look),
+            species: Arc::new(crate::world::species::SpeciesBook::builtin()),
             terrain,
             types: BTreeMap::new(),
             insts: Vec::new(),
@@ -447,6 +450,7 @@ impl WorldModel {
             scatter_epoch: full.scatter_epoch,
             scatter: full.scatter.clone(),
             figure_type: full.figure_type,
+            species: full.species.clone(),
             spawn: full.spawn,
         }))
     }
@@ -488,12 +492,13 @@ impl WorldModel {
             scatter_epoch: h.finish(),
             scatter,
             figure_type,
+            species: self.species.clone(),
             spawn: self.spawn,
         })
     }
 
     pub fn type_names(&self) -> Vec<(u32, String, Vec<String>, [f32; 3])> {
-        self.active_types().iter().filter(|t| !t.entry.has_tag("figure")).map(|t| (t.entry.id, t.entry.name().to_string(), t.entry.ct.meta.tags.clone(), t.entry.ct.meta.bounds)).collect()
+        self.active_types().iter().filter(|t| !t.entry.has_tag("figure") && t.entry.ct.meta.body.is_none()).map(|t| (t.entry.id, t.entry.name().to_string(), t.entry.ct.meta.tags.clone(), t.entry.ct.meta.bounds)).collect()
     }
 
     fn interior_of(&mut self, id: u32) -> Vec<[f32; 3]> {

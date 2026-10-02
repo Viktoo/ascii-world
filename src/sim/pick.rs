@@ -156,7 +156,7 @@ impl Sim {
     /// picking things up without aiming).
     pub fn nearest_in_front(&mut self, who: ActorId) -> Option<Target> {
         let a = self.actor(who)?.clone();
-        let reach = super::actor::REACH;
+        let reach = a.dims.reach;
         let ok = |p: Vec3| {
             let d = Vec3::new(p.x - a.pos.x, 0.0, p.z - a.pos.z);
             d.length() <= reach && d.normalize_or_zero().dot(a.forward()) > 0.3

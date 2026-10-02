@@ -1,0 +1,410 @@
+[
+ {
+  "name": "human",
+  "body": "figure",
+  "size": 1.0,
+  "mind": "sapient",
+  "speech": "words",
+  "diet": {
+   "plants": 0.6,
+   "meat": 0.4
+  },
+  "social": "village",
+  "temper": {
+   "bold": 0.5,
+   "wary": 0.4,
+   "playful": 0.5,
+   "tame": 0.5
+  },
+  "move": {
+   "walk": 1.3,
+   "run": 3.2,
+   "swim": 0.8
+  },
+  "life": {
+   "sleep": [
+    21,
+    6
+   ]
+  },
+  "look": {
+   "height": [
+    1.5,
+    1.95
+   ],
+   "build": [
+    0.8,
+    1.25
+   ],
+   "skin": [
+    0,
+    1
+   ],
+   "shirt": [
+    0,
+    1
+   ],
+   "trousers": [
+    0,
+    1
+   ]
+  },
+  "sounds": [],
+  "mass": 70,
+  "description": "people",
+  "plural": "people"
+ },
+ {
+  "name": "dog",
+  "body": "quadruped",
+  "size": 0.62,
+  "mind": "simple",
+  "speech": "sounds",
+  "diet": {
+   "plants": 0.2,
+   "meat": 0.8
+  },
+  "social": "pack",
+  "temper": {
+   "bold": 0.6,
+   "wary": 0.3,
+   "playful": 0.9,
+   "tame": 0.9
+  },
+  "move": {
+   "walk": 1.5,
+   "run": 6.0,
+   "swim": 1.0
+  },
+  "life": {
+   "sleep": [
+    22,
+    6
+   ]
+  },
+  "look": {
+   "legs": [
+    0.3,
+    0.6
+   ],
+   "length": [
+    0.3,
+    0.7
+   ],
+   "ears": [
+    0.2,
+    0.8
+   ],
+   "hue": [
+    0.05,
+    0.12
+   ],
+   "shade": [
+    0.15,
+    0.85
+   ]
+  },
+  "sounds": [
+   "woof!",
+   "a happy bark",
+   "a low growl",
+   "a soft whine"
+  ],
+  "mass": 25,
+  "description": "a loyal, playful dog",
+  "needs": {
+   "social": 1.4,
+   "fun": 1.3,
+   "curiosity": 1.2
+  }
+ },
+ {
+  "name": "cat",
+  "body": "quadruped",
+  "size": 0.34,
+  "mind": "simple",
+  "speech": "sounds",
+  "diet": {
+   "plants": 0.0,
+   "meat": 1.0
+  },
+  "social": "solitary",
+  "temper": {
+   "bold": 0.5,
+   "wary": 0.7,
+   "playful": 0.6,
+   "tame": 0.55
+  },
+  "move": {
+   "walk": 1.0,
+   "run": 5.0
+  },
+  "life": {
+   "sleep": [
+    10,
+    15
+   ]
+  },
+  "look": {
+   "legs": [
+    0.1,
+    0.3
+   ],
+   "length": [
+    0.5,
+    0.8
+   ],
+   "ears": [
+    0.45,
+    0.65
+   ],
+   "hue": [
+    0.05,
+    0.1
+   ],
+   "shade": [
+    0.05,
+    0.95
+   ]
+  },
+  "sounds": [
+   "meow",
+   "a soft purr",
+   "a hiss"
+  ],
+  "mass": 4.5,
+  "description": "an aloof, curious cat",
+  "needs": {
+   "social": 0.5,
+   "fatigue": 1.5
+  }
+ },
+ {
+  "name": "horse",
+  "body": "quadruped",
+  "size": 1.75,
+  "mind": "instinct",
+  "speech": "sounds",
+  "diet": {
+   "plants": 1.0,
+   "meat": 0.0
+  },
+  "social": "herd",
+  "temper": {
+   "bold": 0.4,
+   "wary": 0.6,
+   "playful": 0.3,
+   "tame": 0.7
+  },
+  "move": {
+   "walk": 1.6,
+   "run": 9.0,
+   "swim": 0.5
+  },
+  "life": {
+   "sleep": [
+    23,
+    4
+   ]
+  },
+  "look": {
+   "legs": [
+    0.85,
+    1.0
+   ],
+   "length": [
+    0.6,
+    0.9
+   ],
+   "ears": [
+    0.5,
+    0.7
+   ],
+   "hue": [
+    0.04,
+    0.09
+   ],
+   "shade": [
+    0.15,
+    0.75
+   ]
+  },
+  "sounds": [
+   "a soft whinny",
+   "a snort"
+  ],
+  "mass": 500,
+  "description": "a strong, gentle horse"
+ },
+ {
+  "name": "wolf",
+  "body": "quadruped",
+  "size": 0.8,
+  "mind": "instinct",
+  "speech": "sounds",
+  "diet": {
+   "plants": 0.0,
+   "meat": 1.0
+  },
+  "social": "pack",
+  "temper": {
+   "bold": 0.7,
+   "wary": 0.6,
+   "playful": 0.4,
+   "tame": 0.05
+  },
+  "move": {
+   "walk": 1.6,
+   "run": 8.0,
+   "swim": 1.0
+  },
+  "life": {
+   "sleep": [
+    8,
+    14
+   ]
+  },
+  "look": {
+   "legs": [
+    0.5,
+    0.7
+   ],
+   "length": [
+    0.5,
+    0.7
+   ],
+   "ears": [
+    0.7,
+    0.9
+   ],
+   "hue": [
+    0.08,
+    0.12
+   ],
+   "shade": [
+    0.35,
+    0.6
+   ]
+  },
+  "sounds": [
+   "a long howl",
+   "a low growl"
+  ],
+  "mass": 40,
+  "description": "a lean grey wolf",
+  "plural": "wolves"
+ },
+ {
+  "name": "goat",
+  "body": "quadruped",
+  "size": 0.8,
+  "mind": "instinct",
+  "speech": "sounds",
+  "diet": {
+   "plants": 1.0,
+   "meat": 0.0
+  },
+  "social": "herd",
+  "temper": {
+   "bold": 0.3,
+   "wary": 0.7,
+   "playful": 0.5,
+   "tame": 0.7
+  },
+  "move": {
+   "walk": 1.0,
+   "run": 4.5
+  },
+  "life": {
+   "sleep": [
+    21,
+    5
+   ]
+  },
+  "look": {
+   "legs": [
+    0.4,
+    0.6
+   ],
+   "length": [
+    0.3,
+    0.5
+   ],
+   "ears": [
+    0.3,
+    0.5
+   ],
+   "hue": [
+    0.08,
+    0.12
+   ],
+   "shade": [
+    0.5,
+    0.95
+   ]
+  },
+  "sounds": [
+   "a bleat",
+   "a loud maa"
+  ],
+  "mass": 50,
+  "description": "a stubborn goat"
+ },
+ {
+  "name": "deer",
+  "body": "quadruped",
+  "size": 1.25,
+  "mind": "instinct",
+  "speech": "sounds",
+  "diet": {
+   "plants": 1.0,
+   "meat": 0.0
+  },
+  "social": "herd",
+  "temper": {
+   "bold": 0.2,
+   "wary": 0.9,
+   "playful": 0.2,
+   "tame": 0.1
+  },
+  "move": {
+   "walk": 1.2,
+   "run": 9.0,
+   "swim": 1.0
+  },
+  "life": {
+   "sleep": [
+    11,
+    16
+   ]
+  },
+  "look": {
+   "legs": [
+    0.8,
+    1.0
+   ],
+   "length": [
+    0.4,
+    0.6
+   ],
+   "ears": [
+    0.6,
+    0.9
+   ],
+   "hue": [
+    0.06,
+    0.09
+   ],
+   "shade": [
+    0.35,
+    0.55
+   ]
+  },
+  "sounds": [
+   "a sharp snort"
+  ],
+  "mass": 90,
+  "description": "a shy deer",
+  "plural": "deer"
+ }
+]

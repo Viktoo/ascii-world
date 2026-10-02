@@ -27,7 +27,6 @@ pub const TURN_SPEED: f32 = 1.9;
 const LOOK_SPEED: f32 = 1.2;
 const PITCH_MIN: f32 = -0.95;
 const PITCH_MAX: f32 = 0.6;
-const EYE: f32 = 1.65;
 const FOV_Y: f32 = 1.05;
 const STATUS_BG: [u8; 3] = [38, 40, 52];
 const PANEL_BG: [u8; 3] = [14, 15, 20];
@@ -175,6 +174,7 @@ impl App {
         let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
         sim.has_llm = s.brain.has_llm;
+        let eye = sim.player.dims.eye;
         let mut app = App {
             db: s.db,
             brain: s.brain,
@@ -184,7 +184,7 @@ impl App {
             sim,
             live: s.live,
             pitch: -0.06,
-            cam_y: pos.y + EYE,
+            cam_y: pos.y + eye,
             mode: Mode::Walk,
             input: String::new(),
             log: VecDeque::new(),
@@ -254,7 +254,7 @@ impl App {
             let obs = Obstacles { solids: &solids, bodies: &[] };
             if obs.dist(&snap.terrain, p.x, p.z) < PLAYER_RADIUS {
                 self.sim.player.pos = free_spot(&snap.terrain, &obs, p, PLAYER_RADIUS, 40.0);
-                self.cam_y = self.sim.player.pos.y + EYE;
+                self.cam_y = self.sim.player.pos.y + self.sim.player.dims.eye;
             }
         }
         for i in 0..self.sim.cast.npcs.len() {
@@ -786,7 +786,7 @@ impl App {
             }
             let p = self.pos();
             self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
-            self.cam_y = self.sim.player.pos.y + EYE;
+            self.cam_y = self.sim.player.pos.y + self.sim.player.dims.eye;
         }
         self.dirty = true;
     }
@@ -826,7 +826,7 @@ impl App {
         }
         let p = self.pos();
         self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
-        let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + EYE;
+        let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + self.sim.player.dims.eye;
         self.cam_y += (eye - self.cam_y) * (dt * 10.0).min(1.0);
 
         // The living world.
@@ -1179,7 +1179,7 @@ impl App {
         let aspect = pw as f32 / ph as f32 * pa;
         let mut labels = Vec::new();
         for n in &self.sim.cast.npcs {
-            let head = n.a.pos + Vec3::Y * (n.def.persona.look.height + 0.35);
+            let head = n.a.pos + Vec3::Y * (n.a.dims.height + 0.35);
             let v = head - cam.pos;
             let d = v.length();
             if d > 10.0 {

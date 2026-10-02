@@ -1,9 +1,12 @@
-// Built-in character figure. Params: a = height (m), b = build, c = skin tone,
+// Built-in human body. Look: a = height (m), b = build, c = skin tone,
 // d = shirt hue, e = trousers hue, f = walk phase (radians). Faces +z.
-// Pose (live state): s0/s1 = left/right arm raised sideways (0 down … 1 up),
+// Roles (live pose): s0/s1 = left/right arm raised sideways (0 down … 1 up),
 // s2/s3 = left/right arm reaching forward (0 … 1), s4 = lean forward (radians),
 // s5 = head nod, s6 = crouch (0 … 1).
-export const meta = { name: "figure", bounds: [0.95, 2.4, 0.95], tags: ["builtin", "figure"] };
+export const meta = { name: "figure", bounds: [0.95, 2.4, 0.95], tags: ["builtin", "figure", "body"],
+  body: { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3],
+          roles: ["raise", "reach", "lean", "head", "crouch"], gait: "biped", arms: true,
+          look: { height: [1.3, 2.0], build: [0.7, 1.4], skin: [0, 1], shirt: [0, 1], trousers: [0, 1] } } };
 
 export function sdf(x, y, z, k) {
   const h = clamp(k.a, 1.3, 2.0) / 1.75;

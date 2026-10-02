@@ -1365,3 +1365,142 @@ fn unused_reshape_versions_are_left_out_of_the_scene() {
     assert!(has(kept), "a reshape version still in use stays");
     assert!(has(plain) && has(made), "other types stay even unused");
 }
+
+// ------------------------------------------------------------------ species
+
+/// A being of some species (a dog, a horse…) living near `home`.
+fn add_being(w: &W, name: &str, species: &str, relationships: &[&str], home: Vec3) -> i64 {
+    let persona = crate::world::Persona { name: name.into(), species: species.into(), relationships: relationships.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+    w.db.with(|c| db::add_character(c, crate::world::region_of(home.x, home.z), &serde_json::to_string(&persona)?, home.x, home.z, w.version)).unwrap()
+}
+
+fn calm(s: &mut Session) {
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.needs = crate::world::characters::Needs { hunger: 0.0, fatigue: 0.0, social: 0.0, fun: 0.0, curiosity: 0.0 };
+        n.think_at = f64::MAX;
+    }
+}
+
+/// Phase 1: a dog lives in its own body but plays the same gestures as a
+/// person (wave raises a paw, sit lies it down, a hug is a paw-and-lean),
+/// holds things in its mouth, and is drawn at its own size.
+#[test]
+fn a_dog_plays_the_same_gestures_with_its_own_body() {
+    use super::actor::{CROUCH, R_RAISE, SPREAD};
+    let w = world("dogbody", 41);
+    let p = dry_spot(&w, 8.0, 0.4);
+    let ola = add_char(&w, "Ola", "kind and patient", &["Rex: her dog"], p);
+    let rex = add_being(&w, "Rex", "dog", &["Ola: owner"], p + Vec3::new(1.2, 0.0, 0.0));
+    let mut s = session(&w, 11, None);
+    calm(&mut s);
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -12.0);
+    let (o, r) = (ActorId::Npc(ola), ActorId::Npc(rex));
+    {
+        let dog = s.sim.cast.get(rex).unwrap();
+        assert_eq!(dog.species.name, "dog");
+        assert_ne!(Some(dog.body_ty), s.sim.snap.figure_type, "a dog has its own body");
+        assert!(dog.a.dims.height > 0.4 && dog.a.dims.height < 0.8 && !dog.a.dims.arms, "{:?}", dog.a.dims);
+        let person = s.sim.cast.get(ola).unwrap();
+        assert!(person.species.is_human() && person.a.dims.arms && (person.a.dims.eye - 1.65 * person.a.dims.height / 1.75).abs() < 0.01);
+    }
+    assert_eq!(s.sim.social.rel(r, o).and_then(|x| x.owner), Some(ola), "Rex is Ola's dog");
+    // Wave: the dog raises a paw.
+    s.sim.act(r, Action::Gesture { kind: "wave".into(), to: None }).unwrap();
+    s.run(0.8, 0.05);
+    assert!(s.sim.cast.get(rex).unwrap().a.pose[R_RAISE] > 0.3, "paw up: {:?}", s.sim.cast.get(rex).unwrap().a.pose);
+    s.run(2.0, 0.1);
+    // Wag: only a body with a tail shows it.
+    s.sim.act(r, Action::Gesture { kind: "wag".into(), to: None }).unwrap();
+    let mut swing: f32 = 0.0;
+    for _ in 0..12 {
+        s.run(0.1, 0.05);
+        swing = swing.max(s.sim.cast.get(rex).unwrap().a.pose[SPREAD].abs());
+    }
+    assert!(swing > 0.3, "the tail wags ({swing})");
+    s.sim.act(o, Action::Gesture { kind: "wag".into(), to: None }).unwrap();
+    s.run(0.5, 0.05);
+    assert_eq!(s.sim.cast.get(ola).unwrap().a.pose[SPREAD], 0.0, "people have no tail");
+    s.run(2.0, 0.1);
+    // Sit: it lies down.
+    s.sim.act(r, Action::Gesture { kind: "sit".into(), to: None }).unwrap();
+    s.run(5.0, 0.1);
+    assert!(s.sim.cast.get(rex).unwrap().a.pose[CROUCH] > 0.5);
+    s.run(17.0, 0.2);
+    // A hug with its person, through the same consent and distance rules.
+    let res = s.sim.act(r, Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(o)) });
+    assert!(res.is_ok(), "{res:?}");
+    s.run(15.0, 0.1);
+    assert!(!events(&s.sim, "hug").is_empty(), "Rex and Ola hugged: {:?}", s.sim.log.recent.iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    // It holds things in its mouth: low and in front, not in a hand.
+    let dog = s.sim.cast.get(rex).unwrap();
+    let h = dog.a.hand(false) - dog.a.pos;
+    assert!(h.y < 0.5 && h.y > 0.15 && h.dot(dog.a.forward()) > 0.25, "mouth at {h:?}");
+    // Drawn with its own body, at its own size.
+    let body = s.sim.snap.type_of(dog.body_ty).unwrap();
+    assert_eq!(body.name(), "quadruped");
+    let g = dog.gpu(body);
+    assert!((g.pos_scale[3] - 0.62).abs() < 1e-3);
+    sound(&s);
+}
+
+/// Render what the session shows from `cam` to a PNG (for looking at).
+fn render_png(s: &mut Session, w: &W, cam: crate::render::Camera, out: &str) {
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    s.sim.flip(snap.clone());
+    let (pw, ph) = (320u32, 180u32);
+    let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
+    let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
+    let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+    let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+    let mut handle = match &gpu {
+        Some(g) => crate::render::gpu::spawn(g.clone()),
+        None => crate::render::cpu::spawn(),
+    };
+    handle.tx.send(crate::render::RenderMsg::Frame(Box::new(req))).unwrap();
+    let f = handle.rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    handle.shutdown();
+    let sc = 3u32;
+    let mut rgb = Vec::new();
+    for y in 0..f.height * sc {
+        for x in 0..f.width * sc {
+            rgb.extend_from_slice(&crate::render::unpack(f.pixels[((y / sc) * f.width + x / sc) as usize]));
+        }
+    }
+    std::fs::write(out, crate::png::encode(f.width * sc, f.height * sc, &rgb)).unwrap();
+    eprintln!("wrote {out}");
+}
+
+/// Render the built-in species side by side (look at it).
+#[test]
+#[ignore]
+fn species_lineup_picture() {
+    let out = std::env::var("POCKET_PNG").unwrap_or_else(|_| std::env::temp_dir().join("pocket-species.png").to_string_lossy().into_owned());
+    let w = world("lineup", 42);
+    let me = w.spawn;
+    let names = [("Ola", "human"), ("Rex", "dog"), ("Tib", "cat"), ("Bram", "horse"), ("Grey", "wolf"), ("Nan", "goat"), ("Doe", "deer")];
+    let mut ids = Vec::new();
+    for (i, (n, sp)) in names.iter().enumerate() {
+        let x = (i as f32 - 3.0) * 1.9;
+        ids.push(if *sp == "human" { add_char(&w, n, "kind", &[], ground(&w, me.x + x, me.z + 7.0)) } else { add_being(&w, n, sp, &[], ground(&w, me.x + x, me.z + 7.0)) });
+    }
+    let mut s = session(&w, 16, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    for id in &ids {
+        let n = s.sim.cast.get_mut(*id).unwrap();
+        n.a.yaw = -1.3;
+    }
+    if let Ok(g) = std::env::var("POCKET_GESTURE") {
+        for id in &ids {
+            let _ = s.sim.act(ActorId::Npc(*id), Action::Gesture { kind: g.clone(), to: None });
+        }
+        s.run(1.0, 0.05);
+    }
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.4 + Vec3::new(0.0, 0.0, -1.5), yaw: 0.0, pitch: -0.1, fov_y: 1.0 };
+    render_png(&mut s, &w, cam, &out);
+}

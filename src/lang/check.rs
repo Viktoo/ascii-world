@@ -196,6 +196,7 @@ impl<'s> Cx<'s> {
         let mut tags = Vec::new();
         let mut props: Vec<(String, f32)> = Vec::new();
         let mut lists: [Vec<String>; 3] = Default::default();
+        let mut body = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -239,6 +240,10 @@ impl<'s> Cx<'s> {
                         }
                     }
                     _ => self.err(p.span, "meta.tags must be an array of strings"),
+                },
+                "body" => match &p.value {
+                    Expression::ObjectExpression(bo) => body = self.meta_body(bo),
+                    _ => self.err(p.span, "meta.body must be an object"),
                 },
                 "props" => match &p.value {
                     Expression::ObjectExpression(po) => props = self.meta_props(po),
@@ -288,7 +293,123 @@ impl<'s> Cx<'s> {
             return None;
         };
         let [says, sounds, spawns] = lists;
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns })
+        if let Some(b) = &body {
+            let r = bounds[0].max(bounds[2]);
+            if b.height > bounds[1] * 2.0 + 0.05 || b.radius > r * 1.5 + 0.05 {
+                self.err(o.span, "meta.body.height and radius must fit inside meta.bounds");
+            }
+        }
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, body })
+    }
+
+    fn meta_body(&mut self, o: &js::ObjectExpression) -> Option<Body> {
+        let mut b = Body::default();
+        let mut eye = None;
+        let mut grip = None;
+        let mut errs = 0;
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
+                self.err(o.span, "spread is not allowed in meta.body");
+                continue;
+            };
+            let key = match &p.key {
+                js::PropertyKey::StaticIdentifier(id) if !p.computed => id.name.as_str().to_string(),
+                js::PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                _ => {
+                    self.err(p.span, "meta.body keys must be plain names");
+                    continue;
+                }
+            };
+            let mut bad = |s: &mut Self, msg: String| {
+                s.err(p.span, msg);
+                errs += 1;
+            };
+            match key.as_str() {
+                "height" | "eye" | "radius" | "reach" => match literal_num(&p.value) {
+                    Some(v) if v.is_finite() && v > 0.0 && v <= 80.0 => match key.as_str() {
+                        "height" => b.height = v,
+                        "eye" => eye = Some(v),
+                        "radius" => b.radius = v,
+                        _ => b.reach = v,
+                    },
+                    _ => bad(self, format!("meta.body.{key} must be a number of metres in (0, 80]")),
+                },
+                "grip" | "seat" => match literal_nums(&p.value) {
+                    Some(v) if v.len() == 3 && v.iter().all(|x| x.is_finite() && x.abs() <= 80.0) => {
+                        if key == "grip" {
+                            grip = Some([v[0], v[1], v[2]]);
+                        } else {
+                            b.seat = Some([v[0], v[1], v[2]]);
+                        }
+                    }
+                    _ => bad(self, format!("meta.body.{key} must be [x, y, z] in metres (x right, y up, z forward)")),
+                },
+                "roles" => match literal_strings(&p.value) {
+                    Some(v) => {
+                        for r in v {
+                            let both = matches!(r.as_str(), "reach" | "raise");
+                            let names = if both { vec![format!("{r}_l"), format!("{r}_r")] } else { vec![role_alias(&r)] };
+                            for r in names {
+                                if !ROLES.contains(&r.as_str()) {
+                                    bad(self, format!("unknown role '{r}' in meta.body.roles (use {}, or reach / raise for both sides)", ROLES.join(", ")));
+                                } else if !b.roles.contains(&r) {
+                                    b.roles.push(r);
+                                }
+                            }
+                        }
+                    }
+                    None => bad(self, "meta.body.roles must be an array of role names".into()),
+                },
+                "gait" => match &p.value {
+                    Expression::StringLiteral(s) if ["biped", "quad", "slither", "hover"].contains(&s.value.as_str()) => b.gait = s.value.to_string(),
+                    _ => bad(self, "meta.body.gait must be \"biped\", \"quad\", \"slither\" or \"hover\"".into()),
+                },
+                "flies" | "arms" => match &p.value {
+                    Expression::BooleanLiteral(v) => {
+                        if key == "flies" {
+                            b.flies = v.value
+                        } else {
+                            b.arms = v.value
+                        }
+                    }
+                    _ => bad(self, format!("meta.body.{key} must be true or false")),
+                },
+                "look" => match &p.value {
+                    Expression::ObjectExpression(lo) => {
+                        for lp in lo.properties.iter() {
+                            let js::ObjectPropertyKind::ObjectProperty(lp) = lp else { continue };
+                            let name = match &lp.key {
+                                js::PropertyKey::StaticIdentifier(id) if !lp.computed => id.name.as_str().to_string(),
+                                js::PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                                _ => {
+                                    bad(self, "meta.body.look keys must be plain names".into());
+                                    continue;
+                                }
+                            };
+                            match literal_nums(&lp.value) {
+                                Some(v) if v.len() == 2 && v[0].is_finite() && v[1].is_finite() && v[0] <= v[1] && valid_prop_name(&name) => {
+                                    if b.look.len() >= MAX_SLIDERS {
+                                        bad(self, format!("meta.body.look may hold at most {MAX_SLIDERS} sliders (they are k.a … k.e)"));
+                                        break;
+                                    }
+                                    b.look.push((name, v[0], v[1]));
+                                }
+                                _ => bad(self, format!("meta.body.look.{name} must be [lo, hi]")),
+                            }
+                        }
+                    }
+                    _ => bad(self, "meta.body.look must be an object of [lo, hi] ranges, e.g. { height: [1.5, 2.0] }".into()),
+                },
+                _ => bad(self, format!("unknown key meta.body.{key} (height, eye, radius, reach, grip, seat, roles, gait, flies, arms, look)")),
+            }
+        }
+        b.eye = eye.unwrap_or(b.height * 0.92).min(b.height * 1.2);
+        b.grip = grip.unwrap_or([b.radius * 0.6, b.height * 0.55, b.radius]);
+        if b.roles.is_empty() {
+            self.err(o.span, format!("meta.body.roles must list the roles the shape answers to ({})", ROLES.join(", ")));
+            return None;
+        }
+        (errs == 0).then_some(b)
     }
 
     fn meta_props(&mut self, o: &js::ObjectExpression) -> Vec<(String, f32)> {
@@ -437,6 +558,46 @@ enum ParamRole {
 enum Target {
     State(u8),
     Prop(bool, u16),
+}
+
+fn literal_num(e: &Expression) -> Option<f32> {
+    match e {
+        Expression::NumericLiteral(n) => Some(n.value as f32),
+        Expression::UnaryExpression(u) if u.operator == UnaryOperator::UnaryNegation => match &u.argument {
+            Expression::NumericLiteral(n) => Some(-n.value as f32),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn literal_nums(e: &Expression) -> Option<Vec<f32>> {
+    let Expression::ArrayExpression(a) = e else { return None };
+    a.elements.iter().map(|el| el.as_expression().and_then(literal_num)).collect()
+}
+
+fn literal_strings(e: &Expression) -> Option<Vec<String>> {
+    let Expression::ArrayExpression(a) = e else { return None };
+    a.elements
+        .iter()
+        .map(|el| match el {
+            js::ArrayExpressionElement::StringLiteral(s) => Some(s.value.as_str().trim().to_lowercase()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Old figure channel names still work as role names.
+pub fn role_alias(r: &str) -> String {
+    match r {
+        "l_raise" => "raise_l",
+        "r_raise" => "raise_r",
+        "l_fwd" | "l_reach" => "reach_l",
+        "r_fwd" | "r_reach" => "reach_r",
+        "nod" => "head",
+        r => r,
+    }
+    .to_string()
 }
 
 fn is_inert_literal(e: &Expression) -> bool {

@@ -3,7 +3,6 @@
 //! fields of nearby solids, so a ball bounces off any shape the LLM wrote
 //! with no extra work. Things at rest sleep and cost nothing.
 
-use super::actor::REACH;
 use super::props::*;
 use super::things::ThingId;
 use super::{ActorId, Note, Sim};
@@ -109,7 +108,7 @@ impl Sim {
                 continue;
             }
             let big = ty.radius() * t.scale > 0.35 || co.is_some();
-            let hand = |s: &Sim, a: ActorId| s.actor(a).map(|x| x.hand(big, s.actor_height(a)));
+            let hand = |s: &Sim, a: ActorId| s.actor(a).map(|x| x.hand(big));
             let Some(mut p) = hand(self, h) else {
                 self.release(id);
                 continue;
@@ -463,7 +462,7 @@ impl Sim {
     pub fn in_reach(&self, a: ActorId, p: Vec3) -> bool {
         self.actor(a).is_some_and(|x| {
             let d = p - x.pos;
-            Vec3::new(d.x, 0.0, d.z).length() <= REACH && d.y > -1.5 && d.y < 2.6
+            Vec3::new(d.x, 0.0, d.z).length() <= x.dims.reach && d.y > -1.5 && d.y < x.dims.height * 1.5
         })
     }
 }

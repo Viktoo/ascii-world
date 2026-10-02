@@ -3,7 +3,7 @@
 //! act through `Sim::act`, so anything a character can do the agent can do,
 //! and test, the same way.
 
-use super::actor::{GestureKind, GestureRun, REACH, Task};
+use super::actor::{GestureKind, GestureRun, Task};
 use super::props::*;
 use super::persist;
 use super::things::{Origin, Thing, ThingId};
@@ -397,7 +397,7 @@ impl Sim {
                 let stop = match r.target {
                     Target::Actor(_) => 1.4,
                     Target::Point(_) => 0.6,
-                    _ => REACH * 0.7,
+                    _ => self.reach_of(who) * 0.7,
                 };
                 let deadline = self.t + 120.0;
                 self.set_task(who, Task::Goto { target: r.target.clone(), stop, run, deadline });
@@ -543,7 +543,7 @@ impl Sim {
                 let id = me.held.ok_or(ActErr::Fail("not holding anything to give".into()))?;
                 let r = self.resolve(&to, who).ok_or_else(|| not_found(&to))?;
                 let Target::Actor(other) = r.target else { return fail("give it to whom?") };
-                if (r.pos - me.pos).length() > REACH + 0.4 {
+                if (r.pos - me.pos).length() > self.reach_of(who) + 0.4 {
                     return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
                 }
                 self.give(who, other, id)

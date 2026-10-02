@@ -59,7 +59,61 @@ fn fmt_p(p: [f32; 3]) -> String {
 }
 
 pub fn probe(t: &CompiledType) -> Result<ProbeReport, Vec<Diag>> {
-    probe_with(t, &default_k(0.37))
+    let Some(body) = t.meta.body.as_ref() else { return probe_with(t, &default_k(0.37)) };
+    let mut k = default_k(0.37);
+    for (i, (_, lo, hi)) in body.look.iter().enumerate().take(5) {
+        k[2 + i] = (lo + hi) * 0.5;
+    }
+    let rep = probe_with(t, &k)?;
+    probe_body(t, body, &k)?;
+    Ok(rep)
+}
+
+/// A body must answer to every role it lists, and stay sound in any pose and
+/// at the ends of its look sliders.
+fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 16]) -> Result<(), Vec<Diag>> {
+    use super::ir::ROLES;
+    let pts: Vec<[f32; 3]> = sample_points(t.meta.bounds).into_iter().step_by(5).collect();
+    let base: Vec<f32> = pts.iter().map(|p| t.sdf(*p, k)).collect();
+    let mut dead = Vec::new();
+    for (i, role) in ROLES.iter().enumerate() {
+        if !body.has_role(role) {
+            continue;
+        }
+        let mut kk = *k;
+        kk[8 + i] = if *role == "lean" { 0.4 } else { 0.8 };
+        let changed = pts.iter().zip(&base).filter(|(p, d)| (t.sdf(**p, &kk) - **d).abs() > 0.01).count();
+        if changed == 0 {
+            dead.push(*role);
+        }
+    }
+    if !dead.is_empty() {
+        return Err(vec![Diag::new(Stage::Probe, 0, format!("meta.body.roles lists {} but moving k.s{} changes nothing in sdf; make the shape answer to it or drop it from roles", dead.join(", "), ROLES.iter().position(|r| *r == dead[0]).unwrap_or(0)))]);
+    }
+    // Extreme poses and looks: finite, cheap and inside the bounds.
+    let mut poses = Vec::new();
+    for v in [0.0f32, 1.0] {
+        let mut kk = *k;
+        for (i, (_, lo, hi)) in body.look.iter().enumerate().take(5) {
+            kk[2 + i] = if v > 0.5 { *hi } else { *lo };
+        }
+        for (i, role) in ROLES.iter().enumerate() {
+            if body.has_role(role) {
+                kk[8 + i] = if *role == "lean" { 0.6 * v } else { v };
+            }
+        }
+        kk[7] = 1.3 * v;
+        poses.push(kk);
+    }
+    for kk in &poses {
+        if let Err(mut d) = probe_with(t, kk) {
+            for x in &mut d {
+                x.msg = format!("in its most extreme pose and look: {}", x.msg);
+            }
+            return Err(d);
+        }
+    }
+    Ok(())
 }
 
 pub fn probe_with(t: &CompiledType, k: &[f32; 16]) -> Result<ProbeReport, Vec<Diag>> {

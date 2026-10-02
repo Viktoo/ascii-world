@@ -12,7 +12,7 @@ use crate::prompts;
 use crate::terrain::{Terrain, WATER_LEVEL};
 use crate::world::characters::Decision;
 use crate::world::describe::View;
-use crate::world::{FigureLook, Look, Persona, REGION, WorldSnapshot};
+use crate::world::{Look, Persona, REGION, WorldSnapshot};
 use glam::Vec3;
 use serde_json::Value;
 use std::sync::Arc;
@@ -721,13 +721,38 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             continue;
         }
         let lk = c.get("look").cloned().unwrap_or_default();
-        p.look = FigureLook {
-            height: f(&lk, "height", 1.75).clamp(1.3, 2.0),
-            build: f(&lk, "build", 1.0).clamp(0.7, 1.4),
-            skin: f(&lk, "skin", 0.3).clamp(0.0, 1.0),
-            shirt_hue: f(&lk, "shirt_hue", 0.6).rem_euclid(1.0),
-            trousers_hue: f(&lk, "trousers_hue", 0.1).rem_euclid(1.0),
-        };
+        p.look.clear();
+        if let Some(o) = lk.as_object() {
+            for (k, v) in o.iter().take(8) {
+                if let Some(v) = v.as_f64().filter(|v| v.is_finite()) {
+                    p.look.insert(k.trim().to_lowercase(), v as f32);
+                }
+            }
+        }
+        if p.species.trim().is_empty() || p.species.eq_ignore_ascii_case("human") {
+            p.species.clear();
+            let hue = |x: Option<f32>| x.map(|v| v.rem_euclid(1.0));
+            let get = |n: &str| crate::world::species::look_value(&p.look, n);
+            let fixed = [
+                ("height", get("height").map(|v| v.clamp(1.3, 2.0))),
+                ("build", get("build").map(|v| v.clamp(0.7, 1.4))),
+                ("skin", get("skin").map(|v| v.clamp(0.0, 1.0))),
+                ("shirt", hue(get("shirt"))),
+                ("trousers", hue(get("trousers"))),
+            ];
+            p.look.clear();
+            for (k, v) in fixed {
+                p.look.insert(k.into(), v.unwrap_or(match k {
+                    "height" => 1.75,
+                    "build" => 1.0,
+                    "skin" => 0.3,
+                    "shirt" => 0.6,
+                    _ => 0.1,
+                }));
+            }
+        } else {
+            p.species = p.species.trim().to_lowercase();
+        }
         let mut home = Vec3::new(ox + clampl(f(c, "home_x", 128.0)), 0.0, oz + clampl(f(c, "home_z", 128.0)));
         // Homes must be on dry land: spiral out until we find some.
         for k in 0..40 {

@@ -4,6 +4,7 @@
 //! people who like each other; carrying a log is two holds on one heavy
 //! thing; a hug is a contact gesture both agree to.
 
+use crate::world::species::Mind;
 use super::actions::{Action, ActErr, Outcome};
 use super::actor::{GestureKind, GestureRun, Task};
 use super::npc::Npc;
@@ -25,6 +26,9 @@ pub struct Rel {
     pub family: bool,
     #[serde(default)]
     pub partner: bool,
+    /// Who of the two owns the other (an animal and its person), by actor code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<i64>,
     #[serde(default)]
     pub last: f64,
 }
@@ -254,6 +258,19 @@ impl Social {
                             continue;
                         }
                         let has = |ws: &[&str]| ws.iter().any(|w| l.contains(w));
+                        // An animal and its person.
+                        let (xa, ya) = (!x.species.is_human() && x.species.mind != Mind::Sapient, !y.species.is_human() && y.species.mind != Mind::Sapient);
+                        if xa && !ya && has(&["owner", "master", "mistress", "keeper", "person", "human", "rider", "herder", "shepherd"]) {
+                            r.owner = Some(y.def.id);
+                        } else if ya && !xa && (has(&["pet", "dog", "cat", "horse", "hound", "pony", "mount", "goat", "flock", "herd"]) || l.contains(&y.species.name)) {
+                            r.owner = Some(x.def.id);
+                        }
+                        if r.owner.is_some() {
+                            r.affection = r.affection.max(0.8);
+                            r.trust = r.trust.max(0.8);
+                            r.familiarity = r.familiarity.max(0.9);
+                            continue;
+                        }
                         if has(&["wife", "husband", "spouse", "partner", "lover", "betrothed", "sweetheart", "girlfriend", "boyfriend", "fianc", "married"]) {
                             r.partner = true;
                             r.affection = r.affection.max(0.85);

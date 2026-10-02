@@ -7,6 +7,7 @@ pub mod collide;
 pub mod cull;
 pub mod describe;
 pub mod scatter;
+pub mod species;
 
 use crate::lang::CompiledType;
 use crate::render::GpuInst;
@@ -145,23 +146,20 @@ pub struct Persona {
     pub relationships: Vec<String>,
     #[serde(default)]
     pub home: String,
-    /// Figure params: height m, build, skin 0..1, shirt hue, trousers hue.
+    /// Look sliders by name (the body's `meta.body.look`), e.g. height in
+    /// metres, build, skin, shirt and trousers hue for people.
     #[serde(default)]
-    pub look: FigureLook,
+    pub look: species::LookMap,
+    /// Species name ("" = human).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub species: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub variety: String,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct FigureLook {
-    pub height: f32,
-    pub build: f32,
-    pub skin: f32,
-    pub shirt_hue: f32,
-    pub trousers_hue: f32,
-}
-
-impl Default for FigureLook {
-    fn default() -> Self {
-        FigureLook { height: 1.75, build: 1.0, skin: 0.3, shirt_hue: 0.6, trousers_hue: 0.1 }
+impl Persona {
+    pub fn look_of(&self, name: &str, default: f32) -> f32 {
+        species::look_value(&self.look, name).unwrap_or(default)
     }
 }
 
@@ -198,6 +196,7 @@ pub struct WorldSnapshot {
     /// Scatter type ids per tag.
     pub scatter: HashMap<String, Vec<u32>>,
     pub figure_type: Option<u32>,
+    pub species: Arc<species::SpeciesBook>,
     pub spawn: Vec3,
 }
 
@@ -238,6 +237,17 @@ impl WorldSnapshot {
 
     pub fn type_of(&self, id: u32) -> Option<&Arc<TypeEntry>> {
         self.scene.types.get(&id)
+    }
+
+    /// A body type by name (built-in bodies first, then the newest).
+    pub fn body_type(&self, name: &str) -> Option<&Arc<TypeEntry>> {
+        let mut found: Option<&Arc<TypeEntry>> = None;
+        for t in self.scene.types.values() {
+            if t.ct.meta.body.is_some() && t.ct.meta.name == name && found.is_none_or(|f| !f.builtin && (t.builtin || t.id > f.id)) {
+                found = Some(t);
+            }
+        }
+        found.or_else(|| self.figure_type.and_then(|f| self.type_of(f)))
     }
 
     pub fn region_name(&self, r: (i32, i32)) -> Option<&str> {

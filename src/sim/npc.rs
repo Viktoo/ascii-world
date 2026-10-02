@@ -6,11 +6,12 @@
 //! them out.
 
 use super::actions::{Action, ActErr};
-use super::actor::{Actor, GestureKind, NPC_RUN, NPC_WALK, PLAYER_SPEED, REACH, Task};
+use super::actor::{Actor, GestureKind, NPC_RUN, NPC_WALK, PLAYER_SPEED, Task};
 use super::props::*;
 use super::{ActorId, Request, Sim, Target};
 use crate::render::GpuInst;
 use crate::world::characters::{Decision, Needs, SavedState};
+use crate::world::species::{Dims, Species};
 use crate::world::{CharacterDef, TypeEntry, WorldSnapshot};
 use glam::Vec3;
 use serde_json::{Value, json};
@@ -48,6 +49,11 @@ impl Traits {
 
 pub struct Npc {
     pub def: Arc<CharacterDef>,
+    pub species: Arc<Species>,
+    /// The body type it is drawn with.
+    pub body_ty: u32,
+    /// Look sliders (k.a … k.e).
+    pub sliders: [f32; 5],
     pub a: Actor,
     pub needs: Needs,
     pub traits: Traits,
@@ -83,15 +89,19 @@ impl Npc {
         SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t }
     }
 
-    pub fn gpu(&self, figure: &TypeEntry) -> GpuInst {
-        let l = self.def.persona.look;
+    pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
         let rot = self.a.yaw;
+        let d = &self.a.dims;
+        // Bodies that draw their own height (people) are scaled only by the
+        // world's size; others by their whole size.
+        let own_height = body.ct.meta.body.as_ref().is_some_and(|b| b.slider("height").is_some());
+        let r = if own_height { d.ratio } else { d.scale };
         let mut g = GpuInst {
-            pos_scale: [self.a.pos.x, self.a.pos.y, self.a.pos.z, 1.0],
-            rot: [rot.cos(), rot.sin(), figure.sphere_r * l.height.max(1.75) / 1.75, 1.0],
-            k0: [self.def.id as f32 % 97.0, 1.0, l.height, l.build],
-            k1: [l.skin, l.shirt_hue, l.trousers_hue, self.a.phase],
-            info: figure.gpu_info(),
+            pos_scale: [self.a.pos.x, self.a.pos.y, self.a.pos.z, d.scale],
+            rot: [rot.cos(), rot.sin(), body.sphere_r * r.max(d.scale), 1.0],
+            k0: [self.def.id as f32 % 97.0, d.scale, self.sliders[0], self.sliders[1]],
+            k1: [self.sliders[2], self.sliders[3], self.sliders[4], self.a.phase],
+            info: body.gpu_info(),
             ..Default::default()
         };
         g.set_state(&self.a.pose);
@@ -145,6 +155,14 @@ impl Cast {
             let rng = crate::noise::pcg(def.id as u32 ^ 0xC0FFEE ^ seed as u32);
             let mut a = Actor::new(pos, s.yaw);
             a.asleep = s.asleep;
+            let species = snap.species.of(&def.persona.species);
+            let body = snap.body_type(&species.body);
+            let body_ty = body.map(|b| b.id).unwrap_or(0);
+            let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
+            let variety = species.varieties.iter().find(|v| v.name == def.persona.variety);
+            let sliders = crate::world::species::sliders(&bmeta, &species, variety, &def.persona.look, rng);
+            a.dims = body_dims(&bmeta, &species, &sliders, snap.species.size_of(&species.name));
+            a.roles = super::actor::role_mask(&bmeta);
             let traits = Traits::from_persona(&def.persona, rng);
             let needs = s.needs.unwrap_or_else(|| {
                 let r = |k: u32| crate::noise::u2f(crate::noise::pcg(rng ^ k)) * 0.4;
@@ -153,6 +171,9 @@ impl Cast {
             self.index.insert(def.id, self.npcs.len());
             self.npcs.push(Npc {
                 def: def.clone(),
+                species,
+                body_ty,
+                sliders,
                 a,
                 needs,
                 traits,
@@ -182,6 +203,23 @@ impl Cast {
     pub fn get_mut(&mut self, id: i64) -> Option<&mut Npc> {
         self.index.get(&id).copied().map(move |i| &mut self.npcs[i])
     }
+}
+
+/// Size numbers for a character: people draw their own height (a slider);
+/// other bodies are scaled by their species' size. `world` is the universe's
+/// size multiplier for the species.
+pub fn body_dims(b: &crate::lang::ir::Body, sp: &Species, sliders: &[f32; 5], world: f32) -> Dims {
+    let (height, scale) = match b.slider("height") {
+        Some(i) => (sliders[i], world),
+        None => (b.height, sp.size * world),
+    };
+    let norm = match b.slider("height") {
+        Some(_) => 1.75,
+        None => b.height * sp.size,
+    };
+    let mut d = Dims::of(b, height, scale, sp.mass);
+    d.mass = sp.mass * (d.height / norm.max(0.01)).powi(3);
+    d
 }
 
 /// Plans written by the LLM are close to the action JSON but not always
@@ -380,7 +418,8 @@ impl Sim {
                     }
                     let run = matches!(who, ActorId::Npc(_)) && dist > 25.0;
                     let deadline = self.t + 90.0;
-                    self.set_task(who, Task::Goto { target: Target::Point(at.to_array()), stop: REACH * 0.6, run, deadline });
+                    let stop = self.reach_of(who) * 0.6;
+                    self.set_task(who, Task::Goto { target: Target::Point(at.to_array()), stop, run, deadline });
                     return true;
                 }
                 Err(ActErr::Fail(msg)) => {
@@ -410,7 +449,7 @@ impl Sim {
     /// Advance an actor's current task. True while it is still running.
     pub fn run_task(&mut self, who: ActorId, dt: f32) -> bool {
         let Some(task) = self.actor(who).and_then(|a| a.task.clone()) else { return false };
-        let speed_walk = if who == ActorId::Player { PLAYER_SPEED } else { NPC_WALK };
+        let (speed_walk, speed_run) = self.speeds(who);
         let now = self.t;
         let me = self.actor(who).map(|a| a.pos).unwrap_or_default();
         let mut done = false;
@@ -430,7 +469,7 @@ impl Sim {
                         } else if now > *deadline {
                             failed = true;
                         } else {
-                            let sp = if *run { NPC_RUN.max(speed_walk) } else { speed_walk };
+                            let sp = if *run { speed_run.max(speed_walk) } else { speed_walk };
                             if !self.step_toward(who, p, sp, dt) {
                                 failed = true;
                             }
@@ -453,7 +492,7 @@ impl Sim {
                 } else if let Some(p) = self.actor(*other).map(|a| a.pos) {
                     let d = (p - me).length();
                     if d > *dist {
-                        let sp = if d > 6.0 { NPC_RUN.max(speed_walk) } else { speed_walk.max(1.6) };
+                        let sp = if d > 6.0 { speed_run.max(speed_walk) } else { speed_walk.max(1.6) };
                         self.step_toward(who, p, sp, dt);
                     } else if let Some(a) = self.actor_mut(who) {
                         a.face(p - me, dt * 4.0);
@@ -488,6 +527,21 @@ impl Sim {
             }
         }
         !(done || failed)
+    }
+
+    /// Walking and running speeds (m/s): the traveller's stride, or the
+    /// species' own.
+    pub fn speeds(&self, who: ActorId) -> (f32, f32) {
+        match who {
+            ActorId::Player => {
+                let s = PLAYER_SPEED * (self.player.dims.height / 1.75).sqrt();
+                (s, s)
+            }
+            ActorId::Npc(c) => match self.cast.get(c) {
+                Some(n) if !n.species.is_human() => (n.species.moves.walk.max(0.2), n.species.moves.run.max(n.species.moves.walk)),
+                _ => (NPC_WALK, NPC_RUN),
+            },
+        }
     }
 
     /// Walk towards a point. False when stuck.
