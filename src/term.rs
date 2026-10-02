@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ENHANCED: AtomicBool = AtomicBool::new(false);
-static MOUSE: AtomicBool = AtomicBool::new(false);
 
 pub struct TermInfo {
     pub enhanced: bool,
@@ -26,11 +25,6 @@ pub fn enter() -> std::io::Result<TermInfo> {
     ACTIVE.store(true, Ordering::SeqCst);
     install_panic_hook();
     execute!(out, terminal::EnterAlternateScreen, cursor::Hide, terminal::DisableLineWrap, crossterm::event::EnableFocusChange)?;
-    // Point at things with the mouse (left: use, right: pick up / throw).
-    if std::env::var("POCKET_NO_MOUSE").is_err() {
-        execute!(out, crossterm::event::EnableMouseCapture)?;
-        MOUSE.store(true, Ordering::SeqCst);
-    }
     let enhanced = std::env::var("POCKET_NO_KEYBOARD_ENHANCEMENT").is_err() && terminal::supports_keyboard_enhancement().unwrap_or(false);
     if enhanced {
         execute!(
@@ -57,9 +51,6 @@ pub fn restore() {
     let _ = out.write_all(b"\x1b[?2026l\x1b[0m");
     if ENHANCED.swap(false, Ordering::SeqCst) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
-    }
-    if MOUSE.swap(false, Ordering::SeqCst) {
-        let _ = execute!(out, crossterm::event::DisableMouseCapture);
     }
     let _ = execute!(out, crossterm::event::DisableFocusChange, terminal::EnableLineWrap, cursor::Show, terminal::LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();

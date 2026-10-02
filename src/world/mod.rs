@@ -272,6 +272,6 @@ impl Solid {
         if ds > 0.5 {
             return ds;
         }
-        self.ty.ct.sdf(self.inst.to_local(p), &self.inst.k()) * self.inst.pos_scale[3]
+        self.inst.sdf(&self.ty.ct, p)
     }
 }

@@ -473,12 +473,12 @@ fn interpreter_lights_the_lantern_and_caches_the_answer() {
     let l1 = s.sim.spawn_thing(lantern, p + Vec3::new(0.0, 0.0, 0.8), 0.0, 1.0, Default::default(), true).unwrap();
     let l2 = s.sim.spawn_thing(lantern, p + Vec3::new(-0.6, 0.0, 0.6), 0.0, 1.0, Default::default(), true).unwrap();
     act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(f) }, 0.2);
-    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(l1)) }, 1.0);
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(l1)), at: None }, 1.0);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(*calls.lock(), 1);
     assert_eq!(s.sim.things.get(l1).unwrap().props[P_LIGHT], 1.0, "lit");
     assert!(r["heard"].to_string().contains("wick catches"), "{r}");
-    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(l2)) }, 1.0);
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(l2)), at: None }, 1.0);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(*calls.lock(), 1, "cached: no second call");
     assert_eq!(s.sim.things.get(l2).unwrap().props[P_LIGHT], 1.0, "the same cause, the same effect");
@@ -498,6 +498,10 @@ fn play_script(ball_src: String, calls: Arc<Mutex<Vec<String>>>) -> Arc<Llm> {
                 return r#"{"goal": "make something to play with", "say": "I'll make a ball.", "steps": [{"do": "create", "text": "a leather ball"}]}"#.into();
             }
             return r#"{"goal": "", "steps": []}"#.into();
+        }
+        if sys.contains("physics and common sense") && user.contains("ball") {
+            calls.lock().push("interpret".into());
+            return r#"{"narration": "", "make": [{"text": "a leather ball"}]}"#.into();
         }
         if user.contains("is making something in the world") {
             calls.lock().push("create".into());
@@ -1015,7 +1019,8 @@ fn plan_steps_accept_common_shapes() {
         (json!({"action": "walk to", "target": "Ola"}), Action::Goto { target: Target::Name("Ola".into()), run: false }),
         (json!({"do": "hug", "target": "Ola"}), Action::Gesture { kind: "hug".into(), to: Some(Target::Name("Ola".into())) }),
         (json!({"do": "say", "line": "Hello"}), Action::Say { text: "Hello".into(), to: None }),
-        (json!({"do": "make", "what": "a kite"}), Action::Create { text: "a kite".into() }),
+        (json!({"do": "make", "what": "a kite"}), Action::Do { text: "make a kite".into(), on: None, at: None }),
+        (json!({"do": "create", "text": "a wooden ball"}), Action::Do { text: "make a wooden ball".into(), on: None, at: None }),
         (json!({"do": "throw", "at": "hoop"}), Action::Throw { at: Some(Target::Name("hoop".into())), dir: None, force: None }),
         (json!({"do": "give", "to": "Ola"}), Action::Give { to: Target::Name("Ola".into()) }),
         (json!({"do": "wait", "secs": 3}), Action::Wait { secs: 3.0 }),
@@ -1081,4 +1086,219 @@ fn an_unknown_gesture_is_learned_and_kept() {
     assert!(super::actor::GestureKind::parse("salute").is_some());
     let n: i64 = w.db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM gestures", [], |r| r.get(0))?)).unwrap();
     assert_eq!(n, 1);
+}
+
+// ------------------------------------------------------------------ editing things
+
+/// The distance to a live thing's shape at `p`, as physics and picking see it.
+fn thing_sdf(s: &Session, id: super::things::ThingId, p: Vec3) -> f32 {
+    let t = s.sim.things.get(id).unwrap();
+    let ty = s.sim.snap.type_of(t.type_id).unwrap();
+    super::render::thing_inst(t, ty, [0.0; 4]).sdf(&ty.ct, p)
+}
+
+/// Cutting takes a piece out of the shape where it was touched: what was
+/// solid is now air, for physics and picking alike; the rest stays.
+#[test]
+fn a_cut_takes_a_piece_out_where_it_was_touched() {
+    let w = world("cut", 52);
+    let hut = add_type(&w, &fixture("sims/hut.js"));
+    let at = dry_spot(&w, 9.0, 0.3);
+    let inst = place(&w, hut, at, 0.0);
+    let mut s = session(&w, 22, None);
+    let h = s.sim.liven(&Target::Instance(inst)).unwrap();
+    let wall = s.sim.touch_point(h, s.sim.things.get(h).unwrap().pos + Vec3::new(6.0, 1.2, 0.0)).unwrap();
+    let inside = wall - Vec3::X * 0.2;
+    let elsewhere = wall + Vec3::new(-0.2, 0.0, 1.2);
+    assert!(thing_sdf(&s, h, inside) < 0.0, "solid wall before");
+    s.sim.cut(ActorId::Player, h, Some(wall), 0.4, false).unwrap();
+    assert!(thing_sdf(&s, h, inside) > 0.0, "a hole after");
+    assert!(thing_sdf(&s, h, elsewhere) < 0.0, "the rest of the wall stays");
+    assert_eq!(s.sim.things.get(h).unwrap().shape.cuts.len(), 1);
+    // More cuts than a thing can show merge, and nothing already cut comes back.
+    for i in 0..6 {
+        let p = wall + Vec3::new(0.0, 0.0, -1.0 + i as f32 * 0.4);
+        s.sim.cut(ActorId::Player, h, Some(p), 0.2, i % 2 == 0).unwrap();
+    }
+    assert_eq!(s.sim.things.get(h).unwrap().shape.cuts.len(), crate::render::MAX_CUTS);
+    assert!(thing_sdf(&s, h, inside) > 0.0, "the first hole is still there");
+    sound(&s);
+}
+
+fn edit_script(calls: Arc<Mutex<Vec<String>>>, hut_src: String) -> Arc<Llm> {
+    let w = world("edit-llm", 1);
+    Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("physics and common sense") {
+            calls.lock().push(user.to_string());
+            if user.contains("add the stick") {
+                return r#"{"narration": "You nail the stick to the wall.", "reshape": [{"target": "target", "name": "wooden hut with a stick on the wall", "change": "a stick nailed flat across the front wall at the touched spot", "with": "held"}]}"#.into();
+            }
+            if user.contains("chimney") {
+                return r#"{"narration": "The hut grows a chimney.", "reshape": [{"target": "target", "name": "wooden hut with a chimney", "change": "add a stone chimney on the roof"}]}"#.into();
+            }
+            return r#"{"narration": "Your fist goes through the planks.", "cut": [{"target": "target", "size_m": 0.4, "shape": "round"}], "cache": true}"#.into();
+        }
+        if user.contains("Change this existing object") && user.contains("Work this other thing into it") {
+            calls.lock().push("combine".into());
+            assert!(user.contains("a stick") && user.contains("rgb(92, 66, 44)"), "the stick's own code is passed on: {user}");
+            let code = hut_src.replace("return min(walls, roof);", "return min(min(walls, roof), box(x, y - 1.6, z + 2.05, 0.5, 0.08, 0.06));");
+            return format!("```js\n{code}\n```");
+        }
+        if user.contains("Change this existing object") {
+            calls.lock().push("edit".into());
+            assert!(user.contains("wooden hut") && user.contains("chimney") && user.contains("local_point"), "{user}");
+            assert!(user.contains("already cut out"), "the cuts are passed on: {user}");
+            let code = hut_src.replace("const roof =", "const chimney = box(x - 1.0, y - 3.4, z, 0.25, 0.6, 0.25);\n  const roof =").replace("return min(walls, roof);", "return min(min(walls, roof), chimney);");
+            return format!("```js\n{code}\n```");
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }))
+}
+
+/// "Punch a hole here": the interpreter answers with a cut, placed where the
+/// player pointed; the same deed on another hut is answered from the cache.
+/// "Add a chimney" rewrites this hut's code (its holes baked in); "add the
+/// stick to this wall" works the held stick's code into the other hut's.
+#[test]
+fn the_interpreter_cuts_and_reshapes_at_the_spot_touched() {
+    let w = world("edit", 54);
+    let src = fixture("sims/hut.js");
+    let hut = add_type(&w, &src);
+    let a = dry_spot(&w, 9.0, 0.3);
+    let b = dry_spot(&w, 9.0, 3.3);
+    let ia = place(&w, hut, a, 0.0);
+    let ib = place(&w, hut, b, 0.0);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut s = session(&w, 24, Some(edit_script(calls.clone(), src)));
+    for (inst, at) in [(ia, a), (ib, b)] {
+        let h = s.sim.liven(&Target::Instance(inst)).unwrap();
+        let hp = s.sim.things.get(h).unwrap().pos;
+        s.sim.player.pos = Vec3::new(hp.x + 3.6, w.terrain.height(hp.x + 3.6, hp.z), hp.z);
+        let wall = s.sim.touch_point(h, hp + Vec3::new(6.0, 1.2, 0.0)).unwrap();
+        let r = act_once(&mut s, ActorId::Player, Action::Do { text: "punch a hole in it".into(), on: Some(Target::Thing(h)), at: Some(wall.to_array()) }, 0.5);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(thing_sdf(&s, h, wall - Vec3::X * 0.2) > 0.0, "a hole where the fist went ({at:?})");
+    }
+    assert_eq!(calls.lock().len(), 1, "the second hut was answered from the cache");
+    assert!(calls.lock()[0].contains("touched_at"), "the interpreter is told where");
+    let h = s.sim.things.by_instance[&ia];
+    let hp = s.sim.things.get(h).unwrap().pos;
+    s.sim.player.pos = Vec3::new(hp.x + 3.6, w.terrain.height(hp.x + 3.6, hp.z), hp.z);
+    let r = act_once(&mut s, ActorId::Player, Action::Do { text: "add a chimney".into(), on: Some(Target::Thing(h)), at: None }, 0.5);
+    assert_eq!(r["ok"], true, "{r}");
+    s.pump(std::time::Duration::from_secs(60));
+    s.run(0.5, 0.05);
+    let t = s.sim.things.get(h).unwrap();
+    assert_eq!(s.sim.thing_name(h), "wooden hut with a chimney", "calls: {:?}", calls.lock());
+    assert!(t.shape.cuts.is_empty(), "the hole is baked into the new code");
+    assert!(t.shape.edits.iter().any(|e| e.what.contains("reshaped")));
+    assert!((t.pos - hp).length() < 0.5, "it stays where it was");
+    let other = s.sim.things.by_instance[&ib];
+    assert_eq!(s.sim.thing_name(other), "wooden hut", "only this hut changed");
+    // "Add the stick to this wall", stick in hand: the stick's code is worked
+    // into the hut's, and the stick is used up once the new hut is there.
+    let stick = s.sim.spawn_thing(builtin_id(&w, "stick"), s.sim.player.pos + Vec3::new(0.0, 0.0, 0.4), 0.0, 1.0, Default::default(), true).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(stick) }, 0.2);
+    assert_eq!(r["ok"], true, "{r}");
+    let ob = s.sim.things.get(other).unwrap().pos;
+    s.sim.player.pos = Vec3::new(ob.x + 3.6, w.terrain.height(ob.x + 3.6, ob.z), ob.z);
+    let wall = s.sim.touch_point(other, ob + Vec3::new(6.0, 1.6, 0.0)).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Do { text: "add the stick to this wall".into(), on: Some(Target::Thing(other)), at: Some(wall.to_array()) }, 0.5);
+    assert_eq!(r["ok"], true, "{r}");
+    s.pump(std::time::Duration::from_secs(60));
+    s.run(0.5, 0.05);
+    assert_eq!(s.sim.thing_name(other), "wooden hut with a stick on the wall", "calls: {:?}", calls.lock());
+    assert!(s.sim.things.get(stick).is_none(), "the stick became part of the hut");
+    assert_eq!(s.sim.player.held, None);
+    sound(&s);
+}
+
+/// Render a hut with a round hole and a square one cut in its wall (look at it).
+#[test]
+#[ignore]
+fn render_edited_hut_png() {
+    let out = std::env::var("POCKET_PNG_OUT").unwrap_or_else(|_| std::env::temp_dir().join("pocket-edited.png").display().to_string());
+    let w = world("pngedit", 44);
+    let hut = add_type(&w, &fixture("sims/hut.js"));
+    let me = w.spawn;
+    let hut_at = ground(&w, me.x, me.z + 9.0);
+    let hut_id = place(&w, hut, hut_at, 0.0);
+    let mut s = session(&w, 15, None);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    let h = s.sim.promote_instance(hut_id).unwrap();
+    let hp = s.sim.things.get(h).unwrap().pos;
+    // Straight at the front wall, as a player looking at it would.
+    let front = |s: &Session, dx: f32, y: f32| {
+        let mut p = hp + Vec3::new(dx, y, -8.0);
+        for _ in 0..200 {
+            let d = thing_sdf(s, h, p);
+            if d < 0.005 {
+                break;
+            }
+            p.z += d.max(0.005);
+        }
+        p
+    };
+    let (hole, low) = (front(&s, -0.5, 1.3), front(&s, 0.9, 0.5));
+    s.sim.cut(ActorId::Player, h, Some(hole), 0.7, false).unwrap();
+    s.sim.cut(ActorId::Player, h, Some(low), 0.35, true).unwrap();
+    s.sim.step(0.1);
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    s.sim.flip(snap.clone());
+    let cam = crate::render::Camera { pos: Vec3::new(hp.x, w.terrain.height(hp.x, hp.z - 6.5) + 1.7, hp.z - 6.5), yaw: 0.0, pitch: -0.05, fov_y: 1.05 };
+    let (pw, ph) = (320u32, 180u32);
+    let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
+    let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
+    let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+    let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+    let mut handle = match &gpu {
+        Some(g) => crate::render::gpu::spawn(g.clone()),
+        None => crate::render::cpu::spawn(),
+    };
+    handle.tx.send(crate::render::RenderMsg::Frame(Box::new(req))).unwrap();
+    let f = handle.rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    handle.shutdown();
+    let sc = 3u32;
+    let mut rgb = Vec::new();
+    for y in 0..f.height * sc {
+        for x in 0..f.width * sc {
+            rgb.extend_from_slice(&crate::render::unpack(f.pixels[((y / sc) * f.width + x / sc) as usize]));
+        }
+    }
+    std::fs::write(&out, crate::png::encode(f.width * sc, f.height * sc, &rgb)).unwrap();
+    eprintln!("wrote {out}");
+}
+
+/// A piece "taken off" a thing whose shape stays the same shows nothing, so
+/// such an answer is not cached: the next time, the interpreter is asked again.
+#[test]
+fn pieces_that_leave_the_shape_unchanged_are_not_cached() {
+    let w = world("nocache", 55);
+    let hut = add_type(&w, &fixture("sims/hut.js"));
+    let at = dry_spot(&w, 9.0, 0.3);
+    let inst = place(&w, hut, at, 0.0);
+    let calls = Arc::new(Mutex::new(0usize));
+    let c2 = calls.clone();
+    let llm = Llm::scripted(world("nocache-llm", 1).db.clone(), Arc::new(move |sys: &str, _msgs: &[Msg]| {
+        if sys.contains("physics and common sense") {
+            *c2.lock() += 1;
+            return r#"{"narration": "You pull the hide off the doorway.", "create": [{"name": "stone", "description": "a hide"}], "cache": true}"#.into();
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let mut s = session(&w, 25, Some(llm));
+    let h = s.sim.liven(&Target::Instance(inst)).unwrap();
+    let hp = s.sim.things.get(h).unwrap().pos;
+    s.sim.player.pos = Vec3::new(hp.x + 3.6, w.terrain.height(hp.x + 3.6, hp.z), hp.z);
+    for _ in 0..2 {
+        let r = act_once(&mut s, ActorId::Player, Action::Do { text: "remove the cover from the doorway".into(), on: Some(Target::Thing(h)), at: None }, 0.3);
+        assert_eq!(r["ok"], true, "{r}");
+    }
+    assert_eq!(*calls.lock(), 2, "asked again, not answered from the cache");
 }

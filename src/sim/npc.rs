@@ -193,20 +193,25 @@ pub fn parse_step(v: &Value) -> Option<Action> {
             }
         }
     }
-    let verb = obj.get("do")?.as_str()?.trim().to_lowercase().replace([' ', '-'], "_");
-    let verb = match verb.as_str() {
+    let raw = obj.get("do")?.as_str()?.trim().to_lowercase().replace([' ', '-'], "_");
+    let verb = match raw.as_str() {
         "walk_to" | "go_to" | "go" | "approach" | "walk" => "goto",
         "pick_up" | "pickup" | "take" | "grab" | "lift" | "carry" => "hold",
         "put_down" | "set_down" | "release" => "drop",
         "toss" => "throw",
         "speak" | "tell" | "talk" => "say",
-        "make" | "build" | "craft" => "create",
+        // Making is something you do, in words, like everything else.
+        "make" | "build" | "craft" | "create" => "do",
         "hand" | "offer" => "give",
         "home" | "go_home" => "go_home",
         v => v,
     }
     .to_string();
     obj.insert("do".into(), Value::String(verb.clone()));
+    // For do and use, `at` is a spot (a point); a plan never names one.
+    if matches!(verb.as_str(), "do" | "use") && obj.get("at").is_some_and(|a| !a.is_array()) {
+        obj.remove("at");
+    }
     for key in ["target", "at", "to", "on", "with"] {
         if let Some(x) = obj.get(key).cloned() {
             let fixed = match x {
@@ -229,9 +234,15 @@ pub fn parse_step(v: &Value) -> Option<Action> {
             obj.insert("kind".into(), x);
         }
     }
-    if verb == "create" && !obj.contains_key("text") {
+    if verb == "do" && !obj.contains_key("text") {
         if let Some(x) = obj.remove("what").or_else(|| obj.remove("thing")) {
             obj.insert("text".into(), x);
+        }
+    }
+    // {"do": "create", "text": "a wooden ball"} → "make a wooden ball".
+    if let (Some(Value::String(t)), true) = (obj.get("text").cloned(), matches!(raw.as_str(), "make" | "build" | "craft" | "create")) {
+        if !t.trim_start().to_lowercase().starts_with(&raw) {
+            obj.insert("text".into(), Value::String(format!("{} {}", if raw == "create" { "make" } else { &raw }, t.trim())));
         }
     }
     // Gestures named as verbs ("hug", "wave").

@@ -64,6 +64,10 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             brain.send(Cmd::BuildGesture { id, name });
             true
         }
+        Request::EditType { id, name, source, change, spot, cuts, with } => {
+            brain.send(Cmd::EditType { id, name, source, change, spot, cuts, with });
+            true
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 //! End-to-end: the real brain, committer, SQLite and (if present) GPU, driven
-//! by a scripted LLM. Covers genesis, a region plan, /create with a repair,
+//! by a scripted LLM. Covers genesis, a region plan, a creation with a repair,
 //! a rejected floating placement, undo, dialogue, and memory across a restart.
 
 use crate::brain::{Brain, Cmd, Event};

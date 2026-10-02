@@ -14,7 +14,6 @@ Where the build differs from the plan:
 - **Breaking:** fragile things split into smaller copies of themselves that keep their
   properties (a broken lamp still holds burning oil), not a cut-up SDF.
 - **Throw:** `f` throws at what you point at, or lobs it to the ground you point at.
-  With a mouse, hold the right button to wind up.
 - **Added, not in the plan:** regrowth (eaten or burnt plants come back after a game
   day or so), and two cheap no-LLM behaviours: gathering loose sticks and stones into
   piles at home, and tossing stones for fun. Without these, a world with no LLM was
@@ -196,13 +195,12 @@ Shared activities should come from the same primitives, not be special-cased.
 
 ## Input
 
-- Turn on crossterm mouse capture. The cursor points at a thing, and picking
-  casts a ray from the camera through that cell (CPU SDF march, or an
-  instance-id readback from the GPU pass).
-- **Left click** = use. **Right click** = hold or drop. Holding right click and
-  releasing throws.
-- **Typing** is the open-ended verb: `/create` already exists, and free text
-  becomes `Do`.
+- No mouse: you point with the middle of the view, and picking casts a ray
+  from the camera through it (CPU SDF march).
+- `e` = use, `g` = hold or drop, `f` = throw.
+- **Typing** is the open-ended verb: everything after `/` becomes `Do`, and the
+  interpreter decides whether that changes what you point at or makes something
+  new (see `docs/editing-plan.md`).
 - The agent uses `pocket act FILE --as player|<cid> '<action json>'`, with the
   same verbs and targets given as thing ids.
 

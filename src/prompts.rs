@@ -160,6 +160,30 @@ Rules:
 
 pub const TYPE_TASK: &str = "Write this object type as one ```js block containing the complete module.";
 
+/// Rewriting one thing's shape: the current module, the change, and where.
+/// `with`: another thing to work into it (name, module, its size relative to this one).
+pub fn edit_task(name: &str, source: &str, change: &str, spot: &str, cuts: &[[f32; 4]], with: Option<&(String, String, f32)>) -> String {
+    let spot = if spot.is_empty() { "not given".to_string() } else { spot.to_string() };
+    let cuts = if cuts.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = cuts
+            .iter()
+            .map(|c| if c[3] > 0.0 { format!("a sphere of radius {:.2} at ({:.2}, {:.2}, {:.2})", c[3], c[0], c[1], c[2]) } else { format!("a cube of half-size {:.2} at ({:.2}, {:.2}, {:.2})", -c[3], c[0], c[1], c[2]) })
+            .collect();
+        format!("\nPieces already cut out of it (subtract these too, so they stay): {}.", list.join("; "))
+    };
+    let with = match with {
+        Some((wname, wsrc, rel)) => format!(
+            "\n\nWork this other thing into it, at the touched spot: a {wname}. In the object's units it is {rel:.2} times the size its own module draws it, so scale its shapes by {rel:.2}. Take its shape and colours from its module:\n```js\n{wsrc}\n```"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "Change this existing object. Here is its current module:\n```js\n{source}\n```\n\nThe change: {change}\nWhere it was touched (in this module's own coordinates, the ones sdf receives): {spot}{cuts}{with}\n\nRewrite the whole module with the change made. Keep everything else the same: the same coordinate frame and origin, the same look and colours, roughly the same bounds (grow them only if the change needs it), the same props and tags. Set meta.name to exactly \"{name}\". Reply with one ```js block containing the complete module."
+    )
+}
+
 pub const CREATE_TASK: &str = r#"Someone is making something in the world by asking for it. You see what they see (JSON below). Decide what to build and where.
 
 Reply with one ```json block:
@@ -191,25 +215,33 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "use", "target": "lantern", "on": "woodpile"}                                {"do": "say", "text": "…", "to": "Ola"}
   {"do": "gesture", "kind": "wave|bow|nod|point|cheer|shrug|dance|sit|handshake|high_five|hug|kiss", "to": "Ola"}
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
-  {"do": "create", "text": "a wooden ball"}    (make something new: only when it really fits who they are)
-  {"do": "do", "text": "carve a notch in the door"}                                   (anything else, in words)
+  {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveller"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
 Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
 For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveller"}] with "say" set, or nothing."#;
 
 pub const SUMMARY_TASK: &str = "Update this character's private memory summary. Write at most 120 words in the first person, covering what they know and feel about the traveller (the player), promises, recurring topics, and notable things they witnessed. Keep the important older points. Plain text only.";
 
-pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a small simulated world. Someone did something that the world's rules don't cover. Decide what happens, as changes to things, not just words. Reply with one JSON object only:
+pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a small simulated world. Someone says, in words, what they do or make. Decide what happens, as changes to things, not just words. Reply with one JSON object only:
 {
   "narration": "one or two sentences: what visibly happens",
   "changes": [ { "target": "held" | "target", "props": { "<property>": number }, "state": { "s0": number } } ],
   "create": [ { "name": "new thing", "replace": "held" | "target" | null, "description": "looks, materials", "size_m": [w, h, d], "props": { "<property>": number } } ],
   "remove": [ "held" | "target" ],
+  "make": [ { "text": "what to make and where, in words, e.g. a stone well by the path" } ],
+  "cut": [ { "target": "target", "size_m": 0.25, "shape": "round" | "square" } ],
+  "reshape": [ { "target": "target", "name": "new name for the changed thing", "change": "what changes about its shape, precisely", "with": "held" | null } ],
   "say": "a few words the actor says, or null",
   "cache": true
 }
-- "held" is what the actor holds; "target" is what they act on. Use only property names from the list. Set "cache": false if the result depends on chance or the moment.
-- Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). If nothing would happen, say so in the narration and change nothing."#;
+- "held" is what the actor holds; "target" is what the middle of their view points at (a thing with its distance, or the ground or a far point). Use only property names from the list. Set "cache": false if the result depends on chance or the moment.
+- Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). If nothing would happen, say so in the narration and change nothing.
+- Decide from the words whether they change what they point at or make something new; the target is only a hint. "Make a stool", "a lighthouse on that hill", "build a fence here" are "make" (it is placed where they look), even when a thing is pointed at. "Fix the roof", "open it", "remove the cover", "add this stick to the wall" change the target. "Carve a bowl from this log" makes from it: "create" with "replace": "target". "make" is for things that stand in the world (buildings, furniture, structures, landmarks); "create" is for small loose things that come from the deed (a piece that comes off, a carving, a spark).
+- The world only shows what your changes do, never what the narration says. If the target visibly changes form (something on it is removed, opened, broken off, added, bent, dug), you must change its shape with "cut" or "reshape"; props alone change nothing you can see.
+- Changing a thing's shape happens where it was touched ("touched_at", in the thing's own coordinates):
+  - "cut": take a piece out (punch a hole, dig, bite, chip, carve a notch). size_m is the radius in metres; a cut deeper than a wall is thick goes right through. It shows at once; the engine places it, you only say how big.
+  - "reshape": change the shape itself: remove a part of it (the door cover, a roof tile, a branch), open or bend it, make the roof a dome, add a chimney. With "with": "held", work the held thing into it (add the stick to the wall, mount the wheel on the boat, hang the lantern on the post): it becomes part of the target and is used up. Describe the change precisely, including where.
+- Taking a piece off a thing is two changes: "reshape" the target without the piece, and "create" the piece as a new thing (it lands nearby)."#;
 
 pub const CHAT_TASK: &str = "Two characters in a small living world meet and talk briefly, in their own voices, about what is on their minds (what they saw, what they are doing, each other). 2 to 4 short lines, plain speech, no stage directions. Reply with one JSON object only: {\"lines\": [{\"who\": \"Name\", \"text\": \"…\"}]}";
 

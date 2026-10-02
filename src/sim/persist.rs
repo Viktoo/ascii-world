@@ -135,6 +135,14 @@ pub fn load(sim: &mut Sim) {
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .unwrap_or_default();
+    // Parts, cuts and edit histories.
+    let shapes: std::collections::HashMap<i64, super::things::Shape> = db
+        .with(|c| {
+            let mut st = c.prepare("SELECT id, json FROM thing_shapes")?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            Ok(rows.filter_map(|r| r.ok()).filter_map(|(id, j)| serde_json::from_str(&j).ok().map(|s| (id, s))).collect())
+        })
+        .unwrap_or_default();
     let alive: HashSet<i64> = sim.snap.instances.iter().map(|p| p.id).collect();
     let mut gone = Vec::new();
     for (id, type_id, v, params_json, state_json, props_json, holder, co_holder, asleep, anchored, origin_json, born) in rows {
@@ -165,6 +173,7 @@ pub fn load(sim: &mut Sim) {
         t.origin = origin;
         t.holder = parse_actor(holder);
         t.co_holder = parse_actor(co_holder);
+        t.shape = shapes.get(&id).cloned().unwrap_or_default();
         t.dirty = false;
         sim.things.insert(t);
     }
@@ -272,6 +281,7 @@ pub fn save(sim: &mut Sim) {
             t.anchored,
             serde_json::to_string(&t.origin).unwrap_or_default(),
             t.born,
+            (!t.shape.is_empty()).then(|| serde_json::to_string(&t.shape).unwrap_or_default()),
         ));
     }
     let removed = std::mem::take(&mut sim.things.removed);
@@ -303,9 +313,14 @@ pub fn save(sim: &mut Sim) {
                  ON CONFLICT(id) DO UPDATE SET type_id = excluded.type_id, x = excluded.x, y = excluded.y, z = excluded.z, yaw = excluded.yaw, scale = excluded.scale, params_json = excluded.params_json, state_json = excluded.state_json, props_json = excluded.props_json, holder = excluded.holder, co_holder = excluded.co_holder, asleep = excluded.asleep, anchored = excluded.anchored, origin_json = excluded.origin_json",
                 params![r.0, r.1 as i64, r.2.x as f64, r.2.y as f64, r.2.z as f64, r.3 as f64, r.4 as f64, r.5, r.6, r.7, r.8, r.9, r.10 as i64, r.11 as i64, r.12, r.13],
             )?;
+            match &r.14 {
+                Some(j) => tx.execute("INSERT INTO thing_shapes(id, json) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET json = excluded.json", params![r.0, j])?,
+                None => tx.execute("DELETE FROM thing_shapes WHERE id = ?1", [r.0])?,
+            };
         }
         for id in &removed {
             tx.execute("DELETE FROM things WHERE id = ?1", [id])?;
+            tx.execute("DELETE FROM thing_shapes WHERE id = ?1", [id])?;
         }
         for (gx, gz, pj, active) in &cell_rows {
             tx.execute("INSERT INTO cells(gx, gz, props_json, active) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(gx, gz) DO UPDATE SET props_json = excluded.props_json, active = excluded.active", params![gx, gz, pj, *active as i64])?;

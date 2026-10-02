@@ -31,16 +31,19 @@ cargo build --release      # → target/release/pocket
 
 | Mode | Enter with | Keys |
 |---|---|---|
-| Walk (default) | `Esc` | `↑` `↓` move, `←` `→` turn, `A`/`D` strafe, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `PgUp`/`PgDn` look, `q` quit |
+| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down (or `PgUp`/`PgDn`), `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
 | Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
-| Mouse | (in walk) | point at things; left click: use; right click: pick up / put down; hold the right button and release: throw (longer is harder) |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk |
-| Do | `:` | anything in words: `:rub the stone on the lantern`, `:carve my name in the door` |
-| Create | `/` | `/a a lighthouse on that hill`, `/undo`, `/history`, `/help` |
+| Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |
 
-More commands: `/wave`, `/bow`, `/nod`, `/cheer`, `/dance`, `/sit`, `/hug NAME`,
-`/kiss NAME`, `/handshake NAME`, `/highfive NAME`, `/give NAME`, `/say TEXT`,
-`/propose NAME catch|carry|dance|walk|…`, `/drop`, `/do TEXT`, `/gesture ANY [NAME]`.
+You point with the middle of the view (the small `+`). Whatever you type after `/`
+goes to the world, which decides from the words, what you point at and what you hold
+whether you change that thing or make something new.
+
+System commands: `/undo`, `/history`, `/help`, `/day`, `/night`, `/time HOUR`, `/inspect`.
+Shortcuts, taken only in exactly this form: `/wave`, `/bow`, `/nod`, `/cheer`, `/dance`,
+`/sit`, `/hug NAME`, `/kiss NAME`, `/handshake NAME`, `/highfive NAME`, `/give NAME`,
+`/say TEXT`, `/propose NAME catch|carry|dance|walk|…`, `/drop`, `/gesture ANY [NAME]`.
 Contact gestures need the other person's consent: characters decide by how they feel
 about you. A gesture nobody knows yet (`/gesture salute`) is written once by the LLM as
 key poses, kept with the world, and anyone can do it after.
@@ -50,7 +53,7 @@ behaviour code and the rules that last fired on it; a character's needs, plan, g
 relationships, recent decisions and memories.
 
 - Terminals with the kitty keyboard protocol (Kitty, Ghostty, WezTerm, foot, …) report
-  key releases, so holding `↑` walks at constant speed and stops the moment you let go.
+  key releases, so holding `W` walks at constant speed and stops the moment you let go.
   Elsewhere every press/repeat event takes one short step.
 - Truecolor is used when `COLORTERM` says so; otherwise 256 colours.
 - The world saves continuously into one `.pocket` file (SQLite). Copy it to fork a world.
@@ -71,7 +74,6 @@ relationships, recent decisions and memories.
 | `POCKET_PRICE_IN` / `POCKET_PRICE_OUT` | $/M tokens for models the built-in table doesn't know. |
 | `POCKET_FPS` | Frame-rate cap (default 60). |
 | `POCKET_NO_GPU=1` | Force the CPU renderer. |
-| `POCKET_NO_MOUSE=1` | Don't capture the mouse (keeps the terminal's own text selection). |
 | `POCKET_SIM_NEAR` | Full simulation within this many metres of you (default 220). |
 | `POCKET_SIM_MEDIUM` | Reduced-rate simulation up to here (default 512): the world keeps changing while you're away. |
 | `POCKET_SIM_MEDIUM_HZ` | Ticks per second at medium distance (default 2). |
@@ -301,7 +303,7 @@ How the acceptance criteria are covered:
 | 1,000 things and 50 people at over 10× real time | `sim::tests::a_thousand_things_and_fifty_people_run_fast` (~29×) |
 | A village left two game days ago has changed | `sim::tests::a_village_left_for_two_days_has_changed` |
 | Live things, cells, relationships survive a restart; eaten plants grow back | `sim::tests::live_things_cells_and_relationships_persist`, `eaten_plants_stay_gone_then_grow_back` |
-| Keys and mouse: pick up, throw, F2, free-text do | `app::tests::grab_throw_inspect_and_do_with_keys_and_mouse` |
+| Keys: pick up, throw, F2, free-text do | `app::tests::grab_throw_inspect_and_do_with_keys` |
 
 The LLM-dependent tests use a scripted model in-process (no network).
 

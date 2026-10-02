@@ -57,7 +57,7 @@ pub struct PointLight {
 pub const FLAG_GRID: u32 = 1;
 pub const FLAG_SHADOWS: u32 = 2;
 
-/// One instance as the shader sees it (128 bytes).
+/// One instance as the shader sees it (192 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct GpuInst {
@@ -72,6 +72,35 @@ pub struct GpuInst {
     /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1.
     pub fx: [f32; 4],
     pub info: [u32; 4],
+    /// Cuts taken out of the shape, in its local frame: centre xyz and size
+    /// w (w > 0 a sphere of that radius, w < 0 a cube of half-size -w, 0 none).
+    pub cuts: [[f32; 4]; MAX_CUTS],
+}
+
+pub const MAX_CUTS: usize = 4;
+
+/// The distance to one cut (local units); twin of `cut_sdf` in scene.wgsl.
+pub fn cut_sdf(c: &[f32; 4], p: [f32; 3]) -> f32 {
+    let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+    if c[3] > 0.0 {
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - c[3]
+    } else {
+        let h = -c[3];
+        let q = [d[0].abs() - h, d[1].abs() - h, d[2].abs() - h];
+        let o = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2) + q[2].max(0.0).powi(2)).sqrt();
+        o + q[0].max(q[1]).max(q[2]).min(0.0)
+    }
+}
+
+/// A shape's local distance with its cuts taken out.
+pub fn apply_cuts(d: f32, cuts: &[[f32; 4]; MAX_CUTS], p: [f32; 3]) -> f32 {
+    let mut d = d;
+    for c in cuts {
+        if c[3] != 0.0 {
+            d = d.max(-cut_sdf(c, p));
+        }
+    }
+    d
 }
 
 pub const FX_CHAR: usize = 0;
@@ -87,6 +116,11 @@ impl GpuInst {
         k[8..12].copy_from_slice(&self.s0);
         k[12..16].copy_from_slice(&self.s1);
         k
+    }
+    /// The shape's distance at world point `p` (CPU), cuts included.
+    pub fn sdf(&self, ct: &crate::lang::CompiledType, p: Vec3) -> f32 {
+        let lp = self.to_local(p);
+        apply_cuts(ct.sdf(lp, &self.k()), &self.cuts, lp) * self.pos_scale[3]
     }
     pub fn set_state(&mut self, s: &[f32; 8]) {
         self.s0.copy_from_slice(&s[0..4]);

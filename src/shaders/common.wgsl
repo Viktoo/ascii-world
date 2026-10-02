@@ -35,6 +35,7 @@ struct Inst {
   s1: vec4f,          // live state s4..s7
   fx: vec4f,          // charred, wet, glow, highlight
   info: vec4u,        // type id, sphere centre y, box half-extents x/z
+  cuts: array<vec4f, 4>, // local centre, size (>0 sphere radius, <0 cube half-size, 0 none)
 }
 
 struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32,

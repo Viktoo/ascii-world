@@ -21,7 +21,7 @@ fn v3(a: [f32; 4]) -> Vec3 {
 impl Scene<'_> {
     fn inst_sdf(&self, i: usize, p: Vec3) -> f32 {
         let (gi, ty) = &self.insts[i];
-        ty.ct.sdf(gi.to_local(p), &gi.k()) * gi.pos_scale[3]
+        gi.sdf(&ty.ct, p)
     }
 
     fn map(&self, p: Vec3, cands: &[usize]) -> (f32, Option<usize>) {
@@ -140,7 +140,7 @@ impl Scene<'_> {
                         let fx = gi.fx;
                         let mut a = base.lerp(Vec3::new(0.07, 0.06, 0.055), fx[0].clamp(0.0, 1.0));
                         a *= 1.0 - 0.35 * fx[1].clamp(0.0, 1.0);
-                        a = a.lerp(Vec3::new(1.0, 0.97, 0.8), fx[3].clamp(0.0, 1.0) * 0.4);
+                        a = a.lerp(Vec3::new(1.0, 0.97, 0.8), fx[3].clamp(0.0, 1.0) * 0.28);
                         self.shade(p, n, a) + base * fx[2].clamp(0.0, 2.0)
                     }
                 }

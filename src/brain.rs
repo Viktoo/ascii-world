@@ -37,6 +37,8 @@ pub enum Cmd {
     BuildType { id: u64, name: String, description: String, size: [f32; 3], props: Vec<(String, f32)> },
     /// Write a gesture's pose keyframes. Answered by `Event::GestureBuilt`.
     BuildGesture { id: u64, name: String },
+    /// Rewrite one thing's shape code. Answered by `Event::TypeBuilt`.
+    EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
 }
 
 pub enum Event {
@@ -176,7 +178,7 @@ impl Brain {
                         Cmd::Interpret { id, .. } => Some(Event::Interpreted { id, result: Err("no LLM".into()) }),
                         Cmd::Create { id, .. } => Some(Event::Created { id, instances: vec![] }),
                         Cmd::Chat { a, b, .. } => Some(Event::ChatLines { a, b, lines: vec![] }),
-                        Cmd::BuildType { id, .. } => Some(Event::TypeBuilt { id, type_id: None }),
+                        Cmd::BuildType { id, .. } | Cmd::EditType { id, .. } => Some(Event::TypeBuilt { id, type_id: None }),
                         Cmd::BuildGesture { id, .. } => Some(Event::GestureBuilt { id, result: Err("no LLM".into()) }),
                         _ => None,
                     };
@@ -321,6 +323,18 @@ async fn run(ctx: Ctx, cmd: Cmd) {
                 Ok(t) => Some(t),
                 Err(e) => {
                     crate::log::error(format!("building type '{name}' failed: {e:#}"));
+                    None
+                }
+            };
+            let _ = ctx.events.send(Event::TypeBuilt { id, type_id });
+            let _ = ctx.events.send(Event::Building(-1));
+        }
+        Cmd::EditType { id, name, source, change, spot, cuts, with } => {
+            let _ = ctx.events.send(Event::Building(1));
+            let type_id = match edit_item_type(&ctx, &name, &source, &change, &spot, &cuts, with.as_ref()).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    crate::log::error(format!("reshaping into '{name}' failed: {e:#}"));
                     None
                 }
             };
@@ -940,6 +954,40 @@ async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3
     let id = ok.snapshot.scene.types.values().filter(|e| e.name() == tname).map(|e| e.id).max().ok_or_else(|| anyhow::anyhow!("type vanished"))?;
     let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
     Ok(id)
+}
+
+/// Rewrite one thing's shape: the builder edits its current code (working
+/// in another thing's, if given).
+async fn edit_item_type(ctx: &Ctx, name: &str, source: &str, change: &str, spot: &str, cuts: &[[f32; 4]], with: Option<&(String, String, f32)>) -> anyhow::Result<u32> {
+    let system = prompts::builder_system(&ctx.bible, &ctx.known_props());
+    let task = prompts::edit_task(name, source, change, spot, cuts, with);
+    let mut t = build_type(ctx, &system, task, name, &[]).await?;
+    // The thing is found again by name: insist on the one asked for.
+    if t.ct.meta.name != name {
+        let mut ct = (*t.ct).clone();
+        ct.meta.name = name.to_string();
+        ct.source = rename_meta(&ct.source, &t.ct.meta.name, name);
+        t.ct = Arc::new(ct);
+    }
+    let ok = ctx
+        .commit(CommitRequest { kind: "interp", summary: format!("reshaped: {name}"), new_types: vec![t], placements: vec![], nudge: true, region: None, look: None })
+        .await
+        .map_err(|d| anyhow::anyhow!(format_diags(&d)))?;
+    let id = ok.snapshot.scene.types.values().filter(|e| e.name() == name).map(|e| e.id).max().ok_or_else(|| anyhow::anyhow!("type vanished"))?;
+    let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
+    Ok(id)
+}
+
+/// Replace the name string in a module's meta (so the stored source matches).
+fn rename_meta(src: &str, old: &str, new: &str) -> String {
+    let esc = new.replace('\\', "").replace('"', "'");
+    for q in ['"', '\''] {
+        let from = format!("name: {q}{old}{q}");
+        if src.contains(&from) {
+            return src.replacen(&from, &format!("name: \"{esc}\""), 1);
+        }
+    }
+    src.to_string()
 }
 
 fn words(s: &str) -> std::collections::HashSet<String> {

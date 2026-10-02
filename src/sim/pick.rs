@@ -32,7 +32,7 @@ fn sdf(c: &Cand, p: Vec3) -> f32 {
             if ds > 0.4 {
                 return ds;
             }
-            ty.ct.sdf(g.to_local(p), &g.k()) * g.pos_scale[3]
+            g.sdf(&ty.ct, p)
         }
         Cand::Body(_, feet, h) => {
             let y = p.y.clamp(feet.y + 0.3, feet.y + h - 0.2);

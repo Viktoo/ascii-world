@@ -37,6 +37,48 @@ pub struct Make {
     pub props: BTreeMap<String, f32>,
 }
 
+/// Make something new in the world (a well, a lighthouse on that hill, a
+/// stool): handed to the builder, which places it in view.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MakeFx {
+    /// What to make and where, in words ("a stone well by the path").
+    pub text: String,
+}
+
+/// Cut a piece out of a thing at the spot that was touched.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CutFx {
+    #[serde(default = "target_role")]
+    pub target: String,
+    /// Radius (or half-width) in metres.
+    #[serde(default = "cut_size")]
+    pub size_m: f32,
+    /// "round" (default) or "square".
+    #[serde(default)]
+    pub shape: String,
+}
+
+/// Rewrite a thing's shape code, maybe working another thing into it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ReshapeFx {
+    #[serde(default = "target_role")]
+    pub target: String,
+    /// The changed thing's name ("hut with a stick on the wall").
+    pub name: String,
+    /// What changes about its shape, for the builder.
+    pub change: String,
+    /// "held": the held thing becomes part of it (and is used up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+}
+
+fn target_role() -> String {
+    "target".into()
+}
+fn cut_size() -> f32 {
+    0.25
+}
+
 /// What the interpreter may answer.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct InterpEffect {
@@ -48,6 +90,12 @@ pub struct InterpEffect {
     pub create: Vec<Make>,
     #[serde(default)]
     pub remove: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub make: Vec<MakeFx>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<CutFx>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reshape: Vec<ReshapeFx>,
     /// A short line the actor says.
     #[serde(default)]
     pub say: Option<String>,
@@ -66,17 +114,23 @@ pub struct PendingInterp {
     pub text: String,
     pub held: Option<ThingId>,
     pub target: Option<Target>,
+    /// The spot on the target that was touched (world).
+    pub hit: Option<glam::Vec3>,
     pub key: String,
     pub at: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PendingBuild {
     pub name: String,
     /// Things waiting for this type: (thing, transform it rather than spawn next to it).
     pub then: Vec<(ThingId, bool)>,
     /// Or a place to put a new one (and who to hand it to).
     pub place: Option<(glam::Vec3, Option<ActorId>, Option<ThingId>)>,
+    /// Things being reshaped into it (by whom, and what is worked into
+    /// them, used up when it is done), and what the change was.
+    pub reshape: Vec<(ThingId, ActorId, Option<ThingId>)>,
+    pub change: String,
 }
 
 #[derive(Default)]
@@ -91,6 +145,17 @@ pub struct Interp {
     pub hits: u64,
 }
 
+/// New loose things appear next to a target whose shape doesn't change (no
+/// cut, reshape, removal or replacement of it): likely "a piece came off" told
+/// only in words.
+fn pieces_without_change(fx: &InterpEffect, p: &PendingInterp) -> bool {
+    let on_thing = matches!(p.target, Some(Target::Thing(_) | Target::Instance(_) | Target::Cell(_)));
+    let is_target = |r: &str| matches!(r.trim().to_lowercase().as_str(), "target" | "object" | "other");
+    let loose = fx.create.iter().any(|m| m.replace.is_none());
+    let reshaped = fx.cut.iter().any(|c| is_target(&c.target)) || fx.reshape.iter().any(|r| is_target(&r.target)) || fx.remove.iter().any(|r| is_target(r)) || fx.create.iter().any(|m| m.replace.as_deref().is_some_and(is_target));
+    on_thing && loose && !reshaped
+}
+
 /// The cache key: the words, normalised, and the kinds of things involved.
 fn cache_key(text: &str, held: &str, target: &str) -> String {
     let t: String = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty() && !matches!(*w, "the" | "a" | "an" | "my" | "i" | "to")).collect::<Vec<_>>().join(" ");
@@ -99,7 +164,7 @@ fn cache_key(text: &str, held: &str, target: &str) -> String {
 
 impl Sim {
     /// Ask the world what an action does (cached, else the LLM).
-    pub fn interpret(&mut self, who: ActorId, text: &str, target: Option<Resolved>) -> Result<Outcome, ActErr> {
+    pub fn interpret(&mut self, who: ActorId, text: &str, target: Option<Resolved>, hit: Option<glam::Vec3>) -> Result<Outcome, ActErr> {
         let held = self.actor(who).and_then(|a| a.held);
         let held_name = held.map(|h| self.thing_name(h)).unwrap_or_default();
         let target_name = target.as_ref().map(|r| r.name.clone()).unwrap_or_default();
@@ -107,7 +172,7 @@ impl Sim {
         let name = self.actor_name(who);
         if let Some(fx) = super::persist::cached_interp(&self.db, &key) {
             self.interp.hits += 1;
-            let p = PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), key, at: self.t };
+            let p = PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t };
             let msg = self.apply_interp(&p, &fx);
             self.event("interpreted", Some(who), None, format!("{name}: {text} → {msg}"), self.actor(who).map(|a| a.pos), json!({ "cached": true }));
             return Ok(Outcome::ok(msg));
@@ -118,7 +183,7 @@ impl Sim {
             return Ok(Outcome { ok: false, msg: "Nothing happens.".into(), pending: None, thing: None });
         }
         let id = self.next_id();
-        let context = self.interp_context(who, held, target.as_ref());
+        let context = self.interp_context(who, held, target.as_ref(), hit);
         let req = Request::Interpret { id, actor: who, text: text.to_string(), context };
         if who == ActorId::Player {
             self.request_now(req);
@@ -126,7 +191,7 @@ impl Sim {
             let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
             self.request(req, at);
         }
-        self.interp.pending.insert(id, PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), key, at: self.t });
+        self.interp.pending.insert(id, PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t });
         Ok(Outcome { ok: true, msg: format!("{name} tries to {text}…"), pending: Some(id), thing: None })
     }
 
@@ -142,10 +207,12 @@ impl Sim {
             "changed_from_new": base.map(|b| diff(&self.vocab, &t.props, &b)),
             "state": t.state,
             "made_by": t.origin.made_by,
+            "cuts": t.shape.cuts.len(),
+            "history": t.shape.edits.iter().rev().take(5).map(|e| format!("{} ({})", e.what, e.by)).collect::<Vec<_>>(),
         })
     }
 
-    fn interp_context(&mut self, who: ActorId, held: Option<ThingId>, target: Option<&Resolved>) -> String {
+    fn interp_context(&mut self, who: ActorId, held: Option<ThingId>, target: Option<&Resolved>, hit: Option<glam::Vec3>) -> String {
         let me = self.actor(who).cloned();
         let mut v = json!({
             "actor": self.actor_name(who),
@@ -155,9 +222,18 @@ impl Sim {
         if let Some(r) = target {
             let tv = match &r.target {
                 Target::Actor(a) => json!({ "person": self.actor_name(*a) }),
-                Target::Point(p) => json!({ "point": p }),
+                Target::Point(p) => json!({ "ground_or_far_point": p, "distance_m": (glam::Vec3::from(*p) - self.actor(who).map(|a| a.pos).unwrap_or_default()).length().round() }),
                 other => match self.liven(other) {
-                    Some(id) => self.describe_thing(id),
+                    Some(id) => {
+                        let mut d = self.describe_thing(id);
+                        if let (Some(t), Some(a)) = (self.things.get(id), self.actor(who)) {
+                            d["distance_m"] = json!(((t.pos - a.pos).length() * 10.0).round() / 10.0);
+                        }
+                        if let Some(spot) = self.touch_spot(id, hit, who).and_then(|p| self.describe_spot(id, p)) {
+                            d["touched_at"] = spot;
+                        }
+                        d
+                    }
                     None => json!({ "name": r.name }),
                 },
             };
@@ -181,7 +257,11 @@ impl Sim {
         match result.and_then(|v| serde_json::from_value::<InterpEffect>(v).map_err(|e| e.to_string())) {
             Ok(fx) => {
                 let msg = self.apply_interp(&p, &fx);
-                if fx.cache {
+                if fx.cache && pieces_without_change(&fx, &p) {
+                    // A piece came off the target, but its shape stayed: that
+                    // answer would show nothing, so don't make it the rule.
+                    crate::log::info(format!("not caching '{}': it makes new things from the target but leaves the target's shape as it was", p.text));
+                } else if fx.cache {
                     super::persist::cache_interp(&self.db, &p.key, &fx);
                 }
                 let at = self.actor(p.actor).map(|a| a.pos);
@@ -254,12 +334,40 @@ impl Sim {
                     let id = self.next_id();
                     let key = m.name.trim().to_lowercase();
                     self.interp.building_names.insert(key, id);
-                    self.interp.building.insert(id, PendingBuild { name: m.name.clone(), then: vec![], place: Some((at, was_held_by, None)) });
+                    self.interp.building.insert(id, PendingBuild { name: m.name.clone(), place: Some((at, was_held_by, None)), ..Default::default() });
                     let props: Vec<(String, f32)> = m.props.iter().map(|(k, v)| (k.clone(), *v)).collect();
                     let desc = if m.description.is_empty() { format!("{} (made from {})", m.name, made_from.join(" and ")) } else { m.description.clone() };
                     self.request_now(Request::BuildType { id, name: m.name.clone(), description: desc, size: m.size_m.unwrap_or([0.5, 0.5, 0.5]), props });
                 }
             }
+        }
+        // Shape changes, at the spot that was touched.
+        let mut why: Vec<String> = Vec::new();
+        for c in fx.cut.iter().take(2) {
+            if let Some(id) = resolve(self, &c.target) {
+                let square = c.shape.trim().eq_ignore_ascii_case("square") || c.shape.trim().eq_ignore_ascii_case("box");
+                if let Err(e) = self.cut(p.actor, id, p.hit, c.size_m, square) {
+                    why.push(e);
+                }
+            }
+        }
+        for r in fx.reshape.iter().take(1) {
+            if let Some(id) = resolve(self, &r.target) {
+                let with = r.with.as_deref().and_then(|w| resolve(self, w));
+                if let Err(e) = self.reshape(p.actor, id, &r.name, &r.change, with, p.hit) {
+                    why.push(e);
+                }
+            }
+        }
+        for m in fx.make.iter().take(1) {
+            if !m.text.trim().is_empty() {
+                if let Err(e) = self.act(p.actor, super::Action::Create { text: m.text.trim().to_string() }) {
+                    why.push(e.to_string());
+                }
+            }
+        }
+        if !why.is_empty() {
+            crate::log::info(format!("interpretation partly failed: {}", why.join("; ")));
         }
         for r in &fx.remove {
             if let Some(id) = resolve(self, r) {
@@ -313,11 +421,24 @@ impl Sim {
         self.interp.building_names.remove(&b.name.trim().to_lowercase());
         let Some(tid) = type_id else {
             crate::log::info(format!("no type for '{}'", b.name));
+            for (thing, _, _) in &b.reshape {
+                if let Some(at) = self.things.get(*thing).map(|t| t.pos) {
+                    let name = self.thing_name(*thing);
+                    self.note_near(at, 30.0, Note::Info(format!("The {name} stays as it was.")));
+                }
+            }
             return;
         };
         for (thing, transform) in b.then {
             let from = self.thing_name(thing);
             self.spawn_or_transform(thing, tid, transform, &from);
+        }
+        for (thing, who, with) in b.reshape {
+            let by = self.actor_name(who);
+            self.set_shape_type(thing, tid, &by, &b.change, true);
+            if let Some(w) = with {
+                self.use_up(w);
+            }
         }
         if let Some((at, holder, _)) = b.place {
             let origin = Origin { made_by: holder.map(|h| self.actor_name(h)), ..Default::default() };

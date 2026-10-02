@@ -89,6 +89,8 @@ impl Sim {
             "changed": diff(&self.vocab, &t.props, &base),
             "state": t.state.iter().map(|v| r2(*v)).collect::<Vec<_>>(),
             "origin": t.origin,
+            "cuts": t.shape.cuts.iter().map(|c| [r2(c[0]), r2(c[1]), r2(c[2]), r2(c[3])]).collect::<Vec<_>>(),
+            "history": t.shape.edits.iter().map(|e| format!("{} — {}", e.what, e.by)).collect::<Vec<_>>(),
             "age_s": r1((self.t - t.born) as f32),
             "rules_fired": t.fired.iter().rev().map(|(n, at)| json!({ "rule": n, "ago_s": r1((self.t - at) as f32) })).collect::<Vec<_>>(),
             "behavior": if ty.ct.has_behavior() { Some(ty.ct.source.clone()) } else { None },

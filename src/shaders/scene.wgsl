@@ -27,9 +27,26 @@ fn inst_center(i: Inst) -> vec3f {
   return i.pos_scale.xyz + vec3f(0.0, bitcast<f32>(i.info.y) * i.pos_scale.w, 0.0);
 }
 
+fn cut_sdf(c: vec4f, p: vec3f) -> f32 {
+  let d = p - c.xyz;
+  if (c.w > 0.0) { return length(d) - c.w; }
+  let q = abs(d) - vec3f(-c.w);
+  return length(max(q, vec3f(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+// A shape's local distance with the instance's cuts taken out.
+fn shape_sdf(i: Inst, lp: vec3f) -> f32 {
+  var d = type_sdf(i.info.x, lp, inst_params(i));
+  for (var c = 0u; c < 4u; c = c + 1u) {
+    let cut = i.cuts[c];
+    if (cut.w != 0.0) { d = max(d, -cut_sdf(cut, lp)); }
+  }
+  return d;
+}
+
 fn inst_sdf(idx: u32, p: vec3f) -> f32 {
   let i = insts[idx];
-  return type_sdf(i.info.x, to_local(i, p), inst_params(i)) * i.pos_scale.w;
+  return shape_sdf(i, to_local(i, p)) * i.pos_scale.w;
 }
 
 fn consider(idx: u32, ro: vec3f, rd: vec3f, tmax: f32, dedupe: bool) {
@@ -130,7 +147,7 @@ fn map_scene_lod(p: vec3f, t: f32, ray_t: f32) -> vec3f {
           continue;
         }
       }
-      let dj = type_sdf(i.info.x, lp, inst_params(i)) * i.pos_scale.w;
+      let dj = shape_sdf(i, lp) * i.pos_scale.w;
       dt = min(dt, dj);
       if (dj < d) { d = dj; id = f32(j); }
     } else {
@@ -164,7 +181,7 @@ fn map_ray(p: vec3f, t: f32, lod_t: f32, relax: f32) -> vec3f {
       let db = (length(max(q, vec3f(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)) * i.pos_scale.w;
       if (db > 0.2) { step = min(step, db); continue; }
     }
-    let dj = type_sdf(i.info.x, lp, inst_params(i)) * i.pos_scale.w;
+    let dj = shape_sdf(i, lp) * i.pos_scale.w;
     if (dj < dtrue) { dtrue = dj; id = f32(j); }
     step = min(step, dj);
   }
@@ -284,7 +301,7 @@ fn point_light(p: vec3f, n: vec3f) -> vec3f {
 fn apply_fx(albedo: vec3f, fx: vec4f) -> vec3f {
   var a = mix(albedo, vec3f(0.07, 0.06, 0.055), clamp(fx.x, 0.0, 1.0));
   a = a * (1.0 - 0.35 * clamp(fx.y, 0.0, 1.0));
-  return mix(a, vec3f(1.0, 0.97, 0.8), clamp(fx.w, 0.0, 1.0) * 0.4);
+  return mix(a, vec3f(1.0, 0.97, 0.8), clamp(fx.w, 0.0, 1.0) * 0.28);
 }
 
 fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
@@ -412,8 +429,10 @@ fn probe_main(@builtin(global_invocation_id) gid: vec3u) {
   if (i >= G.probe.x) { return; }
   let q = probe_io[i];
   if (G.probe.y == 0u) {
-    let k = inst_params(insts[0]);
-    let d = type_sdf(G.probe.z, q.xyz, k);
+    var inst = insts[0];
+    inst.info.x = G.probe.z;
+    let k = inst_params(inst);
+    let d = shape_sdf(inst, q.xyz);
     let c = type_color(G.probe.z, q.xyz, k);
     probe_io[i] = vec4f(d, c);
   } else if (G.probe.y == 2u) {

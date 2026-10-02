@@ -23,6 +23,7 @@ pub mod pick;
 pub mod props;
 pub mod render;
 pub mod rules;
+pub mod shape;
 pub mod social;
 pub mod things;
 
@@ -138,6 +139,10 @@ pub enum Request {
     Talk { cid: i64, text: String, context: String },
     /// Write the pose keyframes of a gesture nobody knows yet.
     BuildGesture { id: u64, name: String },
+    /// Rewrite a thing's shape code: `source` changed as `change` says, near
+    /// `spot` (JSON, the type's own coordinates), with `cuts` baked in and
+    /// maybe another thing worked in (name, source, its size relative to this one).
+    EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
 }
 
 impl Request {
@@ -255,6 +260,8 @@ pub struct Sim {
     budget: f32,
     pub notes: Vec<Note>,
     pub has_llm: bool,
+    /// How far up or down the player looks (radians): where "that hill" is.
+    pub look_pitch: f32,
     /// The character the player is talking to (they stand still and face the player).
     pub talking_to: Option<i64>,
     pub interp: interp::Interp,
@@ -301,6 +308,7 @@ impl Sim {
             budget: 2.0,
             notes: Vec::new(),
             has_llm: false,
+            look_pitch: -0.12,
             talking_to: None,
             interp: interp::Interp::default(),
             acc_rules: 0.0,

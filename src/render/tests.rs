@@ -57,6 +57,35 @@ fn gpu_parity_types_and_terrain() {
     eprintln!("terrain parity worst error {worst:e}");
 }
 
+/// Cuts take the same pieces out on the GPU as on the CPU.
+#[test]
+fn cuts_agree_on_gpu_and_cpu() {
+    let Ok(gpu) = Gpu::new() else { return };
+    let types = all_types();
+    let refs: Vec<(u32, &CompiledType)> = types.iter().map(|(i, t)| (*i, t)).collect();
+    let pipe = gpu.build_pipeline(&shader::assemble(&refs), 2).unwrap();
+    let terrain = crate::terrain::Terrain::new(7, default_biomes());
+    let (tid, ct) = (100, &types.iter().find(|(i, _)| *i == 100).unwrap().1);
+    let mut inst = GpuInst { k0: [0.37, 1.0, 0.5, 0.5], k1: [0.5; 4], ..Default::default() };
+    inst.cuts = [[0.0, 3.0, 1.0, 0.8], [0.5, 6.0, 0.0, -0.6], [0.0; 4], [-1.0, 1.0, -1.0, 0.3]];
+    let pts = crate::lang::probe::sample_points(ct.meta.bounds);
+    let input: Vec<[f32; 4]> = pts.iter().map(|p| [p[0], p[1], p[2], 0.0]).collect();
+    let out = gpu.probe(&pipe, &probe_globals(&terrain), 0, tid, &inst, &input).unwrap();
+    let k = inst.k();
+    let mut worst = 0.0f32;
+    let mut changed = 0;
+    for (p, g) in pts.iter().zip(&out) {
+        let plain = ct.sdf(*p, &k);
+        let c = apply_cuts(plain, &inst.cuts, *p);
+        if c > plain + 1e-4 {
+            changed += 1;
+        }
+        worst = worst.max((g[0] - c).abs() / c.abs().max(1.0));
+    }
+    assert!(changed > 3, "the cuts remove something ({changed} points)");
+    assert!(worst <= crate::model::PARITY_TOL, "GPU/CPU cut mismatch {worst:e}");
+}
+
 #[test]
 fn renders_a_frame_quickly() {
     let Ok(gpu) = Gpu::new() else { return };

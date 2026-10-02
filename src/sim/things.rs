@@ -29,6 +29,31 @@ pub struct Origin {
     pub made_from: Vec<String>,
 }
 
+/// One change to what a thing is (cut, reshaped), and by whom.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EditRec {
+    pub t: f64,
+    pub by: String,
+    pub what: String,
+}
+
+/// How a thing differs from a fresh one of its type: cuts and history.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Shape {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuts: Vec<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<EditRec>,
+}
+
+impl Shape {
+    pub fn is_empty(&self) -> bool {
+        self.cuts.is_empty() && self.edits.is_empty()
+    }
+}
+
+pub const MAX_EDITS: usize = 16;
+
 #[derive(Clone, Debug)]
 pub struct Thing {
     pub id: ThingId,
@@ -66,6 +91,8 @@ pub struct Thing {
     pub cooldown: f64,
     /// The type it last fell through (one "through" per throw).
     pub through: Option<u32>,
+    /// Cuts and the history of changes.
+    pub shape: Shape,
 }
 
 impl Thing {
@@ -97,7 +124,28 @@ impl Thing {
             fired: Vec::new(),
             cooldown: 0.0,
             through: None,
+            shape: Shape::default(),
         }
+    }
+
+    /// Remember a change (newest last, the oldest forgotten).
+    pub fn note_edit(&mut self, t: f64, by: &str, what: &str) {
+        self.shape.edits.push(EditRec { t, by: by.to_string(), what: what.to_string() });
+        if self.shape.edits.len() > MAX_EDITS {
+            self.shape.edits.remove(0);
+        }
+        self.dirty = true;
+    }
+
+    /// Cuts as the shader takes them (newest kept when there are too many).
+    pub fn gpu_cuts(&self) -> [[f32; 4]; crate::render::MAX_CUTS] {
+        let mut out = [[0.0; 4]; crate::render::MAX_CUTS];
+        let n = self.shape.cuts.len();
+        let skip = n.saturating_sub(crate::render::MAX_CUTS);
+        for (i, c) in self.shape.cuts.iter().skip(skip).enumerate() {
+            out[i] = *c;
+        }
+        out
     }
 
     pub fn held(&self) -> bool {

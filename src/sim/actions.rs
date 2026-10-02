@@ -50,6 +50,9 @@ pub enum Action {
         target: Option<Target>,
         #[serde(default)]
         on: Option<Target>,
+        /// The point on the thing that was touched (world), if known.
+        #[serde(default)]
+        at: Option<[f32; 3]>,
     },
     Eat {
         #[serde(default)]
@@ -60,6 +63,9 @@ pub enum Action {
         text: String,
         #[serde(default)]
         on: Option<Target>,
+        /// The point on the thing that was touched (world), if known.
+        #[serde(default)]
+        at: Option<[f32; 3]>,
     },
     Create { text: String },
     Say {
@@ -428,7 +434,7 @@ impl Sim {
                 Ok(Outcome::ok(format!("{name} sets the {tname} down")).thing(id))
             }
             Action::Throw { at, dir, force } => self.throw(who, at, dir, force),
-            Action::Use { target, on } => self.use_thing(who, target, on),
+            Action::Use { target, on, at } => self.use_thing(who, target, on, at.map(Vec3::from)),
             Action::Eat { target } => {
                 let id = match target {
                     Some(t) => {
@@ -442,7 +448,7 @@ impl Sim {
                 };
                 self.eat(who, id)
             }
-            Action::Do { text, on } => {
+            Action::Do { text, on, at } => {
                 let text = text.trim().to_string();
                 if text.is_empty() {
                     return fail("do what?");
@@ -451,7 +457,7 @@ impl Sim {
                     Some(t) => Some(self.resolve(&t, who).ok_or_else(|| not_found(&t))?),
                     None => None,
                 };
-                self.interpret(who, &text, target)
+                self.interpret(who, &text, target, at.map(Vec3::from))
             }
             Action::Create { text } => {
                 if !self.has_llm {
@@ -459,7 +465,8 @@ impl Sim {
                 }
                 let id = self.next_id();
                 let eye = me.eye();
-                let cam = crate::render::Camera { pos: eye, yaw: me.yaw, pitch: -0.12, fov_y: 1.05 };
+                let pitch = if who == ActorId::Player { self.look_pitch } else { -0.12 };
+                let cam = crate::render::Camera { pos: eye, yaw: me.yaw, pitch, fov_y: 1.05 };
                 let npcs = self.npc_views();
                 let snap = self.snap.clone();
                 let view = crate::world::describe::describe(&snap, &mut self.cache, &npcs, &cam, 1.6, self.t);
@@ -759,7 +766,7 @@ impl Sim {
 
     /// Use: eat it, run its own `use` code, let the world's rules decide
     /// (contact), or ask the interpreter, in that order.
-    fn use_thing(&mut self, who: ActorId, target: Option<Target>, on: Option<Target>) -> Result<Outcome, ActErr> {
+    fn use_thing(&mut self, who: ActorId, target: Option<Target>, on: Option<Target>, at: Option<Vec3>) -> Result<Outcome, ActErr> {
         let me = self.actor(who).cloned().ok_or(ActErr::Fail("no such actor".into()))?;
         let rt = match &target {
             Some(t) => Some(self.resolve(t, who).ok_or_else(|| not_found(t))?),
@@ -833,7 +840,7 @@ impl Sim {
             None => format!("use the {tname}"),
         };
         let target = object.or(Some(tool));
-        self.interpret(who, &text, target)
+        self.interpret(who, &text, target, at)
     }
 
     fn eat(&mut self, who: ActorId, id: ThingId) -> Result<Outcome, ActErr> {

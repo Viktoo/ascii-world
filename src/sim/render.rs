@@ -27,6 +27,7 @@ pub fn thing_inst(t: &Thing, ty: &TypeEntry, fx: [f32; 4]) -> GpuInst {
         ..Default::default()
     };
     g.set_state(&t.state);
+    g.cuts = t.gpu_cuts();
     g
 }
 
