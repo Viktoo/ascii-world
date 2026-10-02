@@ -1302,3 +1302,66 @@ fn pieces_that_leave_the_shape_unchanged_are_not_cached() {
     }
     assert_eq!(*calls.lock(), 2, "asked again, not answered from the cache");
 }
+
+/// A reshape named like the thing already is still changes it (its old
+/// name would only find its old shape again).
+#[test]
+fn a_reshape_keeping_the_old_name_still_changes_the_shape() {
+    let w = world("samename", 56);
+    let src = fixture("sims/hut.js");
+    let hut = add_type(&w, &src);
+    let at = dry_spot(&w, 9.0, 0.3);
+    let inst = place(&w, hut, at, 0.0);
+    let src2 = src.clone();
+    let llm = Llm::scripted(world("samename-llm", 1).db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("physics and common sense") {
+            return r#"{"narration": "The door swings open.", "reshape": [{"target": "target", "name": "wooden hut", "change": "the door stands open"}]}"#.into();
+        }
+        if user.contains("Change this existing object") {
+            let name = user.split("Set meta.name to exactly \"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+            return format!("```js\n{}\n```", src2.replace("name: \"wooden hut\"", &format!("name: \"{name}\"")).replace("return min(walls, roof);", "return min(subtract(walls, box(x, y - 0.9, z - 2.0, 0.4, 0.9, 0.3)), roof);"));
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let mut s = session(&w, 26, Some(llm));
+    let h = s.sim.liven(&Target::Instance(inst)).unwrap();
+    let hp = s.sim.things.get(h).unwrap().pos;
+    s.sim.player.pos = Vec3::new(hp.x + 3.6, w.terrain.height(hp.x + 3.6, hp.z), hp.z);
+    let r = act_once(&mut s, ActorId::Player, Action::Do { text: "open this door".into(), on: Some(Target::Thing(h)), at: None }, 0.3);
+    assert_eq!(r["ok"], true, "{r}");
+    s.pump(std::time::Duration::from_secs(60));
+    s.run(0.5, 0.05);
+    let t = s.sim.things.get(h).unwrap();
+    assert_ne!(t.type_id, hut, "a new shape, not the old one again");
+    assert!(s.sim.thing_name(h).starts_with("wooden hut"), "{}", s.sim.thing_name(h));
+}
+
+/// Earlier versions of a reshaped thing that nothing uses any more stay out
+/// of the shader; reshaped types still in use, and ordinary types even
+/// unused, stay in.
+#[test]
+fn unused_reshape_versions_are_left_out_of_the_scene() {
+    let w = world("prune", 57);
+    let src = fixture("sims/hut.js");
+    let plain = add_type(&w, &src);
+    let reshape_type = |summary: &str| {
+        let ct = compile(&src).unwrap();
+        let rep = probe(&ct).unwrap();
+        let meta = serde_json::json!({ "name": ct.meta.name, "bounds": ct.meta.bounds, "tags": ct.meta.tags, "bottom": rep.bottom, "top": rep.top }).to_string();
+        w.db.with(|c| {
+            let v = db::add_version(c, Some(w.version), "interp", summary, None)?;
+            db::add_type(c, Some(v), &ct.meta.name, &src, &meta, "ok", "")
+        })
+        .unwrap() as u32
+    };
+    let old = reshape_type("reshaped: wooden hut with a door");
+    let kept = reshape_type("reshaped: wooden hut with a chimney");
+    let made = reshape_type("new kind of thing: wooden hut");
+    place(&w, kept, dry_spot(&w, 9.0, 0.3), 0.0);
+    let s = session(&w, 31, None);
+    let has = |id: u32| s.sim.snap.type_of(id).is_some();
+    assert!(!has(old), "an unused reshape version is dropped");
+    assert!(has(kept), "a reshape version still in use stays");
+    assert!(has(plain) && has(made), "other types stay even unused");
+}

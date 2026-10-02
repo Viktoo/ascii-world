@@ -51,9 +51,9 @@ pub fn vnoise2(x: f32, y: f32, s: u32) -> f32 {
     let ux = fade(x - fx);
     let uy = fade(y - fy);
     let a = u2f(h2(ix, iy, s));
-    let b = u2f(h2(ix + 1, iy, s));
-    let c = u2f(h2(ix, iy + 1, s));
-    let d = u2f(h2(ix + 1, iy + 1, s));
+    let b = u2f(h2(ix.wrapping_add(1), iy, s));
+    let c = u2f(h2(ix, iy.wrapping_add(1), s));
+    let d = u2f(h2(ix.wrapping_add(1), iy.wrapping_add(1), s));
     lerp(lerp(a, b, ux), lerp(c, d, ux), uy)
 }
 
@@ -69,13 +69,13 @@ pub fn vnoise3(x: f32, y: f32, z: f32, s: u32) -> f32 {
     let uy = fade(y - fy);
     let uz = fade(z - fz);
     let a = u2f(h3(ix, iy, iz, s));
-    let b = u2f(h3(ix + 1, iy, iz, s));
-    let c = u2f(h3(ix, iy + 1, iz, s));
-    let d = u2f(h3(ix + 1, iy + 1, iz, s));
-    let e = u2f(h3(ix, iy, iz + 1, s));
-    let f = u2f(h3(ix + 1, iy, iz + 1, s));
-    let g = u2f(h3(ix, iy + 1, iz + 1, s));
-    let h = u2f(h3(ix + 1, iy + 1, iz + 1, s));
+    let b = u2f(h3(ix.wrapping_add(1), iy, iz, s));
+    let c = u2f(h3(ix, iy.wrapping_add(1), iz, s));
+    let d = u2f(h3(ix.wrapping_add(1), iy.wrapping_add(1), iz, s));
+    let e = u2f(h3(ix, iy, iz.wrapping_add(1), s));
+    let f = u2f(h3(ix.wrapping_add(1), iy, iz.wrapping_add(1), s));
+    let g = u2f(h3(ix, iy.wrapping_add(1), iz.wrapping_add(1), s));
+    let h = u2f(h3(ix.wrapping_add(1), iy.wrapping_add(1), iz.wrapping_add(1), s));
     let lo = lerp(lerp(a, b, ux), lerp(c, d, ux), uy);
     let hi = lerp(lerp(e, f, ux), lerp(g, h, ux), uy);
     lerp(lo, hi, uz)

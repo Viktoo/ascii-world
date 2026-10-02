@@ -353,6 +353,12 @@ impl Sim {
         sky::is_night(self.t)
     }
 
+    /// Types used by live things and cells (reported to the model so it can
+    /// leave unused ones out of the shader).
+    pub fn types_in_use(&self) -> std::collections::HashSet<u32> {
+        self.things.live().map(|t| t.type_id).chain(self.field.cells.values().map(|c| c.type_id)).collect()
+    }
+
     pub fn type_entry(&self, id: u32) -> Option<Arc<TypeEntry>> {
         self.snap.type_of(id).cloned()
     }

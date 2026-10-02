@@ -43,6 +43,11 @@ pub struct SimConfig {
     pub chat_llm_range: f32,
     /// Hard cap on live things (spawning stops beyond it).
     pub max_things: usize,
+    /// A character turns to their craft (make, fix, improve) at most this often (s).
+    pub work_secs: f32,
+    /// ...and across the whole world, at most one character this often (s):
+    /// each piece of work may add a type, and every type slows shader builds.
+    pub work_gap_secs: f32,
 }
 
 impl Default for SimConfig {
@@ -60,6 +65,8 @@ impl Default for SimConfig {
             max_flames: 48,
             chat_llm_range: 20.0,
             max_things: 5000,
+            work_secs: 600.0,
+            work_gap_secs: 120.0,
         }
     }
 }
@@ -89,6 +96,8 @@ impl SimConfig {
             ("max_flames", "POCKET_SIM_MAX_FLAMES"),
             ("chat_llm_range", "POCKET_SIM_CHAT_RANGE"),
             ("max_things", "POCKET_SIM_MAX_THINGS"),
+            ("work_secs", "POCKET_SIM_WORK_SECS"),
+            ("work_gap_secs", "POCKET_SIM_WORK_GAP"),
         ] {
             set(key, env, &mut c);
         }
@@ -122,6 +131,8 @@ impl SimConfig {
             "max_flames" => self.max_flames = v.clamp(0.0, 1000.0) as usize,
             "chat_llm_range" => self.chat_llm_range = v.clamp(0.0, 1000.0),
             "max_things" => self.max_things = v.clamp(10.0, 1_000_000.0) as usize,
+            "work_secs" => self.work_secs = v.clamp(10.0, 1e7),
+            "work_gap_secs" => self.work_gap_secs = v.clamp(0.0, 1e7),
             _ => {}
         }
     }

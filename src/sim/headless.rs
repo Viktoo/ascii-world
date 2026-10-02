@@ -201,6 +201,7 @@ impl Session {
             let mut l = self.live.lock();
             l.player = self.sim.player.pos;
             l.characters = self.sim.cast.npcs.iter().map(|n| n.a.pos).collect();
+            l.types = self.sim.types_in_use();
         }
         self.pump(Duration::from_secs(60));
     }

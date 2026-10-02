@@ -66,6 +66,7 @@ pub struct Npc {
     pub decisions: VecDeque<(f64, String)>,
     pub bored_since: f64,
     pub last_line: f64,
+    pub last_work: f64,
 }
 
 impl Npc {
@@ -127,6 +128,8 @@ impl Npc {
 pub struct Cast {
     pub npcs: Vec<Npc>,
     index: HashMap<i64, usize>,
+    /// When any character last turned to their craft (see `SimConfig::work_gap_secs`).
+    pub last_work: f64,
 }
 
 impl Cast {
@@ -167,6 +170,7 @@ impl Cast {
                 decisions: VecDeque::new(),
                 bored_since: f64::MAX,
                 last_line: f64::MIN,
+                last_work: f64::MIN,
             });
         }
     }
@@ -677,6 +681,16 @@ impl Sim {
                 consider(&mut best, needs.fun * tr.playful * 0.75, "toss");
             }
         }
+        // Their craft: make, fix or improve something nearby. Rare, and only
+        // when nothing is already being built, since each piece of work may
+        // add a type to the world.
+        let can_work = self.has_llm
+            && self.interp.building.is_empty()
+            && t - self.cast.last_work > self.cfg.work_gap_secs as f64
+            && self.cast.get(cid).is_some_and(|n| t - n.last_work > self.cfg.work_secs as f64 && t >= n.next_llm);
+        if can_work {
+            consider(&mut best, 0.1 + tr.crafty * 0.45, "work");
+        }
         if needs.fun > 0.85 && best.1 == "wander" {
             consider(&mut best, 0.5, "bored");
         }
@@ -810,6 +824,15 @@ impl Sim {
                 self.set_doing(cid, "resting");
                 next_think(self, 16.0);
             }
+            "work" => {
+                self.cast.last_work = t;
+                if let Some(n) = self.cast.get_mut(cid) {
+                    n.last_work = t;
+                }
+                self.ask(cid, "work", "You have a little time for your craft or daily work. Look at what is around you: is there something you could make, fix or improve that fits who you are? If so, do it (a \"do\" step, in words). If nothing fits, carry on as you were.");
+                self.set_doing(cid, "thinking about work");
+                next_think(self, 8.0);
+            }
             "bored" => {
                 let since = self.cast.get(cid).map(|n| n.bored_since).unwrap_or(f64::MAX);
                 if since == f64::MAX {
@@ -820,7 +843,7 @@ impl Sim {
                     if let Some(n) = self.cast.get_mut(cid) {
                         n.bored_since = f64::MAX;
                     }
-                    self.ask(cid, "bored", "You are bored: nothing to play with and nobody around to play with. You could make something, find someone, or go somewhere.");
+                    self.ask(cid, "bored", "You are bored: nothing to play with and nobody around to play with. You could make something, fix or improve something nearby, find someone, or go somewhere.");
                 }
                 self.wander(cid, home, 30.0);
                 self.set_doing(cid, "at a loose end");

@@ -150,8 +150,10 @@ impl Sim {
         let old = self.thing_name(id);
         let with = with.filter(|w| *w != id && self.things.get(*w).is_some());
         let name = name.trim();
-        let name = if name.is_empty() { format!("{old} (changed)") } else { name.to_string() };
-        if let Some(ty) = self.type_by_name(&name) {
+        // The changed thing needs a name of its own: its old name would find
+        // its old shape again, and nothing would change.
+        let name = if name.is_empty() || name.eq_ignore_ascii_case(&old) { format!("{old} (changed {})", self.next_id()) } else { name.to_string() };
+        if let Some(ty) = self.type_by_name(&name).filter(|ty| self.things.get(id).is_some_and(|t| t.type_id != ty.id)) {
             let by = self.actor_name(who);
             self.set_shape_type(id, ty.id, &by, change, false);
             if let Some(w) = with {

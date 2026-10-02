@@ -122,7 +122,7 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
       "scatter": { "tree": 0.3, "bush": 0.5, "rock": 0.2, "grass": 2.0 } }
   ]
 }
-- 3 to 6 biomes. base = mean ground height in metres (-10..30; below 0 makes lakes and coast), amp = hill height in metres (2..50), rough 0 (rolling) .. 1 (craggy), ground/ground2 = two ground colours that blend.
+- 3 to 6 biomes. base = mean ground height in metres (-10..30; below 0 makes lakes and coast), amp = hill height in metres (2..50; keep towns, cities and farmland at 2..6 so buildings stand on level ground, and save big hills for wild land), rough 0 (rolling) .. 1 (craggy), ground/ground2 = two ground colours that blend.
 - scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3). Use the tags of your base types below; "grass" tufts already exist.
 - fog: 1 = clear air, up to 3 = misty.
 
@@ -154,6 +154,7 @@ Rules:
 - 0–3 landmarks, 0–1 settlement (with 1–6 buildings), 0–6 characters, 0–3 new_types. Empty regions are fine sometimes: wilderness has value.
 - Reuse existing types by exact name when they fit; only invent new_types the region really needs (a settlement needs at least one building type).
 - Put things on dry land (see the terrain notes), settlements on gentle ground, landmarks where they would be seen.
+- Give each character a trade or daily work in "goals" (what they make, mend or tend, and something they want to make or improve), e.g. "mends the fishing nets; wants to build a proper boat".
 - Characters live near the settlement or a landmark. home_x/home_z is where they stand by day: a spot a few metres outside their house (never the building's own coordinates). Give them distinct voices, goals and relationships with each other ("Name: relation", e.g. "Ola: daughter", "Bren: rival", "Tam: husband"): families, couples, friends and rivals make a village come alive. Weave in the region facts and the neighbouring regions.
 - Small things people use (tools, balls, food, lamps) are welcome as new_types too, placed as landmarks near where they belong.
 "#;
@@ -230,7 +231,7 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
   "remove": [ "held" | "target" ],
   "make": [ { "text": "what to make and where, in words, e.g. a stone well by the path" } ],
   "cut": [ { "target": "target", "size_m": 0.25, "shape": "round" | "square" } ],
-  "reshape": [ { "target": "target", "name": "new name for the changed thing", "change": "what changes about its shape, precisely", "with": "held" | null } ],
+  "reshape": [ { "target": "target", "name": "a new name for the changed thing, different from its current name, e.g. slate cottage with the door open", "change": "what changes about its shape, precisely", "with": "held" | null } ],
   "say": "a few words the actor says, or null",
   "cache": true
 }

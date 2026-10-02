@@ -893,6 +893,7 @@ impl App {
         }
         if self.last_region_check.elapsed() > Duration::from_millis(500) {
             self.last_region_check = Instant::now();
+            self.live.lock().types = self.sim.types_in_use();
             self.schedule_regions();
             let p = self.pos();
             self.sim.cache.trim(p, render::VIEW_DIST + 80.0);

@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/figure.js"),
@@ -35,6 +36,9 @@ pub const BUILTIN_SOURCES: &[&str] = &[
 pub struct Live {
     pub player: Vec3,
     pub characters: Vec<Vec3>,
+    /// Types the sim's live things and cells use right now. Types nothing
+    /// uses are left out of the shader (see `WorldModel::active_types`).
+    pub types: HashSet<u32>,
 }
 
 pub type LiveRef = Arc<Mutex<Live>>;
@@ -44,7 +48,13 @@ struct TypeRec {
     entry: Arc<TypeEntry>,
     version: Option<i64>,
     interior: Vec<[f32; 3]>,
+    /// When this session committed it; new types stay in the shader for a
+    /// while even before the sim reports a thing using them.
+    born: Option<Instant>,
 }
+
+/// How long a newly committed type is kept without any reported use.
+const NEW_TYPE_GRACE: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
 struct InstRec {
@@ -117,6 +127,11 @@ pub struct WorldModel {
     pipelines: Vec<Arc<ScenePipeline>>,
     pub spawn: Vec3,
     pub live: LiveRef,
+    /// Types of the saved live things when the world was loaded. Kept for the
+    /// whole session so nothing is dropped before the sim has loaded them.
+    saved_thing_types: HashSet<u32>,
+    /// Versions that reshaped a thing (each makes a one-off type).
+    reshape_versions: HashSet<i64>,
 }
 
 fn meta_json(ct: &CompiledType, bottom: f32, top: f32) -> String {
@@ -189,7 +204,16 @@ impl WorldModel {
             pipelines: Vec::new(),
             spawn: Vec3::ZERO,
             live,
+            saved_thing_types: HashSet::new(),
+            reshape_versions: HashSet::new(),
         };
+        m.saved_thing_types = db
+            .with(|c| {
+                let mut st = c.prepare("SELECT DISTINCT type_id FROM things")?;
+                let rows = st.query_map([], |r| r.get::<_, i64>(0))?;
+                Ok(rows.filter_map(|r| r.ok()).map(|id| id as u32).collect())
+            })
+            .unwrap_or_default();
         m.spawn = match db.kv_get("spawn").and_then(|s| serde_json::from_str::<[f32; 3]>(&s).ok()) {
             Some(s) if m.terrain.height(s[0], s[2]) >= WATER_LEVEL + 0.3 => Vec3::from(s),
             _ => {
@@ -227,6 +251,7 @@ impl WorldModel {
             }
         }
         m.current = versions.last().map(|v| v.id);
+        m.reshape_versions = versions.iter().filter(|v| is_reshape(&v.kind, &v.summary)).map(|v| v.id).collect();
         for r in db.types()? {
             if r.status != "ok" && r.status != "builtin" {
                 continue;
@@ -249,7 +274,7 @@ impl WorldModel {
             };
             let builtin = r.status == "builtin";
             let version = if builtin { None } else { r.version };
-            m.types.insert(r.id as u32, TypeRec { entry: type_entry(r.id as u32, ct, bottom, top, builtin), version, interior: Vec::new() });
+            m.types.insert(r.id as u32, TypeRec { entry: type_entry(r.id as u32, ct, bottom, top, builtin), version, interior: Vec::new(), born: None });
         }
         for r in db.instances()? {
             m.insts.push(InstRec {
@@ -339,9 +364,22 @@ impl WorldModel {
         self.insts.iter().filter(|i| self.inst_active(i)).map(|i| i.placed.clone()).collect()
     }
 
+    /// Types that go into the shader. A reshape makes a one-off type per
+    /// edit, so earlier versions of a reshaped thing that nothing uses any
+    /// more are left out: every type costs build time. Other types stay even
+    /// unused (things grow into them, spawn them or are made by name).
     fn active_types(&self) -> Vec<&TypeRec> {
         let used: HashSet<u32> = self.insts.iter().filter(|i| self.inst_active(i)).map(|i| i.placed.type_id).collect();
-        self.types.values().filter(|t| self.type_active(t, &used)).collect()
+        let live = self.live.lock().types.clone();
+        let in_use = |t: &TypeRec| {
+            let id = t.entry.id;
+            !t.version.is_some_and(|v| self.reshape_versions.contains(&v))
+                || used.contains(&id)
+                || live.contains(&id)
+                || self.saved_thing_types.contains(&id)
+                || t.born.is_some_and(|b| b.elapsed() < NEW_TYPE_GRACE)
+        };
+        self.types.values().filter(|t| self.type_active(t, &used) && in_use(t)).collect()
     }
 
     /// Scatter type ids per tag: universe types replace built-ins for a tag.
@@ -470,29 +508,55 @@ impl WorldModel {
 
     // ---- step 5: placement ----
 
+    /// For a sizeable thing seated on a slope (more than `MAX_DROP` of ground
+    /// drop under it), a nearby spot where the ground is flatter, if any.
+    fn flatter_spot(&self, pl: &Placement, entry: &Arc<TypeEntry>) -> Option<Placement> {
+        const MAX_DROP: f32 = 1.5;
+        let b = entry.ct.meta.bounds;
+        let r = b[0].max(b[2]) * pl.scale.clamp(0.2, 6.0);
+        if pl.y.is_some() || !entry.solid || r < 1.5 {
+            return None;
+        }
+        let t = &self.terrain;
+        let drop = |p: &Placement| {
+            let (lo, hi) = footprint(t, p, entry);
+            hi - lo
+        };
+        let start = drop(pl);
+        if start <= MAX_DROP {
+            return None;
+        }
+        let mut best = (start, None);
+        for ring in [0.5f32, 1.0, 1.5] {
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4 + ring;
+                let mut p2 = pl.clone();
+                p2.x += a.cos() * r * ring;
+                p2.z += a.sin() * r * ring;
+                if t.height(p2.x, p2.z) < WATER_LEVEL - 0.6 {
+                    continue;
+                }
+                let d = drop(&p2);
+                if d < best.0 - 0.3 {
+                    best = (d, Some(p2));
+                }
+            }
+        }
+        best.1
+    }
+
     /// Check one placement against the terrain, the player, characters, the
     /// spawn point and existing instances. Returns the resolved instance.
     fn check_place(&mut self, pl: &Placement, entry: &Arc<TypeEntry>, interior: &[[f32; 3]], extra: &[(Placed, Arc<TypeEntry>)], label: &str) -> Result<Placed, String> {
         let t = self.terrain.clone();
         let scale = pl.scale.clamp(0.2, 6.0);
-        let b = entry.ct.meta.bounds;
-        // footprint corners under the object
         let (c, s) = (pl.rot_y.cos(), pl.rot_y.sin());
-        let mut lo = f32::MAX;
-        let mut hi = f32::MIN;
-        for (fx, fz) in [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
-            let lx = fx * b[0] * scale * 0.7;
-            let lz = fz * b[2] * scale * 0.7;
-            // local → world is the inverse of to_local
-            let wx = pl.x + c * lx + s * lz;
-            let wz = pl.z - s * lx + c * lz;
-            let h = t.height(wx, wz);
-            lo = lo.min(h);
-            hi = hi.max(h);
-        }
+        let (lo, hi) = footprint(&t, pl, entry);
         let ground = t.height(pl.x, pl.z);
         let y = match pl.y {
-            None => lo.min(ground) - entry.bottom * scale - 0.12,
+            // Seat on the lowest point, raised a little on slopes so less of the
+            // uphill side is buried (the downhill gap stays small).
+            None => lo.min(ground) + ((hi - lo) * 0.3).min(0.4) - entry.bottom * scale - 0.12,
             Some(y) => {
                 let base = y + entry.bottom * scale;
                 if base - hi > 0.5 {
@@ -573,6 +637,7 @@ impl WorldModel {
     // ---- step 6 + commit + flip ----
 
     pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
+        let reshape = is_reshape(req.kind, &req.summary);
         // Provisional entries for new types (ids assigned after the DB insert).
         // Provisional ids match what SQLite will assign (failed types also take ids).
         let db_max = self.db.with(|c| Ok(c.query_row("SELECT COALESCE(MAX(id), 0) FROM types", [], |r| r.get::<_, i64>(0))?)).unwrap_or(0) as u32;
@@ -607,7 +672,11 @@ impl WorldModel {
                 },
             };
             let label = format!("the {} (placement {})", entry.name(), i + 1);
-            let mut result = self.check_place(pl, &entry, &interior, &placed, &label);
+            let flatter = self.flatter_spot(pl, &entry);
+            let mut result = match &flatter {
+                Some(p2) => self.check_place(p2, &entry, &interior, &placed, &label).or_else(|_| self.check_place(pl, &entry, &interior, &placed, &label)),
+                None => self.check_place(pl, &entry, &interior, &placed, &label),
+            };
             if result.is_err() && req.nudge {
                 let r = entry.radius() * pl.scale;
                 for k in 1..=14 {
@@ -643,7 +712,7 @@ impl WorldModel {
         let cur: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
         let mut all: Vec<TypeRec> = cur.clone();
         for e in &new_entries {
-            all.push(TypeRec { entry: e.clone(), version: Some(-1), interior: Vec::new() });
+            all.push(TypeRec { entry: e.clone(), version: Some(-1), interior: Vec::new(), born: None });
         }
         let refs: Vec<&TypeRec> = all.iter().collect();
         let pipeline = self.pipeline_for(&refs)?;
@@ -700,7 +769,7 @@ impl WorldModel {
                 remap = true;
             }
             let entry = Arc::new(TypeEntry { id: *real, ct: e.ct.clone(), builtin: false, solid: e.solid, bottom: e.bottom, top: e.top, sphere_cy: e.sphere_cy, sphere_r: e.sphere_r });
-            self.types.insert(*real, TypeRec { entry, version: Some(v), interior: Vec::new() });
+            self.types.insert(*real, TypeRec { entry, version: Some(v), interior: Vec::new(), born: Some(Instant::now()) });
         }
         for ((p, _), (id, tid)) in placed.iter().zip(&inst_ids) {
             let mut p = p.clone();
@@ -724,6 +793,9 @@ impl WorldModel {
             self.spawn = s;
         }
         self.current = Some(v);
+        if reshape {
+            self.reshape_versions.insert(v);
+        }
         let snapshot = if remap {
             self.snapshot()?
         } else {
@@ -842,4 +914,29 @@ pub fn gpu_parity(gpu: &Gpu, pipe: &ScenePipeline, terrain: &Terrain, tid: u32, 
         return Err(vec![Diag::new(Stage::Gpu, 0, format!("GPU/CPU sdf mismatch for {}: relative error {worst:.2e} at ({:.2}, {:.2}, {:.2})", ct.meta.name, at[0], at[1], at[2]))]);
     }
     Ok(())
+}
+
+/// Lowest and highest ground under a placement's footprint (corners and centre).
+fn footprint(t: &Terrain, pl: &Placement, entry: &TypeEntry) -> (f32, f32) {
+    let scale = pl.scale.clamp(0.2, 6.0);
+    let b = entry.ct.meta.bounds;
+    let (c, s) = (pl.rot_y.cos(), pl.rot_y.sin());
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    for (fx, fz) in [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let lx = fx * b[0] * scale * 0.7;
+        let lz = fz * b[2] * scale * 0.7;
+        // local → world is the inverse of to_local
+        let wx = pl.x + c * lx + s * lz;
+        let wz = pl.z - s * lx + c * lz;
+        let h = t.height(wx, wz);
+        lo = lo.min(h);
+        hi = hi.max(h);
+    }
+    (lo, hi)
+}
+
+/// A commit that reshaped one thing (see `brain::edit_item_type`).
+fn is_reshape(kind: &str, summary: &str) -> bool {
+    kind == "interp" && summary.starts_with("reshaped: ")
 }
