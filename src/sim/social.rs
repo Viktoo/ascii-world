@@ -346,10 +346,10 @@ impl Sim {
 
     fn find_ball(&mut self, who: ActorId) -> Option<ThingId> {
         let me = self.actor(who)?.clone();
-        if let Some(h) = me.held.filter(|h| self.things.get(*h).is_some_and(|t| t.props[P_BOUNCE] >= 0.3 && t.mass() <= 3.0)) {
+        if let Some(h) = me.held.filter(|h| self.things.get(*h).is_some_and(|t| is_toy(&t.props) || (t.props[P_BOUNCE] >= 0.3 && t.mass() <= 3.0))) {
             return Some(h);
         }
-        let (t, _) = self.nearest_matching(me.pos, 25.0, |p| p[P_BOUNCE] >= 0.3 && p[P_MASS] <= 3.0)?;
+        let (t, _) = self.nearest_matching(me.pos, 25.0, |p| is_toy(p) || (p[P_BOUNCE] >= 0.3 && p[P_MASS] <= 3.0))?;
         self.liven(&t)
     }
 

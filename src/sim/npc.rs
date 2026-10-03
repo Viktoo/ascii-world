@@ -198,6 +198,8 @@ pub struct Cast {
     index: HashMap<i64, usize>,
     /// When any character last turned to their craft (see `SimConfig::work_gap_secs`).
     pub last_work: f64,
+    /// When a character last made something (see `SimConfig::maker_secs`).
+    pub last_made: f64,
     /// The species book the cast was last fitted to.
     book: Option<Arc<crate::world::species::SpeciesBook>>,
 }
@@ -944,8 +946,8 @@ impl Sim {
         if let Some((_, aff)) = friend {
             consider(&mut best, needs.social * (0.5 + tr.sociable) * (0.6 + aff.max(0.0)), "socialize");
         }
-        let ball = self.nearest_matching(pos, 30.0, |p| p[P_BOUNCE] >= 0.45 && p[P_MASS] <= 3.0);
-        if ball.is_some() || held.is_some_and(|h| self.things.get(h).is_some_and(|x| x.props[P_BOUNCE] >= 0.45 && x.mass() <= 3.0)) {
+        let ball = self.nearest_matching(pos, 30.0, is_toy);
+        if ball.is_some() || held.is_some_and(|h| self.things.get(h).is_some_and(|x| is_toy(&x.props))) {
             consider(&mut best, needs.fun * (0.4 + tr.playful) * 1.2, "play");
         }
         let novelty = self.novelty_near(cid, pos, 40.0);
@@ -975,6 +977,12 @@ impl Sim {
             && self.cast.get(cid).is_some_and(|n| t - n.last_work > self.cfg.work_secs as f64 && t >= n.next_llm);
         if can_work {
             consider(&mut best, 0.1 + tr.crafty * 0.45, "work");
+        }
+        // Near the traveller, something gets made every minute or so: when
+        // it is due, the idlest person about turns to their trade.
+        let maker_turn = self.maker_turn(cid);
+        if maker_turn {
+            consider(&mut best, 2.0, "work");
         }
         if needs.fun > 0.85 && best.1 == "wander" {
             consider(&mut best, 0.5, "bored");
@@ -1025,7 +1033,7 @@ impl Sim {
                 next_think(self, 8.0);
             }
             "play" => {
-                let ball_id = held.filter(|h| self.things.get(*h).is_some_and(|x| x.props[P_BOUNCE] >= 0.45)).or_else(|| ball.as_ref().and_then(|(tg, _)| self.liven(tg)));
+                let ball_id = held.filter(|h| self.things.get(*h).is_some_and(|x| is_toy(&x.props))).or_else(|| ball.as_ref().and_then(|(tg, _)| self.liven(tg)));
                 let Some(ball_id) = ball_id else { return };
                 let partner = self.best_company(cid, 25.0).map(|x| x.0);
                 if let Some(p) = partner {
@@ -1114,7 +1122,13 @@ impl Sim {
                 if let Some(n) = self.cast.get_mut(cid) {
                     n.last_work = t;
                 }
-                self.ask(cid, "work", "You have a little time for your craft or daily work. Look at what is around you: is there something you could make, fix or improve that fits who you are? If so, do it (a \"do\" step, in words). If nothing fits, carry on as you were.");
+                let crowded = if self.loose_near(pos, 15.0) > self.cfg.max_loose {
+                    " Many things already lie about here: make your new thing from some of them, using them up, rather than adding more."
+                } else {
+                    ""
+                };
+                let what = format!("You have a little time for your craft or daily work. Look at what is around you: your tools, things lying about, things others made. Make something new from one or two of them, or fix or improve something, in a way that fits who you are: hold what you work with, then a \"do\" step in words that names what you use. What you make stays here for anyone to use.{crowded} If nothing fits, carry on as you were.");
+                self.ask_planner(cid, "work", &what, maker_turn);
                 self.set_doing(cid, "thinking about work");
                 next_think(self, 8.0);
             }
@@ -1142,6 +1156,42 @@ impl Sim {
             }
         }
         let _ = name;
+    }
+
+    /// Whether the maker clock is due and this character is the one to answer
+    /// it: the person near the traveller who has gone longest without working.
+    fn maker_turn(&self, cid: i64) -> bool {
+        let t = self.t;
+        let gap = self.cfg.maker_secs as f64;
+        if !self.has_llm || gap <= 0.0 || t - self.cast.last_made < gap || t - self.cast.last_work < gap * 0.5 || self.interp.building.len() >= 2 {
+            return false;
+        }
+        let player = self.player.pos;
+        let ready = |n: &Npc| {
+            !n.dead
+                && !n.a.asleep
+                && n.species.mind == crate::world::species::Mind::Sapient
+                && n.a.task.is_none()
+                && n.plan.is_empty()
+                && n.mission.is_none()
+                && self.talking_to != Some(n.def.id)
+                && !self.social.busy(ActorId::Npc(n.def.id))
+                && (n.a.pos - player).length() < 60.0
+        };
+        self.cast.npcs.iter().filter(|n| ready(n)).min_by(|a, b| a.last_work.total_cmp(&b.last_work).then(a.def.id.cmp(&b.def.id))).is_some_and(|n| n.def.id == cid)
+    }
+
+    /// Small loose things lying about: live ones and placed ones not yet touched.
+    pub fn loose_near(&mut self, p: Vec3, range: f32) -> usize {
+        let near = self.things.near(p, range);
+        let live = near.into_iter().filter(|id| self.things.get(*id).is_some_and(|t| !t.held() && !t.anchored && t.mass() <= STRENGTH)).count();
+        let placed = self
+            .snap
+            .near_chunk(crate::world::chunk_of(p.x, p.z))
+            .filter(|pl| (pl.pos - p).length() < range && !self.things.by_instance.contains_key(&pl.id))
+            .filter(|pl| self.snap.type_of(pl.type_id).is_some_and(|ty| !ty.has_tag("building") && !ty.has_tag("landmark") && ty.radius() < 1.0))
+            .count();
+        live + placed
     }
 
     pub fn set_doing(&mut self, cid: i64, what: &str) {
@@ -1211,6 +1261,19 @@ impl Sim {
             }
         }
         let snap = self.snap.clone();
+        // Placed things not yet touched (a settlement's tools and toys).
+        for pl in snap.near_chunk(crate::world::chunk_of(p.x, p.z)) {
+            let d = (pl.pos - p).length();
+            if d > range || self.things.by_instance.contains_key(&pl.id) || best.as_ref().is_some_and(|b| d >= b.0) {
+                continue;
+            }
+            let Some(ty) = snap.type_of(pl.type_id) else { continue };
+            let base = scaled((*self.type_props.get(&self.vocab, ty)).clone(), pl.scale);
+            if base[P_MASS] > STRENGTH || !f(&base) {
+                continue;
+            }
+            best = Some((d, Target::Instance(pl.id), pl.pos));
+        }
         for it in self.cache.items_near(&snap, p, range.min(20.0)) {
             let Some(ty) = snap.type_of(it.inst.info[0]) else { continue };
             let mut base = (*self.type_props.get(&self.vocab, ty)).clone();

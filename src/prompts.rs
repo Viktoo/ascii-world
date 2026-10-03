@@ -158,6 +158,7 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
   "new_types": [ { "name": "…", "description": "what it looks like, materials, colours", "size_m": [w, h, d], "tags": ["building"], "props": { "burns": 0.4 } } ],
   "landmarks": [ { "type": "type name", "x": 0-256, "z": 0-256, "rot": degrees, "scale": 1.0, "why": "why it is here" } ],
   "settlement": { "name": "…", "x": 0-256, "z": 0-256, "buildings": [ { "type": "type name", "dx": metres, "dz": metres, "rot": degrees } ] },
+  "things": [ { "type": "type name", "near": "a character's name, or \"\" for the middle of the settlement" } ],
   "characters": [ {
       "name": "…", "age": 30, "appearance": "…",
       "look": { "height": 1.75, "build": 1.0, "skin": 0.0-1.0, "shirt_hue": 0.0-1.0, "trousers_hue": 0.0-1.0 },
@@ -170,12 +171,12 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
 }
 Rules:
 - Coordinates are local to the region: x and z from 0 to 256.
-- 0–3 landmarks, 0–1 settlement (with 1–6 buildings), 0–6 characters, 0–3 new_types. Empty regions are fine sometimes: wilderness has value.
+- 0–3 landmarks, 0–1 settlement (with 1–6 buildings), 0–6 characters, 0–8 new_types. Empty regions are fine sometimes: wilderness has value.
 - Reuse existing types by exact name when they fit; only invent new_types the region really needs (a settlement needs at least one building type).
 - Put things on dry land (see the terrain notes), settlements on gentle ground, landmarks where they would be seen.
 - Give each character a trade or daily work in "goals" (what they make, mend or tend, and something they want to make or improve), e.g. "mends the fishing nets; wants to build a proper boat".
 - Characters live near the settlement or a landmark. home_x/home_z is where they stand by day: a spot a few metres outside their house (never the building's own coordinates). Give them distinct voices, goals and relationships with each other ("Name: relation", e.g. "Ola: daughter", "Bren: rival", "Tam: husband"): families, couples, friends and rivals make a village come alive. Weave in the region facts and the neighbouring regions.
-- Small things people use (tools, balls, food, lamps) are welcome as new_types too, placed as landmarks near where they belong.
+- things: small loose things lying about where people live and work, that they pick up, use, play with and make other things from. Give each character 1–2 things of their trade (what they work with or on: a fisher's net and a basket of fish, a smith's tongs and an iron bar, a weaver's spindle and a bundle of wool), "near" them. Give a settlement 1 pastime thing its people toss, catch, kick or roll about for fun, in their own style (a leather ball, a hoop, a straw doll; an orc camp might toss a skull), "near": "", with props { "toy": 1 } and a light mass. Each is under 1 m and 25 kg; at most 12 things. Reuse existing types by exact name when they fit (a trade's tools often repeat); new ones go in new_types with fitting props and tags.
 - Characters are people by default; give "species" (one of the species listed below) for anyone else who talks and plans (an elf, an orc). Their "look" uses their body's sliders.
 - creatures: 0–4 groups of beings that don't talk (herds by farms, a dog or cat with its person, wild packs, a beast in its lair), from the species listed below. Pets and working animals name their "owner" (a character of this plan). Wilderness may have wild herds or predators; villages, pets and livestock.
 - Clothing and gear that shows (armour, cloaks, robes, hats, a saddle or collar for an animal) are layers: new_types with tags ["layer"], "fits": the body they are worn on ("figure" for people, "quadruped" for four-legged animals, or a species' own body) and their props (armour { mass: 12 }, a wool cloak { burns: 0.7, mass: 2 }). A character's "layers" lists what they wear (at most 3, by type name).
@@ -296,7 +297,7 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
   "cache": true
 }
 - "held" is what the actor holds; "target" is what the middle of their view points at (a thing with its distance, or the ground or a far point). Use only property names from the list. Set "cache": false if the result depends on chance or the moment.
-- Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). If nothing would happen, say so in the narration and change nothing.
+- Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). Materials worked into something new are used up ("replace" one, "remove" any other); tools used to work them are not. A made thing can be made into something else again. If nothing would happen, say so in the narration and change nothing.
 - The world only holds things about the size of a cat and up. Smaller inputs that are common in this world (ingredients, tortillas, foil, thread, nails, paint, seeds, small tools) are never there to see but are always at hand: never refuse or fail for lack of them. Rare or special small things (a phoenix feather, a dragon's scale, a royal seal) are not at hand. Real things that are there (the held thing, the target, wood, stone, a building) are used when the words name them.
 - "actor_is" says who acts. The traveller makes what they ask outright, from nothing if need be: a burrito, a lantern, a tree, a house. Always do it, in the universe's own style, and never refuse it.
 - A character follows the world's laws: they can make or do what someone like them ("actor_about") could, in this world, as things are. When it can't be done as things are, change nothing, say why in the narration, and name the one thing it needs in "needs":

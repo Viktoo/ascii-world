@@ -27,6 +27,7 @@ pub const P_CHAR: usize = 15;
 pub const P_HEALTH: usize = 16;
 pub const P_GROWTH: usize = 17;
 pub const P_STRANGE: usize = 18;
+pub const P_TOY: usize = 19;
 
 pub const AMBIENT_TEMP: f32 = 15.0;
 /// What one person can lift (kg); two together lift twice that.
@@ -55,7 +56,14 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("health", 1.0, "how intact it is; at 0 it breaks"),
     ("growth", 1.0, "how grown it is, 0..1 (living things grow)"),
     ("strange", 0.0, "how out of place it is in this world, 0..1: 0 is everyday here, 1 unheard of (a motor car among horse carts 0.9, a glowing rune stone where there is no magic 0.8); people are surprised by strange things"),
+    ("toy", 0.0, "how much people play with it, 0..1: toss, catch, kick or roll it about for fun (a ball 1, a hoop 0.8, knucklebones 0.6; whatever this people plays with)"),
 ];
+
+/// Light enough to toss, and something people play with: a ball, a hoop,
+/// or whatever this people throws about for fun.
+pub fn is_toy(p: &[f32]) -> bool {
+    p[P_MASS] <= 5.0 && (p[P_TOY] >= 0.4 || (p[P_BOUNCE] >= 0.45 && p[P_MASS] <= 3.0))
+}
 
 /// Every property name this universe knows, with defaults.
 #[derive(Clone, Debug)]
@@ -169,6 +177,9 @@ pub fn type_props(vocab: &Vocab, ty: &TypeEntry) -> Props {
     if tag(ty, "light") || tag(ty, "lamp") || tag(ty, "lantern") {
         p[P_LIGHT] = 1.0;
     }
+    if tag(ty, "toy") || tag(ty, "ball") || tag(ty, "game") {
+        p[P_TOY] = 1.0;
+    }
     if tag(ty, "glass") || tag(ty, "pottery") {
         p[P_FRAGILE] = 0.6;
     }
@@ -257,7 +268,7 @@ pub fn sanitize(p: &mut Props) {
         }
         *v = v.clamp(-1e5, 1e5);
     }
-    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE] {
+    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY] {
         p[i] = p[i].clamp(0.0, 1.0);
     }
     p[P_LIGHT] = p[P_LIGHT].clamp(0.0, 2.0);

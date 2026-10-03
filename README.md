@@ -102,6 +102,8 @@ relationships, recent decisions and memories.
 | `POCKET_SIM_CREATE_BEINGS` | `0`: actions can't bring new beings into the world (default: they can, `/conjure a hound`). |
 | `POCKET_SIM_LIFE_SPEED` | How fast lives go: births and growing up (default 1; 0 stops births). |
 | `POCKET_SIM_MAX_CREATURES` | How many of one kind a neighbourhood holds before births stop (default 24). |
+| `POCKET_SIM_MAKER_SECS` | Near you, someone makes something at least this often, in seconds (default 60; 0 turns it off). |
+| `POCKET_SIM_MAX_LOOSE` | Past this many small loose things around a maker, new work uses some up (default 20). |
 | `POCKET_SIM_MAX_AWAKE`, `POCKET_SIM_MAX_FLAMES`, `POCKET_SIM_MAX_THINGS`, `POCKET_SIM_CHAT_RANGE`, `POCKET_SIM_RULES_HZ`, `POCKET_SIM_BEHAVIOR_HZ`, `POCKET_SIM_MEDIUM_LLM` | Further limits. Each can also be set per universe in its `kv` table as `sim.<name>`. |
 
 Defaults on the Claude API: `claude-opus-5-5` for the builder (region plans and object
@@ -221,9 +223,9 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   are spheres against the terrain and the signed distance fields of nearby solids, so a
   ball bounces off any shape the LLM wrote. Things at rest sleep. A thing falling through
   an opening (a hoop, a well) is noticed, whatever the shape.
-- *Properties and rules.* 19 built-in properties (`mass`, `bounce`, `burns`, `temp`,
+- *Properties and rules.* 20 built-in properties (`mass`, `bounce`, `burns`, `temp`,
   `wet`, `light`, `edible`, `alive`, `fragile`, `fire`, `fuel`, `heat`, `char`,
-  `health`, `growth`, `strange`, …). Rules are data (`src/sim/rules.rs`), applied a few times a
+  `health`, `growth`, `strange`, `toy`, …). Rules are data (`src/sim/rules.rs`), applied a few times a
   second to live things, changed scatter cells and placed objects next to something
   happening: heat spreads and ignites what burns, fire consumes fuel and chars, water
   soaks and douses, living things grow, broken lamps spill burning oil. A universe's
@@ -238,6 +240,16 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   It sets how much they remember and retell it, whether their planner hears about it,
   and, past a shock, whether they drop what they are doing; the timid run when there is
   no planner to think it over. Gossip retells the most surprising news first.
+- *Things to work and play with.* Each region plan leaves small loose things lying
+  about: one or two of each person's trade (a fisher's net and a basket of fish) by their
+  home, and the settlement's pastime in its middle, in its own style (a leather ball; an
+  orc camp's skull). A light thing with `toy` set is played with like a ball, whether it
+  bounces or not. Made things can be made into other things again; materials are used
+  up, tools are not.
+- *The maker clock.* Near you, someone makes something about once a minute: when nothing
+  has been made for `maker_secs` (60), the person nearby who has gone longest without
+  working turns to their trade and makes something from what lies around. Past
+  `max_loose` (20) loose things nearby, new work uses some up instead of adding more.
 - *Looks.* Charred, wet, glowing and highlighted are generic per-instance effects in the
   shader; fires get animated flames and up to 8 point lights light the night.
 - *The interpreter.* When an action falls outside the rules and the things' own code,

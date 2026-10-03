@@ -48,6 +48,12 @@ pub struct SimConfig {
     /// ...and across the whole world, at most one character this often (s):
     /// each piece of work may add a type, and every type slows shader builds.
     pub work_gap_secs: f32,
+    /// Near the traveller, someone makes something at least this often (s):
+    /// when nothing has been made for this long, the idlest person nearby
+    /// turns to their trade, whatever the gaps above say.
+    pub maker_secs: f32,
+    /// Past this many small loose things around a maker, new work uses some up.
+    pub max_loose: usize,
     /// Predators kill what they catch (off: they only chase, and give up).
     /// On by default; births refill what is lost.
     pub hunting: bool,
@@ -78,6 +84,8 @@ impl Default for SimConfig {
             max_things: 5000,
             work_secs: 600.0,
             work_gap_secs: 120.0,
+            maker_secs: 60.0,
+            max_loose: 20,
             hunting: true,
             max_creatures: 24,
             transform: false,
@@ -114,6 +122,8 @@ impl SimConfig {
             ("max_things", "POCKET_SIM_MAX_THINGS"),
             ("work_secs", "POCKET_SIM_WORK_SECS"),
             ("work_gap_secs", "POCKET_SIM_WORK_GAP"),
+            ("maker_secs", "POCKET_SIM_MAKER_SECS"),
+            ("max_loose", "POCKET_SIM_MAX_LOOSE"),
             ("max_creatures", "POCKET_SIM_MAX_CREATURES"),
             ("life_speed", "POCKET_SIM_LIFE_SPEED"),
         ] {
@@ -161,6 +171,8 @@ impl SimConfig {
             "max_things" => self.max_things = v.clamp(10.0, 1_000_000.0) as usize,
             "work_secs" => self.work_secs = v.clamp(10.0, 1e7),
             "work_gap_secs" => self.work_gap_secs = v.clamp(0.0, 1e7),
+            "maker_secs" => self.maker_secs = v.clamp(0.0, 1e7),
+            "max_loose" => self.max_loose = v.clamp(1.0, 10_000.0) as usize,
             "max_creatures" => self.max_creatures = v.clamp(1.0, 10_000.0) as usize,
             "life_speed" => self.life_speed = v.clamp(0.0, 1000.0),
             "hunting" => self.hunting = v > 0.5,

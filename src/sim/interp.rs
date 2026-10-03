@@ -885,13 +885,16 @@ impl Sim {
     }
 
     /// Count a kind of thing made in the world's record of creations.
-    pub fn record_creation(&self, tid: u32, kind: &str, by: Option<ActorId>, from: &str, at: glam::Vec3) {
+    pub fn record_creation(&mut self, tid: u32, kind: &str, by: Option<ActorId>, from: &str, at: glam::Vec3) {
         let name = self.snap.type_of(tid).map(|t| t.name().to_string()).unwrap_or_default();
         self.note_creation(&format!("type:{tid}"), kind, &name, by, from, at);
     }
 
     /// Count something made, by key (`type:<id>`, `being:<id>`).
-    pub fn note_creation(&self, key: &str, kind: &str, name: &str, by: Option<ActorId>, from: &str, at: glam::Vec3) {
+    pub fn note_creation(&mut self, key: &str, kind: &str, name: &str, by: Option<ActorId>, from: &str, at: glam::Vec3) {
+        if matches!(by, Some(ActorId::Npc(_))) {
+            self.cast.last_made = self.t;
+        }
         let maker = by.map(|b| self.actor_name(b)).unwrap_or_else(|| "the world".into());
         let t = self.t;
         let _ = self.db.with(|c| crate::db::note_creation(c, key, kind, name, &maker, from, t, at.x, at.z));

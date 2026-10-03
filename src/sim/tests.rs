@@ -2110,6 +2110,7 @@ fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
     let plate = fixture("layers/breastplate.js");
     let cloak = fixture("layers/cloak.js");
     let pine = fixture("mock/seapine.js");
+    let ball = fixture("sims/ball.js");
     let db2 = w.db.clone();
     let saw_body = Arc::new(Mutex::new(false));
     let saw2 = saw_body.clone();
@@ -2126,8 +2127,10 @@ fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
             return format!("```json\n{}\n```", serde_json::json!({ "name": "Ironhold", "mood": "proud", "facts": [],
                 "new_types": [
                     { "name": "iron breastplate", "description": "plate armour", "tags": ["layer"], "fits": "figure", "props": { "mass": 12 } },
-                    { "name": "red cloak", "description": "a wool cloak", "tags": ["layer"], "fits": "figure", "props": { "burns": 0.8 } }
+                    { "name": "red cloak", "description": "a wool cloak", "tags": ["layer"], "fits": "figure", "props": { "burns": 0.8 } },
+                    { "name": "leather ball", "description": "a ball", "tags": ["ball"], "props": { "toy": 1 } }
                 ],
+                "things": [{ "type": "leather ball", "near": "Brann" }, { "type": "leather ball", "near": "" }, { "type": "no such thing", "near": "Tova" }],
                 "varieties": [{ "species": "human", "name": "warrior", "look": { "build": [1.15, 1.35] }, "layers": ["iron breastplate", "red cloak"] }],
                 "settlement": { "name": "Ironhold", "x": cl(lx + 40.0), "z": cl(lz + 40.0), "variety": "warrior", "buildings": [] },
                 "characters": [
@@ -2142,6 +2145,9 @@ fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
         }
         if user.contains("Object type to write: \"red cloak\"") {
             return format!("```js\n{cloak}\n```");
+        }
+        if user.contains("Object type to write: \"leather ball\"") {
+            return format!("```js\n{ball}\n```");
         }
         r#"{"goal": "", "steps": []}"#.into()
     }));
@@ -2175,6 +2181,11 @@ fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
     assert!(giant.height > 2.8, "the people here are giants ({:.1} m)", giant.height);
     assert!(s.sim.strength(ActorId::Player) < 10.0 && s.sim.strength(b) > 50.0);
     assert_eq!(s.sim.cast.get(brann).unwrap().def.persona.variety, "warrior", "the settlement's people are warriors");
+    // The plan's things lie about: one by Brann's home, one in the middle.
+    let balls: Vec<Vec3> = s.sim.snap.instances.iter().filter(|pl| s.sim.snap.type_of(pl.type_id).is_some_and(|t| t.name() == "leather ball")).map(|pl| pl.pos).collect();
+    assert_eq!(balls.len(), 2, "two balls placed");
+    let home = s.sim.cast.get(brann).unwrap().def.home;
+    assert!(balls.iter().any(|b| Vec3::new(b.x - home.x, 0.0, b.z - home.z).length() < 3.0), "one by Brann's home");
     assert_eq!(s.sim.cast.get(pell).unwrap().def.persona.variety, "farmer", "unless they are something else");
     let build = s.sim.cast.get(brann).unwrap().sliders[1];
     assert!((1.15..=1.35).contains(&build), "broad warriors ({build})");
@@ -2798,4 +2809,89 @@ fn a_characters_creation_is_credited_and_counted() {
     let rows = s.sim.db.with(crate::db::creations).unwrap();
     let r = rows.iter().find(|r| r.key == format!("type:{stick}")).unwrap();
     assert_eq!((r.made_by.as_str(), r.count), ("Nell", 2), "the first maker keeps the credit; it counts up");
+}
+
+// ------------------------------------------------------------ settlement things
+
+/// A pastime need not bounce: an orc camp's skull, marked as a toy and lying
+/// untouched where the region put it, is found and played with.
+#[test]
+fn an_untouched_toy_that_barely_bounces_is_played_with() {
+    let w = world("toy", 41);
+    let p = dry_spot(&w, 8.0, 0.4);
+    let a = add_char(&w, "Grub", "a playful, rowdy orc", &["Snag: friend"], p);
+    let b = add_char(&w, "Snag", "a lively, playful orc", &["Grub: friend"], p + Vec3::new(5.0, 0.0, 0.0));
+    let skull = add_type(&w, &fixture("sims/skull.js"));
+    let skull_id = place(&w, skull, p + Vec3::new(2.0, 0.0, 2.0), 0.0);
+    let mut s = session(&w, 9, None);
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -15.0);
+    for cid in [a, b] {
+        let n = s.sim.cast.get_mut(cid).unwrap();
+        n.needs = crate::world::characters::Needs { hunger: 0.0, fatigue: 0.0, social: 0.0, fun: 0.95, curiosity: 0.0 };
+    }
+    let all = record(&mut s);
+    for _ in 0..(120.0 / 0.1) as usize {
+        s.step(0.1);
+        if s.sim.night() {
+            s.sim.t += crate::render::sky::DAY_SECONDS * 0.5;
+        }
+        if !of(&all, "caught").is_empty() || !of(&all, "threw").is_empty() {
+            break;
+        }
+    }
+    assert!(s.sim.things.by_instance.contains_key(&skull_id), "the skull was picked up");
+    assert!(!of(&all, "threw").is_empty() || !of(&all, "caught").is_empty(), "someone played with it: {:?}", all.lock().iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    sound(&s);
+}
+
+/// Near the traveller something gets made every minute or so: the clock
+/// turns the idlest person to their trade (at once while nothing has been
+/// made), and a making resets it.
+#[test]
+fn the_maker_clock_sends_someone_to_their_trade_each_minute() {
+    let w = world("maker", 42);
+    let p = dry_spot(&w, 8.0, 1.1);
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    place(&w, ball, p + Vec3::new(1.5, 0.0, 0.0), 0.0);
+    add_char(&w, "Ada", "a steady cobbler", &[], p);
+    add_char(&w, "Ben", "a quiet weaver", &[], p + Vec3::new(6.0, 0.0, 0.0));
+    let asks = Arc::new(Mutex::new(Vec::<(f64, String)>::new()));
+    let a2 = asks.clone();
+    let clock = Arc::new(Mutex::new(0.0f64));
+    let c2 = clock.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("You decide what a character") {
+            if user.contains("craft or daily work") {
+                a2.lock().push((*c2.lock(), user.to_string()));
+                return r#"{"goal": "make a ball", "steps": [{"do": "do", "text": "stitch a leather ball"}]}"#.into();
+            }
+            return r#"{"goal": "", "steps": []}"#.into();
+        }
+        if sys.contains("physics and common sense") {
+            return r#"{"narration": "A ball takes shape.", "create": [{"name": "leather ball"}], "cache": false}"#.into();
+        }
+        r#"{"lines": []}"#.into()
+    }));
+    let mut s = session(&w, 10, Some(llm));
+    s.sim.cfg.work_secs = 1e6;
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -12.0);
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.needs = crate::world::characters::Needs { hunger: 0.0, fatigue: 0.0, social: 0.0, fun: 0.0, curiosity: 0.0 };
+    }
+    let start = s.sim.t;
+    for _ in 0..(200.0 / 0.1) as usize {
+        *clock.lock() = s.sim.t - start;
+        s.step(0.1);
+        if s.sim.night() {
+            s.sim.t += crate::render::sky::DAY_SECONDS * 0.5;
+        }
+    }
+    let asks = asks.lock().clone();
+    let times: Vec<f64> = asks.iter().map(|a| a.0.round()).collect();
+    assert!(asks.len() >= 2 && asks.len() <= 5, "about one turn to work a minute: {times:?}");
+    assert!(times[0] < 5.0, "nothing made yet: the first comes at once: {times:?}");
+    assert!(times.windows(2).all(|w| w[1] - w[0] >= 50.0), "and never sooner after a making: {times:?}");
+    assert!(s.sim.cast.last_made > start, "something was made");
+    sound(&s);
 }

@@ -15,7 +15,7 @@ pub enum Task {
 
 /// Typical reply lengths in characters (measured from past universes).
 pub const GENESIS_CHARS: usize = 30_000;
-pub const REGION_CHARS: usize = 11_000;
+pub const REGION_CHARS: usize = 12_500;
 
 /// Progress through a stream: linear, then easing towards 1 if the reply
 /// runs longer than expected, so the bar never stops dead or overshoots.
@@ -70,7 +70,7 @@ impl Pacer {
 }
 
 /// JSON objects whose names are worth showing, and nested ones that set the verb.
-const SECTIONS: &[&str] = &["biomes", "properties", "rules", "species", "new_species", "varieties", "new_types", "landmarks", "settlement", "buildings", "characters", "creatures", "attitudes", "facts"];
+const SECTIONS: &[&str] = &["biomes", "properties", "rules", "species", "new_species", "varieties", "new_types", "landmarks", "settlement", "buildings", "things", "characters", "creatures", "attitudes", "facts"];
 
 /// Picks names out of a streamed reply, line by line: what each JSON section
 /// names, and each code block's `name:`.
@@ -164,6 +164,7 @@ impl Scanner {
                     ("species", Some("creatures")) => Some("herding"),
                     ("type", Some("landmarks")) => Some("placing"),
                     ("type", Some("buildings")) => Some("building"),
+                    ("type", Some("things")) => Some("leaving out"),
                     _ => None,
                 };
                 if let Some(verb) = verb {

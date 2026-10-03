@@ -835,7 +835,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // New types, in parallel.
     let mut new_types: Vec<NewType> = Vec::new();
     let mut new_names: Vec<(String, usize)> = Vec::new();
-    let specs: Vec<Value> = plan.get("new_types").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().take(3).collect();
+    let specs: Vec<Value> = plan.get("new_types").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().take(8).collect();
     let done = std::sync::atomic::AtomicUsize::new(0);
     let done = &done;
     let n_specs = specs.len().max(1);
@@ -985,6 +985,26 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             home += Vec3::new(a.cos(), 0.0, a.sin()) * (3.0 + k as f32);
         }
         chars.push((p, home));
+    }
+    // Small things lying about: each trade's tools and materials by its
+    // person's home, and the settlement's plaything in its middle.
+    let middle = plan.get("settlement").filter(|v| v.is_object()).map(|st| (ox + clampl(f(st, "x", 128.0)), oz + clampl(f(st, "z", 128.0))));
+    let mut by_spot: std::collections::HashMap<String, usize> = Default::default();
+    for (i, th) in plan.get("things").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(12).enumerate() {
+        let Some(ty) = resolve(&s(th, "type")) else { continue };
+        let near = s(th, "near").trim().to_lowercase();
+        let spot = chars.iter().find(|(p, _)| !near.is_empty() && p.name.trim().to_lowercase() == near).map(|(_, h)| (h.x, h.z)).or(middle).or_else(|| chars.first().map(|(_, h)| (h.x, h.z)));
+        let Some((sx, sz)) = spot else { continue };
+        // Spread round the spot so a person's things don't pile up.
+        let k = by_spot.entry(near).or_default();
+        let a = *k as f32 * 2.399 + i as f32 * 0.7;
+        let rad = 1.6 + 0.5 * *k as f32;
+        *k += 1;
+        let (x, z) = (sx + a.cos() * rad, sz + a.sin() * rad);
+        if info.terrain.height(x, z) <= WATER_LEVEL + 0.2 {
+            continue;
+        }
+        placements.push(Placement { ty, x, z, y: None, rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
     }
     // Creatures: herds, packs, pets, beasts. No voice or trade, just a
     // species, a home, maybe a name and a person they belong to.
