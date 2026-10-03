@@ -581,11 +581,7 @@ pub fn act_once(s: &mut Session, who: ActorId, action: super::Action, run: f32) 
     // What this actor did, and what happened near them.
     let here = s.sim.actor(who).map(|a| a.pos).unwrap_or_default();
     let events: Vec<SimEvent> = s.sim.log.recent.iter().rev().take(n).rev().filter(|e| e.actor == Some(who) || e.pos.is_some_and(|p| (Vec3::from(p) - here).length() < 30.0)).cloned().collect();
-    let notes: Vec<String> = s.sim.drain_notes().into_iter().map(|n| match n {
-        Note::Line { who, text, .. } => format!("{who}: {text}"),
-        Note::Info(t) => t,
-        Note::Effect(t) => format!("↳ {t}"),
-    }).collect();
+    let notes: Vec<String> = s.sim.drain_notes().into_iter().filter(|n| !matches!(n, Note::Far(..))).map(|n| n.text()).collect();
     let me = s.sim.inspect(&Target::Actor(who));
     json!({ "ok": ok, "msg": msg, "events": events, "heard": notes, "actor": me })
 }

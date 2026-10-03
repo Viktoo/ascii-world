@@ -171,6 +171,16 @@ pub struct Persona {
     /// line that drifted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temper: Option<species::Temper>,
+    /// Their own size against their species' (a big tom: 1.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f32>,
+}
+
+impl Persona {
+    /// Their own size against their species', kept in sense.
+    pub fn size_mul(&self) -> f32 {
+        self.size.filter(|s| s.is_finite()).unwrap_or(1.0).clamp(0.5, 4.0)
+    }
 }
 
 #[derive(Clone, Debug)]

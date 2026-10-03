@@ -260,7 +260,7 @@ impl Sim {
                             t.through = Some(s.ty.id);
                         }
                         self.event("through", thrown.map(|x| x.0), Some(format!("thing:{id}")), format!("the {} went through the {name}", ty.name()), Some(p), json!({ "target": name }));
-                        self.note_near(p, 25.0, Note::Info(format!("The {} drops through the {name}!", ty.name())));
+                        self.note_near(p, 25.0, Note::Ambient(format!("The {} drops through the {name}!", ty.name())));
                         self.witness(p, 25.0, &format!("I saw the {} go through the {name}.", ty.name()), 0.35, &[]);
                         if let Some((who, _)) = thrown {
                             self.on_scored(who, &name);
@@ -294,7 +294,7 @@ impl Sim {
                 let name = ty.name().to_string();
                 let who = self.actor_name(a);
                 self.event("caught", Some(a), Some(format!("thing:{id}")), format!("{who} caught the {name}"), Some(p), json!({ "from": thrower }));
-                self.note_near(p, 30.0, Note::Info(format!("{} caught the {name}.", cap(&who))));
+                self.note_near(p, 30.0, Note::Ambient(format!("{} caught the {name}.", cap(&who))));
                 self.on_caught(a, thrower, id);
                 return false;
             }

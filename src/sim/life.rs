@@ -218,7 +218,7 @@ impl Sim {
         }
         let msg = format!("{an} and {bn} have a young one, {name}");
         self.event("born", Some(kid), Some(ActorId::Npc(a).key()), msg.clone(), Some(p), json!({ "parents": [a, b], "lineage": lineage, "tame": temper.tame, "wary": temper.wary }));
-        self.note_near(p, 30.0, Note::Info(format!("{msg}.")));
+        self.note_near(p, 30.0, Note::Notable(format!("{msg}.")));
         self.witness(p, 30.0, &msg, 0.6, &[]);
         self.drift(lineage);
         Some(id)
@@ -279,7 +279,7 @@ impl Sim {
             let msg = format!("{}'s line are {} now, a kind of their own", parent_name, sp.plural());
             self.event("new_species", None, None, msg.clone(), at, json!({ "species": name, "from": species.name, "lineage": lineage }));
             if let Some(p) = at {
-                self.note_near(p, 40.0, Note::Info(format!("{msg}.")));
+                self.note_near(p, 40.0, Note::Notable(format!("{msg}.")));
                 self.witness(p, 40.0, &msg, 0.6, &[]);
             }
             return;
@@ -308,7 +308,7 @@ impl Sim {
         let msg = format!("people have started calling {}'s line the {name}", parent_name);
         self.event("new_variety", None, None, msg.clone(), at, json!({ "variety": name, "species": species.name, "lineage": lineage, "tame": tame, "wary": wary }));
         if let Some(p) = at {
-            self.note_near(p, 40.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            self.note_near(p, 40.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
             self.witness(p, 40.0, &msg, 0.5, &[]);
         }
     }

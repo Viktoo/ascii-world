@@ -1455,7 +1455,7 @@ fn the_interpreter_cuts_and_reshapes_at_the_spot_touched() {
     s.run(0.5, 0.05);
     // The deed's story is told once, when the new shape is there.
     let mut heard: Vec<String> = r["heard"].as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
-    heard.extend(s.sim.drain_notes().into_iter().filter_map(|n| if let super::Note::Info(t) = n { Some(t) } else { None }));
+    heard.extend(s.sim.drain_notes().into_iter().filter(|n| !matches!(n, super::Note::Far(..))).map(|n| n.text()));
     assert_eq!(heard.iter().filter(|t| t.contains("grows a chimney")).count(), 1, "{heard:?}");
     assert!(!heard.iter().any(|t| t.contains("becomes")), "and not told twice: {heard:?}");
     let t = s.sim.things.get(h).unwrap();
@@ -2279,7 +2279,11 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
             return fx(serde_json::json!({ "narration": "Green smoke, and a toad blinks up.", "being": { "become": "toad" }, "cache": false }));
         }
         if user.contains("\"conjure a hound\"") {
-            return fx(serde_json::json!({ "narration": "A hound steps out of the mist.", "beings": [{ "species": "dog", "name": "Mist" }] }));
+            return fx(serde_json::json!({ "narration": "A hound steps out of the mist.", "beings": [{ "species": "dog", "name": "Mist", "look": { "hue": 1.2, "shade": 0.5 }, "size": 1.5 }] }));
+        }
+        if user.contains("\"make mist much larger\"") {
+            assert!(user.contains("\"person\":\"Mist\""), "Mist is the target, named in the words");
+            return fx(serde_json::json!({ "narration": "Mist grows.", "being": { "grow": 2.0 } }));
         }
         if user.contains("Object type to write: \"red cloak\"") {
             assert!(user.contains("This is a layer"), "written as a layer");
@@ -2352,6 +2356,22 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
     deed(&mut s, "conjure a hound", me);
     let mist = s.sim.cast.npcs.iter().find(|n| n.name() == "Mist").map(|n| n.def.id).expect("a hound appeared");
     assert_eq!(s.sim.owner_of(mist), Some(me), "it is the traveller's");
+    let m = s.sim.cast.get(mist).unwrap();
+    assert_eq!(m.def.persona.look.get("hue"), Some(&1.2), "made grey, as asked");
+    assert_eq!(m.def.persona.size, Some(1.5));
+    let h0 = m.a.dims.height;
+    // Named, not pointed at: "make mist much larger" is done to Mist.
+    s.sim.player.pos = s.sim.actor(ActorId::Npc(mist)).unwrap().pos + Vec3::new(0.0, 0.0, -3.0);
+    act_once(&mut s, me, Action::Do { text: "make mist much larger".into(), on: None, at: None }, 0.3);
+    for _ in 0..200 {
+        s.step(0.05);
+        if s.sim.interp.pending.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let h1 = s.sim.cast.get(mist).unwrap().a.dims.height;
+    assert!((h1 / h0 - 2.0).abs() < 0.05, "twice as big: {h0} -> {h1}");
     s.save();
     drop(s);
     let s = session(&w, 25, None);
@@ -2713,4 +2733,69 @@ fn a_house_out_of_nowhere_frightens_the_timid_and_the_next_one_less() {
     s.sim.startle_one(cid, &news("Another house appeared east of me."));
     let second = felt(&s);
     assert!(second[0].1 < first[0].1, "{second:?}");
+}
+
+/// A camp dog scares the horses at first, but scares that come to nothing
+/// wear off: they get used to it and stop bolting. One telling per herd.
+#[test]
+fn herds_get_used_to_a_dog_that_never_hunts_them() {
+    let w = world("camp-dog", 61);
+    let a = dry_spot(&w, 10.0, 0.6);
+    let bram = add_being(&w, "Bram", "horse", &[], a);
+    let nell = add_being(&w, "Nell", "horse", &[], a + Vec3::new(2.0, 0.0, 0.0));
+    let dog = add_being(&w, "Bankhar", "dog", &[], a + Vec3::new(0.0, 0.0, 4.0));
+    let mut s = session(&w, 5, None);
+    calm(&mut s);
+    let (b, d) = (ActorId::Npc(bram), ActorId::Npc(dog));
+    for id in [bram, nell] {
+        let n = s.sim.cast.get_mut(id).unwrap();
+        n.temper.wary = 0.7;
+    }
+    assert!(!s.sim.hunts(d, b), "the dog doesn't hunt horses");
+    assert_eq!(s.sim.threat(b).map(|t| t.0), Some(d), "at first the dog scares the horse");
+    s.sim.player.pos = a + Vec3::new(5.0, 0.0, 0.0);
+    s.sim.drain_notes();
+    let at = s.sim.actor(d).unwrap().pos;
+    s.sim.flee(bram, d, at);
+    s.sim.flee(nell, d, at);
+    let told = s.sim.drain_notes().iter().filter(|n| n.text().contains("bolt") || n.text().contains("runs")).count();
+    assert_eq!(told, 1, "one line for the whole herd");
+    for _ in 0..3 {
+        s.sim.flee(bram, d, at);
+    }
+    // Put them back next to the dog: they no longer care.
+    s.sim.cast.get_mut(dog).unwrap().a.pos = s.sim.actor(b).unwrap().pos + Vec3::new(0.0, 0.0, 4.0);
+    assert!(s.sim.threat(b).is_none(), "used to the dog now");
+    assert!(s.sim.threat(ActorId::Npc(nell)).is_none(), "the whole herd is");
+}
+
+/// What a character makes by a deed is theirs: the "made" event names them,
+/// the thing knows its maker, and the world's record of creations lists it
+/// under them. Made again, it counts up instead of adding a line.
+#[test]
+fn a_characters_creation_is_credited_and_counted() {
+    use super::Request;
+    let w = world("credit", 43);
+    let stick = builtin_id(&w, "stick");
+    let at = dry_spot(&w, 8.0, 0.3);
+    let nell = add_char(&w, "Nell", "handy", &[], at);
+    let mut s = session(&w, 9, None);
+    s.sim.has_llm = true;
+    calm(&mut s);
+    let me = ActorId::Npc(nell);
+    // A character's deed waits its turn for the model; its id is all we need.
+    let id = s.sim.act(me, Action::Do { text: "whittle a flute".into(), on: None, at: None }).unwrap().pending.expect("asked");
+    s.sim.on_interpreted(id, Ok(serde_json::json!({ "narration": "A flute takes shape.", "create": [{ "name": "reed flute", "description": "new" }] })));
+    let b = s.sim.drain_requests().into_iter().find_map(|r| if let Request::BuildType { id, .. } = r { Some(id) } else { None }).unwrap();
+    s.sim.on_type_built(b, Some(stick));
+    let made = events(&s.sim, "made");
+    assert_eq!(made.last().and_then(|e| e.actor), Some(me), "the made event names its maker: {made:?}");
+    assert!(s.sim.things.live().any(|t| t.type_id == stick && t.origin.made_by.as_deref() == Some("Nell")), "the thing knows who made it");
+    let rows = s.sim.db.with(crate::db::creations).unwrap();
+    let r = rows.iter().find(|r| r.key == format!("type:{stick}")).expect("listed");
+    assert_eq!((r.kind.as_str(), r.made_by.as_str(), r.count), ("made", "Nell", 1));
+    s.sim.record_creation(stick, "made", Some(ActorId::Player), "", at);
+    let rows = s.sim.db.with(crate::db::creations).unwrap();
+    let r = rows.iter().find(|r| r.key == format!("type:{stick}")).unwrap();
+    assert_eq!((r.made_by.as_str(), r.count), ("Nell", 2), "the first maker keeps the credit; it counts up");
 }

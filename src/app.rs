@@ -7,7 +7,8 @@ use crate::model::LiveRef;
 use crate::render::{self, Camera, Frame, FrameRequest, RenderHandle, RenderMsg, SceneParams, sky};
 use crate::sim::actions::Action;
 use crate::sim::pick::Picked;
-use crate::sim::{ActorId, Note, Sim, Target};
+use crate::sim::{ActorId, Sim, Target};
+use journal::LogLine;
 use crate::term::{self, Cell, Screen};
 use crate::world::characters::TALK_RANGE;
 use crate::world::collide::{Obstacles, PLAYER_RADIUS};
@@ -21,6 +22,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+mod creations;
+mod journal;
 mod loading;
 mod menu;
 mod work;
@@ -34,6 +37,12 @@ const PITCH_MAX: f32 = 0.6;
 const FOV_Y: f32 = 1.05;
 const STATUS_BG: [u8; 3] = [38, 40, 52];
 const PANEL_BG: [u8; 3] = [14, 15, 20];
+/// At most this many speech boxes over heads at once (the nearest speakers).
+const BUBBLES: usize = 3;
+/// A speech box stays at most this long.
+const BUBBLE_MAX: Duration = Duration::from_secs(10);
+const BUBBLE_W: usize = 39;
+const BUBBLE_ROWS: usize = 3;
 const DIM: [u8; 3] = [130, 134, 150];
 const TEXT: [u8; 3] = [222, 224, 230];
 const ACCENT: [u8; 3] = [255, 200, 110];
@@ -46,14 +55,6 @@ pub enum Mode {
     Command,
 }
 
-#[derive(Clone)]
-struct LogLine {
-    speaker: Option<String>,
-    text: String,
-    color: [u8; 3],
-    /// A streaming reply from this character.
-    streaming: Option<i64>,
-}
 
 #[derive(Default)]
 struct Keys {
@@ -148,6 +149,12 @@ pub struct App {
     log_view: u8,
     /// Log lines scrolled back from the newest (PgUp / PgDn).
     log_scroll: usize,
+    /// Which lines the journal shows (Tab cycles).
+    journal_filter: journal::Filter,
+    /// What came in since the journal was last open.
+    unseen: journal::Unseen,
+    /// When the next everyday line leaves the small log.
+    log_expiry: Option<Instant>,
     dirty: bool,
     llm: Option<Arc<crate::llm::Llm>>,
     /// Region plans wait until the universe's look (and so its terrain) exists.
@@ -238,6 +245,9 @@ impl App {
             menu: None,
             log_view: 0,
             log_scroll: 0,
+            journal_filter: journal::Filter::default(),
+            unseen: journal::Unseen::default(),
+            log_expiry: None,
             dirty: true,
             llm: s.llm.clone(),
             genesis_pending: false,
@@ -305,14 +315,6 @@ impl App {
         self.sim.player.yaw
     }
 
-    fn say(&mut self, speaker: Option<&str>, text: &str, color: [u8; 3]) {
-        self.log.push_back(LogLine { speaker: speaker.map(str::to_string), text: text.to_string(), color, streaming: None });
-        while self.log.len() > 1000 {
-            self.log.pop_front();
-        }
-        self.dirty = true;
-    }
-
     fn held(&self, c: char) -> bool {
         if self.enhanced {
             self.keys.down.contains(&c)
@@ -335,13 +337,6 @@ impl App {
         let ui = log_rows + 3; // separator, log, input, status
         let vh = h.saturating_sub(ui).max(4);
         (self.screen.w, vh, log_rows)
-    }
-
-    fn set_log_view(&mut self, v: u8) {
-        self.log_view = v;
-        self.log_scroll = 0;
-        self.last_frame = None;
-        self.dirty = true;
     }
 
     /// Rows of log on screen: over the whole view when it is full screen.
@@ -441,6 +436,11 @@ impl App {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.quit = true,
             KeyCode::Esc if self.log_view > 0 => self.set_log_view(0),
             KeyCode::Esc => self.toggle_menu(),
+            KeyCode::Tab if self.log_view > 0 => {
+                self.journal_filter = self.journal_filter.next();
+                self.log_scroll = 0;
+                self.dirty = true;
+            }
             KeyCode::Tab => {
                 self.ascii = !self.ascii;
                 self.screen.resize(self.screen.w, self.screen.h);
@@ -539,7 +539,10 @@ impl App {
         }
         let pointed = self.pointed_thing().filter(|_| self.pointed.as_ref().is_some_and(|p| p.dist < crate::sim::actor::REACH + 1.0));
         match pointed.or_else(|| self.sim.nearest_in_front(ActorId::Player)) {
-            Some(Target::Actor(_)) => self.say(None, "You can't pick up a person. (/hug, /wave, /give …)", DIM),
+            Some(Target::Actor(id)) => {
+                let who = self.sim.actor_name(id);
+                self.say(None, &format!("You can't pick up {who}. (/hug, /wave, /give …)"), DIM)
+            }
             Some(t) => self.player_act(Action::Hold { target: t }),
             None => self.say(None, "Nothing to pick up within reach.", DIM),
         }
@@ -634,9 +637,11 @@ impl App {
     /// The nearest character whose name starts with `who`, or the one pointed at.
     fn person(&mut self, who: &str) -> Option<Target> {
         if who.trim().is_empty() {
+            // The crosshair wins: on a thing, nobody nearby is meant.
             return match self.pointed_thing() {
                 Some(t @ Target::Actor(_)) => Some(t),
-                _ => self.talk_hint.as_ref().map(|(id, _)| Target::Actor(ActorId::Npc(*id))),
+                Some(_) => None,
+                None => self.talk_hint.as_ref().map(|(id, _)| Target::Actor(ActorId::Npc(*id))),
             };
         }
         let p = self.sim.player.pos;
@@ -651,7 +656,10 @@ impl App {
         // anything else ("/wave the flag") is something you do, in words.
         if let Some(k) = crate::sim::actor::GestureKind::parse(&lc) {
             let to = self.person(rest);
-            if (rest.is_empty() && !k.contact()) || to.is_some() {
+            // With a thing in the crosshair, made-up gestures act on it, in words.
+            let on_thing = rest.is_empty() && self.pointed_thing().is_some_and(|t| !matches!(t, Target::Actor(_)));
+            let custom = matches!(k, crate::sim::actor::GestureKind::Custom(_));
+            if (rest.is_empty() && !k.contact() && !(on_thing && custom)) || to.is_some() {
                 self.player_act(Action::Gesture { kind: lc.clone(), to });
                 return;
             }
@@ -811,8 +819,11 @@ impl App {
             Event::Token { cid, text } => {
                 let name = self.sim.actor_name(ActorId::Npc(cid));
                 match self.log.back_mut() {
-                    Some(l) if l.streaming == Some(cid) => l.text.push_str(&text),
-                    _ => self.log.push_back(LogLine { speaker: Some(name), text: text.trim_start().to_string(), color: TEXT, streaming: Some(cid) }),
+                    Some(l) if l.streaming == Some(cid) => {
+                        l.text.push_str(&text);
+                        l.at = Instant::now();
+                    }
+                    _ => self.log.push_back(LogLine { streaming: Some(cid), who: Some(cid), ..LogLine::new(journal::Kind::Talk, Some(name), text.trim_start().to_string(), TEXT) }),
                 }
                 self.sim_talk.entry(cid).or_default().push_str(&text);
                 self.dirty = true;
@@ -949,16 +960,11 @@ impl App {
             crate::sim::headless::forward(&self.sim, &self.brain, r);
         }
         for n in self.sim.drain_notes() {
-            match n {
-                Note::Line { id, who, text } => {
-                    if let Some(ActorId::Npc(c)) = id {
-                        self.conv.entry(c).or_default().push((false, text.clone()));
-                    }
-                    self.say(Some(&who), &text, TEXT);
-                }
-                Note::Info(t) => self.say(None, &t, [200, 205, 220]),
-                Note::Effect(t) => self.say(None, &format!("  ↳ {t}"), [150, 175, 200]),
-            }
+            self.tell(n);
+        }
+        if self.log_expiry.is_some_and(|t| Instant::now() >= t) {
+            self.log_expiry = None;
+            self.dirty = true;
         }
         self.update_work();
         let got = self.achievements.update(&self.sim);
@@ -995,7 +1001,8 @@ impl App {
             self.dirty = true;
         }
         // What are we pointing at?
-        if self.last_pick.elapsed() > Duration::from_millis(120) {
+        // While typing a command, keep what was pointed at when / was pressed.
+        if self.mode != Mode::Command && self.last_pick.elapsed() > Duration::from_millis(120) {
             self.repick();
         }
         {
@@ -1174,42 +1181,7 @@ impl App {
             Mode::Command => " do ".to_string(),
         };
         let x = self.screen.text(2, top, &tag, ACCENT, PANEL_BG, true);
-        // Log, scrolled back `log_scroll` lines.
-        let width = w as usize - 2;
-        let mut lines: Vec<(Option<String>, String, [u8; 3], bool)> = Vec::new();
-        for l in self.log.iter().rev() {
-            let prefix = l.speaker.as_ref().map(|s| format!("{s}: ")).unwrap_or_default();
-            let full = format!("{prefix}{}", l.text);
-            let wrapped = term::wrap(&full, width);
-            for (i, wl) in wrapped.into_iter().enumerate().rev() {
-                lines.push((if i == 0 { l.speaker.clone() } else { None }, wl, l.color, l.streaming.is_some()));
-            }
-            if lines.len() >= rows as usize + self.log_scroll {
-                break;
-            }
-        }
-        self.log_scroll = self.log_scroll.min(lines.len().saturating_sub(rows as usize));
-        if self.log_scroll > 0 {
-            self.screen.text(x + 1, top, &format!(" ↑ {} lines back · PgDn ", self.log_scroll), DIM, PANEL_BG, false);
-        }
-        let mut lines: Vec<_> = lines.into_iter().skip(self.log_scroll).take(rows as usize).collect();
-        lines.reverse();
-        for i in 0..rows {
-            let y = top + 1 + i;
-            self.screen.fill_row(y, Cell { bg: PANEL_BG, ..Cell::BLANK });
-            if let Some((speaker, text, color, _)) = lines.get(i as usize) {
-                match speaker {
-                    Some(s) if text.starts_with(&format!("{s}: ")) => {
-                        let sc = if s == "you" { ACCENT } else { speaker_color(s) };
-                        let x = self.screen.text(1, y, &format!("{s}:"), sc, PANEL_BG, true);
-                        self.screen.text(x, y, &text[s.len() + 1..], *color, PANEL_BG, false);
-                    }
-                    _ => {
-                        self.screen.text(1, y, text, *color, PANEL_BG, false);
-                    }
-                }
-            }
-        }
+        self.draw_log(w, top, rows, x);
         if self.menu.is_some() && !full {
             self.draw_menu(w, vh);
         }
@@ -1224,7 +1196,7 @@ impl App {
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
-                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 log  Esc settings  q quit".into(),
+                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings  q quit".into(),
                 };
                 self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
             }
@@ -1280,9 +1252,6 @@ impl App {
         }
         if self.render.cpu_fallback {
             right = format!("{right}{}CPU renderer", if right.is_empty() { "" } else { " · " });
-        }
-        if let (Mode::Walk, Some((id, n))) = (self.mode, &self.talk_hint) {
-            right = format!("Enter: {} {n}", self.talk_verb(*id));
         }
         let rx = w.saturating_sub(right.chars().count() as u16 + 1);
         if !right.is_empty() {
@@ -1431,22 +1400,69 @@ impl App {
             let col = ((sx + 1.0) * 0.5 * w as f32) as i32;
             let row = ((1.0 - sy) * 0.5 * vh as f32) as i32 - 1;
             let name = if n.a.asleep { format!("{} (asleep)", n.name()) } else { n.name().to_string() };
-            labels.push((col, row, name));
+            labels.push((d, col, row, n.def.id, name));
         }
-        for (col, row, name) in labels {
-            if row < 0 || row >= vh as i32 {
+        // What each one said a moment ago goes in a box between name and head;
+        // only the nearest few speakers get one. The log keeps it all.
+        labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let now = Instant::now();
+        let mut boxes = 0;
+        let mut taken: Vec<(i32, i32, i32, i32)> = Vec::new();
+        let mut draw = Vec::new();
+        for (_, col, row, id, name) in labels {
+            let said = if boxes < BUBBLES { self.said_lately(id, now) } else { None };
+            let lines = said.map(|t| bubble_lines(&t)).unwrap_or_default();
+            boxes += !lines.is_empty() as usize;
+            let bw = lines.iter().map(|l| l.chars().count() as i32 + 2).max().unwrap_or(0).max(name.chars().count() as i32);
+            let x0 = (col - bw / 2).clamp(0, (w as i32 - bw).max(0));
+            // Nearer ones are placed first; a farther one that would cover them moves up.
+            let mut bottom = row;
+            let mut top = bottom - lines.len() as i32;
+            while let Some(t) = taken.iter().find(|t| x0 < t.2 && t.0 < x0 + bw && top <= t.3 && t.1 <= bottom) {
+                bottom = t.1 - 1;
+                top = bottom - lines.len() as i32;
+            }
+            taken.push((x0, top, x0 + bw, bottom));
+            draw.push((col, top, name, lines, x0, bw));
+        }
+        for (col, top, name, lines, x0, bw) in draw.into_iter().rev() {
+            for (i, l) in lines.iter().enumerate() {
+                let y = top + 1 + i as i32;
+                if y < 0 || y >= vh as i32 {
+                    continue;
+                }
+                let s = format!(" {l:<width$} ", width = bw as usize - 2);
+                self.screen.text(x0 as u16, y as u16, &s, [235, 235, 240], [24, 26, 36], false);
+            }
+            if top < 0 || top >= vh as i32 {
                 continue;
             }
             let len = name.chars().count() as i32;
-            let x0 = (col - len / 2).clamp(0, (w as i32 - len).max(0));
+            let nx = (col - len / 2).clamp(0, (w as i32 - len).max(0));
             for (i, ch) in name.chars().enumerate() {
-                let x = x0 as u16 + i as u16;
-                if let Some(c) = self.screen.get(x, row as u16) {
+                let x = nx as u16 + i as u16;
+                if let Some(c) = self.screen.get(x, top as u16) {
                     let bg = [(c.bg[0] as u16 / 3) as u8, (c.bg[1] as u16 / 3) as u8, (c.bg[2] as u16 / 3) as u8];
-                    self.screen.set(x, row as u16, Cell { ch: term::narrow(ch), fg: [255, 255, 255], bg, bold: true });
+                    self.screen.set(x, top as u16, Cell { ch: term::narrow(ch), fg: [255, 255, 255], bg, bold: true });
                 }
             }
         }
+    }
+
+    /// The last thing this character said, while it is still fresh.
+    fn said_lately(&self, id: i64, now: Instant) -> Option<String> {
+        for l in self.log.iter().rev() {
+            let age = now.duration_since(l.at);
+            if age > BUBBLE_MAX {
+                return None;
+            }
+            if l.kind == journal::Kind::Talk && l.who == Some(id) {
+                let n = l.text.chars().count() as u64;
+                let keep = Duration::from_millis((3000 + n * 70).min(BUBBLE_MAX.as_millis() as u64));
+                return (l.streaming.is_some() || age < keep).then(|| l.text.clone());
+            }
+        }
+        None
     }
 
     /// A small reticle in the middle of the view (what you point at) and the
@@ -1633,6 +1649,20 @@ impl App {
 }
 
 
+/// Words for a speech box: wrapped narrow, a few rows, the rest cut with "…".
+fn bubble_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = term::wrap(text.trim(), BUBBLE_W).into_iter().filter(|l| !l.is_empty()).collect();
+    if lines.len() > BUBBLE_ROWS {
+        lines.truncate(BUBBLE_ROWS);
+        let last = &mut lines[BUBBLE_ROWS - 1];
+        while last.chars().count() > BUBBLE_W - 1 {
+            last.pop();
+        }
+        last.push('…');
+    }
+    lines
+}
+
 fn speaker_color(name: &str) -> [u8; 3] {
     let h = crate::noise::pcg(name.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)));
     let hue = crate::noise::u2f(h);
@@ -1814,6 +1844,33 @@ mod tests {
         };
         let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, enhanced, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false });
         (app, db, gpu)
+    }
+
+    /// Look at the creations page of a real world (a copy of POCKET_WORLD):
+    /// `POCKET_WORLD=~/.pocket/universes/x.pocket cargo test --release real_world_creations -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_world_creations() {
+        let Ok(src) = std::env::var("POCKET_WORLD") else { return };
+        let dir = std::env::temp_dir().join(format!("pocket-real-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.pocket");
+        std::fs::copy(&src, &path).unwrap();
+        let db = Db::open(&path).unwrap();
+        let live = Arc::new(Mutex::new(Live::default()));
+        let mut model = WorldModel::load(db.clone(), None, live.clone()).unwrap();
+        let snap = model.snapshot().unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let brain = Brain::start(model, None, tx, false);
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, enhanced: false, truecolor: true, size: (110, 44), llm: None, genesis: false });
+        app.open_menu(false);
+        app.on_key(key(KeyCode::Char('3'), KeyEventKind::Press));
+        for _ in 0..3 {
+            app.compose();
+            println!("{}", screen_text(&app));
+            app.on_key(key(KeyCode::Tab, KeyEventKind::Press));
+        }
+        app.shutdown();
     }
 
     /// Run the loop with `steps(app, elapsed_seconds) -> keep going`.
@@ -2050,6 +2107,48 @@ mod tests {
         app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
         app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
         assert_eq!(app.log_view, 0, "1 cycles back to small");
+    }
+
+    /// The small log keeps talk and what changes the world; everyday life
+    /// shows a while, said-again lines count up, far news waits in the
+    /// journal, whose filters pick what to see.
+    #[test]
+    fn log_keeps_what_matters_and_the_journal_keeps_all() {
+        use crate::sim::Note;
+        let (mut app, _db) = make_app(false);
+        for _ in 0..3 {
+            app.tell(Note::Ambient("The horse gives a snort.".into()));
+        }
+        app.tell(Note::Notable("Ganzorig made a felt saddle.".into()));
+        app.tell(Note::Far("Oyunaa made a drying rack.".into(), [400.0, 0.0, 0.0]));
+        app.tell(Note::Line { id: None, who: "Ganzorig".into(), text: format!("{}\nAny word from the stone grandfather?", "Hoy! ".repeat(30)) });
+        app.compose();
+        let small = screen_text(&app);
+        assert!(small.contains("The horse gives a snort. ×3"), "{small}");
+        assert!(small.contains("✦ Ganzorig made a felt saddle."), "{small}");
+        assert!(!small.contains("drying rack"), "far news waits in the journal: {small}");
+        assert!(small.contains("3 stirring nearby · 1 elsewhere"), "{small}");
+        assert!(small.contains("\n   Any word from the stone grandfather?"), "wrapped lines hang under the speaker: {small}");
+        // Everyday life gives way after a while.
+        for l in app.log.iter_mut().filter(|l| l.kind == journal::Kind::Life) {
+            l.at -= Duration::from_secs(30);
+        }
+        app.compose();
+        let later = screen_text(&app);
+        assert!(!later.contains("snort") && later.contains("felt saddle"), "{later}");
+        // The journal has it all; Tab picks what to see.
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        app.compose();
+        let all = screen_text(&app);
+        assert!(all.contains("snort") && all.contains("✧ Oyunaa made a drying rack.") && !all.contains("stirring nearby"), "{all}");
+        for _ in 0..4 {
+            app.on_key(key(KeyCode::Tab, KeyEventKind::Press));
+        }
+        assert_eq!(app.journal_filter, journal::Filter::Elsewhere);
+        app.compose();
+        let far = screen_text(&app);
+        assert!(far.contains("drying rack") && !far.contains("felt saddle") && !far.contains("snort"), "{far}");
+        assert!(!app.ascii, "Tab picks a filter in the journal, not the look");
     }
 
     #[test]

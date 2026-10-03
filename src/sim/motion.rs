@@ -128,7 +128,7 @@ impl Sim {
             let aff = self.social.affection(mount, who) - self.wariness(c);
             if aff < 0.25 || tame < 0.2 {
                 self.event("refused", Some(mount), Some(who.key()), format!("{mname} shies away from {name}"), Some(m.pos), json!({ "ride": true }));
-                self.note_near(m.pos, 20.0, Note::Info(format!("{} shies away and won't be ridden.", super::physics::cap(&mname))));
+                self.note_near(m.pos, 20.0, Note::seen(format!("{} shies away and won't be ridden.", super::physics::cap(&mname)), who == ActorId::Player));
                 if !self.speaks(mount) {
                     self.make_noise(c, false);
                 }
@@ -147,7 +147,7 @@ impl Sim {
         self.update_riders();
         let msg = format!("{name} climbs onto {mname}");
         self.event("mounted", Some(who), Some(mount.key()), msg.clone(), Some(m.pos), json!({}));
-        self.note_near(m.pos, 25.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+        self.note_near(m.pos, 25.0, Note::seen(format!("{}.", super::physics::cap(&msg)), who == ActorId::Player));
         self.social.bond(who, mount, 0.03, self.t);
         Ok(Outcome::ok(msg))
     }
@@ -182,7 +182,7 @@ impl Sim {
         let msg = format!("{mn} throws {rn} off");
         self.event("thrown", Some(mount), Some(rider.key()), msg.clone(), at, json!({}));
         if let Some(p) = at {
-            self.note_near(p, 30.0, Note::Info(format!("{}!", super::physics::cap(&msg))));
+            self.note_near(p, 30.0, Note::seen(format!("{}!", super::physics::cap(&msg)), rider == ActorId::Player));
             self.witness(p, 25.0, &msg, 0.5, &[]);
         }
         let r = self.social.rel_mut(rider, mount);

@@ -163,11 +163,36 @@ impl Request {
 pub enum Note {
     /// Someone says something the player hears (`id` is who, when it is a being).
     Line { id: Option<ActorId>, who: String, text: String },
-    /// Something the player sees happen.
+    /// Something the player sees happen that is for them: an answer to what
+    /// they did, a question, a deed done to them.
     Info(String),
+    /// Everyday life nearby (a snort, a wave, someone eating): shown a short
+    /// while, kept in the journal.
+    Ambient(String),
+    /// Something that changes the world (a thing made or remade, a birth, a
+    /// death, a new kind of creature): always kept, marked.
+    Notable(String),
+    /// Something notable beyond earshot, and where.
+    Far(String, [f32; 3]),
     /// What the player's deed changed that the eye may miss ("the moth:
     /// trust ↓"), under the deed's story.
     Effect(String),
+}
+
+impl Note {
+    /// Everyday life, unless it is done to or with the player.
+    pub fn seen(text: String, involves_player: bool) -> Note {
+        if involves_player { Note::Info(text) } else { Note::Ambient(text) }
+    }
+
+    /// The words, whatever the kind.
+    pub fn text(&self) -> String {
+        match self {
+            Note::Line { who, text, .. } => format!("{who}: {text}"),
+            Note::Info(t) | Note::Ambient(t) | Note::Notable(t) | Note::Far(t, _) => t.clone(),
+            Note::Effect(t) => format!("↳ {t}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -451,9 +476,12 @@ impl Sim {
     }
 
     /// Tell the player, if they are close enough to notice.
+    /// Notable news from beyond earshot is still told, as far off.
     pub fn note_near(&mut self, at: Vec3, range: f32, n: Note) {
         if self.dist_to_player(at) <= range {
             self.notes.push(n);
+        } else if let Note::Notable(t) = n {
+            self.notes.push(Note::Far(t, at.to_array()));
         }
     }
 
@@ -770,7 +798,6 @@ impl Sim {
     }
 }
 
-/// Short compass word for a direction.
 /// The traveller's body: a person of the universe's chosen height (1.75 m
 /// unless the world says otherwise).
 pub fn traveller_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
@@ -785,6 +812,7 @@ pub fn traveller_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
     npc::body_dims(&body, &human, &sliders, h / own)
 }
 
+/// Short compass word for a direction.
 pub fn compass(d: Vec3) -> &'static str {
     let a = d.x.atan2(d.z).to_degrees().rem_euclid(360.0);
     ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][((a + 22.5) / 45.0) as usize % 8]

@@ -51,6 +51,9 @@ pub struct BeingFx {
     /// Look sliders set (within the body's ranges).
     #[serde(default)]
     pub look: BTreeMap<String, f32>,
+    /// Its size changes by this factor (2 = twice as big).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow: Option<f32>,
     /// Layers put on it (made if nobody has made one yet).
     #[serde(default)]
     pub wear: Vec<Make>,
@@ -72,6 +75,12 @@ pub struct NewBeing {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Its look sliders (its species' body's), from the description.
+    #[serde(default)]
+    pub look: BTreeMap<String, f32>,
+    /// Its size against its species' (1 = usual).
+    #[serde(default)]
+    pub size: Option<f32>,
 }
 
 /// Make something new in the world (a well, a lighthouse on that hill, a
@@ -288,8 +297,8 @@ fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<S
     // `changes`, `cut` and the being's needs and feelings are in `moved`.
     // New, removed and reshaped things, new beings and words show by themselves.
     if let Some(b) = being {
-        let BeingFx { needs: _, feel: _, look: _, wear: _, take_off: _, learn: _, turn_into: _ } = b;
-        // Its look, layers, a trick and a new species show by themselves.
+        let BeingFx { needs: _, feel: _, look: _, grow: _, wear: _, take_off: _, learn: _, turn_into: _ } = b;
+        // Its look, size, layers, a trick and a new species show by themselves.
     }
     let parts: Vec<String> = moved.into_iter().map(|(what, shifts)| format!("{what}: {}", shifts.join(", "))).collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
@@ -360,6 +369,18 @@ impl Sim {
         v
     }
 
+    /// Each species with its body's look sliders and their usual ranges, for
+    /// making a new being that looks as described.
+    fn species_looks(&self) -> Value {
+        let mut out = serde_json::Map::new();
+        for sp in &self.snap.species.list {
+            let body = self.snap.body_type(&sp.body).and_then(|b| b.ct.meta.body.clone());
+            let look: serde_json::Map<String, Value> = body.map(|b| b.look.iter().map(|(name, lo, hi)| (name.clone(), json!({ "range": [lo, hi], "usual": sp.look.get(name) }))).collect()).unwrap_or_default();
+            out.insert(sp.name.clone(), json!({ "body": sp.body, "look": look }));
+        }
+        Value::Object(out)
+    }
+
     fn describe_thing(&self, id: ThingId) -> Value {
         let Some(t) = self.things.get(id) else { return Value::Null };
         let ty = self.snap.type_of(t.type_id);
@@ -411,6 +432,10 @@ impl Sim {
                 near.push(self.thing_name(id));
             }
             v["nearby"] = json!(near);
+            let beings: Vec<Value> = self.cast.npcs.iter().filter(|n| !n.dead && ActorId::Npc(n.def.id) != who && (n.a.pos - m.pos).length() < 15.0).take(8).map(|n| json!({ "name": n.def.persona.name, "species": n.species.name })).collect();
+            if !beings.is_empty() {
+                v["beings_nearby"] = json!(beings);
+            }
             if let ActorId::Npc(c) = who {
                 if let Some(n) = self.cast.get(c) {
                     let pe = &n.def.persona;
@@ -419,6 +444,10 @@ impl Sim {
                 }
                 v["around"] = self.around(m.pos);
             }
+        }
+        if self.cfg.create_beings {
+            v["beings_can_be_made"] = json!(true);
+            v["species_looks"] = self.species_looks();
         }
         v["properties"] = json!(self.vocab.names);
         v.to_string()
@@ -455,7 +484,7 @@ impl Sim {
             Err(e) => {
                 self.deed_landed(p.actor);
                 crate::log::error(format!("interpretation failed: {e}"));
-                self.note_near(self.actor(p.actor).map(|a| a.pos).unwrap_or_default(), 30.0, Note::Info("Nothing seems to happen.".into()));
+                self.note_near(self.actor(p.actor).map(|a| a.pos).unwrap_or_default(), 30.0, Note::seen("Nothing seems to happen.".into(), p.actor == ActorId::Player));
             }
         }
     }
@@ -576,6 +605,7 @@ impl Sim {
             match self.type_by_name(&m.name) {
                 Some(ty) => {
                     if let Some(nid) = self.spawn_thing(ty.id, at, 0.0, 1.0, origin, was_held_by.is_none()) {
+                        self.record_creation(ty.id, "made", Some(p.actor), &made_from.join(" and "), at);
                         self.apply_make_props(nid, m);
                         if let Some(h) = was_held_by {
                             self.hand_to(h, nid);
@@ -710,7 +740,9 @@ impl Sim {
 
     /// A deed's story, told to those near and remembered by who saw it.
     fn tell_story(&mut self, pos: glam::Vec3, who: ActorId, msg: &str, effect: Option<String>) {
-        self.note_near(pos, 30.0, Note::Info(msg.to_string()));
+        // Your own deeds are answers to you; anyone else's change the world.
+        let n = if who == ActorId::Player { Note::Info(msg.to_string()) } else { Note::Notable(msg.to_string()) };
+        self.note_near(pos, 30.0, n);
         if let Some(e) = effect {
             self.note_near(pos, 30.0, Note::Effect(e));
         }
@@ -808,11 +840,15 @@ impl Sim {
         };
         for (thing, transform) in b.then {
             let from = self.thing_name(thing);
+            let at = self.things.get(thing).map(|t| t.pos).unwrap_or_default();
+            self.record_creation(tid, "changed", b.by, &from, at);
             self.spawn_or_transform(thing, tid, transform, &from);
         }
         let mut told = false;
         for (thing, who, with) in b.reshape {
             let at = self.things.get(thing).map(|t| t.pos).unwrap_or_default();
+            let from = self.thing_name(thing);
+            self.record_creation(tid, "reshaped", Some(who), &from, at);
             told = told || self.tell_held_stories(id, at);
             self.set_shape_type(thing, tid, who, &b.change, true, !told);
             if let Some(w) = with {
@@ -821,6 +857,7 @@ impl Sim {
         }
         if let Some((wearer, by)) = b.wear_on {
             let at = self.actor(wearer).map(|a| a.pos).unwrap_or_default();
+            self.record_creation(tid, "made", Some(by), "", at);
             let origin = Origin { made_by: Some(self.actor_name(by)), ..Default::default() };
             if let Some(nid) = self.spawn_thing(tid, at, 0.0, 1.0, origin, false) {
                 if let Err(e) = self.wear(by, wearer, nid) {
@@ -830,18 +867,34 @@ impl Sim {
             }
         }
         if let Some((at, holder, _)) = b.place {
-            let origin = Origin { made_by: holder.map(|h| self.actor_name(h)), ..Default::default() };
+            // Credit whose deed it was, not only who ends up holding it.
+            let maker = b.by.or(holder);
+            let origin = Origin { made_by: maker.map(|h| self.actor_name(h)), ..Default::default() };
             if let Some(nid) = self.spawn_thing(tid, at, 0.0, 1.0, origin, holder.is_none()) {
+                self.record_creation(tid, if maker.is_some() { "made" } else { "changed" }, maker, "", at);
                 let name = self.thing_name(nid);
                 if let Some(h) = holder {
                     self.hand_to(h, nid);
                 }
-                self.event("made", holder, Some(format!("thing:{nid}")), format!("{} {name} came into being", super::physics::cap(super::article(&name))), Some(at), json!({}));
+                self.event("made", maker, Some(format!("thing:{nid}")), format!("{} {name} came into being", super::physics::cap(super::article(&name))), Some(at), json!({}));
                 if !self.tell_held_stories(id, at) {
-                    self.note_near(at, 30.0, Note::Info(format!("{} {name} appears.", super::physics::cap(super::article(&name)))));
+                    self.note_near(at, 30.0, Note::Notable(format!("{} {name} appears.", super::physics::cap(super::article(&name)))));
                 }
             }
         }
+    }
+
+    /// Count a kind of thing made in the world's record of creations.
+    pub fn record_creation(&self, tid: u32, kind: &str, by: Option<ActorId>, from: &str, at: glam::Vec3) {
+        let name = self.snap.type_of(tid).map(|t| t.name().to_string()).unwrap_or_default();
+        self.note_creation(&format!("type:{tid}"), kind, &name, by, from, at);
+    }
+
+    /// Count something made, by key (`type:<id>`, `being:<id>`).
+    pub fn note_creation(&self, key: &str, kind: &str, name: &str, by: Option<ActorId>, from: &str, at: glam::Vec3) {
+        let maker = by.map(|b| self.actor_name(b)).unwrap_or_else(|| "the world".into());
+        let t = self.t;
+        let _ = self.db.with(|c| crate::db::note_creation(c, key, kind, name, &maker, from, t, at.x, at.z));
     }
 
     /// A creation request finished: `instances` are the new placed objects.
@@ -857,7 +910,7 @@ impl Sim {
             self.release_deeds(id, false);
             if self.interp.stories.remove(&id).is_some() {
                 let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
-                self.note_near(at, 30.0, Note::Info("Nothing comes of it.".into()));
+                self.note_near(at, 30.0, Note::seen("Nothing comes of it.".into(), who == ActorId::Player));
             }
             self.event("create_failed", Some(who), None, format!("{maker} couldn't make it"), None, json!({}));
             return;
@@ -871,11 +924,14 @@ impl Sim {
             None => super::surprise::Sight { how, extent: 1.0, strange: 0.0 },
         };
         let surprise = (self.plain_surprise(sight) * 100.0).round() / 100.0;
+        if let Some(tid) = self.snap.instances.iter().find(|p| p.id == first).map(|p| p.type_id) {
+            self.record_creation(tid, "built", Some(who), "", pos);
+        }
         self.event("made", Some(who), Some(format!("instance:{first}")), format!("{maker} made {} {name}", super::article(&name)), Some(pos), json!({ "instances": instances, "surprise": surprise }));
         let told = self.tell_held_stories(id, pos);
         if who != ActorId::Player {
             if !told {
-                self.note_near(pos, 40.0, Note::Info(format!("{} made {} {name}.", super::physics::cap(&maker), super::article(&name))));
+                self.note_near(pos, 40.0, Note::Notable(format!("{} made {} {name}.", super::physics::cap(&maker), super::article(&name))));
             }
             let memory = format!("{maker} made {} {name}.", super::article(&name));
             let tell = format!("{} just made {} {name} near you.", super::physics::cap(&maker), super::article(&name));
@@ -912,7 +968,7 @@ impl Sim {
             }
             Err(e) => {
                 crate::log::info(format!("gesture '{name}' not learned: {e}"));
-                self.note_near(self.actor(who).map(|a| a.pos).unwrap_or_default(), 20.0, Note::Info(format!("(nobody quite knows how to {name})")));
+                self.note_near(self.actor(who).map(|a| a.pos).unwrap_or_default(), 20.0, Note::seen(format!("(nobody quite knows how to {name})"), who == ActorId::Player));
             }
         }
     }

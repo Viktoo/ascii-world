@@ -270,6 +270,25 @@ impl Sim {
 
     /// Make a target concrete: names become the nearest match, and the result
     /// carries a position and a display name.
+    /// The nearest living being within 25 m whose first name is a word of
+    /// `text` (not `who` themselves).
+    pub fn named_near(&self, who: ActorId, text: &str) -> Option<ActorId> {
+        let words: Vec<String> = text.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-').filter(|w| !w.is_empty()).map(|w| w.trim_end_matches("'s").to_string()).collect();
+        let from = self.actor(who)?.pos;
+        let mut best: Option<(f32, ActorId)> = None;
+        for n in self.cast.npcs.iter().filter(|n| !n.dead && ActorId::Npc(n.def.id) != who) {
+            let first = n.def.persona.name.split_whitespace().next().unwrap_or("").to_lowercase();
+            if first.len() < 2 || matches!(first.as_str(), "the" | "a" | "an") || !words.contains(&first) {
+                continue;
+            }
+            let d = (n.a.pos - from).length();
+            if d <= 25.0 && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, ActorId::Npc(n.def.id)));
+            }
+        }
+        best.map(|(_, a)| a)
+    }
+
     pub fn resolve(&mut self, t: &Target, from: ActorId) -> Option<Resolved> {
         let origin = self.actor(from).map(|a| a.pos).unwrap_or(self.player.pos);
         match t {
@@ -542,10 +561,17 @@ impl Sim {
                 if text.is_empty() {
                     return fail("do what?");
                 }
-                let target = match on {
+                let mut target = match on {
                     Some(t) => Some(self.resolve(&t, who).ok_or_else(|| not_found(&t))?),
                     None => None,
                 };
+                // "Make Remy larger": a being named in the words, close by, is
+                // what the deed is done to, whatever was pointed at.
+                if !matches!(target.as_ref().map(|r| &r.target), Some(Target::Actor(_))) {
+                    if let Some(r) = self.named_near(who, &text).and_then(|a| self.resolve(&Target::Actor(a), who)) {
+                        target = Some(r);
+                    }
+                }
                 self.interpret(who, &text, target, at.map(Vec3::from))
             }
             Action::Create { text } => {
@@ -751,8 +777,8 @@ impl Sim {
         let me = self.actor(who).cloned().ok_or(ActErr::Fail("no such actor".into()))?;
         let name = self.actor_name(who);
         let r = self.resolve(target, who).ok_or_else(|| not_found(target))?;
-        if let Target::Actor(_) = r.target {
-            return fail("you can't pick up a person; try a hug");
+        if let Target::Actor(id) = r.target {
+            return fail(format!("you can't pick up {}; try a hug", self.actor_name(id)));
         }
         if let Some(h) = me.held {
             if Some(h) == self.liven_peek(&r.target) {
@@ -787,7 +813,7 @@ impl Sim {
                 }
                 let other = self.actor_name(h);
                 self.event("carry", Some(who), Some(format!("thing:{id}")), format!("{name} and {other} lift the {} together", r.name), Some(r.pos), json!({ "with": h }));
-                self.note_near(r.pos, 30.0, Note::Info(format!("{} and {other} lift the {} together.", super::physics::cap(&name), r.name)));
+                self.note_near(r.pos, 30.0, Note::Ambient(format!("{} and {other} lift the {} together.", super::physics::cap(&name), r.name)));
                 self.witness(r.pos, 20.0, &format!("{name} and {other} carried the {} together.", r.name), 0.35, &[who, h]);
                 self.social.bond(who, h, 0.05, self.t);
                 return Ok(Outcome::ok(format!("{name} lifts the {} together with {other}", r.name)).thing(id));
@@ -812,7 +838,7 @@ impl Sim {
         }
         self.event("picked_up", Some(who), Some(format!("thing:{id}")), format!("{name} picked up the {}", r.name), Some(r.pos), json!({}));
         if who != ActorId::Player {
-            self.note_near(r.pos, 15.0, Note::Info(format!("{} picks up {} {}.", super::physics::cap(&name), article(&r.name), r.name)));
+            self.note_near(r.pos, 15.0, Note::Ambient(format!("{} picks up {} {}.", super::physics::cap(&name), article(&r.name), r.name)));
         }
         Ok(Outcome::ok(format!("{name} picks up the {}", r.name)).thing(id))
     }
@@ -911,7 +937,7 @@ impl Sim {
         let msg = if target_name.is_empty() { format!("{name} throws the {tname}") } else { format!("{name} throws the {tname} at {}", the(&target_name)) };
         self.event("threw", Some(who), Some(format!("thing:{id}")), msg.clone(), Some(me.pos), json!({ "at": target_name, "speed": (v.length() as f64 * 10.0).round() / 10.0, "to": target_actor }));
         if who != ActorId::Player {
-            self.note_near(me.pos, 25.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            self.note_near(me.pos, 25.0, Note::seen(format!("{}.", super::physics::cap(&msg)), target_actor == Some(ActorId::Player)));
         }
         self.animals_notice_throw(me.pos);
         Ok(Outcome::ok(msg).thing(id))
@@ -1017,7 +1043,7 @@ impl Sim {
         }
         self.event("ate", Some(who), Some(format!("thing:{id}")), format!("{name} ate the {tname}"), Some(pos), json!({ "edible": e }));
         if who != ActorId::Player {
-            self.note_near(pos, 15.0, Note::Info(format!("{} eats {} {tname}.", super::physics::cap(&name), article(&tname))));
+            self.note_near(pos, 15.0, Note::Ambient(format!("{} eats {} {tname}.", super::physics::cap(&name), article(&tname))));
         }
         Ok(Outcome::ok(format!("{name} eats the {tname}")))
     }
@@ -1122,7 +1148,7 @@ impl Sim {
         let at = self.actor(to).map(|a| a.pos);
         self.event("gave", Some(who), Some(format!("thing:{id}")), format!("{name} gave the {tname} to {other}"), at, json!({ "to": to }));
         if let Some(p) = at {
-            self.note_near(p, 20.0, Note::Info(format!("{} gives the {tname} to {other}.", super::physics::cap(&name))));
+            self.note_near(p, 20.0, Note::seen(format!("{} gives the {tname} to {other}.", super::physics::cap(&name)), to == ActorId::Player));
             self.witness(p, 15.0, &format!("{name} gave {other} {} {tname}.", article(&tname)), 0.4, &[]);
         }
         self.social.bond(who, to, 0.12, self.t);
@@ -1199,7 +1225,7 @@ impl Sim {
         let p = at.map(|x| x.0);
         self.event("wore", Some(who), Some(format!("thing:{id}")), msg.clone(), p, json!({ "on": wearer }));
         if let Some(p) = p {
-            self.note_near(p, 20.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            self.note_near(p, 20.0, Note::seen(format!("{}.", super::physics::cap(&msg)), wearer == ActorId::Player || who == ActorId::Player));
             self.witness(p, 15.0, &msg, 0.3, &[]);
         }
         if wearer != who {
@@ -1248,7 +1274,7 @@ impl Sim {
         let p = self.actor(wearer).map(|a| a.pos);
         self.event("took_off", Some(who), Some(format!("thing:{id}")), msg.clone(), p, json!({ "from": wearer }));
         if let Some(p) = p {
-            self.note_near(p, 20.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            self.note_near(p, 20.0, Note::seen(format!("{}.", super::physics::cap(&msg)), wearer == ActorId::Player || who == ActorId::Player));
         }
         Ok(Outcome::ok(msg).thing(id))
     }
@@ -1278,7 +1304,7 @@ impl Sim {
         };
         self.event("gesture", Some(who), other.map(|o| o.key()), msg.clone(), Some(at), json!({ "kind": k.name() }));
         if who != ActorId::Player {
-            self.note_near(at, 25.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            self.note_near(at, 25.0, Note::seen(format!("{}.", super::physics::cap(&msg)), other == Some(ActorId::Player)));
         }
         if let Some(o) = other {
             self.on_gestured(o, who, k);

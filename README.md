@@ -42,8 +42,10 @@ cargo build --release      # → target/release/pocket
 | Mode | Enter with | Keys |
 |---|---|---|
 | Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
-| Log | (any time) | `PgUp`/`PgDn` scroll back; in walk `1` makes it bigger: half the screen, the whole screen, then back to small (`Esc` closes) |
+| Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
+| Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
 | Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
+| Creations | `3` in settings (`Esc`, or `F3` then `3`) | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
 | Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
 | Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |
@@ -357,7 +359,7 @@ How the acceptance criteria are covered:
 
 | Criterion | Where |
 |---|---|
-| Enter only once the world around you exists | `pocket new` shows a loading screen at once: a map forming outward from you, a log naming what is made (streamed from genesis and region replies), and a bar; you step in once genesis and every region within ~110 m are done (`app::loading::tests`) |
+| Enter only once the world around you exists | `pocket new` shows a loading screen at once: a map forming outward from you, a log naming what is made (streamed from genesis and region replies), and a bar; the world waits there, paused, until you press a key once genesis and every region within ~110 m are done (`app::loading::tests`) |
 | ≥ 60 fps at 120×40, ≥ 30 fps at 250×70, GPU < 2 ms | `pocket bench` / `gpubench`; F1 overlay shows fps, worst frame, GPU time (timestamp queries) |
 | 2 km walk without a frame over 50 ms, regions keep appearing | `app::tests::long_walk_with_generation_has_no_hitches` (ignored, long) and `pocket bench` |
 | Generation never blocks rendering or input | same test: 35+ regions and pipeline rebuilds during the walk |

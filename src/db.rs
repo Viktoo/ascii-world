@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS interp_cache(key TEXT PRIMARY KEY, effect_json TEXT N
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, t REAL NOT NULL, kind TEXT NOT NULL, actor TEXT, subject TEXT, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS events_subject ON events(subject);
 CREATE TABLE IF NOT EXISTS origins(instance_id INTEGER PRIMARY KEY, made_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS creations(key TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, made_by TEXT NOT NULL, from_name TEXT NOT NULL, t REAL NOT NULL, x REAL NOT NULL, z REAL NOT NULL, wall REAL NOT NULL, count INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS gestures(name TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS species(name TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS thing_shapes(id INTEGER PRIMARY KEY, json TEXT NOT NULL);
@@ -109,6 +110,27 @@ pub struct MemoryRow {
     pub id: i64,
     pub text: String,
     pub importance: f32,
+}
+
+/// Something made in this world after it began: a kind of thing (`type:<id>`)
+/// or a being (`being:<id>`), who first made it, from what, when and where,
+/// and how many times it was made. Older worlds didn't record all of it.
+#[derive(Clone, Debug)]
+pub struct CreationRow {
+    pub key: String,
+    /// made, built, reshaped, changed (by the world itself), being
+    pub kind: String,
+    pub name: String,
+    /// Empty when nobody recorded it.
+    pub made_by: String,
+    pub from: String,
+    /// Game time it was first made, when known.
+    pub t: Option<f64>,
+    pub at: Option<[f32; 2]>,
+    /// Wall-clock time it was first made (seconds since the epoch).
+    pub wall: f64,
+    pub count: i64,
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -355,6 +377,58 @@ pub fn species_rows(c: &Connection) -> Result<Vec<(String, String)>> {
     let mut st = c.prepare("SELECT name, json FROM species ORDER BY rowid")?;
     let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Count a creation: the first time records who, from what, when and where;
+/// later times only add to its count.
+#[allow(clippy::too_many_arguments)]
+pub fn note_creation(c: &Connection, key: &str, kind: &str, name: &str, made_by: &str, from: &str, t: f64, x: f32, z: f32) -> Result<()> {
+    c.execute(
+        "INSERT INTO creations(key, kind, name, made_by, from_name, t, x, z, wall, count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
+         ON CONFLICT(key) DO UPDATE SET count = count + 1",
+        params![key, kind, name, made_by, from, t, x, z, now()],
+    )?;
+    Ok(())
+}
+
+/// Every creation, oldest first: kinds of thing written during play (or
+/// recorded as made) and beings made. Where no record was kept (older
+/// worlds), the maker comes from what is known of the things themselves.
+pub fn creations(c: &Connection) -> Result<Vec<CreationRow>> {
+    let mut st = c.prepare(
+        "SELECT 'type:' || t.id, t.id,
+                COALESCE(cr.kind, CASE WHEN v.kind = 'create' THEN 'built' WHEN v.summary LIKE 'reshaped:%' THEN 'reshaped' ELSE 'made' END),
+                t.name, COALESCE(cr.made_by, o.made_by, th.made_by, ''), COALESCE(cr.from_name, ''), cr.t, cr.x, cr.z,
+                COALESCE(cr.wall, v.created_at, 0), COALESCE(cr.count, 1), t.meta_json
+         FROM types t
+         LEFT JOIN versions v ON v.id = t.version_id
+         LEFT JOIN creations cr ON cr.key = 'type:' || t.id
+         LEFT JOIN (SELECT i.type_id, MIN(o.made_by) AS made_by FROM instances i JOIN origins o ON o.instance_id = i.id GROUP BY i.type_id) o ON o.type_id = t.id
+         LEFT JOIN (SELECT type_id, MIN(json_extract(origin_json, '$.made_by')) AS made_by FROM things WHERE json_extract(origin_json, '$.made_by') IS NOT NULL GROUP BY type_id) th ON th.type_id = t.id
+         WHERE v.kind IN ('interp', 'create') OR cr.key IS NOT NULL
+         UNION ALL
+         SELECT key, NULL, kind, name, made_by, from_name, t, x, z, wall, count, '{}' FROM creations WHERE key NOT LIKE 'type:%'",
+    )?;
+    let rows = st.query_map([], |r| {
+        let meta: String = r.get(11)?;
+        let tags = serde_json::from_str::<serde_json::Value>(&meta).ok().and_then(|m| m["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())).unwrap_or_default();
+        let (x, z): (Option<f32>, Option<f32>) = (r.get(7)?, r.get(8)?);
+        Ok(CreationRow {
+            key: r.get(0)?,
+            kind: r.get(2)?,
+            name: r.get(3)?,
+            made_by: r.get(4)?,
+            from: r.get(5)?,
+            t: r.get(6)?,
+            at: x.zip(z).map(|(x, z)| [x, z]),
+            wall: r.get(9)?,
+            count: r.get(10)?,
+            tags,
+        })
+    })?;
+    let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    out.sort_by(|a, b| a.wall.total_cmp(&b.wall));
+    Ok(out)
 }
 
 pub fn kv_set(c: &Connection, key: &str, value: &str) -> Result<()> {

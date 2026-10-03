@@ -518,7 +518,7 @@ impl Sim {
         let name = self.actor_name(who);
         let goal = if m.text.is_empty() { format!("get {}", m.need.what) } else { m.text.clone() };
         if let Some(at) = self.actor(who).map(|a| a.pos) {
-            self.note_near(at, 20.0, Note::Info(format!("{} gives up trying to {goal}: {why}.", super::physics::cap(&name))));
+            self.note_near(at, 20.0, Note::Ambient(format!("{} gives up trying to {goal}: {why}.", super::physics::cap(&name))));
         }
     }
 

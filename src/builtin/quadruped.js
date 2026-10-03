@@ -1,7 +1,8 @@
 // Built-in four-legged body (dogs, cats, horses, wolves, goats, deer…), about
 // 1 m to the top of the head at scale 1; species set the scale. Faces +z.
 // Look: a = leg length, b = body length, c = ears (short … tall), d = coat
-// hue, e = coat shade (dark … light). f = walk phase (radians).
+// hue (0 … 1 round the wheel; 1 … 1.2 fades to grey), e = coat shade (black
+// … white). f = walk phase (radians).
 // Roles: s0/s1 = left/right front paw raised, s2/s3 = left/right front leg
 // reaching forward, s4 = lean (front down, as in a play bow), s5 = head down
 // (grazing, nodding), s6 = crouch (sit … lie), s7 = spread (tail up / wag).
@@ -9,7 +10,7 @@ export const meta = { name: "quadruped", bounds: [0.36, 1.2, 0.98], tags: ["buil
   props: { mass: 30, alive: 1, burns: 0.2 },
   body: { height: 1.0, eye: 0.82, radius: 0.3, reach: 0.9, grip: [0, 0.5, 0.66], seat: [0, 0.74, -0.02],
           roles: ["raise", "reach", "lean", "head", "crouch", "spread"], gait: "quad", arms: false,
-          look: { legs: [0, 1], length: [0, 1], ears: [0, 1], hue: [0, 1], shade: [0, 1] } } };
+          look: { legs: [0, 1], length: [0, 1], ears: [0, 1], hue: [0, 1.2], shade: [0, 1] } } };
 
 export function sdf(x, y, z, k) {
   const leg = 0.34 + clamp(k.a, 0, 1) * 0.26;
@@ -61,7 +62,11 @@ export function sdf(x, y, z, k) {
 }
 
 export function color(x, y, z, k) {
-  const coat = hsv(k.d, 0.25 + 0.35 * hash(k.seed, 3), 0.2 + 0.7 * clamp(k.e, 0, 1));
+  const lit = clamp(k.e, 0, 1);
+  const grey = clamp((k.d - 1) * 5, 0, 1);
+  // Near white or black the colour fades out too.
+  const sat = (0.25 + 0.35 * hash(k.seed, 3)) * (1 - grey) * (1 - clamp((lit - 0.85) * 6.6, 0, 1)) * clamp(lit * 8, 0, 1);
+  const coat = hsv(k.d, sat, 0.08 + 0.87 * lit);
   const light = mix(coat, rgb(240, 232, 220), 0.55);
   const leg = 0.34 + clamp(k.a, 0, 1) * 0.26;
   const rz = 0.3 + clamp(k.b, 0, 1) * 0.15;

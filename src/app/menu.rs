@@ -1,15 +1,16 @@
 //! The settings screen (Esc or F10 in walk mode): budget, display, this
 //! world's life, and the keys. Changes take effect at once and are saved.
-//! Its second page (2, or F3 in walk mode) lists this world's achievements.
+//! Its second page (2, or F3 in walk mode) lists this world's achievements,
+//! its third (3) everything made in it (see `creations`).
 
 use super::{ACCENT, App, DIM, TEXT};
 use crate::achievements::{self, Tier};
 use crate::settings;
 use crossterm::event::{KeyCode, KeyEvent};
 
-const BG: [u8; 3] = [16, 18, 26];
-const SEL_BG: [u8; 3] = [48, 52, 72];
-const HEAD: [u8; 3] = [150, 170, 220];
+pub(super) const BG: [u8; 3] = [16, 18, 26];
+pub(super) const SEL_BG: [u8; 3] = [48, 52, 72];
+pub(super) const HEAD: [u8; 3] = [150, 170, 220];
 
 const BUDGETS: &[f64] = &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 0.0];
 const FPS: &[f64] = &[15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 144.0, 240.0];
@@ -42,6 +43,8 @@ pub struct Menu {
     achievements: bool,
     /// The chosen achievement on that page.
     ach_sel: usize,
+    /// The creations page instead, when open.
+    pub creations: Option<super::creations::Book>,
 }
 
 /// A medal: more ornate as the challenge grows.
@@ -94,7 +97,7 @@ fn purpose(p: &str) -> &str {
     }
 }
 
-fn ago(secs: f64) -> String {
+pub(super) fn ago(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     match s {
         0..60 => "just now".into(),
@@ -113,7 +116,7 @@ impl App {
     pub(super) fn open_menu(&mut self, achievements: bool) {
         self.menu = match self.menu {
             Some(_) => None,
-            None => Some(Menu { sel: 0, details: None, achievements, ach_sel: 0 }),
+            None => Some(Menu { sel: 0, details: None, achievements, ach_sel: 0, creations: None }),
         };
         if self.log_view == 2 {
             self.set_log_view(0);
@@ -133,9 +136,24 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Char('1') => m.achievements = false,
-            KeyCode::Char('2') => m.achievements = true,
+            KeyCode::Char('1') => {
+                m.achievements = false;
+                m.creations = None;
+            }
+            KeyCode::Char('2') => {
+                m.achievements = true;
+                m.creations = None;
+            }
+            KeyCode::Char('3') => return self.open_creations(),
             _ => {}
+        }
+        if m.creations.is_some() {
+            if matches!(k.code, KeyCode::Esc | KeyCode::F(10) | KeyCode::F(3)) {
+                self.menu = None;
+            } else {
+                self.creations_key(k);
+            }
+            return;
         }
         if m.achievements {
             let n = achievements::ALL.len();
@@ -257,7 +275,10 @@ impl App {
         let x0 = (w as usize).saturating_sub(pw) as u16 / 2;
         let mut lines: Vec<(String, [u8; 3], bool)> = Vec::new();
         let blank = (String::new(), TEXT, false);
-        let tabs = format!("[1] Settings    [2] Achievements {}/{}", self.achievements.count(), achievements::ALL.len());
+        let tabs = format!("[1] Settings    [2] Achievements {}/{}    [3] Creations", self.achievements.count(), achievements::ALL.len());
+        if m.creations.is_some() {
+            return self.draw_creations(x0, pw, vh, &tabs);
+        }
         if m.achievements {
             return self.draw_achievements(x0, pw, vh, &tabs);
         }
@@ -291,14 +312,14 @@ impl App {
                 lines.push((format!("{} {label:<30} {value}", if sel { "›" } else { " " }), if Self::locked(*row) { DIM } else { TEXT }, sel));
             }
             lines.push(blank.clone());
-            lines.push(("↑↓ choose · ←→ change · Enter select · 2 achievements · Esc close".into(), DIM, false));
+            lines.push(("↑↓ choose · ←→ change · Enter select · 2 achievements · 3 creations · Esc close".into(), DIM, false));
             lines.push(blank.clone());
             lines.push(("Keys".into(), HEAD, false));
             for l in [
                 "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · Tab blocks/ASCII",
                 "      Enter talk · / do or make anything · e use · g grab/drop",
                 "      f throw · y/n answer · F1 stats · F2 inspect · F3 achievements · q quit",
-                "Log   1 bigger (half → full → small) · PgUp/PgDn scroll back",
+                "Log   1 journal (half → full → closed) · Tab filter · PgUp/PgDn scroll back",
                 "Talk  type and Enter · Esc back to walking",
                 "/help lists every / shortcut (/wave, /give, /ride, /undo…)",
             ] {
@@ -353,7 +374,7 @@ impl App {
             detail.push((l, DIM, false, None));
         }
         detail.push((String::new(), TEXT, false, None));
-        detail.push(("↑↓ choose · PgUp/PgDn page · 1 settings · Esc close".into(), DIM, false, None));
+        detail.push(("↑↓ choose · PgUp/PgDn page · 1 settings · 3 creations · Esc close".into(), DIM, false, None));
         // As much of the list as fits, scrolled to keep the chosen one in view.
         let fit = (vh as usize).saturating_sub(detail.len() + 6).max(3);
         let top = sel_line.saturating_sub(fit / 2).min(list.len().saturating_sub(fit));

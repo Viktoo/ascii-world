@@ -308,7 +308,7 @@ pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {
     let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
     n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
     // The young are smaller, all over.
-    n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name) * n.growth.clamp(0.2, 1.0));
+    n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name) * n.def.persona.size_mul() * n.growth.clamp(0.2, 1.0));
     n.a.roles = super::actor::role_mask(&bmeta);
     n.a.species = if species.is_human() { String::new() } else { species.name.clone() };
     n.traits = Traits::from_persona(&n.def.persona, rng);

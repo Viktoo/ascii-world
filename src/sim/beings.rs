@@ -11,6 +11,11 @@ use crate::world::species::{Mind, Speech};
 use glam::Vec3;
 use serde_json::json;
 
+/// How much one harmless scare gets an animal used to what scared it.
+const GET_USED: f32 = 0.15;
+/// Used to it: it no longer frightens them.
+const USED_TO: f32 = 0.6;
+
 impl Sim {
     /// How much an actor can lift alone (kg): a person's strength, scaled
     /// with body mass (a dog carries a stick, a horse a sack, a cat a mouse).
@@ -58,7 +63,7 @@ impl Sim {
         let Some(at) = self.actor(who).map(|a| a.pos) else { return };
         let Some(noise) = self.noise(cid, happy) else { return };
         let name = self.actor_name(who);
-        self.note_near(at, 22.0, Note::Info(format!("{} gives {}.", super::physics::cap(&name), with_article(&noise))));
+        self.note_near(at, 22.0, Note::Ambient(format!("{} gives {}.", super::physics::cap(&name), with_article(&noise))));
         self.event("sound", Some(who), None, format!("{name}: {noise}"), Some(at), json!({ "sound": noise }));
     }
 
@@ -261,10 +266,11 @@ impl Sim {
             }
         }
         match (a, b) {
-            (ActorId::Npc(x), ActorId::Npc(y)) => {
-                let (ox, oy) = (self.owner_of(x), self.owner_of(y));
-                ox.is_some() && ox == oy
-            }
+            // Animals of one household: one owner, or owners who are family.
+            (ActorId::Npc(x), ActorId::Npc(y)) => match (self.owner_of(x), self.owner_of(y)) {
+                (Some(ox), Some(oy)) => ox == oy || self.social.rel(ox, oy).is_some_and(|r| r.family || r.partner),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -327,13 +333,13 @@ impl Sim {
             }
             let d = (x.pos - pos).length();
             let ratio = (self.mass_of(o) / my_mass.max(0.1)).sqrt().min(3.0);
-            let spooks = animal && sp.is_some_and(|s| s.diet.meat < 0.3 && wary >= 0.5) && self.species_of(o).is_some_and(|s| s.diet.meat > 0.5 && s.mind != Mind::Sapient) && !self.kin(me, o);
+            let spooks = animal && sp.is_some_and(|s| s.diet.meat < 0.3 && wary >= 0.5) && self.species_of(o).is_some_and(|s| s.diet.meat > 0.5 && s.mind != Mind::Sapient) && !self.kin(me, o) && !self.used_to(me, o);
             let keep = if self.hunts(o, me) {
                 (6.0 + 30.0 * wary * ratio).min(60.0)
             } else if spooks {
                 // Prey animals shy from any meat eater, however small.
                 6.0 + 10.0 * wary
-            } else if animal && wary > 0.65 && self.social.affection(me, o) < 0.3 && sp.map(|s| &s.name) != self.species_of(o).map(|s| &s.name) && self.mass_of(o) > 0.4 * my_mass {
+            } else if animal && wary > 0.65 && self.social.affection(me, o) < 0.3 && sp.map(|s| &s.name) != self.species_of(o).map(|s| &s.name) && self.mass_of(o) > 0.4 * my_mass && !self.used_to(me, o) {
                 4.0 + 10.0 * wary
             } else {
                 continue;
@@ -345,10 +351,27 @@ impl Sim {
         best.map(|b| (b.1, b.2))
     }
 
-    /// Run from `from`; a herd runs together.
+    /// Run from `from`; a herd runs together. Each scare that comes to
+    /// nothing makes the next less likely: animals get used to a meat eater
+    /// that lives among them and never hunts them.
     pub fn flee(&mut self, cid: i64, from: ActorId, at: Vec3) {
+        let me = ActorId::Npc(cid);
+        if !self.hunts(from, me) {
+            let pos = self.actor(me).map(|a| a.pos).unwrap_or(at);
+            let mut herd = vec![me];
+            herd.extend(self.kind_near(me, pos, 25.0).into_iter().map(|h| h.0));
+            for h in herd {
+                let r = self.social.rel_mut(h, from);
+                r.familiarity = (r.familiarity + GET_USED).min(1.0);
+            }
+        }
         let what = self.actor_name(from);
         self.run_from(cid, &what, Some(from.key()), at);
+    }
+
+    /// Used enough to `o` that it no longer frightens `me` (unless it hunts).
+    fn used_to(&self, me: ActorId, o: ActorId) -> bool {
+        self.social.rel(me, o).is_some_and(|r| r.familiarity >= USED_TO)
     }
 
     /// Run from whatever is at `at` (a being, or a thing that frightened
@@ -366,6 +389,7 @@ impl Sim {
         if group {
             who.extend(self.kind_near(me, pos, 25.0));
         }
+        let herd: Vec<ActorId> = who.iter().map(|w| w.0).collect();
         // A herd runs to one place, so it stays a herd.
         let centre = who.iter().fold(Vec3::ZERO, |a, (_, p)| a + *p) / who.len() as f32;
         let side = Vec3::new(-away.z, 0.0, away.x);
@@ -384,15 +408,21 @@ impl Sim {
             self.set_doing(c, &format!("fleeing {what}"));
         }
         let t = self.t;
-        let recent = self.log.recent.iter().rev().take(30).any(|e| e.kind == "fled" && e.actor == Some(me) && t - e.t < 8.0);
+        // One telling for the whole herd, its cry in the same breath.
+        let recent = self.log.recent.iter().rev().take(30).any(|e| e.kind == "fled" && e.actor.is_some_and(|a| herd.contains(&a)) && t - e.t < 8.0);
         if !recent {
             let name = self.actor_name(me);
-            let msg = if group { format!("{name} and the herd bolt from {what}") } else { format!("{name} runs from {what}") };
+            let msg = if herd.len() > 1 { format!("{name} and the herd bolt from {what}") } else { format!("{name} runs from {what}") };
             self.event("fled", Some(me), subject, msg.clone(), Some(pos), json!({ "herd": group }));
-            self.note_near(pos, 30.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+            let cry = if self.speaks(me) { None } else { self.noise(cid, false) };
+            let told = match &cry {
+                Some(noise) => format!("{} with {}.", super::physics::cap(&msg), with_article(noise)),
+                None => format!("{}.", super::physics::cap(&msg)),
+            };
+            self.note_near(pos, 30.0, Note::Ambient(told));
             self.witness(pos, 25.0, &msg, 0.35, &[me]);
-            if !self.speaks(me) {
-                self.make_noise(cid, false);
+            if let Some(noise) = cry {
+                self.event("sound", Some(me), None, format!("{name}: {noise}"), Some(pos), json!({ "sound": noise }));
             }
         }
     }
@@ -492,7 +522,7 @@ impl Sim {
             n.a.task = None;
         }
         let msg = format!("{name} was {how}");
-        self.note_near(pos, 40.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+        self.note_near(pos, 40.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
         self.witness(pos, 40.0, &msg, 0.8, &[who]);
         self.event("died", Some(who), None, msg, Some(pos), json!({}));
     }
@@ -720,7 +750,7 @@ impl Sim {
         }
         let need = if fx.turn_into.is_some() {
             0.0
-        } else if !fx.look.is_empty() {
+        } else if !fx.look.is_empty() || fx.grow.is_some() {
             0.3
         } else if !fx.take_off.is_empty() {
             0.25
@@ -812,13 +842,17 @@ impl Sim {
             }
         }
         if let ActorId::Npc(c) = b {
-            if !fx.look.is_empty() {
+            let grow = fx.grow.filter(|g| g.is_finite() && *g > 0.0 && (*g - 1.0).abs() > 0.01);
+            if !fx.look.is_empty() || grow.is_some() {
                 let look = fx.look.clone();
                 self.change_persona(c, |p| {
                     for (k, v) in look {
                         if v.is_finite() {
                             p.look.insert(k.trim().to_lowercase(), v);
                         }
+                    }
+                    if let Some(g) = grow {
+                        p.size = Some((p.size_mul() * g).clamp(0.5, 4.0));
                     }
                 });
             }
@@ -843,7 +877,7 @@ impl Sim {
         if actor != b {
             let fed = fx.needs.get("hunger").is_some_and(|v| *v < 0.0);
             let (an, bn) = (self.actor_name(actor), self.actor_name(b));
-            self.event("deed_on", Some(actor), Some(b.key()), format!("{an} did something to {bn}"), self.actor(b).map(|a| a.pos), json!({ "fed": fed, "mood": !fx.feel.is_empty(), "looks": !fx.look.is_empty(), "trust": fx.feel.get("trust").copied().unwrap_or(0.0) }));
+            self.event("deed_on", Some(actor), Some(b.key()), format!("{an} did something to {bn}"), self.actor(b).map(|a| a.pos), json!({ "fed": fed, "mood": !fx.feel.is_empty(), "looks": !fx.look.is_empty() || fx.grow.is_some(), "trust": fx.feel.get("trust").copied().unwrap_or(0.0) }));
         }
     }
 
@@ -890,7 +924,7 @@ impl Sim {
         let msg = format!("{n} turned from {} {from} into {} {}", super::article(&from), super::article(&sp.name), sp.name);
         self.event("transformed", Some(who), Some(by.key()), msg.clone(), at, json!({ "from": from, "to": sp.name, "by": b }));
         if let Some(p) = at {
-            self.note_near(p, 30.0, Note::Info(format!("{}!", super::physics::cap(&msg))));
+            self.note_near(p, 30.0, Note::Notable(format!("{}!", super::physics::cap(&msg))));
             self.witness(p, 30.0, &msg, 0.8, &[]);
         }
         Ok(())
@@ -943,6 +977,8 @@ impl Sim {
             name: name.clone(),
             species: if sp.is_human() { String::new() } else { sp.name.clone() },
             appearance: nb.description.chars().take(160).collect(),
+            look: nb.look.iter().filter(|(_, v)| v.is_finite()).map(|(k, v)| (k.trim().to_lowercase(), *v)).collect(),
+            size: nb.size.filter(|s| s.is_finite() && (*s - 1.0).abs() > 0.01).map(|s| s.clamp(0.5, 4.0)),
             relationships: vec![format!("{}: owner and maker", if first == "the" { "the traveller" } else { &maker })],
             ..Default::default()
         };
@@ -954,9 +990,10 @@ impl Sim {
         r.owner = Some(by.code());
         r.affection = r.affection.max(0.7);
         r.familiarity = 1.0;
+        self.note_creation(&format!("being:{id}"), "being", &format!("{name}, {} {}", super::article(&sp.name), sp.name), Some(by), "", at);
         let msg = format!("{maker} brought {name} into the world");
         self.event("made_being", Some(by), Some(me.key()), msg.clone(), Some(at), json!({ "species": sp.name }));
-        self.note_near(at, 30.0, Note::Info(format!("{}.", super::physics::cap(&msg))));
+        self.note_near(at, 30.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
         let extent = self.actor(me).map(|a| a.dims.height).unwrap_or(1.0);
         let sight = super::surprise::Sight { how: super::surprise::Arrival::FromNowhere, extent, strange: 0.0 };
         let tell = format!("{}, near you.", super::physics::cap(&msg));

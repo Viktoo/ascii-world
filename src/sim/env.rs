@@ -461,15 +461,15 @@ impl Sim {
         }
         // People notice the first of a kind nearby, not every tuft.
         let note = match kind {
-            "ignited" => Some(format!("{} catches fire!", super::physics::cap(text.trim_end_matches(" caught fire")))),
+            "ignited" => Some(Note::Notable(format!("{} catches fire!", super::physics::cap(text.trim_end_matches(" caught fire"))))),
             "burnt_out" => None,
-            "doused" => Some(format!("{}.", super::physics::cap(text))),
+            "doused" => Some(format!("{}.", super::physics::cap(text))).map(Note::Ambient),
             "grown" => None,
             "broken" => None,
             _ => None,
         };
         if let Some(n) = note {
-            self.note_near(pos, 60.0, Note::Info(n));
+            self.note_near(pos, 60.0, n);
         }
         let (memory, importance) = match kind {
             "ignited" => (format!("I saw fire: {text}."), 0.7),

@@ -743,7 +743,7 @@ impl Sim {
                         };
                         let msg = format!("{names} {verb}");
                         self.event(&format!("{}", k.name()), Some(j.a), Some(j.b.key()), msg.clone(), Some(pa), json!({}));
-                        self.note_near(pa, 25.0, Note::Info(format!("{msg}.")));
+                        self.note_near(pa, 25.0, Note::seen(format!("{msg}."), j.has(ActorId::Player)));
                         set(self, &|x| {
                             x.phase = 1;
                             x.next = t + k.duration() as f64;
@@ -903,7 +903,7 @@ impl Sim {
                     let at = self.actor(other).map(|a| a.pos);
                     self.event("refused", Some(other), Some(who.key()), format!("{oname} stepped back from {name}'s {}", k.name().replace('_', " ")), at, json!({}));
                     if let Some(p) = at {
-                        self.note_near(p, 20.0, Note::Info(format!("{oname} steps back.")));
+                        self.note_near(p, 20.0, Note::seen(format!("{oname} steps back."), who == ActorId::Player));
                     }
                     self.social.rel_mut(who, other).affection -= 0.03;
                     return Err(ActErr::Fail(format!("{oname} steps back")));
@@ -1031,8 +1031,8 @@ impl Sim {
         match seen {
             Some(e) => {
                 let both = e.pos.is_some_and(|p| (Vec3::from(p) - pb).length() < 45.0);
-                let what = e.text.trim_start_matches("the ").to_string();
-                out.push((a, format!("Did you see? The {what}.")));
+                // Told as it happened: "The stick broke", "A boomerang came into being", "Oyunaa made a rack".
+                out.push((a, format!("Did you see? {}.", super::physics::cap(e.text.trim_end_matches('.')))));
                 let reply = if both { ["I saw it too!", "I did. Strange times.", "Hard to miss."][(k % 3) as usize] } else { ["No! Really?", "I missed that.", "You're joking."][(k % 3) as usize] };
                 out.push((b, reply.to_string()));
             }

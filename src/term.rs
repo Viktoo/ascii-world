@@ -242,8 +242,11 @@ pub fn narrow(c: char) -> char {
     }
 }
 
-/// Word-wrap to `width` columns.
+/// Word-wrap to `width` columns; a line break starts a new line.
 pub fn wrap(s: &str, width: usize) -> Vec<String> {
+    if s.contains('\n') {
+        return s.split('\n').flat_map(|p| wrap(p, width)).collect();
+    }
     let width = width.max(8);
     let mut lines = Vec::new();
     let mut cur = String::new();
