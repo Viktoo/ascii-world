@@ -97,6 +97,18 @@ Species can keep hours (`"active": "night"`: owls, moths), go after something
 (`"shuns": ["light"]`) and move only unseen (`"moves_unseen"`). Peaceful worlds use the
 same fields, minus the harm.
 
+### Sound
+
+Everything you hear is made live from small recipes, with no audio files. Each sound comes
+from where it happens and is heard from where you stand and face: a call behind you
+is quiet and dull; turn to it and it gets clearer; walk up and it gets louder. You hear
+footsteps (from each body's weight and the ground), brushing through grass (soft when
+green, crunchy when dry), bumps, impacts, wind, water, and crickets that fall
+silent near what comes at night. Species sound as their `"voice"` says (one entry per
+`"sounds"` line; written by the LLM with the species, guessed from the words otherwise);
+things sound as their properties or `meta.sound` say. `Sound` and `Volume` are in settings
+(`Esc`); details in `docs/sound-plan.md`.
+
 `F2` shows the raw truth about what you point at: a thing's properties, state, origin,
 behaviour code and the rules that last fired on it; a character's needs, plan, goal,
 relationships, recent decisions and memories.
@@ -125,6 +137,7 @@ relationships, recent decisions and memories.
 | `POCKET_PRICE_IN` / `POCKET_PRICE_OUT` | $/M tokens for models the built-in table doesn't know. |
 | `POCKET_FPS` | Frame-rate cap (default 60). |
 | `POCKET_NO_GPU=1` | Force the CPU renderer. |
+| `POCKET_NO_SOUND=1` | No sound this run. |
 | `POCKET_SIM_NEAR` | Full simulation within this many metres of you (default 220). |
 | `POCKET_SIM_MEDIUM` | Reduced-rate simulation up to here (default 512): the world keeps changing while you're away. |
 | `POCKET_SIM_MEDIUM_HZ` | Ticks per second at medium distance (default 2). |
@@ -401,6 +414,9 @@ pocket sim FILE --hours 3 --seed 5 --verify                                     
 pocket act FILE --as Mara '{"do": "hold", "target": {"name": "stick"}}'         # act as anyone (walks there first)
 pocket act FILE --stdin                                                         # one JSON command per line
 pocket inspect FILE npc:3 | thing:12 | instance:7 | cell:10,20 | NAME | --look  # the raw truth, as JSON
+pocket listen --demo --out DIR                                                  # sound scenes as WAVs
+pocket listen FILE --species wolf                                               # a species' calls
+pocket listen FILE --at 0,0,90 --hour 23 --walk --calls --verbose               # walk somewhere and record it
 ```
 
 `pocket sim` works on a private copy unless you pass `--save`, uses the LLM if one is
@@ -464,6 +480,9 @@ How the acceptance criteria are covered:
 | A village left two game days ago has changed | `sim::tests::a_village_left_for_two_days_has_changed` |
 | Live things, cells, relationships survive a restart; eaten plants grow back | `sim::tests::live_things_cells_and_relationships_persist`, `eaten_plants_stay_gone_then_grow_back` |
 | Keys: pick up, throw, F2, free-text do | `app::tests::grab_throw_inspect_and_do_with_keys` |
+| A call behind you is dull and left; turned round, brighter and right; walking up, louder | `audio::mix::tests::behind_then_facing_then_walking_up_gets_louder_and_clearer` |
+| A dog is heard from the dog in its own voice; a shrub bumped once; a stone where it lands; listening changes nothing | `sim::tests::noises_bumps_and_impacts_are_heard_where_they_happen`, `listening_changes_nothing` |
+| Sound under budget: a crowded night at ~6% of a core | `audio::mix::tests::a_dense_night_runs_faster_than_real_time` |
 
 The LLM-dependent tests use a scripted model in-process (no network).
 

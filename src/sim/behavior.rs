@@ -157,6 +157,10 @@ impl Sim {
             }
             Effect::Sound => {
                 let Some(s) = meta.sounds.get(i).cloned() else { return };
+                let mass = t.props.get(super::props::P_MASS).copied().unwrap_or(1.0);
+                if let Some(call) = crate::audio::call::guess(&s, mass.max(0.05), false) {
+                    self.cue(pos, None, crate::audio::Heard::Call { call, mass: mass.max(0.05), pitch: 1.0, gain: 0.9 });
+                }
                 self.note_near(pos, 25.0, Note::Ambient(format!("*{s}* (the {name})")));
                 self.event("sound", None, Some(format!("thing:{id}")), format!("the {name} went \"{s}\""), Some(pos), json!({}));
             }

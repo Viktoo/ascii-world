@@ -1,6 +1,7 @@
 //! Pocket Universe: an infinite, colour 3D world in your terminal.
 
 mod achievements;
+mod audio;
 mod app;
 mod brain;
 mod db;
@@ -49,6 +50,7 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
   pocket act FILE --as player|ID|NAME '{\"do\": \"hold\", \"target\": {\"name\": \"stick\"}}' [--run SECS] [--dry]
   pocket act FILE --stdin                one JSON command per line (actions, inspect, look, run)
   pocket inspect FILE player|npc:ID|thing:ID|instance:ID|cell:X,Z|NAME   (or --look [--as WHO])
+  pocket listen --play | --demo | FILE [--species NAME | --at x,z,yawDeg --walk --calls]   hear it (WAVs)
   pocket check TYPE.js                   validate an object type module (steps 1-4)
   pocket selftest                        GPU/CPU parity and validator checks
 
@@ -56,7 +58,8 @@ Environment: ANTHROPIC_API_KEY, or POCKET_LLM_BASE_URL (+ POCKET_LLM_API_KEY) fo
 OpenAI-compatible endpoint; POCKET_MODEL_{BUILDER,CHARACTER,DECIDER,SUMMARIZER};
 POCKET_BUDGET_USD; POCKET_REGION_RADIUS (default 2); POCKET_DECIDER_URL; POCKET_FPS;
 POCKET_NO_GPU=1; POCKET_HOME (default ~/.pocket); POCKET_SIM_NEAR, POCKET_SIM_MEDIUM,
-POCKET_SIM_FAR (frozen | catchup:HOURS), POCKET_LLM_PER_MIN (how alive the world is).";
+POCKET_SIM_FAR (frozen | catchup:HOURS), POCKET_LLM_PER_MIN (how alive the world is),
+POCKET_NO_SOUND=1.";
 
 fn main() {
     log::init();
@@ -123,6 +126,7 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("sim") => sim::headless::run_sim_cli(&args[1..]),
         Some("act") => sim::headless::act_cli(&args[1..]),
         Some("inspect") => sim::headless::inspect_cli(&args[1..]),
+        Some("listen") => audio::listen::cli(&args[1..]),
         Some(p) if !p.starts_with('-') => play(Path::new(p), false),
         Some(other) => bail!("unknown option {other}\n\n{USAGE}"),
         None => {

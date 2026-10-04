@@ -166,6 +166,10 @@ pub struct Meta {
     /// Type names for `spawn(i)` / `transform(i)`.
     #[serde(default)]
     pub spawns: Vec<String>,
+    /// How it sounds struck, brushed or stepped on, when its properties
+    /// don't say: `sound: { hard: 0.2, dry: 0.3, ring: 0 }` (each 0–1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sound: Vec<(String, f32)>,
     /// Present when the type is a body that a being can live in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Body>,

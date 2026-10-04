@@ -172,6 +172,11 @@ pub struct App {
     toasts: VecDeque<(&'static crate::achievements::Def, Option<Instant>)>,
     /// The "working on" box: slow work in progress, and just done.
     work: work::WorkBox,
+    /// The sound device, while sound is on and there is one.
+    sound: Option<crate::audio::Output>,
+    /// What the world sounds like, read off the sim each frame.
+    foley: crate::audio::foley::Foley,
+    sound_cmds: Vec<crate::audio::mix::Cmd>,
 }
 
 pub struct Setup {
@@ -258,7 +263,11 @@ impl App {
             achievements,
             toasts: VecDeque::new(),
             work: work::WorkBox::default(),
+            sound: None,
+            foley: Default::default(),
+            sound_cmds: Vec::new(),
         };
+        app.sync_sound();
         app.unstick();
         let name = app.snap.look.name.clone();
         app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use, g grab, f throw, Esc settings, q quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
@@ -966,6 +975,7 @@ impl App {
         for n in self.sim.drain_notes() {
             self.tell(n);
         }
+        self.hear(dt);
         if self.log_expiry.is_some_and(|t| Instant::now() >= t) {
             self.log_expiry = None;
             self.dirty = true;
@@ -1026,6 +1036,32 @@ impl App {
             self.schedule_regions();
             let p = self.pos();
             self.sim.cache.trim(p, render::VIEW_DIST + 80.0);
+        }
+    }
+
+    /// What the world sounds like this frame, to the sound device.
+    fn hear(&mut self, dt: f32) {
+        let Some(out) = self.sound.as_ref() else {
+            self.sim.sounds.clear();
+            return;
+        };
+        self.foley.frame(&mut self.sim, dt, &mut self.sound_cmds);
+        for c in self.sound_cmds.drain(..) {
+            out.send(c);
+        }
+    }
+
+    /// Sound on or off and its volume, as the settings say.
+    pub(super) fn sync_sound(&mut self) {
+        match (&self.sound, self.settings.sound) {
+            (None, true) => self.sound = crate::audio::start(self.settings.volume),
+            (Some(_), false) => {
+                if let Some(o) = self.sound.take() {
+                    o.send(crate::audio::mix::Cmd::Clear);
+                }
+            }
+            (Some(o), true) => o.send(crate::audio::mix::Cmd::Volume(self.settings.volume)),
+            (None, false) => {}
         }
     }
 
@@ -1650,6 +1686,9 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        if let Some(o) = self.sound.take() {
+            o.send(crate::audio::mix::Cmd::Clear);
+        }
         self.save_player();
         self.save_characters();
         self.render.shutdown();
@@ -2304,8 +2343,20 @@ mod tests {
         app.compose();
         assert!(screen_text(&app).contains("Spend details"), "{}", screen_text(&app));
         app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        // Sound and its volume (no device in tests: it stays quiet).
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        }
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(!app.settings.sound, "Enter turns sound off");
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(app.settings.sound);
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        let vol = app.settings.volume;
+        app.on_key(key(KeyCode::Left, KeyEventKind::Press));
+        assert!(app.settings.volume < vol);
         // A world setting changes the running sim and is kept with the world.
-        for _ in 0..5 {
+        for _ in 0..3 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));
         }
         assert_eq!(app.sim.cfg.difficulty, 0, "peaceful by default");

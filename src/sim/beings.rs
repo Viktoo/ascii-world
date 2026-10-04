@@ -54,7 +54,9 @@ impl Sim {
         } else {
             s.len() - 1
         };
-        Some(s[i].clone())
+        let text = s[i].clone();
+        self.cue_noise(cid, i, if happy { 0.8 } else { 1.0 });
+        Some(text)
     }
 
     /// An animal makes a noise: heard nearby, remembered like a line.

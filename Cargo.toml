@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
+cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 crossterm = "0.29.0"
 dirs = "7.0.0"

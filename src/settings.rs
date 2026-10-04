@@ -16,11 +16,15 @@ pub struct Settings {
     pub region_radius: i32,
     /// Whose slow work (deeds, makings) the "working on" box lists.
     pub show_work: ShowWork,
+    /// Sound on (it turns itself off when there is no output device).
+    pub sound: bool,
+    /// 0..1.
+    pub volume: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8 }
     }
 }
 
@@ -71,6 +75,9 @@ pub fn env_shadows() -> bool {
 pub fn env_region_radius() -> bool {
     env("POCKET_REGION_RADIUS").is_some()
 }
+pub fn env_sound() -> bool {
+    std::env::var_os("POCKET_NO_SOUND").is_some()
+}
 
 impl Settings {
     /// The saved settings, with environment variables on top.
@@ -90,6 +97,10 @@ impl Settings {
         if let Some(r) = env("POCKET_REGION_RADIUS").and_then(|v| v.trim().parse::<i32>().ok()) {
             s.region_radius = r;
         }
+        if env_sound() {
+            s.sound = false;
+        }
+        s.volume = if s.volume.is_finite() { s.volume.clamp(0.0, 1.0) } else { 0.8 };
         s.fps = s.fps.clamp(5.0, 240.0);
         s.region_radius = s.region_radius.clamp(0, 4);
         s
@@ -119,6 +130,10 @@ impl Settings {
             out.region_radius = self.region_radius;
         }
         out.show_work = self.show_work;
+        if !env_sound() {
+            out.sound = self.sound;
+        }
+        out.volume = self.volume;
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {
             let _ = std::fs::write(path(), t);
