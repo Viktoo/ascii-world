@@ -15,6 +15,7 @@ pub mod catchup;
 pub mod config;
 pub mod env;
 pub mod headless;
+pub mod incident;
 pub mod inspect;
 pub mod interp;
 pub mod life;
@@ -182,8 +183,15 @@ pub enum Note {
     /// Something that changes the world (a thing made or remade, a birth, a
     /// death, a new kind of creature): always kept, marked.
     Notable(String),
-    /// Something notable beyond earshot, and where.
-    Far(String, [f32; 3]),
+    /// Something made or remade (a thing, a being): kept, marked, and
+    /// listed under "made".
+    Made(String),
+    /// Something notable beyond earshot, and where; `made` if it was a making.
+    Far { text: String, at: [f32; 3], made: bool },
+    /// One line for an incident (a fire, a plague), updated in place as it
+    /// grows and when it ends. `near` if the player is close. An empty
+    /// text: it joined another incident, and its line goes.
+    Incident { id: u32, text: String, at: [f32; 3], near: bool },
     /// What the player's deed changed that the eye may miss ("the moth:
     /// trust ↓"), under the deed's story.
     Effect(String),
@@ -199,7 +207,7 @@ impl Note {
     pub fn text(&self) -> String {
         match self {
             Note::Line { who, text, .. } => format!("{who}: {text}"),
-            Note::Info(t) | Note::Ambient(t) | Note::Notable(t) | Note::Far(t, _) => t.clone(),
+            Note::Info(t) | Note::Ambient(t) | Note::Notable(t) | Note::Made(t) | Note::Far { text: t, .. } | Note::Incident { text: t, .. } => t.clone(),
             Note::Effect(t) => format!("↳ {t}"),
         }
     }
@@ -330,6 +338,8 @@ pub struct Sim {
     pub made: std::collections::HashMap<i64, ActorId>,
     /// Night, corruption and the traveler's charges (see `night`).
     pub night: night::NightState,
+    /// Happenings with one cause, told as one story (see `incident`).
+    pub incidents: incident::Incidents,
 }
 
 impl Sim {
@@ -374,6 +384,7 @@ impl Sim {
             fresh: Vec::new(),
             made: std::collections::HashMap::new(),
             night: night::NightState::default(),
+            incidents: incident::Incidents::default(),
         };
         sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();
@@ -496,8 +507,12 @@ impl Sim {
     pub fn note_near(&mut self, at: Vec3, range: f32, n: Note) {
         if self.dist_to_player(at) <= range {
             self.notes.push(n);
-        } else if let Note::Notable(t) = n {
-            self.notes.push(Note::Far(t, at.to_array()));
+        } else {
+            match n {
+                Note::Notable(text) => self.notes.push(Note::Far { text, at: at.to_array(), made: false }),
+                Note::Made(text) => self.notes.push(Note::Far { text, at: at.to_array(), made: true }),
+                _ => {}
+            }
         }
     }
 
@@ -714,6 +729,7 @@ impl Sim {
         if self.acc_regions >= 1.0 {
             self.acc_regions = 0.0;
             self.step_regions();
+            self.step_incidents();
             self.ask_species_bodies();
             self.step_night();
         }

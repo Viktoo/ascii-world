@@ -1040,6 +1040,131 @@ fn a_firebreak_wider_than_the_heat_reach_stops_fire() {
     assert!(reach < 12.0, "and stopped at the gap ({reach:.1} m)");
 }
 
+/// A grass patch on a flat dry spot, with the wild scatter around cleared
+/// (only what is planted burns). Returns the spot, the direction and a session.
+fn grass_patch(tag: &str, seed: u32, to: f32) -> (W, Vec3, Vec3) {
+    let w = world(tag, seed);
+    let a = dry_spot(&w, 8.0, 0.4);
+    let mut dir = Vec3::X;
+    for d in [Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z] {
+        if (0..30).all(|k| w.terrain.height(a.x + d.x * k as f32, a.z + d.z * k as f32) > WATER_LEVEL + 0.4) {
+            dir = d;
+            break;
+        }
+    }
+    assert!(plant_grass(&w, a, dir, 0.0, to, 5.0) > 8);
+    (w, a, dir)
+}
+
+fn clear_scatter(s: &mut Session, at: Vec3, r: f32) {
+    let snap = s.sim.snap.clone();
+    for it in s.sim.cache.items_near(&snap, at, r) {
+        s.sim.cache.overlay.taken.insert(it.cell);
+        s.sim.things.taken.insert(it.cell, -1);
+    }
+}
+
+/// A kiln at 900° warms the grass around it and never sets it alight:
+/// heat warms, only flames burn.
+#[test]
+fn a_kiln_warms_the_grass_but_does_not_light_it() {
+    let (w, a, dir) = grass_patch("kiln", 44, 10.0);
+    let kiln = add_type(&w, r#"// A kiln.
+export const meta = { name: "root kiln", bounds: [1.2, 1.6, 1.2], tags: ["building"], props: { heat: 900, conducts: 0.6, light: 0.5 } };
+export function sdf(x, y, z, k) { return box(x, y - 0.8, z, 0.6, 0.8, 0.6); }
+export function color(x, y, z, k) { return rgb(140, 90, 60); }
+"#);
+    let kiln_at = ground(&w, a.x + dir.x * 5.0 + 1.2, a.z + dir.z * 5.0 + 1.2);
+    let inst = place(&w, kiln, kiln_at, 0.0);
+    let mut s = session(&w, 14, None);
+    s.sim.player.pos = a - dir * 20.0;
+    clear_scatter(&mut s, a + dir * 5.0, 40.0);
+    s.sim.promote_instance(inst).unwrap();
+    s.run(90.0, 0.1);
+    assert!(events(&s.sim, "ignited").is_empty(), "nothing caught: {:?}", events(&s.sim, "ignited").iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    let warm = s.sim.things.live().filter(|t| t.props[P_TEMP] > 25.0 && t.props[P_BURNS] > 0.0).count();
+    assert!(warm > 0, "the grass by it is warm");
+    assert!(s.sim.incidents.list.is_empty());
+}
+
+/// A fire that eats a patch of grass is one incident: it knows what started
+/// it, tells the log one line (rewritten as it grows), keeps one event in the
+/// save, people remember its cause, and it ends.
+#[test]
+fn a_fire_is_one_incident_with_one_cause_and_one_line() {
+    let (w, a, dir) = grass_patch("incident", 45, 12.0);
+    let lantern = add_type(&w, &fixture("sims/lantern.js"));
+    let watcher = add_char(&w, "Wenna", "calm, timid", &[], a - dir * 45.0);
+    let mut s = session(&w, 15, None);
+    s.sim.player.pos = a - dir * 16.0;
+    clear_scatter(&mut s, a + dir * 6.0, 40.0);
+    // A lantern thrown into the grass by the traveler.
+    let id = s.sim.spawn_thing(lantern, a + Vec3::Y * 3.0, 0.0, 1.0, Default::default(), false).unwrap();
+    s.sim.things.get_mut(id).unwrap().vel = Vec3::new(0.0, -6.0, 0.0);
+    s.sim.things.get_mut(id).unwrap().asleep = false;
+    s.sim.things.get_mut(id).unwrap().thrown_by = Some((ActorId::Player, s.sim.t));
+    let all = record(&mut s);
+    s.run(40.0, 0.1);
+    let ignited = of(&all, "ignited");
+    assert!(ignited.len() >= 5, "the grass caught: {}", ignited.len());
+    assert_eq!(s.sim.incidents.list.len(), 1, "one fire, one incident: {:?}", s.sim.incidents.list.iter().map(|i| i.line()).collect::<Vec<_>>());
+    let inc = s.sim.incidents.list[0].clone();
+    assert_eq!(inc.count("ignited") as usize, ignited.len(), "every tuft counted on it");
+    assert!(ignited.iter().all(|e| e.data["incident"] == inc.id), "every ignition filed under it");
+    assert_eq!(inc.cause.name, "the oil lantern", "started by the lantern (a piece of it): {:?}", inc.cause);
+    assert_eq!(inc.cause.by.as_deref(), Some("the traveler"), "thrown by the traveler");
+    assert!(inc.line().contains("oil lantern (the traveler)"), "{}", inc.line());
+    // The log: one line per incident, however many tufts.
+    let notes = s.sim.drain_notes();
+    let lines: std::collections::BTreeSet<u32> = notes.iter().filter_map(|n| if let super::Note::Incident { id, .. } = n { Some(*id) } else { None }).collect();
+    assert_eq!(lines.len(), 1);
+    assert!(!notes.iter().any(|n| matches!(n, super::Note::Notable(t) | super::Note::Far { text: t, .. } if t.contains("catches fire"))), "no line per tuft");
+    // It burns out and ends; the save keeps its start and end, not every tuft.
+    s.run(200.0, 0.1);
+    let inc = s.sim.incidents.list[0].clone();
+    assert!(inc.ended.is_some(), "it ended: {}", inc.line());
+    assert!(inc.line().contains("burnt itself out"), "{}", inc.line());
+    // Who saw it remembers what started it.
+    let mems = s.sim.db.memories(watcher).unwrap_or_default();
+    assert!(mems.iter().any(|m| m.text.contains("oil lantern")), "the watcher knows what started it: {:?}", mems.iter().map(|m| m.text.clone()).collect::<Vec<_>>());
+    s.save();
+    let saved: i64 = s.sim.db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM events WHERE kind = 'ignited'", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(saved, 1, "only the first ignition is saved");
+    let ends: i64 = s.sim.db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM events WHERE kind IN ('incident', 'incident_end')", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(ends, 2);
+    sound(&s);
+}
+
+/// People whose homes a fire comes near fight it: the brave first, and
+/// those who see a neighbour at it join in. They beat it out before it eats
+/// the whole meadow.
+#[test]
+fn villagers_fight_a_fire_near_their_homes() {
+    let (w, a, dir) = grass_patch("fight", 46, 22.5);
+    let home = a + dir * 26.0;
+    let names = ["Tarn", "Ilse", "Bram"];
+    for n in names {
+        add_char(&w, n, "brave, steady, a good neighbour", &["Tarn: neighbour", "Ilse: neighbour", "Bram: neighbour"], home);
+    }
+    let mut s = session(&w, 16, None);
+    s.sim.player.pos = a - dir * 20.0;
+    clear_scatter(&mut s, a + dir * 10.0, 50.0);
+    let p = s.sim.snap.instances.iter().min_by(|x, y| (x.pos - a).length().total_cmp(&(y.pos - a).length())).unwrap().id;
+    let id = s.sim.promote_instance(p).unwrap();
+    s.sim.things.get_mut(id).unwrap().props[P_FIRE] = 0.6;
+    let all = record(&mut s);
+    s.run(150.0, 0.1);
+    let fought = of(&all, "fought_fire");
+    assert!(!fought.is_empty(), "someone fought it");
+    let inc = s.sim.incidents.list.first().cloned().expect("an incident");
+    assert!(!inc.fought_by.is_empty(), "{}", inc.line());
+    assert!(inc.ended.is_some(), "it's out: {}", inc.line());
+    assert!(inc.saved.len() >= 5, "they saved some of the meadow: {}", inc.line());
+    assert!(s.sim.trouble_line(home).is_some_and(|l| l.contains("Fought by")), "{:?}", s.sim.trouble_line(home));
+    eprintln!("{}", inc.line());
+    sound(&s);
+}
+
 /// A ball thrown at a hoop from a few metres drops through it.
 #[test]
 fn a_ball_thrown_at_a_hoop_goes_through() {
@@ -1455,7 +1580,7 @@ fn the_interpreter_cuts_and_reshapes_at_the_spot_touched() {
     s.run(0.5, 0.05);
     // The deed's story is told once, when the new shape is there.
     let mut heard: Vec<String> = r["heard"].as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
-    heard.extend(s.sim.drain_notes().into_iter().filter(|n| !matches!(n, super::Note::Far(..))).map(|n| n.text()));
+    heard.extend(s.sim.drain_notes().into_iter().filter(|n| !matches!(n, super::Note::Far { .. } | super::Note::Incident { near: false, .. })).map(|n| n.text()));
     assert_eq!(heard.iter().filter(|t| t.contains("grows a chimney")).count(), 1, "{heard:?}");
     assert!(!heard.iter().any(|t| t.contains("becomes")), "and not told twice: {heard:?}");
     let t = s.sim.things.get(h).unwrap();
@@ -3397,4 +3522,26 @@ fn species_get_own_bodies_and_one_being_can_be_reshaped() {
     assert_eq!(body_of(&s, tom), own, "his own body after a restart");
     assert_eq!(body_of(&s, mia), "cat");
     sound(&s);
+}
+
+/// A goat grazes a grass tuft at its feet (grass has no `edible`, but it is
+/// alive and small, and goats eat plants); a person can't eat grass.
+#[test]
+fn plant_eaters_graze_grass_and_people_do_not() {
+    let w = world("graze", 52);
+    let spot = dry_spot(&w, 14.0, 1.0);
+    let goat = add_being(&w, "Nan", "goat", &[], spot);
+    let ola = add_char(&w, "Ola", "a kind herder", &[], spot + Vec3::new(1.0, 0.0, 0.0));
+    let grass = builtin_id(&w, "grass tuft");
+    let tuft = place(&w, grass, spot + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let mut s = session(&w, 7, None);
+    calm(&mut s);
+    let t1 = s.sim.liven(&Target::Instance(tuft)).unwrap();
+    let r = s.sim.act(ActorId::Npc(ola), Action::Eat { target: Some(Target::Thing(t1)) });
+    assert!(r.is_err(), "a person doesn't eat grass: {r:?}");
+    s.sim.cast.get_mut(goat).unwrap().needs.hunger = 0.9;
+    let r = s.sim.act(ActorId::Npc(goat), Action::Eat { target: Some(Target::Thing(t1)) });
+    assert!(r.is_ok(), "the goat grazes: {r:?}");
+    assert!(s.sim.things.get(t1).is_none(), "the tuft is eaten");
+    assert!(s.sim.cast.get(goat).unwrap().needs.hunger < 0.9, "and the goat is less hungry");
 }

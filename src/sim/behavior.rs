@@ -208,7 +208,7 @@ impl Sim {
                 x.dirty = true;
             }
             self.event("transformed", None, Some(format!("thing:{id}")), format!("the {from_name} became {} {nname}", super::article(&nname)), Some(t.pos), json!({ "into": nname }));
-            self.note_near(t.pos, 30.0, Note::Notable(format!("The {from_name} becomes {} {nname}.", super::article(&nname))));
+            self.note_near(t.pos, 30.0, Note::Made(format!("The {from_name} becomes {} {nname}.", super::article(&nname))));
             let sight = self.sight_of(&nty, t.scale, super::surprise::Arrival::Changed);
             let memory = format!("I saw the {from_name} turn into {} {nname}.", super::article(&nname));
             let tell = format!("The {from_name} near you just turned into {} {nname}.", super::article(&nname));
@@ -220,7 +220,7 @@ impl Sim {
             let origin = Origin { made_from: vec![from_name.to_string()], ..Default::default() };
             if let Some(nid) = self.spawn_thing(type_id, at, a, 1.0, origin, true) {
                 self.event("spawned", None, Some(format!("thing:{nid}")), format!("the {from_name} made {} {nname}", super::article(&nname)), Some(at), json!({ "from": id }));
-                self.note_near(at, 20.0, Note::Notable(format!("The {from_name} makes {} {nname}.", super::article(&nname))));
+                self.note_near(at, 20.0, Note::Made(format!("The {from_name} makes {} {nname}.", super::article(&nname))));
             }
         }
     }

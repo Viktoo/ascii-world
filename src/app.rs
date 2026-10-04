@@ -763,6 +763,7 @@ impl App {
         let place = view.region.clone().unwrap_or_else(|| view.biome.clone());
         let held = self.sim.player.held.map(|h| format!(" The traveler is holding {}.", crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
         let dark = self.sim.talking_to.and_then(|cid| self.sim.twist_line(ActorId::Npc(cid))).map(|l| format!(" {l}")).unwrap_or_default();
+        let dark = format!("{dark}{}", self.sim.trouble_line(cam.pos).map(|l| format!(" {l}")).unwrap_or_default());
         format!(
             "It is {} in {}. Visible around you: {}. Recently the traveler {}.{held}{dark}",
             view.time,
@@ -2127,7 +2128,7 @@ mod tests {
             app.tell(Note::Ambient("The horse gives a snort.".into()));
         }
         app.tell(Note::Notable("Ganzorig made a felt saddle.".into()));
-        app.tell(Note::Far("Oyunaa made a drying rack.".into(), [400.0, 0.0, 0.0]));
+        app.tell(Note::Far { text: "Oyunaa made a drying rack.".into(), at: [400.0, 0.0, 0.0], made: true });
         app.tell(Note::Line { id: None, who: "Ganzorig".into(), text: format!("{}\nAny word from the stone grandfather?", "Hoy! ".repeat(30)) });
         app.compose();
         let small = screen_text(&app);
@@ -2151,11 +2152,22 @@ mod tests {
         for _ in 0..4 {
             app.on_key(key(KeyCode::Tab, KeyEventKind::Press));
         }
+        assert_eq!(app.journal_filter, journal::Filter::Made);
+        app.compose();
+        let made = screen_text(&app);
+        assert!(made.contains("drying rack") && !made.contains("felt saddle") && !made.contains("snort"), "makings, near and far: {made}");
+        app.on_key(key(KeyCode::Tab, KeyEventKind::Press));
         assert_eq!(app.journal_filter, journal::Filter::Elsewhere);
         app.compose();
         let far = screen_text(&app);
         assert!(far.contains("drying rack") && !far.contains("felt saddle") && !far.contains("snort"), "{far}");
         assert!(!app.ascii, "Tab picks a filter in the journal, not the look");
+        // An incident is one line, rewritten as it goes, however much happens.
+        for k in 1..=30 {
+            app.tell(Note::Incident { id: 7, text: format!("Wildfire from the root kiln: {k} burnt."), at: [0.0, 0.0, 0.0], near: true });
+        }
+        assert_eq!(app.log.iter().filter(|l| l.incident == Some(7)).count(), 1);
+        assert!(app.log.iter().any(|l| l.text == "Wildfire from the root kiln: 30 burnt."));
     }
 
     #[test]

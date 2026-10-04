@@ -729,9 +729,19 @@ impl Sim {
     pub fn food_for(&mut self, cid: i64, p: Vec3, range: f32) -> Option<(Target, Vec3)> {
         let diet = self.cast.get(cid)?.species.diet.clone();
         let strength = self.strength(ActorId::Npc(cid));
-        let plants = diet.plants > 0.5;
-        self.nearest_matching(p, range, |pr| (pr[P_EDIBLE] > 0.05 && pr[P_MASS] < strength.max(1.0)) || (plants && pr[P_ALIVE] > 0.0 && pr[P_MASS] < 1.0 && pr[P_FIRE] <= 0.0))
+        let grazes = diet.grazes();
+        self.nearest_matching(p, range, |pr| (pr[P_EDIBLE] > 0.05 && pr[P_MASS] < strength.max(1.0)) || (grazes && grazable(pr)))
     }
+
+    /// Does this being eat plants as they grow (grass, leaves)?
+    pub fn grazes(&self, who: ActorId) -> bool {
+        self.species_of(who).is_some_and(|s| s.diet.grazes())
+    }
+}
+
+/// A plant a grazer can eat where it grows: alive, small, not burning.
+pub fn grazable(pr: &[f32]) -> bool {
+    pr[P_ALIVE] > 0.0 && pr[P_MASS] < 1.0 && pr[P_FIRE] <= 0.0
 }
 
 fn with_article(s: &str) -> String {
@@ -1079,7 +1089,7 @@ impl Sim {
         self.note_creation(&format!("being:{id}"), "being", &format!("{name}, {} {}", super::article(&sp.name), sp.name), Some(by), "", at);
         let msg = format!("{maker} brought {name} into the world");
         self.event("made_being", Some(by), Some(me.key()), msg.clone(), Some(at), json!({ "species": sp.name }));
-        self.note_near(at, 30.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
+        self.note_near(at, 30.0, Note::Made(format!("{}.", super::physics::cap(&msg))));
         let extent = self.actor(me).map(|a| a.dims.height).unwrap_or(1.0);
         let sight = super::surprise::Sight { how: super::surprise::Arrival::FromNowhere, extent, strange: 0.0 };
         let tell = format!("{}, near you.", super::physics::cap(&msg));

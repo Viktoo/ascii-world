@@ -15,6 +15,9 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+/// How much a grazed plant (grass, a leafy stalk) feeds a plant eater.
+const GRAZE: f32 = 0.25;
+
 fn one() -> f32 {
     1.0
 }
@@ -138,6 +141,12 @@ pub enum Action {
     Plea { to: Target },
     /// Wait until the hour of the day comes round.
     WaitUntil { hour: f32 },
+    /// Put out what burns (the target, or the nearest fire): soak it and
+    /// beat at it, and at what burns right by it.
+    Douse {
+        #[serde(default)]
+        target: Option<Target>,
+    },
     /// Go back to the deed a need held up.
     Resume {
         #[serde(default)]
@@ -176,6 +185,7 @@ impl Action {
             Action::Ask { .. } => "ask",
             Action::Plea { .. } => "plea",
             Action::WaitUntil { .. } => "wait_until",
+            Action::Douse { .. } => "douse",
             Action::Resume { .. } => "resume",
         }
     }
@@ -542,6 +552,7 @@ impl Sim {
                 Ok(Outcome::ok(format!("{name} sets the {tname} down")).thing(id))
             }
             Action::Throw { at, dir, force } => self.throw(who, at, dir, force),
+            Action::Douse { target } => self.douse(who, target),
             Action::Use { target, on, at } => self.use_thing(who, target, on, at.map(Vec3::from)),
             Action::Eat { target } => {
                 let id = match target {
@@ -1024,8 +1035,12 @@ impl Sim {
 
     fn eat(&mut self, who: ActorId, id: ThingId) -> Result<Outcome, ActErr> {
         let t = self.things.get(id).cloned().ok_or(ActErr::Fail("it's gone".into()))?;
-        let e = t.props[P_EDIBLE];
+        let mut e = t.props[P_EDIBLE];
         let tname = self.thing_name(id);
+        // Grazers live on what grows: a grass tuft feeds them a little.
+        if e <= 0.0 && self.grazes(who) && super::beings::grazable(&t.props) {
+            e = GRAZE;
+        }
         if e <= 0.0 {
             return fail(format!("the {tname} isn't something to eat"));
         }
@@ -1101,7 +1116,8 @@ impl Sim {
         }
         sanitize(&mut na);
         sanitize(&mut nb);
-        let changed = |x: &Props, y: &Props| x.iter().zip(y).any(|(p, q)| (p - q).abs() > 1e-3);
+        // A little warmth passing between them isn't something the use did.
+        let changed = |x: &Props, y: &Props| x.iter().zip(y).enumerate().any(|(i, (p, q))| (p - q).abs() > if i == P_TEMP { 50.0 } else { 1e-3 });
         let any = changed(&na, &ta.props) || changed(&nb, &tb.props);
         let t = self.t;
         if let Some(x) = self.things.get_mut(a) {
@@ -1236,6 +1252,40 @@ impl Sim {
 
     /// Take a layer off (yourself, or someone who agrees): into the hands,
     /// or to the ground when they are full.
+    /// Beat out a fire: what was named, or the nearest one. Everything
+    /// burning within arm's swing of it is soaked; the rules put it out.
+    pub fn douse(&mut self, who: ActorId, target: Option<Target>) -> Result<Outcome, ActErr> {
+        let me = self.actor(who).ok_or(ActErr::Fail("nobody".into()))?.pos;
+        let name = self.actor_name(who);
+        let at = match target {
+            Some(t) => self.resolve(&t, who).ok_or_else(|| not_found(&t))?.pos,
+            None => self.burning_parts().into_iter().map(|(_, p)| p).filter(|p| (*p - me).length() < 40.0).min_by(|a, b| (*a - me).length().total_cmp(&(*b - me).length())).ok_or(ActErr::Fail("nothing is burning nearby".into()))?,
+        };
+        let flat = Vec3::new(at.x - me.x, 0.0, at.z - me.z).length();
+        if flat > 2.6 {
+            return Err(ActErr::TooFar { at, dist: flat });
+        }
+        let n = self.soak_near(at, 2.2);
+        if n == 0 {
+            return Ok(Outcome::ok("it's already out"));
+        }
+        // Counted on the fire it belongs to, as one who fought it.
+        let near: Vec<u32> = self.incidents_near(at, 3.0).into_iter().map(|i| i.id).collect();
+        for id in near {
+            if let Some(inc) = self.incidents.list.iter_mut().find(|i| i.id == id) {
+                inc.fought_by.insert(name.clone());
+            }
+        }
+        if let Some(a) = self.actor_mut(who) {
+            let d = at - a.pos;
+            if d.length() > 0.1 {
+                a.yaw = d.x.atan2(d.z);
+            }
+        }
+        self.event("fought_fire", Some(who), None, format!("{name} beats at the flames"), Some(at), json!({ "soaked": n }));
+        Ok(Outcome::ok(format!("{name} beats at the flames")))
+    }
+
     pub fn take_off(&mut self, who: ActorId, wearer: ActorId, id: ThingId) -> Result<Outcome, ActErr> {
         let name = self.actor_name(who);
         let wname = self.actor_name(wearer);

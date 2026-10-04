@@ -239,6 +239,9 @@ pub fn load(sim: &mut Sim) {
     if let Some(st) = db.kv_get("sim.night").and_then(|j| serde_json::from_str(&j).ok()) {
         sim.night = st;
     }
+    if let Some(st) = db.kv_get("sim.incidents").and_then(|j| serde_json::from_str(&j).ok()) {
+        sim.incidents = st;
+    }
     if let Some(j) = db.kv_get("sim.region_seen") {
         if let Ok(v) = serde_json::from_str::<Vec<((i32, i32), f64)>>(&j) {
             sim.region_seen = v.into_iter().collect();
@@ -315,7 +318,9 @@ pub fn save(sim: &mut Sim) {
     sim.field.saved = now_cells;
     let rels: Vec<((i64, i64), String)> = if sim.social.dirty { sim.social.rels.iter().map(|(k, r)| (*k, serde_json::to_string(r).unwrap_or_default())).collect() } else { Vec::new() };
     sim.social.dirty = false;
-    let events = std::mem::take(&mut sim.log.unsaved);
+    // The parts of an incident are counted on it; only its first is kept.
+    let events: Vec<_> = std::mem::take(&mut sim.log.unsaved).into_iter().filter(|e| e.data.get("part").and_then(|v| v.as_bool()) != Some(true)).collect();
+    let incidents = serde_json::to_string(&sim.incidents).unwrap_or_default();
     let npc_states: Vec<(i64, String)> = sim.cast.npcs.iter().map(|n| (n.def.id, serde_json::to_string(&n.saved(sim.t)).unwrap_or_default())).collect();
     let seen: Vec<((i32, i32), f64)> = sim.region_seen.iter().map(|(k, v)| (*k, *v)).collect();
     let night = serde_json::to_string(&sim.night).unwrap_or_default();
@@ -359,6 +364,7 @@ pub fn save(sim: &mut Sim) {
         }
         crate::db::kv_set(tx, "sim.region_seen", &serde_json::to_string(&seen)?)?;
         crate::db::kv_set(tx, "sim.night", &night)?;
+        crate::db::kv_set(tx, "sim.incidents", &incidents)?;
         tx.execute("DELETE FROM spent_cells", [])?;
         for ((gx, gz), t) in &spent {
             tx.execute("INSERT INTO spent_cells(gx, gz, t) VALUES (?1, ?2, ?3)", params![gx, gz, t])?;

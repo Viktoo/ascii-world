@@ -42,8 +42,8 @@ cargo build --release      # → target/release/pocket
 | Mode | Enter with | Keys |
 |---|---|---|
 | Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
-| Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
-| Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
+| Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`; a fire or other incident is one line, updated as it goes); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
+| Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
 | Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
 | Creations | `3` in settings (`Esc`, or `F3` then `3`) | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
 | Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
@@ -261,11 +261,19 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   `wet`, `light`, `edible`, `alive`, `fragile`, `fire`, `fuel`, `heat`, `char`,
   `health`, `growth`, `strange`, `toy`, …). Rules are data (`src/sim/rules.rs`), applied a few times a
   second to live things, changed scatter cells and placed objects next to something
-  happening: heat spreads and ignites what burns, fire consumes fuel and chars, water
+  happening: heat warms what is near (never to burning point), flames ignite what burns near them, fire consumes fuel and chars, water
   soaks and douses, living things grow, broken lamps spill burning oil. A universe's
   genesis can add its own properties and rules (a curse that spreads by touch); they
   are tested in a small scene first and rejected if they blow up or spread to
   everything at once. Burnt and eaten plants grow back after a day or so.
+- *Incidents* (`src/sim/incident.rs`). What a property spreads to remembers where it
+  came from, so many crossings with one cause are one incident: a fire that eats 300
+  tufts started at one lantern, thrown by someone. The log has one line per incident,
+  rewritten as it grows and when it ends; the save keeps its start and end, not every
+  tuft. Fires that grow into each other merge. Witnesses remember the cause, and it is
+  in characters' context when they plan and talk. People grown and sapient fight one
+  near them or their home (`douse`): the brave, those whose home is at stake, and anyone
+  who sees a neighbour already at it.
 - *Surprise* (`src/sim/surprise.rs`). One number, 0..1, for how much something breaks
   what an onlooker thinks can happen: from how it came about (made by hand, changed,
   out of nowhere), its size against theirs, and its `strange` property (how out of place

@@ -35,6 +35,8 @@ pub(super) enum Kind {
     Notable,
     /// Something that changed the world, beyond earshot.
     Far,
+    /// Something made or remade nearby (far ones are `Far` with `made`).
+    Made,
 }
 
 #[derive(Clone)]
@@ -51,11 +53,15 @@ pub(super) struct LogLine {
     pub at: Instant,
     /// How many times it was said.
     pub count: u32,
+    /// A making (listed under "made", near or far).
+    pub made: bool,
+    /// The incident this line tells (updated in place).
+    pub incident: Option<u32>,
 }
 
 impl LogLine {
     pub fn new(kind: Kind, speaker: Option<String>, text: String, color: [u8; 3]) -> LogLine {
-        LogLine { speaker, text, color, streaming: None, who: None, kind, at: Instant::now(), count: 1 }
+        LogLine { speaker, text, color, streaming: None, who: None, kind, at: Instant::now(), count: 1, made: kind == Kind::Made, incident: None }
     }
 }
 
@@ -67,11 +73,12 @@ pub(super) enum Filter {
     Talk,
     Notable,
     Life,
+    Made,
     Elsewhere,
 }
 
 impl Filter {
-    const ALL: [Filter; 5] = [Filter::All, Filter::Talk, Filter::Notable, Filter::Life, Filter::Elsewhere];
+    const ALL: [Filter; 6] = [Filter::All, Filter::Talk, Filter::Notable, Filter::Life, Filter::Made, Filter::Elsewhere];
 
     fn name(self) -> &'static str {
         match self {
@@ -79,6 +86,7 @@ impl Filter {
             Filter::Talk => "talk",
             Filter::Notable => "✦ notable",
             Filter::Life => "life",
+            Filter::Made => "made",
             Filter::Elsewhere => "elsewhere",
         }
     }
@@ -88,13 +96,14 @@ impl Filter {
         Filter::ALL[(i + 1) % Filter::ALL.len()]
     }
 
-    fn keeps(self, k: Kind) -> bool {
+    fn keeps(self, l: &LogLine) -> bool {
         match self {
             Filter::All => true,
-            Filter::Talk => k == Kind::Talk,
-            Filter::Notable => matches!(k, Kind::Notable | Kind::Far),
-            Filter::Life => k == Kind::Life,
-            Filter::Elsewhere => k == Kind::Far,
+            Filter::Talk => l.kind == Kind::Talk,
+            Filter::Notable => matches!(l.kind, Kind::Notable | Kind::Far) && !l.made,
+            Filter::Life => l.kind == Kind::Life,
+            Filter::Made => l.made,
+            Filter::Elsewhere => l.kind == Kind::Far,
         }
     }
 }
@@ -197,8 +206,34 @@ impl App {
             Note::Effect(t) => LogLine::new(Kind::System, None, format!("↳ {t}"), [150, 175, 200]),
             Note::Ambient(t) => LogLine::new(Kind::Life, None, t, LIFE),
             Note::Notable(t) => LogLine::new(Kind::Notable, None, t, NOTABLE),
-            Note::Far(t, at) => LogLine::new(Kind::Far, None, format!("{t} ({})", self.far_place(Vec3::from(at))), FAR),
+            Note::Made(t) => LogLine::new(Kind::Made, None, t, NOTABLE),
+            Note::Far { text, at, made } => LogLine { made, ..LogLine::new(Kind::Far, None, format!("{text} ({})", self.far_place(Vec3::from(at))), FAR) },
+            Note::Incident { id, text, at, near } => return self.tell_incident(id, text, Vec3::from(at), near),
         };
+        self.log_push(line);
+    }
+
+    /// An incident has one line: the first telling adds it, the rest
+    /// rewrite it where it is. Once it came near, it stays marked as near.
+    /// An empty text: it joined another, and its line goes.
+    fn tell_incident(&mut self, id: u32, text: String, at: Vec3, near: bool) {
+        if text.is_empty() {
+            self.log.retain(|l| l.incident != Some(id));
+            self.dirty = true;
+            return;
+        }
+        let where_ = self.far_place(at);
+        let shown = |near: bool| if near { text.clone() } else { format!("{text} ({where_})") };
+        if let Some(l) = self.log.iter_mut().rev().find(|l| l.incident == Some(id)) {
+            let near = near || l.kind == Kind::Notable;
+            l.kind = if near { Kind::Notable } else { Kind::Far };
+            l.color = if near { NOTABLE } else { FAR };
+            l.text = shown(near);
+            self.dirty = true;
+            return;
+        }
+        let kind = if near { Kind::Notable } else { Kind::Far };
+        let line = LogLine { incident: Some(id), ..LogLine::new(kind, None, shown(near), if near { NOTABLE } else { FAR }) };
         self.log_push(line);
     }
 
@@ -219,7 +254,7 @@ impl App {
     /// the journal what its filter asks for.
     fn in_view(&self, l: &LogLine, now: Instant) -> bool {
         if self.log_view > 0 {
-            return self.journal_filter.keeps(l.kind);
+            return self.journal_filter.keeps(l);
         }
         match l.kind {
             Kind::Far => false,
@@ -233,7 +268,7 @@ impl App {
         let mut s: Styled = Vec::new();
         let put = |s: &mut Styled, t: &str, c: [u8; 3], b: bool| s.extend(t.chars().map(|ch| (ch, c, b)));
         match l.kind {
-            Kind::Notable => put(&mut s, "✦ ", MARK, true),
+            Kind::Notable | Kind::Made => put(&mut s, "✦ ", MARK, true),
             Kind::Far => put(&mut s, "✧ ", FAR, false),
             _ => {}
         }

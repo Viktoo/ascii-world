@@ -57,6 +57,14 @@ impl Default for Diet {
     }
 }
 
+impl Diet {
+    /// Lives on plants (a goat, a deer): grazes grass and leaves where they
+    /// grow. Mixed eaters like people want food that is edible.
+    pub fn grazes(&self) -> bool {
+        self.plants >= 0.8
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Temper {
     #[serde(default = "half")]

@@ -914,7 +914,7 @@ impl Sim {
                 }
                 self.event("made", maker, Some(format!("thing:{nid}")), format!("{} {name} came into being", super::physics::cap(super::article(&name))), Some(at), json!({}));
                 if !self.tell_held_stories(id, at) {
-                    self.note_near(at, 30.0, Note::Notable(format!("{} {name} appears.", super::physics::cap(super::article(&name)))));
+                    self.note_near(at, 30.0, Note::Made(format!("{} {name} appears.", super::physics::cap(super::article(&name)))));
                 }
             }
         }
@@ -970,7 +970,7 @@ impl Sim {
         let told = self.tell_held_stories(id, pos);
         if who != ActorId::Player {
             if !told {
-                self.note_near(pos, 40.0, Note::Notable(format!("{} made {} {name}.", super::physics::cap(&maker), super::article(&name))));
+                self.note_near(pos, 40.0, Note::Made(format!("{} made {} {name}.", super::physics::cap(&maker), super::article(&name))));
             }
             let memory = format!("{maker} made {} {name}.", super::article(&name));
             let tell = format!("{} just made {} {name} near you.", super::physics::cap(&maker), super::article(&name));

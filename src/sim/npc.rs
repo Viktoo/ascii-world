@@ -391,6 +391,7 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "mount" | "ride_on" | "climb_on" => "ride",
         "get_down" | "get_off" | "dismount" => "dismount",
         "take_off" | "undress" | "doff" => "take_off",
+        "put_out" | "extinguish" | "fight_fire" | "beat_out" | "smother" => "douse",
         "home" | "go_home" => "go_home",
         v => v,
     }
@@ -485,6 +486,7 @@ fn template_line(kind: &str, other: &str, hour: f32, k: u32) -> String {
         "caught" => pick(&["Got it!", "Nice throw!", "Ha!", "Again!"]),
         "missed" => pick(&["Oops!", "Missed it!", "Too high!"]),
         "fire" => pick(&["Fire! Get back!", "It's burning!", "Look at that blaze…"]),
+        "fight_fire" => pick(&["Help me beat it out!", "Water! Bring water!", "Don't let it reach the houses!", "Stamp it out, quick!"]),
         "thanks" => pick(&["For me? Thank you.", "Thank you, {o}.", "Oh! That's kind."]),
         "hug" => pick(&["Come here, you.", "Missed you.", "Oh, {o}."]),
         "bored" => pick(&["Nothing ever happens here.", "Hm.", "What to do…"]),
@@ -931,6 +933,74 @@ impl Sim {
 
     // ------------------------------------------------------------ choosing
 
+    /// Fight a going incident near them or their home, if they are willing:
+    /// people grown and sapient who are brave, whose home is threatened, or
+    /// who see someone they know already at it. They go for what started it
+    /// while it still burns, else the nearest flames. True if they set out.
+    fn fight_trouble(&mut self, cid: i64) -> bool {
+        let me = ActorId::Npc(cid);
+        let Some(n) = self.cast.get(cid) else { return false };
+        if self.mind_of(me) != crate::world::species::Mind::Sapient || n.growth < 0.8 || n.a.riding.is_some() {
+            return false;
+        }
+        let (pos, home, brave, was) = (n.a.pos, n.def.home, n.traits.brave, n.doing.clone());
+        let near_me = self.incidents_near(pos, 50.0).first().map(|i| (i.id, i.cause.subject.clone(), i.live.clone(), i.fought_by.clone()));
+        let near_home = self.incidents_near(home, 40.0).first().map(|i| (i.id, i.cause.subject.clone(), i.live.clone(), i.fought_by.clone()));
+        let home_threatened = near_home.is_some();
+        let Some((_, cause, live, fought_by)) = near_me.or(near_home) else { return false };
+        if fought_by.is_empty() && live.is_empty() {
+            return false;
+        }
+        // Courage is catching: someone they know is already at it.
+        let neighbour_fights = self.cast.npcs.iter().any(|o| o.def.id != cid && o.here() && o.doing == "fighting the fire" && (o.a.pos - pos).length() < 40.0 && self.social.rel(me, ActorId::Npc(o.def.id)).is_some_and(|r| r.familiarity > 0.2));
+        if !(brave > 0.45 || home_threatened || neighbour_fights) {
+            return false;
+        }
+        let parts = self.burning_parts();
+        let key = |t: &Target| match t {
+            Target::Thing(id) => format!("thing:{id}"),
+            Target::Cell(c) => format!("cell:{},{}", c[0], c[1]),
+            _ => String::new(),
+        };
+        // What started it, while it burns; else what burns nearest (to home,
+        // when home is what's at stake) that nobody else has gone for.
+        let guard = if home_threatened && (pos - home).length() > 30.0 { home } else { pos };
+        let claimed: Vec<String> = self
+            .cast
+            .npcs
+            .iter()
+            .filter(|o| o.def.id != cid)
+            .filter_map(|o| match o.plan.back() {
+                Some(Action::Douse { target: Some(t) }) => Some(key(t)),
+                _ => None,
+            })
+            .collect();
+        let parts: Vec<(Target, Vec3)> = {
+            let free: Vec<(Target, Vec3)> = parts.iter().filter(|(t, _)| !claimed.contains(&key(t))).cloned().collect();
+            if free.is_empty() { parts } else { free }
+        };
+        let target = parts
+            .iter()
+            .find(|(t, p)| live.contains(&key(t)) && key(t) == cause && (*p - pos).length() < 60.0)
+            .or_else(|| parts.iter().filter(|(t, p)| live.contains(&key(t)) && (*p - pos).length() < 60.0).min_by(|a, b| (a.1 - guard).length().total_cmp(&(b.1 - guard).length())))
+            .map(|(t, _)| t.clone());
+        let Some(target) = target else { return false };
+        if was != "fighting the fire" {
+            let k = self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32;
+            let line = template_line("fight_fire", "", self.hour(), k);
+            self.say(me, &line, None);
+        }
+        let far = parts.iter().find(|(t, _)| *t == target).is_some_and(|(_, p)| (*p - pos).length() > 2.0);
+        let mut steps = Vec::new();
+        if far {
+            steps.push(Action::Goto { target: target.clone(), run: true });
+        }
+        steps.push(Action::Douse { target: Some(target) });
+        self.plan(me, steps, "put out the fire", false);
+        self.set_doing(cid, "fighting the fire");
+        true
+    }
+
     /// Pick what to do next from needs, surroundings and personality.
     fn think(&mut self, cid: i64) {
         let t = self.t;
@@ -967,6 +1037,12 @@ impl Sim {
                 next_think(self, 2.0);
                 return;
             }
+        }
+        // 1. A fire near them or their home: the willing fight it, the
+        // rest get away (and the curious watch).
+        if self.fight_trouble(cid) {
+            next_think(self, 1.2);
+            return;
         }
         // 1. Fire close by: get away (the brave stay to watch).
         let fires: Vec<super::env::Burning> = self.burning().into_iter().filter(|f| !f.held).collect();
@@ -1537,6 +1613,7 @@ impl Sim {
         }
         let recent: Vec<String> = self.log.recent.iter().rev().filter(|e| e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 40.0) && self.t - e.t < 300.0).take(6).map(|e| e.text.clone()).collect();
         let twist = self.twist_line(me).map(|l| format!("\n{l}")).unwrap_or_default();
+        let twist = format!("{twist}{}", self.trouble_line(pos).map(|l| format!("\n{l}")).unwrap_or_default());
         format!(
             "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
             crate::render::sky::time_label(self.t),

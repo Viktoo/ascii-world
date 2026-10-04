@@ -445,6 +445,8 @@ impl Sim {
             piece.asleep = false;
             piece.anchored = false;
             piece.origin.made_from = vec![ty.name().to_string()];
+            // Whoever threw it threw its pieces (a smashed lamp's fire is theirs).
+            piece.thrown_by = t.thrown_by.or(t.holder.map(|h| (h, self.t)));
             self.things.insert(piece);
         }
         let name = ty.name().to_string();

@@ -221,7 +221,7 @@ impl Sim {
         let pos = x.pos;
         self.event("reshaped", Some(who), Some(format!("thing:{id}")), format!("the {old} became {} {nname}", super::article(&nname)), Some(pos), json!({ "into": nname, "change": change }));
         if tell {
-            self.note_near(pos, 30.0, Note::Notable(format!("The {old} becomes {} {nname}.", super::article(&nname))));
+            self.note_near(pos, 30.0, Note::Made(format!("The {old} becomes {} {nname}.", super::article(&nname))));
         }
         self.witness(pos, 20.0, &format!("I saw the {old} change: {change}."), 0.35, &[]);
     }

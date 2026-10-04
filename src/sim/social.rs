@@ -1019,7 +1019,7 @@ impl Sim {
         // Something notable that happened near them lately.
         let pa = self.actor(ActorId::Npc(a)).map(|x| x.pos).unwrap_or_default();
         let pb = self.actor(ActorId::Npc(b)).map(|x| x.pos).unwrap_or_default();
-        let notable = ["ignited", "broke", "through", "made", "transformed", "burnt_out", "caught", "carry", "hug", "kiss", "spawned"];
+        let notable = ["incident", "incident_end", "broke", "through", "made", "transformed", "caught", "carry", "hug", "kiss", "spawned"];
         // The most surprising wins; a shock stays news for longer.
         let surprise = |e: &super::SimEvent| e.data.get("surprise").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
         let seen = self

@@ -491,11 +491,17 @@ fn spec(name: &str, near: Option<f32>, when: &str, effects: &[&str]) -> RuleSpec
 
 /// The world's physics. Tuned so fire crawls from tuft to tuft in seconds,
 /// a stream stops it, and a warm lamp does not set the grass alight.
+///
+/// Heat and flame are apart. Heat warms what is around, less the further
+/// off, and never to burning point: a kiln at 900° warms the yard and leaves
+/// the grass by its wall alone. Only something on fire sets fire to what
+/// burns near it.
 pub fn builtin_specs() -> Vec<RuleSpec> {
     vec![
         spec("keeps its own heat", None, "self.heat > self.temp", &["self.temp = self.heat"]),
         spec("fire is hot", None, "self.fire > 0", &["self.temp = max(self.temp, 350 + 450 * self.fire)"]),
-        spec("heat spreads", Some(6.0), "self.temp > 45 && self.temp > other.temp + 30", &["other.temp += (self.temp - other.temp) * dt / (1 + dist * dist)"]),
+        spec("heat spreads", Some(6.0), "self.temp > 45 && other.temp < 10 + min(self.temp - 15, 135) / (1 + dist * dist)", &["other.temp += (15 + min(self.temp - 15, 135) / (1 + dist * dist) - other.temp) * 0.5 * dt"]),
+        spec("flames spread", Some(6.0), "self.fire > 0 && other.burns > 0 && other.fire <= 0 && self.temp > other.temp + 30", &["other.temp += (self.temp - other.temp) * 0.3 * dt / (1 + dist * dist)"]),
         spec("cools down", None, "self.temp > self.heat && abs(self.temp - 15) > 0.5", &["self.temp += (15 - self.temp) * 0.05 * dt"]),
         spec("warms up", None, "self.temp < 14.5", &["self.temp += (15 - self.temp) * 0.05 * dt"]),
         spec("catches fire", None, "self.burns > 0 && self.fire <= 0 && self.fuel > 0 && self.wet < 0.4 && self.temp > 240 - 60 * self.burns", &["self.fire = 0.2"]),

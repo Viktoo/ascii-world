@@ -161,6 +161,30 @@ impl Sim {
         out
     }
 
+    /// What burns, as targets (things and scatter cells), and where.
+    pub fn burning_parts(&self) -> Vec<(super::Target, Vec3)> {
+        let things = self.things.live().filter(|t| t.props[P_FIRE] > 0.0 && !t.held() && t.worn.is_none()).map(|t| (super::Target::Thing(t.id), t.pos));
+        let cells = self.field.cells.iter().filter(|(_, c)| c.props[P_FIRE] > 0.0).map(|(k, c)| (super::Target::Cell([k.0, k.1]), c.pos));
+        things.chain(cells).collect()
+    }
+
+    /// Soak what burns within `r` of a point (a beating with something wet).
+    /// Returns how many were soaked.
+    pub fn soak_near(&mut self, p: Vec3, r: f32) -> usize {
+        let mut n = 0;
+        for t in self.things.map.values_mut().filter(|t| !t.removed && t.props[P_FIRE] > 0.0 && (t.pos - p).length() <= r) {
+            t.props[P_WET] = t.props[P_WET].max(0.9);
+            t.dirty = true;
+            n += 1;
+        }
+        for c in self.field.cells.values_mut().filter(|c| c.props[P_FIRE] > 0.0 && (c.pos - p).length() <= r) {
+            c.props[P_WET] = c.props[P_WET].max(0.9);
+            c.active = true;
+            n += 1;
+        }
+        n
+    }
+
     /// One rules pass over everything within the medium range.
     pub fn step_rules(&mut self, dt: f32) {
         self.rules_pass(dt, None);
@@ -320,6 +344,9 @@ impl Sim {
             e.fired.extend(fired.into_iter().map(str::to_string));
         }
         // Pair rules. Big things reach further (their surface, not their centre).
+        // What spread to each entity, and from where (the hottest source):
+        // a crossing it makes is part of what that source started.
+        let mut from: Vec<Option<usize>> = vec![None; ents.len()];
         for i in 0..acting {
             for r in rules.iter().filter(|r| r.near.is_some()) {
                 let near = r.near.unwrap_or(0.0);
@@ -366,21 +393,28 @@ impl Sim {
                     ents[j].next = other_next;
                     if fired {
                         ents[i].fired.push(r.spec.name.clone());
+                        if r.effects.iter().any(|e| e.other) && from[j].is_none_or(|k| ents[k].props[P_TEMP] < ents[i].props[P_TEMP]) {
+                            from[j] = Some(i);
+                        }
                     }
                 }
             }
         }
         // Apply.
         let mut overlay_changed = false;
-        let mut events: Vec<(Key, String, Vec3, String)> = Vec::new();
+        let mut events: Vec<(Key, String, Vec3, String, Option<super::incident::Cause>)> = Vec::new();
         for e in ents.iter_mut() {
             sanitize(&mut e.next);
+        }
+        let crosses = |e: &Ent| !phenomena(&e.props, &e.next, &e.name).is_empty();
+        let causes: Vec<Option<super::incident::Cause>> = (0..ents.len()).map(|ix| from[ix].filter(|_| crosses(&ents[ix])).map(|k| self.cause_named(&ents[k].key.subject(), format!("the {}", ents[k].name)))).collect();
+        for (ix, e) in ents.iter_mut().enumerate() {
             let changed = e.next.iter().zip(&e.props).any(|(a, b)| (a - b).abs() > 1e-4);
             if !changed && !e.acting {
                 continue;
             }
             for (kind, text) in phenomena(&e.props, &e.next, &e.name) {
-                events.push((e.key, kind, e.pos, text));
+                events.push((e.key, kind, e.pos, text, causes[ix].clone()));
             }
             let t = self.t;
             match e.key {
@@ -455,6 +489,10 @@ impl Sim {
                 Key::Inst(i) => {
                     if changed {
                         if let Some(id) = self.promote_instance(i) {
+                            // It is a live thing now: what it does is told as that.
+                            for ev in events.iter_mut().filter(|ev| ev.0 == e.key) {
+                                ev.0 = Key::Thing(id);
+                            }
                             if let Some(th) = self.things.get_mut(id) {
                                 th.props = e.next.clone();
                                 th.dirty = true;
@@ -467,12 +505,22 @@ impl Sim {
         if overlay_changed {
             self.sync_overlay();
         }
-        for (key, kind, pos, text) in events {
-            self.phenomenon(key.subject(), &kind, pos, &text);
+        for (key, kind, pos, text, cause) in events {
+            self.phenomenon(key.subject(), &kind, pos, &text, cause);
         }
     }
 
-    fn phenomenon(&mut self, subject: String, kind: &str, pos: Vec3, text: &str) {
+    fn phenomenon(&mut self, subject: String, kind: &str, pos: Vec3, text: &str, cause: Option<super::incident::Cause>) {
+        // Part of something bigger (a fire): counted on its incident, told as one story.
+        if let Some(j) = self.file_incident(&subject, kind, pos, cause) {
+            let (id, part) = match j {
+                super::incident::Joined::Began(id) => (id, false),
+                super::incident::Joined::Part(id) => (id, true),
+            };
+            self.event(kind, None, Some(subject), text, Some(pos), json!({ "incident": id, "part": part }));
+            self.incident_crossing(j, kind, pos);
+            return;
+        }
         let first = self.log.recent.iter().rev().take(60).filter(|e| e.kind == kind && e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 12.0) && self.t - e.t < 20.0).count() == 0;
         self.event(kind, None, Some(subject), text, Some(pos), json!({}));
         if !first {
@@ -480,7 +528,6 @@ impl Sim {
         }
         // People notice the first of a kind nearby, not every tuft.
         let note = match kind {
-            "ignited" => Some(Note::Notable(format!("{} catches fire!", super::physics::cap(text.trim_end_matches(" caught fire"))))),
             "burnt_out" => None,
             "doused" => Some(format!("{}.", super::physics::cap(text))).map(Note::Ambient),
             "grown" => None,
@@ -491,7 +538,6 @@ impl Sim {
             self.note_near(pos, 60.0, n);
         }
         let (memory, importance) = match kind {
-            "ignited" => (format!("I saw fire: {text}."), 0.7),
             "doused" => (format!("I saw a fire put out: {text}."), 0.4),
             "burnt_out" => (format!("{} burnt away.", super::physics::cap(text.trim_end_matches(" burnt out"))), 0.4),
             _ => (String::new(), 0.0),
