@@ -478,8 +478,8 @@ pub fn compile(spec: &RuleSpec, vocab: &Vocab, builtin: bool) -> Result<Rule, St
     let mut effects = Vec::new();
     for e in &spec.effects {
         let fx = parse_effect(e, vocab, pair).map_err(|x| format!("{name}: do \"{e}\": {x}"))?;
-        if !builtin && vocab.is_act(fx.prop) {
-            return Err(format!("{name}: do \"{e}\": '{}' is what an action is doing right now; rules may read it but not set it", vocab.names[fx.prop]));
+        if !builtin && vocab.engine_only(fx.prop) {
+            return Err(format!("{name}: do \"{e}\": only the engine sets '{}'; rules may read it but not set it", vocab.names[fx.prop]));
         }
         effects.push(fx);
     }
@@ -503,6 +503,7 @@ fn spec(name: &str, near: Option<f32>, when: &str, effects: &[&str]) -> RuleSpec
 pub fn builtin_specs() -> Vec<RuleSpec> {
     vec![
         spec("keeps its own heat", None, "self.heat > self.temp", &["self.temp = self.heat"]),
+        spec("keeps its own cold", None, "self.heat < 0 && self.temp > self.heat", &["self.temp = self.heat"]),
         spec("fire is hot", None, "self.fire > 0", &["self.temp = max(self.temp, 350 + 450 * self.fire)"]),
         spec("heat spreads", Some(6.0), "self.temp > 45 && other.temp < 10 + min(self.temp - 15, 135) / (1 + dist * dist)", &["other.temp += (15 + min(self.temp - 15, 135) / (1 + dist * dist) - other.temp) * 0.5 * dt"]),
         spec("flames spread", Some(6.0), "self.fire > 0 && other.burns > 0 && other.fire <= 0 && self.temp > other.temp + 30", &["other.temp += (self.temp - other.temp) * 0.3 * dt / (1 + dist * dist)"]),
@@ -516,10 +517,15 @@ pub fn builtin_specs() -> Vec<RuleSpec> {
         spec("soaked in water", None, "water > 0", &["self.wet = 1"]),
         spec("dries", None, "self.wet > 0 && water <= 0", &["self.wet -= (0.004 + max(0, self.temp - 30) * 0.0004) * dt"]),
         spec("wets what it touches", Some(1.2), "other.wet > 0.8 && self.wet < other.wet - 0.1 && water <= 0", &["self.wet += 0.25 * dt"]),
-        spec("grows", None, "self.alive > 0 && self.growth < 1 && self.fire <= 0 && held <= 0", &["self.growth += (0.002 + 0.006 * self.wet) * dt"]),
-        spec("killed by heat", None, "self.alive > 0 && self.temp > 120", &["self.alive = 0"]),
+        spec("grows", None, "self.alive > 0 && self.body <= 0 && self.growth < 1 && self.fire <= 0 && held <= 0", &["self.growth += (0.002 + 0.006 * self.wet) * dt"]),
+        spec("killed by heat", None, "self.alive > 0 && self.body <= 0 && self.temp > 120", &["self.alive = 0"]),
         spec("broken open, it burns", None, "self.health <= 0 && self.burns > 0 && self.fuel > 0 && self.fire <= 0 && self.temp > 90", &["self.fire = 1"]),
         spec("conducts heat", Some(0.8), "self.conducts > 0 && other.conducts > 0 && self.temp > other.temp + 5", &["other.temp += (self.temp - other.temp) * self.conducts * other.conducts * dt"]),
+        // A glow on a body (a touch's dust) fades; one hot enough to shine keeps it.
+        spec("a glow fades", None, "self.body > 0 && self.light > 0 && self.heat < 500", &["self.light -= 0.002 * dt"]),
+        // Darkness passes between those it can take hold of, most at a touch.
+        spec("darkness passes on touch", Some(0.8), "self.body > 0 && self.susceptible > 0 && self.corruption >= 0.3 && other.susceptible > 0 && other.corruption < self.corruption", &["other.corruption += 0.05 * self.corruption * other.susceptible * dt / (1 + 10 * dist * dist)"]),
+        spec("kindness eases darkness", Some(0.8), "self.body > 0 && self.corruption > 0 && other.kindness > 0", &["self.corruption -= 0.05 * other.kindness * dt"]),
     ]
 }
 

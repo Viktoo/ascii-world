@@ -422,6 +422,9 @@ impl Sim {
         } else if let Some((x, z)) = subject.strip_prefix("cell:").and_then(|s| s.split_once(',')) {
             let c = (x.parse().unwrap_or(0), z.parse().unwrap_or(0));
             self.field.cells.get(&c).and_then(|c| self.snap.type_of(c.type_id)).map(|t| t.name().to_string())
+        } else if let Some(a) = subject.starts_with("npc:").then(|| super::ActorId::parse(subject)).flatten() {
+            // A being goes by its own name.
+            return self.actor_name(a);
         } else {
             None
         };

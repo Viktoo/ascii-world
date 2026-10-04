@@ -3176,7 +3176,7 @@ fn the_dark_comes_at_dusk_touches_you_and_leaves_at_dawn() {
     assert_eq!(dark.len(), 1, "one comes on normal: {:?}", of(&all, "dark_came"));
     let h = s.sim.cast.get(dark[0]).unwrap();
     assert!(h.here() && h.species.about(true) && !h.species.about(false));
-    assert!(h.corruption > 0.9, "the dark is corrupt");
+    assert!(h.corruption() > 0.9, "the dark is corrupt");
     let d0 = (h.a.pos - s.sim.player.pos).length();
     assert!(d0 > 35.0 && !s.sim.player_sees(h.a.pos), "it comes out of sight, behind: {d0:.0} m");
     // The traveler stands still, looking away: it reaches them.
@@ -3452,38 +3452,52 @@ fn watched_it_stands_still_and_light_keeps_it_at_bay() {
     assert!(s.sim.cast.get(h).unwrap().doing.contains("edge of the light"), "{}", s.sim.cast.get(h).unwrap().doing);
 }
 
-/// Corruption passes in talk (on hard), twists minds, and kindness from the
-/// traveler draws it out.
+/// Corruption passes by touch (on hard), twists minds, and kindness from the
+/// traveler draws it out: rules on the body's own `corruption` and a touch's
+/// `kindness`, with no code that looks at what kind of touch it was.
 #[test]
-fn corruption_spreads_twists_and_kindness_draws_it_out() {
+fn corruption_spreads_by_touch_twists_and_kindness_draws_it_out() {
+    use super::body::{EMBRACE, HUG_SECS};
     let w = world("corrupt", 11);
     let a = add_char(&w, "Ada", "generous", &[], w.spawn + Vec3::new(3.0, 0.0, 0.0));
     let b = add_char(&w, "Bo", "curious", &[], w.spawn + Vec3::new(5.0, 0.0, 0.0));
+    let c = add_char(&w, "Cy", "calm", &[], w.spawn + Vec3::new(7.0, 0.0, 0.0));
     let mut s = session(&w, 11, None);
     s.sim.cfg.difficulty = 3;
     s.sim.t = crate::render::sky::DAY_SECONDS * 1.45;
     run_for(&mut s, 1.1);
-    s.sim.cast.get_mut(a).unwrap().corruption = 0.9;
-    assert!(s.sim.twist_line(ActorId::Npc(a)).is_some_and(|l| l.contains("never say")));
-    assert!(s.sim.twist_line(ActorId::Npc(b)).is_none());
+    let (ada, bo, cy) = (ActorId::Npc(a), ActorId::Npc(b), ActorId::Npc(c));
+    s.sim.cast.get_mut(a).unwrap().props[P_CORRUPT] = 0.9;
+    assert!(s.sim.twist_line(ada).is_some_and(|l| l.contains("never say")));
+    assert!(s.sim.twist_line(bo).is_none());
     assert!(s.sim.decide_context(a, "x").contains("Something dark has a hold on you"));
+    // Old saves' word for it is gone: events named like a hug do nothing.
+    s.sim.event("gesture", Some(ActorId::Player), Some(ada.key()), "the traveler hugs Ada", None, serde_json::json!({ "kind": "hug" }));
+    run_for(&mut s, 1.1);
+    assert!(s.sim.corruption_of(ada) > 0.85);
+    // Ada and Bo embrace, as a contact gesture does it.
     for _ in 0..8 {
-        s.sim.event("chatted", Some(ActorId::Npc(a)), Some(ActorId::Npc(b).key()), "Ada and Bo talked", None, serde_json::json!({}));
+        s.sim.touch_bodies(ada, bo, 0.5, 0.5, HUG_SECS, EMBRACE);
         run_for(&mut s, 1.1);
     }
-    let cb = s.sim.cast.get(b).unwrap().corruption;
-    assert!(cb >= 0.3, "talk carried it to Bo ({cb:.2})");
+    let cb = s.sim.corruption_of(bo);
+    assert!(cb >= 0.3, "touch carried it to Bo ({cb:.2})");
+    // On easy darkness doesn't pass at all.
+    s.sim.cfg.difficulty = 1;
+    s.sim.touch_bodies(ada, cy, 0.5, 0.5, HUG_SECS, EMBRACE);
+    assert_eq!(s.sim.corruption_of(cy), 0.0, "easy: it doesn't pass");
     // Peaceful again: nothing twists, though the number stays.
     s.sim.cfg.difficulty = 0;
-    assert!(s.sim.twist_line(ActorId::Npc(a)).is_none());
+    assert!(s.sim.twist_line(ada).is_none());
     s.sim.cfg.difficulty = 3;
-    // Kindness: gifts and hugs from the traveler.
+    // Kindness: hugs from the traveler.
     for _ in 0..12 {
-        s.sim.event("gesture", Some(ActorId::Player), Some(ActorId::Npc(a).key()), "the traveler hugs Ada", None, serde_json::json!({ "kind": "hug" }));
+        s.sim.touch_bodies(ActorId::Player, ada, 0.5, 0.0, HUG_SECS, EMBRACE);
         run_for(&mut s, 1.1);
     }
-    assert!(s.sim.cast.get(a).unwrap().corruption < 0.1);
+    assert!(s.sim.corruption_of(ada) < 0.1, "{}", s.sim.corruption_of(ada));
     assert_eq!(events(&s.sim, "cleansed").len(), 1, "the dark goes out of Ada");
+    assert_eq!(s.sim.night.corruption, 0.0, "the traveler is never touched by the rules");
 }
 
 #[test]
@@ -3827,5 +3841,192 @@ export function color(x, y, z, k) { return rgb(90, 60, 30); }
     assert!(e.contains("force"), "{e}");
     let push = super::rules::RuleSpec { name: "curses push".into(), near: None, when: "self.cursed > 0".into(), effects: vec!["self.force = 1".into()] };
     assert!(crate::brain::check_universe_rules(&props, &[push]).1.is_empty());
+    sound(&s);
+}
+
+// ------------------------------------------------------- bodies have properties
+
+/// A world with a curse that spreads by touch: `cursed` with words for its
+/// crossings and the given harm.
+fn cursed_world(tag: &str, seed: u32, hazard: f32) -> W {
+    use super::props::{Crossing, PropMeta};
+    use super::rules::RuleSpec;
+    let w = world(tag, seed);
+    let rules = vec![RuleSpec { name: "curses spread by touch".into(), near: Some(1.5), when: "self.cursed > 0.5 && other.cursed < self.cursed".into(), effects: vec!["other.cursed += 0.1 * dt".into()] }];
+    let (props, rules) = crate::brain::check_universe_rules(&[("cursed".into(), 0.0, "how cursed it is, 0..1".into())], &rules);
+    super::persist::set_universe_rules(&w.db, &props, &rules).unwrap();
+    let meta = PropMeta { rises: vec![Crossing { kind: "cursed_rose".into(), text: "fell under the curse".into(), when: None, saved: false }], hazard, keep: true, range: Some([0.0, 1.0]), ..Default::default() };
+    super::persist::set_universe_meta(&w.db, &[("cursed".into(), meta)]).unwrap();
+    w
+}
+
+/// A cursed idol passed hand to hand curses whoever holds it: the world's
+/// own rule reaches a body through what it holds, and the crossing is told
+/// by the holder's name. Nobody far off is touched.
+#[test]
+fn a_cursed_idol_passed_hand_to_hand_curses_whoever_holds_it() {
+    let w = cursed_world("idol-hands", 51, 0.0);
+    let idol = add_type(&w, r#"
+export const meta = { name: "black idol", bounds: [0.1, 0.15, 0.1], tags: ["item"], props: { cursed: 1, mass: 1 } };
+export function sdf(x, y, z, k) { return roundBox(x, y, z, 0.08, 0.13, 0.08, 0.02); }
+export function color(x, y, z, k) { return rgb(30, 20, 40); }
+"#);
+    let p = dry_spot(&w, 8.0, 1.3);
+    let a = add_char(&w, "Ada", "kind and steady", &["Bo: brother"], p);
+    let b = add_char(&w, "Bo", "kind and steady", &["Ada: sister"], p + Vec3::new(6.0, 0.0, 0.0));
+    let c = add_char(&w, "Cy", "quiet", &[], p + Vec3::new(-30.0, 0.0, 0.0));
+    let mut s = session(&w, 51, None);
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -12.0);
+    clear_scatter(&mut s, p, 20.0);
+    let all = record(&mut s);
+    let ci = s.sim.vocab.id("cursed").unwrap();
+    let curse = |s: &Session, id: i64| s.sim.cast.get(id).unwrap().props[ci];
+    let id = s.sim.spawn_thing(idol, p + Vec3::new(0.3, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.think_at = f64::MAX;
+    }
+    s.sim.hand_to(ActorId::Npc(a), id);
+    s.run(12.0, 0.1);
+    assert!(curse(&s, a) > 0.5, "holding it cursed Ada ({:.2})", curse(&s, a));
+    let told: Vec<String> = of(&all, "cursed_rose").into_iter().filter(|e| e.subject.as_deref() == Some(ActorId::Npc(a).key().as_str())).map(|e| e.text).collect();
+    assert!(told.iter().any(|t| t.starts_with("Ada fell under the curse")), "told by her name: {told:?}");
+    let r = act_once(&mut s, ActorId::Npc(a), Action::Give { to: Target::Actor(ActorId::Npc(b)) }, 20.0);
+    assert_eq!(s.sim.actor(ActorId::Npc(b)).unwrap().held, Some(id), "Bo took it: {r}");
+    s.run(12.0, 0.1);
+    assert!(curse(&s, b) > 0.5, "and now Bo is cursed ({:.2})", curse(&s, b));
+    assert!(curse(&s, c) < 0.01, "Cy, far off, is not");
+    // Kept across a restart, as the difference from a plain body.
+    s.save();
+    drop(s);
+    let s = session(&w, 51, None);
+    assert!(s.sim.cast.get(b).unwrap().props[ci] > 0.5, "still cursed after a restart");
+    sound(&s);
+}
+
+/// A villager takes off a cursed cloak: what is worn touches the body, the
+/// curse's harm (its metadata, no code for curses) makes it hurt, and they
+/// get it off. Their planner hears what is on their body.
+#[test]
+fn a_villager_takes_off_a_cursed_cloak_because_it_harms() {
+    let w = cursed_world("cloak", 52, 0.5);
+    let cloak = add_type(&w, r#"
+export const meta = { name: "grey cloak", bounds: [0.4, 0.6, 0.2], tags: ["layer"], props: { cursed: 1, mass: 2 } };
+export function sdf(x, y, z, k) { return roundBox(x, y, z, 0.35, 0.5, 0.15, 0.05); }
+export function color(x, y, z, k) { return rgb(120, 120, 130); }
+"#);
+    let p = dry_spot(&w, 8.0, 2.1);
+    let a = add_char(&w, "Oda", "practical", &[], p);
+    let mut s = session(&w, 52, None);
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -12.0);
+    let all = record(&mut s);
+    let id = s.sim.spawn_thing(cloak, p, 0.0, 1.0, Default::default(), true).unwrap();
+    let me = ActorId::Npc(a);
+    s.sim.wear(me, me, id).unwrap();
+    // Busy for a few seconds before she notices.
+    s.sim.cast.get_mut(a).unwrap().think_at = s.sim.t + 4.0;
+    let ci = s.sim.vocab.id("cursed").unwrap();
+    let mut line = None;
+    for _ in 0..200 {
+        s.step(0.1);
+        if line.is_none() && s.sim.cast.get(a).unwrap().pain > 0.05 {
+            line = Some(s.sim.decide_context(a, "x"));
+        }
+        if !s.sim.worn_by(me).contains(&id) {
+            break;
+        }
+    }
+    assert!(!s.sim.worn_by(me).contains(&id), "Oda took the cloak off: {:?}", of(&all, "took_off").iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    assert!(!of(&all, "took_off").is_empty());
+    assert!(s.sim.cast.get(a).unwrap().props[ci] > 0.0, "it touched her while she wore it");
+    let line = line.expect("it hurt");
+    assert!(line.contains("On your own body: cursed") && line.contains("it hurts"), "{line}");
+    sound(&s);
+}
+
+/// A real hug on hard carries darkness from one body to the other; the
+/// traveler's gift draws some out and earns a charge. Nothing reads event names.
+#[test]
+fn a_hug_carries_darkness_on_hard_and_a_gift_eases_it() {
+    let w = world("hug-dark", 53);
+    let p = dry_spot(&w, 8.0, 0.4);
+    let a = add_char(&w, "Ada", "warm and affectionate", &["Bo: husband"], p);
+    let b = add_char(&w, "Bo", "warm and affectionate", &["Ada: wife"], p + Vec3::new(1.5, 0.0, 0.0));
+    let stick = builtin_id(&w, "stick");
+    let mut s = session(&w, 53, None);
+    s.sim.cfg.difficulty = 3;
+    s.sim.t = crate::render::sky::DAY_SECONDS * 1.45;
+    run_for(&mut s, 1.1);
+    let (ada, bo) = (ActorId::Npc(a), ActorId::Npc(b));
+    for (x, y) in [(ada, bo), (bo, ada)] {
+        let r = s.sim.social.rel_mut(x, y);
+        r.affection = 0.9;
+        r.partner = true;
+    }
+    s.sim.cast.get_mut(a).unwrap().props[P_CORRUPT] = 0.8;
+    let all = record(&mut s);
+    s.sim.act(ada, Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(bo)) }).unwrap();
+    for _ in 0..300 {
+        s.step(0.1);
+        if !of(&all, "hug").is_empty() {
+            break;
+        }
+    }
+    assert!(!of(&all, "hug").is_empty(), "they hugged");
+    let cb = s.sim.corruption_of(bo);
+    assert!(cb > 0.05, "the hug carried darkness to Bo ({cb:.3})");
+    // The traveler hands Ada a stick: kindness eases her and earns a charge.
+    s.sim.player.pos = s.sim.actor(ada).unwrap().pos + Vec3::new(0.0, 0.0, -1.0);
+    let st = s.sim.spawn_thing(stick, s.sim.player.pos, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.hand_to(ActorId::Player, st);
+    s.sim.cast.get_mut(a).unwrap().a.held = None;
+    let (ca, charges) = (s.sim.corruption_of(ada), s.sim.night.charges);
+    s.sim.act(ActorId::Player, Action::Give { to: Target::Actor(ada) }).unwrap();
+    assert!(s.sim.corruption_of(ada) < ca - 0.05, "the gift eased her ({ca:.2} → {:.2})", s.sim.corruption_of(ada));
+    assert_eq!(s.sim.night.charges, charges + 1, "kindness earns a charge");
+    sound(&s);
+}
+
+/// A kiln warms the people by it and kills nobody: heat reaches bodies by
+/// the same rule as it reaches grass, and the plants' "killed by heat"
+/// leaves bodies alone. Wading wets them.
+#[test]
+fn a_kiln_warms_the_people_by_it_and_kills_nobody() {
+    let w = world("kiln", 54);
+    let kiln = add_type(&w, r#"
+export const meta = { name: "kiln", bounds: [0.8, 1.0, 0.8], tags: ["item"], props: { heat: 900, mass: 3000, burns: 0 } };
+export function sdf(x, y, z, k) { return roundBox(x, y, z, 0.7, 0.9, 0.7, 0.1); }
+export function color(x, y, z, k) { return rgb(150, 80, 50); }
+"#);
+    let p = dry_spot(&w, 10.0, 0.9);
+    let ids: Vec<i64> = (0..3).map(|k| add_char(&w, &format!("Potter{k}"), "patient", &[], p + Vec3::new(1.4 * (k as f32 * 2.1).cos(), 0.0, 1.4 * (k as f32 * 2.1).sin()))).collect();
+    let mut s = session(&w, 54, None);
+    s.sim.player.pos = p + Vec3::new(0.0, 0.0, -14.0);
+    clear_scatter(&mut s, p, 10.0);
+    s.sim.spawn_thing(kiln, p, 0.0, 1.0, Default::default(), true).unwrap();
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.think_at = f64::MAX;
+    }
+    let mut warmest: f32 = 0.0;
+    for _ in 0..200 {
+        s.step(0.1);
+        for id in &ids {
+            warmest = warmest.max(s.sim.cast.get(*id).unwrap().props[P_TEMP]);
+        }
+    }
+    assert!(warmest > 45.0, "the kiln warmed someone ({warmest:.0}°)");
+    for id in &ids {
+        let n = s.sim.cast.get(*id).unwrap();
+        assert!(!n.dead && n.props[P_ALIVE] > 0.5, "{} is alive", n.name());
+    }
+    // A body keeps itself warm away from the kiln, and gets wet in water.
+    let o = s.sim.cast.get(ids[0]).unwrap().props.clone();
+    assert!((o[P_HEAT] - 36.0).abs() < 1e-3 && o[P_BODY] == 1.0);
+    let lake = (0..400).map(|k| w.spawn + Vec3::new((k as f32 * 0.7).cos(), 0.0, (k as f32 * 0.7).sin()) * (5.0 + k as f32 * 0.5)).find(|q| w.terrain.height(q.x, q.z) < WATER_LEVEL - 0.4);
+    if let Some(q) = lake {
+        s.sim.cast.get_mut(ids[1]).unwrap().a.pos = Vec3::new(q.x, w.terrain.height(q.x, q.z), q.z);
+        s.sim.player.pos = q + Vec3::new(0.0, 0.0, -10.0);
+        s.run(2.0, 0.1);
+        assert!(s.sim.cast.get(ids[1]).unwrap().props[P_WET] > 0.9, "wading wets");
+    }
     sound(&s);
 }

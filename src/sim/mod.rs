@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod actor;
 pub mod behavior;
+pub mod body;
 pub mod beings;
 pub mod catchup;
 pub mod config;
@@ -408,6 +409,7 @@ impl Sim {
         persist::load_gestures(&sim.db);
         sim.cast.sync(&snap, seed);
         persist::load(&mut sim);
+        sim.fit_bodies();
         sim.social.seed_from_personas(&sim.cast, &snap.species);
         sim.dress_new();
         sim.sync_overlay();
@@ -739,6 +741,7 @@ impl Sim {
         self.snap = snap.clone();
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
+        self.fit_bodies();
         self.player.dims = traveler_dims(&snap);
         self.social.seed_from_personas(&self.cast, &snap.species);
         self.dress_new();
@@ -827,6 +830,7 @@ impl Sim {
             self.step_incidents();
             self.ask_species_bodies();
             self.step_night();
+            self.feel_bodies(1.0);
         }
         self.pump_requests(dt);
     }

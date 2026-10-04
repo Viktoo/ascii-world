@@ -121,12 +121,13 @@ impl Sim {
                     // only their eyes show (the parts marked glow()), always, and red
                     // (charred past 1 is the renderer's sign for that).
                     let of_the_dark = n.species.touch.harms();
-                    g.fx[FX_GLOW] = n.glow;
+                    g.fx[FX_GLOW] = n.glow();
+                    g.fx[FX_WET] = n.props.get(super::props::P_WET).copied().unwrap_or(0.0).min(1.0) * 0.6;
                     if of_the_dark {
                         g.fx[FX_CHAR] = DARK_OWN;
                         g.fx[FX_GLOW] = if body.ct.marks_glow() { 1.6 } else { 0.0 };
                     } else {
-                        g.fx[FX_HIGHLIGHT] = -n.corruption;
+                        g.fx[FX_HIGHLIGHT] = -n.corruption();
                     }
                     if hover_actor == Some(ActorId::Npc(n.def.id)) {
                         g.fx[FX_HIGHLIGHT] = 0.5;
@@ -135,9 +136,10 @@ impl Sim {
                     if of_the_dark {
                         let p = n.a.pos + Vec3::Y * n.a.dims.eye;
                         lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(1.0, 0.08, 0.04), intensity: 0.12, reach: 1.6 }));
-                    } else if n.glow > 0.05 && n.glow > n.corruption {
+                    } else if n.glow() > 0.05 && n.glow() > n.corruption() {
                         let p = n.a.pos + Vec3::Y * n.a.dims.height * 0.6;
-                        lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(0.95, 0.9, 0.5), intensity: 0.5 * n.glow, reach: 3.0 + 4.0 * n.glow }));
+                        let gl = n.glow().min(1.0);
+                        lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(0.95, 0.9, 0.5), intensity: 0.5 * gl, reach: 3.0 + 4.0 * gl }));
                     }
                     // What they wear, drawn in their frame and pose.
                     for t in worn.get(&ActorId::Npc(n.def.id)).map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -208,7 +210,7 @@ impl Sim {
             }
         }
         // Lights dim near the corrupted.
-        let dark: Vec<(Vec3, f32)> = self.cast.npcs.iter().filter(|n| n.here() && n.corruption > 0.5).map(|n| (n.a.pos, n.corruption)).collect();
+        let dark: Vec<(Vec3, f32)> = self.cast.npcs.iter().filter(|n| n.here() && n.corruption() > 0.5).map(|n| (n.a.pos, n.corruption())).collect();
         if !dark.is_empty() {
             for (_, l) in lights.iter_mut() {
                 if l.color.z > l.color.x {

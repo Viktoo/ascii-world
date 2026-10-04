@@ -278,6 +278,11 @@ pub struct Species {
     /// hear a rustle behind you."), written for the species.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signs: Vec<String>,
+    /// What its body has beyond a plain living body, by property name: a
+    /// fire spirit { heat: 600, light: 1 }, a ghost { heat: -5 }, a holy
+    /// beast { blessed: 1 }. The world's rules then act on it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub props: BTreeMap<String, f32>,
 }
 
 fn is_always(a: &Active) -> bool {
@@ -317,6 +322,11 @@ impl Species {
         }
         self.sounds.truncate(6);
         self.voice.truncate(self.sounds.len());
+        self.props.retain(|k, v| v.is_finite() && !k.trim().is_empty());
+        while self.props.len() > 8 {
+            let k = self.props.keys().next_back().cloned().unwrap_or_default();
+            self.props.remove(&k);
+        }
         self.varieties.truncate(6);
         self.description = self.description.chars().take(160).collect();
         self.want = self.want.trim().to_lowercase();

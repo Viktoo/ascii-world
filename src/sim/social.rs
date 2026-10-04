@@ -482,6 +482,8 @@ impl Sim {
         };
         if why == "done" {
             self.social.bond(j.a, j.b, bond, self.t);
+            // Time spent together is a warm touch for both.
+            self.kind_touch(j.a, j.b, 1.0, super::body::HUG_SECS, super::body::EMBRACE, true, true);
         }
         for who in [j.a, j.b] {
             if let ActorId::Npc(c) = who {
@@ -743,6 +745,10 @@ impl Sim {
                         };
                         let msg = format!("{names} {verb}");
                         self.event(&format!("{}", k.name()), Some(j.a), Some(j.b.key()), msg.clone(), Some(pa), json!({}));
+                        // Bodies that touch run the world's rules between them, warmly.
+                        if k.contact() {
+                            self.touch_bodies(j.a, j.b, 0.5, 0.5, super::body::HUG_SECS, super::body::EMBRACE);
+                        }
                         self.note_near(pa, 25.0, Note::seen(format!("{msg}."), j.has(ActorId::Player)));
                         set(self, &|x| {
                             x.phase = 1;

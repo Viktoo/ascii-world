@@ -1093,9 +1093,13 @@ impl Sim {
         };
         self.event("said", Some(who), to.as_ref().and_then(|t| if let Target::Actor(a) = t { Some(a.key()) } else { None }), what.clone(), Some(at), json!({ "text": text }));
         self.witness(at, 14.0, &what, 0.3, &[who]);
-        // The player speaking to a character starts a conversation.
+        // The player speaking to a character starts a conversation; to one
+        // who doesn't mind them, a kind word is a little warmth.
         if who == ActorId::Player {
             if let Some(Target::Actor(ActorId::Npc(c))) = to {
+                if self.social.affection(ActorId::Npc(c), who) >= 0.0 {
+                    self.touch_bodies(who, ActorId::Npc(c), 0.3, 0.0, super::body::WORDS_SECS, super::body::NEAR);
+                }
                 self.player_talks(c, text);
             }
         }
@@ -1175,6 +1179,7 @@ impl Sim {
             self.witness(p, 15.0, &format!("{name} gave {other} {} {tname}.", article(&tname)), 0.4, &[]);
         }
         self.social.bond(who, to, 0.12, self.t);
+        self.kind_touch(who, to, 1.0, super::body::GIFT_SECS, super::body::HAND, false, who == ActorId::Player);
         self.on_gift(to, who, id);
         self.need_given(who, to);
         Ok(Outcome::ok(format!("{name} gives the {tname} to {other}")).thing(id))
@@ -1255,18 +1260,6 @@ impl Sim {
             self.social.bond(who, wearer, 0.06, self.t);
         }
         Ok(Outcome::ok(msg).thing(id))
-    }
-
-    /// A body as the rules see it, when it is the tool: its mass, and the
-    /// force of someone working it.
-    pub fn body_props(&self, who: ActorId) -> Props {
-        let mut p = self.vocab.defaults.clone();
-        if let Some(a) = self.actor(who) {
-            p[P_MASS] = a.dims.mass.max(1.0);
-        }
-        p[P_TEMP] = 36.0;
-        p[P_ALIVE] = 1.0;
-        p
     }
 
     /// Work a tool (a thing, or one's own hands) against a part of the

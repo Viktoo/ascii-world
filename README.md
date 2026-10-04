@@ -76,7 +76,7 @@ something comes for you at night, because you can make things out of nothing:
 | charges (`✦`, start and dawn top-up) | ∞ | ∞ | 24 | 12 |
 | night horrors | none | some nights, 1 | every night | every night, more over time |
 | their touch | – | corruption | ✦ −1, corruption | ✦ −4, corruption |
-| corruption passes in talk and gifts | no | no | slowly | yes |
+| corruption passes by touch (a hug, a gift, standing close) | no | no | slowly | yes |
 
 - Every `/` action costs a charge (none if nothing came of it). Dawn tops you back up to
   the start; charges earned above it are kept: +2 for a night got through, +1 when you
@@ -88,8 +88,8 @@ something comes for you at night, because you can make things out of nothing:
   people fall quiet. At night people sleep by the nearest light.
 - Corruption glows purple, dims light, and twists minds: a corrupted character's words,
   plans and makings turn their own nature bad; your own creations come out a little
-  wrong. It fades by day and faster in light; talking kindly, gifts and hugs draw it out
-  of someone.
+  wrong. It fades by day and faster in light; talking kindly, gifts, hugs and time spent
+  together draw it out of someone (a corrupted heart's touch isn't warm).
 - The status bar shows what matters: `night in 3m · ✦ 18 · corrupted 20% · 2 corrupted near`.
 
 Species can keep hours (`"active": "night"`: owls, moths), go after something
@@ -270,9 +270,9 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   are spheres against the terrain and the signed distance fields of nearby solids, so a
   ball bounces off any shape the LLM wrote. Things at rest sleep. A thing falling through
   an opening (a hoop, a well) is noticed, whatever the shape.
-- *Properties and rules.* 23 built-in properties (`mass`, `bounce`, `burns`, `temp`,
+- *Properties and rules.* 26 built-in properties (`mass`, `bounce`, `burns`, `temp`,
   `wet`, `light`, `edible`, `alive`, `fragile`, `fire`, `fuel`, `heat`, `char`,
-  `health`, `growth`, `strange`, `toy`, `force`, `mark`, …). Each property's vocabulary
+  `health`, `growth`, `strange`, `toy`, `force`, `mark`, `body`, `kindness`, …). Each property's vocabulary
   entry (`PropMeta`) says when a change is news ("caught fire", "was put out"), whether it
   spreads as incidents and the words for them, how harmful it is, and whether it carries
   over when a thing turns into another; fire is one entry, not code. A universe's own
@@ -290,6 +290,19 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   alias, else one LLM ruling), kept with the world and reused; a name nothing maps to is
   sent back to be fixed. Act properties (`force`) say what an action is doing right now:
   the engine sets them for a moment, rules read them, and nothing generated can set them.
+- *Bodies* (`src/sim/body.rs`). Every being's body has properties like a thing's,
+  started from its species (a living body keeps itself at 36°, plus what the species
+  declares: a fire spirit is hot, a ghost cold) and saved as the difference. Bodies near
+  you join the rules pass, so a world's own rules reach people: a curse that spreads by
+  touch curses whoever holds the idol, a kiln warms those by it, wading wets. What
+  someone holds or wears touches them every pass; a hug, a gift or time spent together
+  runs the rules between two bodies once, with `kindness` on whoever means it warmly.
+  Darkness (`corruption`) lives on the body: it passes on touch by a built-in rule,
+  gated by `susceptible` (set from the difficulty), and kindness eases it by another;
+  a touch's glow is the body's `light`, fading by a rule. Harm on a body hurts (it
+  wears them out and is in what their planner sees), and they let go of or take off
+  what harms them. Crossings on bodies are told like any other ("Oda fell under the
+  curse"). The traveler's body is never in the rules.
 - *Incidents* (`src/sim/incident.rs`). What a property spreads to remembers where it
   came from, so many crossings with one cause are one incident: a fire that eats 300
   tufts started at one lantern, thrown by someone. The log has one line per incident,

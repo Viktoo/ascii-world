@@ -363,7 +363,16 @@ pub fn save(sim: &mut Sim) {
     // The parts of an incident are counted on it; only its first is kept.
     let events: Vec<_> = std::mem::take(&mut sim.log.unsaved).into_iter().filter(|e| e.data.get("part").and_then(|v| v.as_bool()) != Some(true)).collect();
     let incidents = serde_json::to_string(&sim.incidents).unwrap_or_default();
-    let npc_states: Vec<(i64, String)> = sim.cast.npcs.iter().map(|n| (n.def.id, serde_json::to_string(&n.saved(sim.t)).unwrap_or_default())).collect();
+    let npc_states: Vec<(i64, String)> = sim
+        .cast
+        .npcs
+        .iter()
+        .map(|n| {
+            let mut st = n.saved(sim.t);
+            st.props = sim.body_diff(n);
+            (n.def.id, serde_json::to_string(&st).unwrap_or_default())
+        })
+        .collect();
     let seen: Vec<((i32, i32), f64)> = sim.region_seen.iter().map(|(k, v)| (*k, *v)).collect();
     let night = serde_json::to_string(&sim.night).unwrap_or_default();
     let spent: Vec<((i32, i32), f64)> = sim.things.spent_cells.iter().map(|(k, v)| (*k, *v)).collect();

@@ -72,9 +72,12 @@ pub struct SavedState {
     /// simulation's own shape (`sim::needs::Work`), so it carries on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<serde_json::Value>,
-    /// How much darkness has got into them (0..1).
-    #[serde(default, skip_serializing_if = "is_zero_f")]
+    /// Older saves kept their darkness here; it is read into `props`.
+    #[serde(default, skip_serializing)]
     pub corruption: f32,
+    /// Their body's properties, where they differ from their species'.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub props: serde_json::Map<String, serde_json::Value>,
     /// Gone outside their hours (night beings by day).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub away: bool,

@@ -32,12 +32,19 @@ pub const P_TOY: usize = 19;
 pub const P_CORRUPT: usize = 20;
 pub const P_FORCE: usize = 21;
 pub const P_MARK: usize = 22;
+pub const P_BODY: usize = 23;
+pub const P_KIND: usize = 24;
+pub const P_SUSCEPT: usize = 25;
 
 /// Act properties: what an action is doing right now, not what a thing is
 /// (`force` while someone works a tool). The engine sets them for a moment;
 /// rules may read them, but nothing generated (types, deeds, universe rules)
 /// can write them, and they are never saved.
-pub const ACT: &[usize] = &[P_FORCE];
+pub const ACT: &[usize] = &[P_FORCE, P_KIND];
+/// What only the engine knows about a thing: whether it is a living body,
+/// and how readily darkness takes hold of it (the world's difficulty).
+/// Rules read them; nothing generated writes them.
+pub const ENGINE: &[usize] = &[P_BODY, P_SUSCEPT];
 
 pub const AMBIENT_TEMP: f32 = 15.0;
 /// What one person can lift (kg); two together lift twice that.
@@ -70,6 +77,9 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("corruption", 0.0, "how much darkness has got into it, 0..1: corrupted things darken as if the night got into them, dim the light around them and work a little wrong"),
     ("force", 0.0, "how hard it is being worked against what it touches right now, 0..1: a beating, a rubbing, a pressing (someone applying it; nothing has it by itself)"),
     ("mark", 0.0, "how much people aim thrown things at it, 0..1: a hoop or a goal 1, a bell to ring or a bucket to toss into 0.8, a fence post 0.2"),
+    ("body", 0.0, "1 for a being's own body (people and creatures; set by the engine)"),
+    ("kindness", 0.0, "how warmly someone is touching right now, 0..1: a hug, a gift handed over (set by actions; nothing has it by itself)"),
+    ("susceptible", 0.0, "how readily darkness passes into it, 0..1 (bodies; set by the world's difficulty)"),
 ];
 
 /// A threshold crossing worth telling ("the grass tuft caught fire").
@@ -334,14 +344,19 @@ impl Vocab {
         }
     }
 
-    /// An act property (see `ACT`): read by rules, set only by the engine.
+    /// An act property (see `ACT`): what an action does right now.
     pub fn is_act(&self, i: usize) -> bool {
         ACT.contains(&i)
     }
 
+    /// Set only by the engine (act properties and `ENGINE`): rules read them.
+    pub fn engine_only(&self, i: usize) -> bool {
+        ACT.contains(&i) || ENGINE.contains(&i)
+    }
+
     /// A property generated things may give values to.
     pub fn writable(&self, i: usize) -> bool {
-        i < self.len() && !self.is_act(i)
+        i < self.len() && !self.engine_only(i)
     }
 
     /// The names generated things may give values to.
@@ -469,7 +484,7 @@ pub fn diff(vocab: &Vocab, p: &Props, base: &Props) -> serde_json::Map<String, s
     let mut m = serde_json::Map::new();
     for (i, v) in p.iter().enumerate() {
         let b = base.get(i).copied().unwrap_or(0.0);
-        if (v - b).abs() > 1e-4 && !vocab.is_act(i) {
+        if (v - b).abs() > 1e-4 && !vocab.engine_only(i) {
             if let Some(n) = vocab.names.get(i) {
                 m.insert(n.clone(), serde_json::json!((*v as f64 * 1000.0).round() / 1000.0));
             }
@@ -513,7 +528,7 @@ pub fn sanitize(p: &mut Props) {
         }
         *v = v.clamp(-1e5, 1e5);
     }
-    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_CORRUPT, P_FORCE, P_MARK] {
+    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_CORRUPT, P_FORCE, P_MARK, P_BODY, P_KIND, P_SUSCEPT] {
         p[i] = p[i].clamp(0.0, 1.0);
     }
     p[P_LIGHT] = p[P_LIGHT].clamp(0.0, 2.0);

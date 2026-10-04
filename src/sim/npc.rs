@@ -178,10 +178,12 @@ pub struct Npc {
     pub growth: f32,
     /// Out of its hours (see `Species::active`): not drawn, simulated or met.
     pub away: bool,
-    /// How much darkness has got into them (0..1; see `night`).
-    pub corruption: f32,
-    /// A glow someone's touch left on them (0..1), fading.
-    pub glow: f32,
+    /// Their body's properties, like a thing's (empty until the sim fits
+    /// it to the vocabulary; see `Sim::fit_bodies`): darkness, a touch's
+    /// glow, wetness, warmth, and whatever the world's own rules put on them.
+    pub props: Props,
+    /// How much what is on their body hurts them right now (by its harm).
+    pub pain: f32,
     /// When its touch last landed (it draws back for a while after).
     pub touched_at: f64,
 }
@@ -196,13 +198,23 @@ impl Npc {
         &self.def.persona.name
     }
 
+    /// How much darkness has got into them (0..1; see `night`).
+    pub fn corruption(&self) -> f32 {
+        self.props.get(P_CORRUPT).copied().unwrap_or(0.0)
+    }
+
+    /// A glow on them (a touch's dust; it fades).
+    pub fn glow(&self) -> f32 {
+        self.props.get(P_LIGHT).copied().unwrap_or(0.0)
+    }
+
     pub fn rand(&mut self) -> f32 {
         self.rng = crate::noise::pcg(self.rng);
         crate::noise::u2f(self.rng)
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), corruption: self.corruption, away: self.away }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), corruption: 0.0, props: Default::default(), away: self.away }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -352,8 +364,8 @@ impl Cast {
             // Only the born grow up; beings made by deeds arrive grown.
             growth: if s.born > 0.0 && !s.parents.is_empty() { 0.3 } else { 1.0 },
             away: s.away,
-            corruption: s.corruption.clamp(0.0, 1.0),
-            glow: 0.0,
+            props: Vec::new(),
+            pain: 0.0,
             touched_at: f64::MIN,
         };
         if let Some(w) = s.work.as_ref() {
@@ -1130,6 +1142,14 @@ impl Sim {
                 return;
             }
         }
+        // What they hold hurts them: they let go of it.
+        if let Some(h) = held.filter(|h| self.things.get(*h).is_some_and(|t| self.vocab.harm(&t.props) > 0.05)) {
+            let what = self.thing_name(h);
+            self.plan(me, vec![Action::Drop], &format!("let go of the {what}"), false);
+            self.set_aim(cid, Aim::Avoid, &format!("dropping the {what}"));
+            next_think(self, 2.0);
+            return;
+        }
         // 1. Trouble near them or their home: the willing push it back, the
         // rest keep clear of what harms (and the curious watch).
         if self.counter_trouble(cid) {
@@ -1688,7 +1708,7 @@ impl Sim {
             // universe's curse as much as fire): properties well off their default.
             let mut notes: Vec<String> = Vec::new();
             for (i, v) in t.props.iter().enumerate() {
-                if i == P_MASS || i == P_SOLID || i == P_FORCE {
+                if i == P_MASS || i == P_SOLID || self.vocab.engine_only(i) {
                     continue;
                 }
                 let d = self.vocab.defaults.get(i).copied().unwrap_or(0.0);
@@ -1735,6 +1755,7 @@ impl Sim {
         let meanings: Vec<String> = shown.iter().map(|i| format!("{}: {}", self.vocab.names[*i], self.vocab.meanings[*i])).collect();
         let twist = if meanings.is_empty() { twist } else { format!("{twist}\nWhat those numbers mean: {}.", meanings.join("; ")) };
         let twist = format!("{twist}{}", self.trouble_line(pos).map(|l| format!("\n{l}")).unwrap_or_default());
+        let twist = format!("{twist}{}", self.body_line(cid).map(|l| format!("\nOn your own body: {l}.")).unwrap_or_default());
         format!(
             "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
             crate::render::sky::time_label(self.t),

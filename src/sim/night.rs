@@ -8,6 +8,7 @@
 //! difficulty scales the harm: on peaceful worlds harmful beings never come.
 //! What the traveler makes costs charges, topped up each dawn.
 
+use super::props::{P_CORRUPT, P_LIGHT};
 use super::{ActorId, Note, Request, Sim, Target};
 use crate::render::sky::{self, DAY_SECONDS};
 use glam::Vec3;
@@ -61,8 +62,6 @@ const ARRIVE_AT: f32 = 48.0;
 /// Corruption fading by day, and again near light (per second).
 const FADE_DAY: f32 = 0.0006;
 const FADE_LIGHT: f32 = 0.0008;
-/// The most charges kindness earns in one day.
-const KIND_PER_DAY: i32 = 4;
 /// Charges for getting through a night the dark came.
 const NIGHT_BONUS: i32 = 2;
 /// How long a night waits for its kind to be written before the stock
@@ -126,9 +125,6 @@ pub struct NightState {
     pub wait_from: f64,
     /// Charges kindness earned today, and which day.
     pub kind_today: (i64, i32),
-    /// Log events already looked at.
-    #[serde(skip)]
-    pub seen: u64,
     #[serde(skip)]
     pub last_dread: f64,
     /// How wide the traveler's view is: tan of half its width (the app
@@ -218,7 +214,7 @@ impl Sim {
     pub fn corruption_of(&self, who: ActorId) -> f32 {
         match who {
             ActorId::Player => self.night.corruption,
-            ActorId::Npc(c) => self.cast.get(c).map(|n| n.corruption).unwrap_or(0.0),
+            ActorId::Npc(c) => self.cast.get(c).map(|n| n.corruption()).unwrap_or(0.0),
         }
     }
 
@@ -226,8 +222,8 @@ impl Sim {
         match who {
             ActorId::Player => self.night.corruption = (self.night.corruption + d).clamp(0.0, 1.0),
             ActorId::Npc(c) => {
-                if let Some(n) = self.cast.get_mut(c) {
-                    n.corruption = (n.corruption + d).clamp(0.0, 1.0);
+                if let Some(v) = self.cast.get_mut(c).and_then(|n| n.props.get_mut(P_CORRUPT)) {
+                    *v = (*v + d).clamp(0.0, 1.0);
                 }
             }
         }
@@ -364,7 +360,6 @@ impl Sim {
         let first = self.night.was_night.is_none();
         match self.night.was_night {
             None => {
-                self.night.seen = self.log.total;
                 // An older world's stock horrors take its current shape.
                 let stock = fallback_horror();
                 let old: Vec<String> = self.night.kinds.iter().filter(|k| self.snap.species.get(k).is_some_and(|s| s.body == stock.body && (s.look != stock.look || s.moves != stock.moves || s.signs != stock.signs))).cloned().collect();
@@ -395,7 +390,6 @@ impl Sim {
             self.call_the_dark();
         }
         self.comings_and_goings(night, first);
-        self.night_events();
         self.fade(night);
         self.dread();
     }
@@ -573,9 +567,6 @@ impl Sim {
         let persona = crate::world::Persona { name: format!("the {}", sp.name), species: sp.name.clone(), appearance: sp.description.clone(), ..Default::default() };
         let state = crate::world::characters::SavedState { x: at.x, z: at.z, corruption: 1.0, ..Default::default() };
         let id = self.add_being(persona, at, state)?;
-        if let Some(n) = self.cast.get_mut(id) {
-            n.corruption = 1.0;
-        }
         self.night.horrors.push(id);
         self.night.came = true;
         self.event("dark_came", Some(ActorId::Npc(id)), Some("player".into()), format!("{} came out of the dark", self.actor_name(ActorId::Npc(id))), Some(at), json!({ "species": sp.name }));
@@ -679,90 +670,18 @@ impl Sim {
         }
     }
 
-    /// Kindness earns charges; talk and gifts carry corruption, and kindness
-    /// from the traveler draws it out.
-    fn night_events(&mut self) {
-        let total = self.log.total;
-        let new = (total.saturating_sub(self.night.seen) as usize).min(self.log.recent.len());
-        self.night.seen = total;
-        if new == 0 {
-            return;
-        }
-        let events: Vec<super::SimEvent> = self.log.recent.iter().rev().take(new).cloned().collect();
-        let spread = self.level().spread;
-        let day = NightState::day(self.t);
-        for e in events.into_iter().rev() {
-            let (Some(a), Some(b)) = (e.actor, e.subject.as_deref().and_then(ActorId::parse).or_else(|| e.data.get("to").and_then(|v| serde_json::from_value::<ActorId>(v.clone()).ok()))) else { continue };
-            match e.kind.as_str() {
-                "gave" | "together_end" if a == ActorId::Player || b == ActorId::Player => {
-                    let other = if a == ActorId::Player { b } else { a };
-                    // Kindness to the corrupted draws the dark out of them.
-                    self.cleanse(other, if e.kind == "gave" { 0.1 } else { 0.15 });
-                    if a == ActorId::Player || e.kind == "together_end" {
-                        if self.night.kind_today.0 != day {
-                            self.night.kind_today = (day, 0);
-                        }
-                        if self.night.kind_today.1 < KIND_PER_DAY {
-                            self.night.kind_today.1 += 1;
-                            let name = self.actor_name(other);
-                            self.gain_charges(1, &format!("{} is glad of you.", super::physics::cap(&name)));
-                        }
-                    }
-                }
-                "said" if a == ActorId::Player => {
-                    if self.social.affection(b, a) >= 0.0 {
-                        self.cleanse(b, 0.03);
-                    }
-                }
-                "gesture" if a == ActorId::Player && e.data.get("kind").and_then(|k| k.as_str()).is_some_and(|k| matches!(k, "hug" | "handshake" | "kiss" | "highfive")) => {
-                    self.cleanse(b, 0.08);
-                }
-                "chatted" | "gave" if spread > 0.0 => {
-                    for (x, y) in [(a, b), (b, a)] {
-                        let c = self.corruption_of(x);
-                        if c >= TWISTED && self.actor(y).is_some() {
-                            self.add_corruption(y, spread * 0.06 * c);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The traveler's kindness lowers someone's corruption.
-    fn cleanse(&mut self, who: ActorId, by: f32) {
-        let ActorId::Npc(c) = who else { return };
-        let Some(n) = self.cast.get(c) else { return };
-        if n.species.touch.harms() || n.corruption <= 0.0 {
-            return;
-        }
-        let before = n.corruption;
-        self.add_corruption(who, -by);
-        let after = self.corruption_of(who);
-        if before >= 0.1 && after < 0.1 {
-            let name = self.actor_name(who);
-            let at = self.actor(who).map(|a| a.pos);
-            self.event("cleansed", Some(ActorId::Player), Some(who.key()), format!("the traveler drew the dark out of {name}"), at, json!({}));
-            self.notes.push(Note::Notable(format!("The dark goes out of {name}.")));
-            self.witness(at.unwrap_or_default(), 20.0, &format!("the traveler drew the dark out of {name}"), 0.7, &[]);
-        }
-    }
-
-    /// Corruption and glows fade by day, faster near light.
+    /// Corruption fades by day, faster near light (a glow on a body fades
+    /// by a rule; the traveler's here).
     fn fade(&mut self, night: bool) {
         let light = vec!["light".to_string()];
         let lit_player = self.shunned_at(self.player.pos, &light).is_some();
         let k = |lit: bool| if night { 0.0 } else { FADE_DAY } + if lit { FADE_LIGHT } else { 0.0 };
         self.night.corruption = (self.night.corruption - k(lit_player)).max(0.0);
         self.night.glow = (self.night.glow - 0.002).max(0.0);
-        let ids: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| n.here() && (n.corruption > 0.0 || n.glow > 0.0) && !n.species.touch.harms()).map(|n| (n.def.id, n.a.pos)).collect();
+        let ids: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| n.here() && n.corruption() > 0.0 && !n.species.touch.harms()).map(|n| (n.def.id, n.a.pos)).collect();
         for (cid, pos) in ids {
             let lit = self.dist_to_player(pos) < self.cfg.medium && self.shunned_at(pos, &light).is_some();
-            if let Some(n) = self.cast.get_mut(cid) {
-                n.corruption = (n.corruption - k(lit)).max(0.0);
-                n.glow = (n.glow - 0.002).max(0.0);
-            }
+            self.add_corruption(ActorId::Npc(cid), -k(lit));
         }
     }
 
@@ -962,7 +881,9 @@ impl Sim {
             }
         } else if let ActorId::Npc(c) = target {
             if let Some(m) = self.cast.get_mut(c) {
-                m.glow = (m.glow + touch.glow).min(1.0);
+                if let Some(l) = m.props.get_mut(P_LIGHT) {
+                    *l = (*l + touch.glow).min(1.0);
+                }
                 for (k, v) in &touch.needs {
                     let x = match k.as_str() {
                         "hunger" => &mut m.needs.hunger,
@@ -1107,7 +1028,7 @@ impl Sim {
             out.push(format!("corrupted {:.0}%", self.night.corruption * 100.0));
         }
         let p = self.player.pos;
-        let near = self.cast.npcs.iter().filter(|n| n.here() && n.corruption >= TWISTED && !n.species.touch.harms() && (n.a.pos - p).length() < 60.0).count();
+        let near = self.cast.npcs.iter().filter(|n| n.here() && n.corruption() >= TWISTED && !n.species.touch.harms() && (n.a.pos - p).length() < 60.0).count();
         if near > 0 {
             out.push(format!("{near} corrupted near"));
         }

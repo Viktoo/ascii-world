@@ -1059,6 +1059,7 @@ impl Sim {
         let def = std::sync::Arc::new(crate::world::CharacterDef { id, persona, home, state, version });
         let snap = self.snap.clone();
         self.cast.add(def, &snap, self.seed);
+        self.fit_bodies();
         let book = snap.species.clone();
         self.social.seed_from_personas(&self.cast, &book);
         Some(id)

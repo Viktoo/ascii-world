@@ -76,6 +76,8 @@ enum Key {
     Thing(ThingId),
     Cell(i32, i32),
     Inst(i64),
+    /// A being's body (never the traveler's).
+    Actor(i64),
 }
 
 impl Key {
@@ -84,8 +86,24 @@ impl Key {
             Key::Thing(id) => format!("thing:{id}"),
             Key::Cell(x, z) => format!("cell:{x},{z}"),
             Key::Inst(i) => format!("instance:{i}"),
+            Key::Actor(c) => super::ActorId::Npc(c).key(),
         }
     }
+}
+
+/// How a part is named when what happened to it is told: "the oak", or a
+/// being by its own name.
+fn told_name(key: Key, name: &str) -> String {
+    match key {
+        Key::Actor(_) => name.to_string(),
+        _ if name.is_empty() => "something".into(),
+        _ => format!("the {name}"),
+    }
+}
+
+/// Crossings that belong to plants, not to bodies (dying, growing up).
+fn plant_only(prop: usize) -> bool {
+    prop == P_ALIVE || prop == P_GROWTH
 }
 
 struct Ent {
@@ -137,6 +155,7 @@ impl Sim {
                 c.props.push(defaults[c.props.len()]);
             }
         }
+        self.fit_bodies();
     }
 
     /// Everything currently burning (for flames, light and fear).
@@ -347,10 +366,46 @@ impl Sim {
                 fired: Vec::new(),
             });
         }
+        // Beings' bodies (the traveler's never).
+        let bodies: Vec<i64> = self.cast.npcs.iter().filter(|n| n.here() && n.props.len() == self.vocab.len() && in_range(n.a.pos)).map(|n| n.def.id).collect();
+        for c in &bodies {
+            self.refresh_body(*c);
+        }
+        for c in bodies {
+            let Some(n) = self.cast.get(c) else { continue };
+            let d = &n.a.dims;
+            let pos = n.a.pos + Vec3::Y * d.height * 0.5;
+            let key = Key::Actor(c);
+            index.insert(key, ents.len());
+            ents.push(Ent {
+                key,
+                pos,
+                props: n.props.clone(),
+                next: n.props.clone(),
+                water: (snap.terrain.height(n.a.pos.x, n.a.pos.z) < WATER_LEVEL - 0.1 && n.a.riding.is_none()) as u32 as f32,
+                held: 0.0,
+                ground: 1.0,
+                acting: true,
+                name: n.name().to_string(),
+                size: (d.radius * 2.0).max(0.2),
+                fired: Vec::new(),
+            });
+        }
         if ents.is_empty() {
             return;
         }
         let acting = ents.len();
+        // What someone holds or wears touches them every pass.
+        let mut touching: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+        for t in self.things.live() {
+            for who in [t.holder, t.co_holder, t.worn].into_iter().flatten() {
+                let super::ActorId::Npc(c) = who else { continue };
+                if let (Some(i), Some(j)) = (index.get(&Key::Actor(c)), index.get(&Key::Thing(t.id))) {
+                    touching.insert((*i, *j));
+                    touching.insert((*j, *i));
+                }
+            }
+        }
         let hour = self.hour();
         let night = self.night() as u32 as f32;
         // Neighbours: other entities, untouched scatter cells and placed objects.
@@ -463,12 +518,14 @@ impl Sim {
                         }
                     }
                 }
+                cands.extend(touching.iter().filter(|(a, _)| *a == i).map(|(_, b)| *b));
                 cands.sort_unstable();
+                cands.dedup();
                 for j in cands {
                     if j == i {
                         continue;
                     }
-                    let gap = ((ents[j].pos - p).length() - (size_i.min(4.0) + ents[j].size.min(4.0)) * 0.5).max(0.05);
+                    let gap = if touching.contains(&(i, j)) { 0.05 } else { ((ents[j].pos - p).length() - (size_i.min(4.0) + ents[j].size.min(4.0)) * 0.5).max(0.05) };
                     if gap > near {
                         continue;
                     }
@@ -502,14 +559,15 @@ impl Sim {
             self.vocab.clamp(&mut e.next);
         }
         let watch = self.watch.clone();
-        let crosses = |e: &Ent| !phenomena(&watch, &e.props, &e.next, &e.name).is_empty();
-        let causes: Vec<Option<super::incident::Cause>> = (0..ents.len()).map(|ix| from[ix].filter(|_| crosses(&ents[ix])).map(|k| self.cause_named(&ents[k].key.subject(), format!("the {}", ents[k].name)))).collect();
+        let told = |e: &Ent| phenomena(&watch, &e.props, &e.next, &told_name(e.key, &e.name)).into_iter().filter(|(c, _)| !(matches!(e.key, Key::Actor(_)) && plant_only(c.prop))).collect::<Vec<_>>();
+        let crosses = |e: &Ent| !told(e).is_empty();
+        let causes: Vec<Option<super::incident::Cause>> = (0..ents.len()).map(|ix| from[ix].filter(|_| crosses(&ents[ix])).map(|k| self.cause_named(&ents[k].key.subject(), told_name(ents[k].key, &ents[k].name)))).collect();
         for (ix, e) in ents.iter_mut().enumerate() {
             let changed = e.next.iter().zip(&e.props).any(|(a, b)| (a - b).abs() > 1e-4);
             if !changed && !e.acting {
                 continue;
             }
-            for (c, text) in phenomena(&watch, &e.props, &e.next, &e.name) {
+            for (c, text) in told(e) {
                 events.push((e.key, c, e.pos, text, causes[ix].clone()));
             }
             let t = self.t;
@@ -583,6 +641,13 @@ impl Sim {
                         }
                     }
                 }
+                Key::Actor(c) => {
+                    if changed {
+                        if let Some(n) = self.cast.get_mut(c) {
+                            n.props = e.next.clone();
+                        }
+                    }
+                }
                 Key::Inst(i) => {
                     if changed {
                         if let Some(id) = self.promote_instance(i) {
@@ -613,8 +678,22 @@ impl Sim {
         let watch = self.watch.clone();
         let subject = Self::part_key(part);
         let cause = by.map(|a| super::incident::Cause { subject: a.key(), name: String::new(), by: Some(self.actor_name(a)) });
-        for (c, text) in phenomena(&watch, before, after, name) {
+        let who = if name.is_empty() { "something".to_string() } else { format!("the {name}") };
+        for (c, text) in phenomena(&watch, before, after, &who) {
             self.phenomenon(subject.clone(), &c, pos, &text, cause.clone());
+        }
+    }
+
+    /// Tell the crossings a touch made on a being's body ("Oda fell under
+    /// the curse"); never the ones that belong to plants.
+    pub fn tell_body_change(&mut self, cid: i64, name: &str, pos: Vec3, before: &Props, after: &Props, by: Option<super::ActorId>) {
+        let watch = self.watch.clone();
+        let subject = super::ActorId::Npc(cid).key();
+        let cause = by.map(|a| super::incident::Cause { subject: a.key(), name: String::new(), by: Some(self.actor_name(a)) });
+        for (c, text) in phenomena(&watch, before, after, name) {
+            if !plant_only(c.prop) {
+                self.phenomenon(subject.clone(), &c, pos, &text, cause.clone());
+            }
         }
     }
 
@@ -711,10 +790,10 @@ pub fn watches(vocab: &Vocab) -> Vec<Watch> {
     out
 }
 
-/// Threshold crossings worth telling about, as the vocabulary describes them.
-fn phenomena(watch: &[Watch], before: &Props, after: &Props, name: &str) -> Vec<(super::incident::Crossed, String)> {
+/// Threshold crossings worth telling about, as the vocabulary describes
+/// them; `n` is what the part is called ("the oak", "Oda").
+fn phenomena(watch: &[Watch], before: &Props, after: &Props, n: &str) -> Vec<(super::incident::Crossed, String)> {
     let mut v = Vec::new();
-    let n = if name.is_empty() { "something".to_string() } else { format!("the {name}") };
     let env = rules::Env { me: after, other: &[], dt: 0.0, dist: 0.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0 };
     let holds = |e: &Option<rules::RExpr>| e.as_ref().is_none_or(|e| e.eval(&env) != 0.0);
     for w in watch {
