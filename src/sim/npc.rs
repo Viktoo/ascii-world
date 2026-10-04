@@ -1503,6 +1503,7 @@ impl Sim {
         let twist = format!("{twist}{}", self.trouble_line(pos).map(|l| format!("\n{l}")).unwrap_or_default());
         let twist = format!("{twist}{}", self.body_line(cid).map(|l| format!("\nOn your own body: {l}.")).unwrap_or_default());
         let twist = format!("{twist}{}", self.goals_line(cid).map(|l| format!("\nYour goals: {l}.")).unwrap_or_default());
+        let twist = format!("{twist}{}", self.beliefs_line(cid).map(|l| format!("\nWhat you believe: {l}.")).unwrap_or_default());
         let twist = format!("{twist}{}", self.goals_done_line(cid).map(|l| format!("\nLately: {l}.")).unwrap_or_default());
         let twist = format!("{twist}{}", self.menu_line(cid).map(|l| format!("\nThings you could do now (best first): {l}.")).unwrap_or_default());
         format!(

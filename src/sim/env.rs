@@ -701,13 +701,13 @@ impl Sim {
         let kind = c.kind.as_str();
         // Part of something bigger (a fire, a spreading curse): counted on
         // its incident, told as one story.
-        if let Some(j) = self.file_incident(&subject, c, pos, cause) {
+        if let Some(j) = self.file_incident(&subject, c, pos, cause.clone()) {
             let (id, part) = match j {
                 super::incident::Joined::Began(id) => (id, false),
                 super::incident::Joined::Part(id) => (id, true),
             };
             self.event(kind, None, Some(subject), text, Some(pos), json!({ "incident": id, "part": part }));
-            self.incident_crossing(j, c, pos);
+            self.incident_crossing(j, c, pos, text, cause);
             return;
         }
         let first = self.log.recent.iter().rev().take(60).filter(|e| e.kind == kind && e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 12.0) && self.t - e.t < 20.0).count() == 0;

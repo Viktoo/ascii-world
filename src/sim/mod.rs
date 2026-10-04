@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod actor;
 pub mod behavior;
+pub mod beliefs;
 pub mod body;
 pub mod beings;
 pub mod catchup;
@@ -347,6 +348,8 @@ pub struct Sim {
     pub incidents: incident::Incidents,
     /// What people want and have promised (see `goals`).
     pub goals: goals::Goals,
+    /// What each holds true (see `beliefs`).
+    pub beliefs: beliefs::Beliefs,
     /// Which property crossings are news (from the vocabulary).
     pub watch: Arc<Vec<env::Watch>>,
     /// Requests dropped for waiting too long (see `SimConfig::queue_wait`).
@@ -403,6 +406,7 @@ impl Sim {
             night: night::NightState::default(),
             incidents: incident::Incidents::default(),
             goals: goals::Goals::default(),
+            beliefs: beliefs::Beliefs::default(),
             watch: Arc::new(Vec::new()),
             dropped: 0,
             sounds: Vec::new(),

@@ -996,6 +996,11 @@ impl Sim {
             self.record_creation(tid, "built", Some(who), "", pos);
         }
         self.event("made", Some(who), Some(format!("instance:{first}")), format!("{maker} made {} {name}", super::article(&name)), Some(pos), json!({ "instances": instances, "surprise": surprise }));
+        // Who saw it made knows who made it (the traveler's makings come out of nowhere).
+        if who != ActorId::Player {
+            let claim = super::beliefs::Claim::Made { name: name.clone(), by: maker.clone() };
+            self.notice_claim(pos, 40.0, &[who], &claim, super::beliefs::Source::Saw, 0.95, 0.5);
+        }
         let told = self.tell_held_stories(id, pos);
         if who != ActorId::Player {
             if !told {

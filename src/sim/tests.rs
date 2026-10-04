@@ -4171,8 +4171,8 @@ export function color(x, y, z, k) { return rgb(200, 30, 30); }
         std::fs::copy(&w.path, &copy).unwrap();
         let mut s = Session::with_db(Db::open(&copy).unwrap(), Some(57), None).unwrap();
         s.sim.player.pos = p + Vec3::new(0.0, 0.0, -15.0);
-        for k in 0..6 {
-            s.sim.spawn_thing(apple, p + Vec3::new(k as f32 * 0.7, 0.0, 3.0), 0.0, 1.0, Default::default(), true).unwrap();
+        for k in 0..16 {
+            s.sim.spawn_thing(apple, p + Vec3::new((k % 8) as f32 * 0.7, 0.0, 3.0 + (k / 8) as f32 * 0.7), 0.0, 1.0, Default::default(), true).unwrap();
         }
         s.sim.spawn_thing(ball, p + Vec3::new(3.0, 0.0, 4.0), 0.0, 1.0, Default::default(), true).unwrap();
         let all = record(&mut s);
@@ -4189,7 +4189,7 @@ export function color(x, y, z, k) { return rgb(200, 30, 30); }
         assert!(kinds.contains(k), "{k} happened: {kinds:?}");
     }
     // Curiosity only eases by looking at something new or going to see;
-    // the rest are met for most (a day's six apples don't feed everyone).
+    // the rest are met for most.
     let pressing: usize = e.pressing.iter().filter(|(k, _)| k.as_str() != "curiosity").map(|(_, v)| v).sum();
     let awake = s.sim.cast.npcs.iter().filter(|n| n.here() && !n.a.asleep).count();
     assert!((pressing as f32) <= awake as f32 * 4.0 * 0.3, "needs kept met: {:?} of {awake} awake", e.pressing);
@@ -4219,4 +4219,102 @@ export function color(x, y, z, k) { return rgb(200, 30, 30); }
     let v = s.sim.affordances(ids[0]);
     let best = v.iter().max_by(|x, y| x.score.total_cmp(&y.score)).unwrap();
     assert!(best.label.starts_with("let go of the stick"), "{}", best.label);
+}
+
+// ------------------------------------------------------------------ beliefs
+
+/// Beliefs: two villagers who saw different parts of a fire hold different
+/// causes (the one who saw it break out knows the lantern the traveler
+/// threw; the one it reached guesses it came from the grass). One who only
+/// heard of it believes the teller, less surely. A corrupted teller blames
+/// someone else, and whoever saw it for themselves doesn't take it up; who
+/// didn't, does. People go where they believe a thing lies, and forget it
+/// when it isn't there. Each mind stays under its cap; repeats merge.
+#[test]
+fn beliefs_differ_by_what_was_seen_pass_on_and_only_corruption_lies() {
+    use super::beliefs::{Claim, Source};
+    let (w, a, dir) = grass_patch("beliefs", 45, 40.0);
+    let lantern = add_type(&w, &fixture("sims/lantern.js"));
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let side = Vec3::new(-dir.z, 0.0, dir.x);
+    let ada = add_char(&w, "Ada", "calm, timid", &[], a - dir * 12.0);
+    let dov = add_char(&w, "Dov", "sly", &["Ada: neighbour"], a - dir * 12.0 + side * 3.0);
+    let bram = add_char(&w, "Bram", "calm, timid", &[], a + dir * 62.0 + side * 2.0);
+    let cai = add_char(&w, "Cai", "calm", &[], a - dir * 90.0);
+    let eli = add_char(&w, "Eli", "calm", &[], a - dir * 92.0);
+    let mut s = session(&w, 15, None);
+    s.sim.player.pos = a - dir * 16.0 - side * 4.0;
+    clear_scatter(&mut s, a + dir * 20.0, 60.0);
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.think_at = f64::MAX;
+    }
+    // A lantern thrown into the grass by the traveler.
+    let id = s.sim.spawn_thing(lantern, a + Vec3::Y * 3.0, 0.0, 1.0, Default::default(), false).unwrap();
+    s.sim.things.get_mut(id).unwrap().vel = Vec3::new(0.0, -6.0, 0.0);
+    s.sim.things.get_mut(id).unwrap().asleep = false;
+    s.sim.things.get_mut(id).unwrap().thrown_by = Some((ActorId::Player, s.sim.t));
+    let all = record(&mut s);
+    let inc_key = |s: &Session| s.sim.incidents.list.first().map(|i| format!("cause:{}", i.id)).unwrap_or_default();
+    for _ in 0..3000 {
+        s.step(0.1);
+        if s.sim.beliefs.get(bram, &inc_key(&s)).is_some() {
+            break;
+        }
+    }
+    let key = inc_key(&s);
+    let seen = s.sim.beliefs.get(ada, &key).cloned().expect("Ada saw it break out");
+    let guess = s.sim.beliefs.get(bram, &key).cloned().unwrap_or_else(|| panic!("Bram saw it reach him: {:?}", s.sim.incidents.list.first().map(|i| i.line())));
+    assert_eq!(seen.source, Source::Saw);
+    assert!(matches!(&seen.claim, Claim::Cause { what, by, .. } if what == "the oil lantern" && by.as_deref() == Some("the traveler")), "{:?}", seen.claim);
+    assert_eq!(guess.source, Source::Guessed);
+    assert!(matches!(&guess.claim, Claim::Cause { what, .. } if what.contains("grass")), "{:?}", guess.claim);
+    assert!(s.sim.beliefs.disagreements() >= 1, "they disagree about what started it");
+    assert!(s.sim.decide_context(bram, "x").contains("What you believe: the fire started from the grass tuft (your guess"), "{}", s.sim.decide_context(bram, "x"));
+    // Cai only hears of it, from Ada: believes her, less surely.
+    s.sim.converse(ada, cai);
+    let told = s.sim.beliefs.get(cai, &key).cloned().expect("Cai heard of it");
+    assert_eq!(told.source, Source::Told { by: "Ada".into() });
+    assert!(told.claim == seen.claim && told.sure < seen.sure, "{told:?}");
+    // Dov saw it too, but darkness has a hold on him.
+    s.sim.cfg.difficulty = 3;
+    s.sim.cast.get_mut(dov).unwrap().props[P_CORRUPT] = 0.9;
+    assert_eq!(s.sim.beliefs.get(dov, &key).map(|b| b.source.clone()), Some(Source::Saw));
+    s.sim.converse(dov, eli);
+    let lie = s.sim.beliefs.get(eli, &key).cloned().expect("Eli heard Dov's version");
+    assert!(lie.twisted && matches!(&lie.claim, Claim::Cause { by, .. } if by.as_deref() != Some("the traveler")), "{lie:?}");
+    assert!(!of(&all, "rumour").is_empty());
+    s.sim.converse(dov, ada);
+    assert_eq!(s.sim.beliefs.get(ada, &key).map(|b| b.claim.clone()), Some(seen.claim.clone()), "who saw it keeps what they saw");
+    s.sim.converse(dov, bram);
+    assert!(s.sim.beliefs.get(bram, &key).is_some_and(|b| b.twisted), "who only guessed takes up the surer word, twisted or not");
+    // Where a thing lies: they go there, and forget it when it's gone.
+    let b = s.sim.spawn_thing(ball, s.sim.actor(ActorId::Npc(cai)).unwrap().pos + Vec3::new(4.0, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.see_thing(cai, b);
+    let at = s.sim.things.get(b).unwrap().pos;
+    s.sim.things.get_mut(b).unwrap().pos = at + Vec3::new(60.0, 0.0, 0.0);
+    s.sim.cast.get_mut(cai).unwrap().a.pos = at + Vec3::new(-40.0, 0.0, 0.0);
+    s.sim.cast.get_mut(cai).unwrap().needs.fun = 0.95;
+    let v = s.sim.affordances(cai);
+    assert!(v.iter().any(|x| x.label.starts_with("go where you last saw something to play with")), "{:?}", v.iter().map(|x| x.label.clone()).collect::<Vec<_>>());
+    s.sim.look_about(cai, at);
+    assert!(s.sim.beliefs.get(cai, &format!("where:{b}")).is_none(), "not there: forgotten");
+    // A repeat merges; a mind keeps no more than its cap.
+    let rows = s.sim.beliefs.of(ada).len();
+    let sure = s.sim.beliefs.get(ada, &key).unwrap().sure;
+    s.sim.believe(ada, seen.claim.clone(), Source::Saw, 0.9, 0.8);
+    assert_eq!(s.sim.beliefs.of(ada).len(), rows);
+    assert!(s.sim.beliefs.get(ada, &key).unwrap().sure > sure.min(0.999));
+    s.sim.cfg.beliefs_per_mind = 3;
+    for k in 0..20 {
+        s.sim.believe(ada, Claim::Made { name: format!("pot {k}"), by: "Dov".into() }, Source::Saw, 0.9, 0.2);
+    }
+    assert!(s.sim.beliefs.of(ada).len() <= 3, "{}", s.sim.beliefs.of(ada).len());
+    assert!(s.sim.beliefs.get(ada, &key).is_some(), "what matters most stays");
+    // Kept across a restart.
+    s.save();
+    drop(s);
+    let s = session(&w, 15, None);
+    assert!(s.sim.beliefs.get(eli, &key).is_some_and(|b| b.twisted), "kept with the world");
+    let _ = (dov, eli);
+    sound(&s);
 }

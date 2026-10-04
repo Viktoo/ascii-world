@@ -967,7 +967,7 @@ impl Sim {
 
     /// Two characters meet and talk: through the LLM if the player can hear,
     /// otherwise in a few plain words. They also pass on news (gossip).
-    fn converse(&mut self, a: i64, b: i64) {
+    pub(super) fn converse(&mut self, a: i64, b: i64) {
         let (Some(pa), Some(_)) = (self.cast.get(a).map(|n| n.a.pos), self.cast.get(b)) else { return };
         // With the dark close, people fall quiet.
         if self.dread_near(pa, 35.0) {
@@ -1017,6 +1017,10 @@ impl Sim {
                 let text = format!("{xn} told me: {}", m.text.trim_start_matches("I ").trim());
                 self.out.push(Request::Witness { cid: y, text, importance: (m.importance * 0.7).min(0.6) });
             }
+        }
+        // And what each holds true passes on, a little less surely.
+        for (x, y) in [(a, b), (b, a)] {
+            self.pass_belief(x, y);
         }
         self.social.bond(ActorId::Npc(a), ActorId::Npc(b), 0.03, t);
         self.event("chatted", Some(ActorId::Npc(a)), Some(ActorId::Npc(b).key()), format!("{an} and {bn} talked"), Some(pa), json!({}));

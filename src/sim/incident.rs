@@ -449,23 +449,33 @@ impl Sim {
 
     /// A crossing that belongs to an incident: count it, tell it as one
     /// story, remember it once.
-    pub fn incident_crossing(&mut self, joined: Joined, c: &Crossed, pos: Vec3) {
+    /// A crossing joined an incident (`text`: what happened to the part;
+    /// `from`: what it spread from).
+    pub fn incident_crossing(&mut self, joined: Joined, c: &Crossed, pos: Vec3, text: &str, from: Option<Cause>) {
+        use super::beliefs::{Claim, Source};
         match joined {
             Joined::Began(id) => {
                 let Some(inc) = self.incidents.get(id).cloned() else { return };
                 self.rouse(id, pos, 60.0);
                 self.event("incident", None, Some(inc.cause.subject.clone()).filter(|s| !s.is_empty()), inc.story(), Some(pos), json!({ "incident": id, "kind": inc.kind, "cause": inc.cause }));
                 self.tell_incident(id, true);
-                self.witness(pos, 60.0, &inc.memory(), 0.8, &[]);
+                // Who saw it break out saw what started it.
+                let claim = Claim::Cause { incident: id, noun: inc.words.noun.clone(), what: if inc.cause.name.is_empty() { "nobody knows what".into() } else { inc.cause.name.clone() }, by: inc.cause.by.clone() };
+                self.witness_claim(pos, 60.0, &inc.memory(), 0.8, &[], &claim, Source::Saw, 0.9);
             }
             Joined::Part(id) => {
-                // Those who see it reach them learn where it came from.
+                // Who sees it reach them sees where it came at them, and
+                // guesses that is where it came from.
                 if c.rose {
                     let near_new = self.cast.npcs.iter().any(|n| n.here() && (n.a.pos - pos).length() < 30.0);
                     if near_new {
                         self.rouse(id, pos, 30.0);
-                        if let Some(m) = self.incidents.get(id).map(|i| i.memory()) {
-                            self.witness(pos, 45.0, &m, 0.7, &[]);
+                        if let Some(inc) = self.incidents.get(id).cloned() {
+                            let noun = inc.words.noun.clone();
+                            let src = from.filter(|f| !f.name.is_empty() || f.by.is_some()).unwrap_or_else(|| inc.cause.clone());
+                            let memory = format!("I saw {}; the {noun} came at it from {}.", text.trim_end_matches('.'), src.told());
+                            let claim = Claim::Cause { incident: id, noun, what: if src.name.is_empty() { "nobody knows what".into() } else { src.name.clone() }, by: src.by.clone() };
+                            self.witness_claim(pos, 45.0, &memory, 0.7, &[], &claim, Source::Guessed, 0.5);
                         }
                     }
                 }

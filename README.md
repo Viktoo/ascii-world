@@ -151,6 +151,7 @@ relationships, recent decisions and memories.
 | `POCKET_DIFFICULTY` | `0` peaceful, `1` easy, `2` normal, `3` hard, for worlds that have none set (new worlds get normal). Normally set per world in settings. |
 | `POCKET_SIM_MAKER_SECS` | Near you, someone makes something at least this often, in seconds (default 60; 0 turns it off). |
 | `POCKET_SIM_MAX_LOOSE` | Past this many small loose things around a maker, new work uses some up (default 20). |
+| `POCKET_SIM_BELIEFS` | Beliefs each character keeps at most (default 200; the least worth keeping fade first). |
 | `POCKET_SIM_MAX_AWAKE`, `POCKET_SIM_MAX_FLAMES`, `POCKET_SIM_MAX_THINGS`, `POCKET_SIM_CHAT_RANGE`, `POCKET_SIM_RULES_HZ`, `POCKET_SIM_BEHAVIOR_HZ`, `POCKET_SIM_MEDIUM_LLM` | Further limits. Each can also be set per universe in its `kv` table as `sim.<name>`. |
 
 Defaults on the Claude API: `claude-opus-5-5` for the builder (region plans and object
@@ -364,6 +365,18 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   deadline or no longer possible is given up (remembered; a promisee trusts them less).
   Goals in words get one look from the owner's planner at their deadline. Open goals and
   ones closed lately are in the planner's context; they are saved in the `goals` table.
+- *Beliefs* (`src/sim/beliefs.rs`). What each character holds true, as rows that can be
+  asked: a claim (what started a fire, where a thing lies, who made something), how they
+  know (saw it, guessed, told by someone), how sure, and when. Seeing different parts of
+  something makes different beliefs: whoever saw a fire break out knows what started
+  it; whoever only saw it reach them guesses it came from where it came at them. Gossip
+  passes beliefs on, a little less sure each hop, so rumours emerge without lies. Only
+  corruption lies: a corrupted teller blames someone else (marked in the row); whoever
+  saw it themselves doesn't take it up. The planner and talk hear what they believe;
+  the scorer sends them where they believe a thing lies, and they forget it when it
+  isn't there. Each mind keeps at most `beliefs_per_mind` (200): the least important,
+  least sure and oldest fade first, and a repeat raises sureness instead of adding a
+  row. Saved in the `beliefs` table.
 - *Minds* (`src/sim/npc.rs`, `src/sim/scorer.rs`). Needs (hunger, tiredness, loneliness,
   boredom, curiosity) drift; traits come from the persona's words (or numbers). One
   scorer decides every body's free moments, people's and animals' alike: the world
@@ -434,7 +447,7 @@ nobody has yet.
 `instances`, `regions`, `characters`, `memories`, `summaries`, `player`, `llm_usage`),
 plus a small `kv` table for the spawn point and current version, and the live world:
 `things`, `cells` (changed scatter), `spent_cells`, `relationships`, `vocab` and `rules`
-(the universe's own), `goals`, `interp_cache`, `events` (the latest 5,000) and `origins` (who
+(the universe's own), `goals`, `beliefs`, `interp_cache`, `events` (the latest 5,000) and `origins` (who
 made what). Only LLM-written source is stored; WGSL and bytecode are rebuilt on load.
 Opening an older world adds the new tables and built-in types.
 

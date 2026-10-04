@@ -285,6 +285,9 @@ impl Sim {
                 add(Verb::Eat(None, true), s, format!("eat the {}", held.map(|h| self.thing_name(h)).unwrap_or_default()));
             }
         } else if let Some((tg, at)) = food.clone() {
+            if let Target::Thing(f) = tg {
+                self.see_thing(cid, f);
+            }
             if let Some(s) = self.worth(cid, Kind::Eat, 1.0, 0.0) {
                 add(Verb::Eat(Some(tg.clone()), true), s, format!("eat something ({:.0} m)", (at - pos).length()));
             }
@@ -317,8 +320,17 @@ impl Sim {
             let ball_held = held.filter(|h| self.things.get(*h).is_some_and(|x| is_toy(&x.props)));
             let toy = ball_held.or_else(|| ball.as_ref().and_then(|(tg, _)| self.liven(tg)));
             if let Some(id) = toy {
+                self.see_thing(cid, id);
                 if let Some(s) = self.worth(cid, Kind::Play, 1.0, 0.0) {
                     add(Verb::Play(id), s, format!("play with the {}", self.thing_name(id)));
+                }
+            } else {
+                // None in sight: go where they believe one lies (it may be gone).
+                let toys: Vec<String> = self.things.live().filter(|t| is_toy(&t.props)).map(|t| self.thing_name(t.id)).collect();
+                if let Some((_, at, sure)) = self.believed_where(cid, |n| toys.iter().any(|x| x == n), pos).filter(|(_, at, _)| (*at - pos).length() < 100.0) {
+                    if let Some(s) = self.worth(cid, Kind::Play, 0.8 * sure, (at - pos).length() / 100.0) {
+                        add(Verb::Goal { id: 0, steps: vec![Action::Goto { target: Target::Point(at.to_array()), run: false }], what: "go where the ball was".into() }, s, format!("go where you last saw something to play with ({:.0} m)", (at - pos).length()));
+                    }
                 }
             }
             // Something new to look at.
@@ -445,6 +457,9 @@ impl Sim {
                         }
                         steps.push(Action::Hold { target: Target::Thing(t) });
                         out.push((id, steps, format!("{text}: pick it up"), priority, d));
+                    } else if let Some((_, at, sure)) = self.believed_where(cid, |n| fits(&what, n), pos) {
+                        // Not in sight: where they believe one lies.
+                        out.push((id, vec![Action::Goto { target: Target::Point(at.to_array()), run: false }], format!("{text}: go where you saw one"), priority * sure, (at - pos).length()));
                     }
                 }
                 Want::Be { place } => {
@@ -529,6 +544,10 @@ impl Sim {
             self.set_doing(cid, &format!("carrying {rn}"));
             self.think_again(cid, 1.0);
             return;
+        }
+        // What they believed lay about here and doesn't any more is forgotten.
+        if let Some(pos) = self.actor(me).map(|a| a.pos) {
+            self.look_about(cid, pos);
         }
         let v = self.affordances(cid);
         let safe = v.iter().all(|a| a.score < SAFETY - 0.5);
@@ -820,7 +839,7 @@ impl Sim {
                 self.think_again(cid, 4.0);
             }
             Verb::Goal { id, steps, what } => {
-                if let Some(g) = self.goals.list.iter_mut().find(|g| g.id == id) {
+                if let Some(g) = self.goals.list.iter_mut().find(|g| g.id == id && id != 0) {
                     g.progress = g.progress.max(0.1);
                 }
                 self.plan(me, steps, &what, false);

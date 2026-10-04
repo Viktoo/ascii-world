@@ -349,6 +349,11 @@ pub struct Emergence {
     pub needs_met: f32,
     /// Awake beings that went nowhere and did nothing in the last game hour.
     pub stuck: usize,
+    /// Things people believe differently (what started a fire, …).
+    pub beliefs_differ: usize,
+    /// Belief rows held, and the most any one mind holds (under the cap).
+    pub belief_rows: usize,
+    pub beliefs_most: usize,
     /// Which needs are pressing (0.8 or more) at the end, and how many.
     pub pressing: BTreeMap<String, usize>,
     /// What the stuck were doing.
@@ -434,7 +439,7 @@ pub fn emergence(sim: &Sim, events: &[SimEvent], hours: f32, hour_ago: &HashMap<
     for n in &stuck_ones {
         *stuck_doing.entry(format!("{}: {}", n.species.name, n.doing)).or_default() += 1;
     }
-    Emergence { kinds_per_day, chains_3plus: stories(events), with_cause, goals_crossing, needs_met: if all == 0 { 1.0 } else { met as f32 / all as f32 }, stuck: stuck_ones.len(), pressing, stuck_doing }
+    Emergence { kinds_per_day, chains_3plus: stories(events), with_cause, goals_crossing, needs_met: if all == 0 { 1.0 } else { met as f32 / all as f32 }, stuck: stuck_ones.len(), beliefs_differ: sim.beliefs.disagreements(), belief_rows: sim.beliefs.total(), beliefs_most: sim.beliefs.most(), pressing, stuck_doing }
 }
 
 pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i64, Vec3>, start_rels: &BTreeMap<(i64, i64), f32>, hour_ago: &HashMap<i64, Vec3>) -> Metrics {

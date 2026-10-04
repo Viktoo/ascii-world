@@ -78,6 +78,8 @@ pub struct SimConfig {
     /// Species still drawn with a shared template body (a cat on the
     /// four-legged "quadruped") get their own body written from it.
     pub own_bodies: bool,
+    /// Beliefs each mind keeps at most (the least worth keeping fade first).
+    pub beliefs_per_mind: usize,
 }
 
 impl Default for SimConfig {
@@ -109,6 +111,7 @@ impl Default for SimConfig {
             create_beings: true,
             life_speed: 1.0,
             own_bodies: true,
+            beliefs_per_mind: 200,
         }
     }
 }
@@ -148,6 +151,7 @@ impl SimConfig {
             ("max_creatures", "POCKET_SIM_MAX_CREATURES"),
             ("difficulty", "POCKET_DIFFICULTY"),
             ("life_speed", "POCKET_SIM_LIFE_SPEED"),
+            ("beliefs_per_mind", "POCKET_SIM_BELIEFS"),
         ] {
             set(key, env, &mut c);
         }
@@ -203,6 +207,7 @@ impl SimConfig {
             "max_loose" => self.max_loose = v.clamp(1.0, 10_000.0) as usize,
             "max_creatures" => self.max_creatures = v.clamp(1.0, 10_000.0) as usize,
             "life_speed" => self.life_speed = v.clamp(0.0, 1000.0),
+            "beliefs_per_mind" => self.beliefs_per_mind = v.clamp(1.0, 100_000.0) as usize,
             "hunting" => self.hunting = v > 0.5,
             "difficulty" => self.difficulty = v.clamp(0.0, 3.0).round() as u8,
             "transform" => self.transform = v > 0.5,
