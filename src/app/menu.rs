@@ -17,6 +17,7 @@ const FPS: &[f64] = &[15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 144.0, 240.0];
 const RADII: &[f64] = &[0.0, 1.0, 2.0, 3.0, 4.0];
 const CREATURES: &[f64] = &[6.0, 12.0, 24.0, 48.0, 96.0, 200.0];
 const LIFE: &[f64] = &[0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
+const VOLUMES: &[f64] = &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Row {
@@ -25,6 +26,8 @@ enum Row {
     Details,
     Fps,
     Shadows,
+    Sound,
+    Volume,
     Difficulty,
     Radius,
     ShowWork,
@@ -34,7 +37,7 @@ enum Row {
     Beings,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
 
 pub struct Menu {
     sel: usize,
@@ -184,7 +187,7 @@ impl App {
                             m.details = Some(d);
                         }
                     }
-                    Row::Shadows | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
+                    Row::Shadows | Row::Sound | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
                     _ => {}
                 }
             }
@@ -198,6 +201,7 @@ impl App {
             Row::Budget => settings::env_budget(),
             Row::Fps => settings::env_fps(),
             Row::Shadows => settings::env_shadows(),
+            Row::Sound => settings::env_sound(),
             Row::Radius => settings::env_region_radius(),
             _ => false,
         }
@@ -224,6 +228,8 @@ impl App {
             }
             Row::Fps => s.fps = step(FPS, s.fps as f64, dir) as f32,
             Row::Shadows => s.shadows = !s.shadows,
+            Row::Sound => s.sound = !s.sound,
+            Row::Volume => s.volume = step(VOLUMES, s.volume as f64, dir) as f32,
             Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
             Row::ShowWork => s.show_work = s.show_work.next(dir),
             Row::Difficulty => {
@@ -236,8 +242,11 @@ impl App {
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
             Row::Details => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Radius | Row::ShowWork) {
+        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
             self.settings.save();
+        }
+        if matches!(row, Row::Sound | Row::Volume) {
+            self.sync_sound();
         }
         if let Some(l) = &self.llm {
             *l.budget.lock() = self.settings.budget();
@@ -263,6 +272,8 @@ impl App {
             Row::Details => ("Spend details", "Enter →".into()),
             Row::Fps => ("Frame rate cap", format!("{:.0} fps", s.fps)),
             Row::Shadows => ("Shadows", on(s.shadows)),
+            Row::Sound => ("Sound", if s.sound && self.sound.is_none() && !cfg!(test) { "on (no output device)".into() } else { on(s.sound) }),
+            Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
             Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
             Row::Difficulty => ("Difficulty (this world)", self.sim.level().name.to_string()),

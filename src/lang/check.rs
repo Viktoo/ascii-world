@@ -198,6 +198,7 @@ impl<'s> Cx<'s> {
         let mut lists: [Vec<String>; 3] = Default::default();
         let mut body = None;
         let mut fits = None;
+        let mut sound: Vec<(String, f32)> = Vec::new();
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -249,6 +250,10 @@ impl<'s> Cx<'s> {
                 "fits" => match &p.value {
                     Expression::StringLiteral(s) => fits = Some(s.value.as_str().trim().to_lowercase().chars().take(48).collect::<String>()),
                     _ => self.err(p.span, "meta.fits must be the name of the body this layer is worn on"),
+                },
+                "sound" => match &p.value {
+                    Expression::ObjectExpression(so) => sound = self.meta_sound(so),
+                    _ => self.err(p.span, "meta.sound must be an object of 0–1 numbers, e.g. { hard: 0.2, dry: 0.3, ring: 0 }"),
                 },
                 "props" => match &p.value {
                     Expression::ObjectExpression(po) => props = self.meta_props(po),
@@ -304,7 +309,7 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.body.height and radius must fit inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, body, fits })
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits })
     }
 
     fn meta_body(&mut self, o: &js::ObjectExpression) -> Option<Body> {
@@ -419,6 +424,28 @@ impl<'s> Cx<'s> {
             return None;
         }
         (errs == 0).then_some(b)
+    }
+
+    /// `meta.sound`: hard, dry, ring (and leafy), each a number 0–1.
+    fn meta_sound(&mut self, o: &js::ObjectExpression) -> Vec<(String, f32)> {
+        let mut out = Vec::new();
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let key = match &p.key {
+                js::PropertyKey::StaticIdentifier(id) if !p.computed => id.name.as_str().to_string(),
+                js::PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                _ => continue,
+            };
+            if !matches!(key.as_str(), "hard" | "dry" | "ring" | "leafy") {
+                self.err(p.span, format!("meta.sound.{key} is not known (hard, dry, ring, leafy)"));
+                continue;
+            }
+            match &p.value {
+                Expression::NumericLiteral(n) if (0.0..=1.0).contains(&n.value) => out.push((key, n.value as f32)),
+                _ => self.err(p.span, format!("meta.sound.{key} must be a number from 0 to 1")),
+            }
+        }
+        out
     }
 
     fn meta_props(&mut self, o: &js::ObjectExpression) -> Vec<(String, f32)> {

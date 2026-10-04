@@ -795,9 +795,18 @@ impl Sim {
         let heard = !sounds.is_empty() && (signs.is_empty() || self.rand() < 0.5);
         let line = if heard {
             let i = (self.rand() * sounds.len() as f32) as usize % sounds.len();
+            // Heard truly, from where it is.
+            self.cue_noise(cid, i, 1.0);
             format!("You hear {} {}.", sounds[i].trim().trim_end_matches('.'), self.where_is(at))
         } else if !signs.is_empty() {
             let i = (self.rand() * signs.len() as f32) as usize % signs.len();
+            // A sign that is a sound ("a twig snaps") is heard too, from it.
+            if let Some(n) = self.cast.get(cid) {
+                if let Some(call) = crate::audio::call::guess(&signs[i], n.species.mass, false) {
+                    let mass = n.species.mass;
+                    self.cue(at + Vec3::Y, Some(ActorId::Npc(cid)), crate::audio::Heard::Call { call, mass, pitch: 1.0, gain: 0.8 });
+                }
+            }
             signs[i].clone()
         } else {
             return;
@@ -1002,7 +1011,7 @@ use super::actions::Action;
 
 /// What the brain is asked for when the dark needs a new kind.
 fn horror_brief() -> String {
-    "Invent one night horror for this world (it is called the night walker; its name is given): what comes out of the dark at night for the traveler, because the traveler can make things out of nothing. Let this world's lore choose where it comes from and how it is felt, and its form: it may walk upright, crawl, slither, or glide low on wings; be one huge thing or a pack of lean ones. Its body must borrow nothing from this world's own people or animals: no ears, fur, whiskers, tails, muzzles or faces like theirs, nothing cute or familiar. It must be frightening to meet in a dark, low-resolution world: an unnatural silhouette (wrong proportions, joints that bend wrong, too many of something, a face that is not a face). It is black, the colour of the dark itself (never purple or any bright colour, and its body gives no light); its eyes, two or many, glow red, and are the only lit part. Give it a description of under 25 words, a body (a new body name of your own, not \"night walker\", with a body_description of how it looks and moves, which says it is black all over, borrows nothing from the world's creatures, and only its red eyes shine, marked with glow()), \"social\": \"solitary\" if it comes alone or \"pack\" if a few come together, a \"size\" (1 for something person-sized, up to 3 for something huge), look ranges that keep it near black, 2–4 \"sounds\": what the traveler hears of it, each read after \"You hear\" (\"a wet click\", \"slow, dragging steps\"), and 5–8 \"signs\": short lines, to the traveler, of what they notice when it is near but out of sight, in this world's own textures (\"The crickets stop, all at once.\", \"You feel watched.\"); signs never say where it is (no behind, ahead, left or right: the game says that), and none may name or describe it outright.".into()
+    "Invent one night horror for this world (it is called the night walker; its name is given): what comes out of the dark at night for the traveler, because the traveler can make things out of nothing. Let this world's lore choose where it comes from and how it is felt, and its form: it may walk upright, crawl, slither, or glide low on wings; be one huge thing or a pack of lean ones. Its body must borrow nothing from this world's own people or animals: no ears, fur, whiskers, tails, muzzles or faces like theirs, nothing cute or familiar. It must be frightening to meet in a dark, low-resolution world: an unnatural silhouette (wrong proportions, joints that bend wrong, too many of something, a face that is not a face). It is black, the colour of the dark itself (never purple or any bright colour, and its body gives no light); its eyes, two or many, glow red, and are the only lit part. Give it a description of under 25 words, a body (a new body name of your own, not \"night walker\", with a body_description of how it looks and moves, which says it is black all over, borrows nothing from the world's creatures, and only its red eyes shine, marked with glow()), \"social\": \"solitary\" if it comes alone or \"pack\" if a few come together, a \"size\" (1 for something person-sized, up to 3 for something huge), look ranges that keep it near black, 2–4 \"sounds\": what the traveler hears of it, each read after \"You hear\" (\"a wet click\", \"slow, dragging steps\"), with a \"voice\" for each that is wrong to hear (breath that is too slow, a groan too low, clicks too wet), and 5–8 \"signs\": short lines, to the traveler, of what they notice when it is near but out of sight, in this world's own textures (\"The crickets stop, all at once.\", \"You feel watched.\"); signs never say where it is (no behind, ahead, left or right: the game says that), and none may name or describe it outright.".into()
 }
 
 /// What every night horror is, whatever the brain wrote.

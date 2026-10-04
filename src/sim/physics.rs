@@ -404,10 +404,18 @@ impl Sim {
         let Some(t) = self.things.get(id) else { return };
         let fragile = t.props[P_FRAGILE];
         let pos = t.pos;
+        let (type_id, props) = (t.type_id, t.props.clone());
         let name = self.thing_name(id);
         if fragile > 0.0 {
             if let Some(t) = self.things.get_mut(id) {
                 t.props[P_HEALTH] -= fragile * (speed - IMPACT_SAFE) * 0.4;
+            }
+        }
+        if speed > 1.2 {
+            if let Some(ty) = self.snap.type_of(type_id).cloned() {
+                let mass = props[P_MASS];
+                let mat = crate::audio::call::Material::of(&props, &ty.ct.meta.tags, crate::audio::call::Material::from_meta(&ty.ct.meta.sound).as_ref());
+                self.cue(pos, None, crate::audio::Heard::Hit { mat, mass, speed, by: None });
             }
         }
         self.run_touch(id, speed);

@@ -247,6 +247,10 @@ pub struct Species {
     /// Noises it makes when it can't speak ("woof", "a low purr").
     #[serde(default)]
     pub sounds: Vec<String>,
+    /// How each of `sounds` sounds (same order): see `audio::call`. Missing
+    /// or unreadable ones are guessed from the words.
+    #[serde(default, deserialize_with = "crate::audio::call::lenient_calls", skip_serializing_if = "Vec::is_empty")]
+    pub voice: Vec<crate::audio::call::Call>,
     /// Mass in kg at full size.
     #[serde(default = "mass")]
     pub mass: f32,
@@ -312,6 +316,7 @@ impl Species {
             *h = if h.is_finite() { h.rem_euclid(24.0) } else { 0.0 };
         }
         self.sounds.truncate(6);
+        self.voice.truncate(self.sounds.len());
         self.varieties.truncate(6);
         self.description = self.description.chars().take(160).collect();
         self.want = self.want.trim().to_lowercase();

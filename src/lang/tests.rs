@@ -427,3 +427,16 @@ export function color(x, y, z, k) { return glow(rgb(255, 60, 170)) * 0.5; }
     let t = compile(&local).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
     assert!(!t.marks_glow());
 }
+
+#[test]
+fn meta_sound_is_read_and_checked() {
+    let src = |sound: &str| format!("export const meta = {{ name: \"bell\", bounds: [0.3, 0.3, 0.3], sound: {sound} }};\nexport function sdf(x, y, z, k) {{ return sphere(x, y, z, 0.3); }}\nexport function color(x, y, z, k) {{ return rgb(200, 180, 60); }}\n");
+    let ct = compile(&src("{ hard: 0.9, dry: 0.5, ring: 1 }")).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    assert_eq!(ct.meta.sound, vec![("hard".to_string(), 0.9), ("dry".to_string(), 0.5), ("ring".to_string(), 1.0)]);
+    let m = crate::audio::call::Material::from_meta(&ct.meta.sound).unwrap();
+    assert_eq!(m.ring, 1.0);
+    for bad in ["{ hard: 3 }", "{ loudness: 0.5 }", "\"metal\""] {
+        let d = check::check(&src(bad)).expect_err(bad);
+        assert!(d.iter().any(|x| x.msg.contains("meta.sound")), "{bad}: {}", format_diags(&d));
+    }
+}

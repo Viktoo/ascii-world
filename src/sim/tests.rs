@@ -3545,3 +3545,146 @@ fn plant_eaters_graze_grass_and_people_do_not() {
     assert!(s.sim.things.get(t1).is_none(), "the tuft is eaten");
     assert!(s.sim.cast.get(goat).unwrap().needs.hunger < 0.9, "and the goat is less hungry");
 }
+
+// ------------------------------------------------------------------ sound
+
+/// What happens is heard where it happens, as physics says: a dog's noise
+/// in the dog's own voice, from the dog; a living shrub gives way and
+/// rustles, never knocks; a body meeting stone is a dull, quiet thud with
+/// no ring; fire crackles where it burns; a thrown stone where it lands.
+/// The game's foley turns them into voices that sound.
+#[test]
+fn noises_bumps_and_impacts_are_heard_where_they_happen() {
+    use crate::audio::Heard;
+    let w = world("sound", 51);
+    let p = dry_spot(&w, 10.0, 0.4);
+    let rex = add_being(&w, "Rex", "dog", &[], p + Vec3::new(4.0, 0.0, -2.0));
+    let shrub = builtin_id(&w, "shrub");
+    place(&w, shrub, p + Vec3::new(0.0, 0.0, 2.6), 0.0);
+    let boulder = builtin_id(&w, "boulder");
+    place(&w, boulder, p + Vec3::new(2.0, 0.0, -3.6), 0.0);
+    let mut s = session(&w, 5, None);
+    calm(&mut s);
+    clear_scatter(&mut s, p, 8.0);
+    s.sim.player.pos = ground(&w, p.x, p.z);
+    s.sim.player.yaw = 0.0;
+    s.sim.sounds.clear();
+
+    // The dog.
+    s.sim.make_noise(rex, true);
+    let c = s.sim.sounds.pop().expect("the noise is heard");
+    assert_eq!(c.from, Some(ActorId::Npc(rex)));
+    let dog = s.sim.actor(ActorId::Npc(rex)).unwrap().pos;
+    assert!((c.at - dog).length() < 1.5, "from the dog");
+    let Heard::Call { call, mass, .. } = &c.what else { panic!("a call: {c:?}") };
+    let sp = s.sim.cast.get(rex).unwrap().species.clone();
+    assert_eq!(*mass, sp.mass);
+    assert!(sp.voice.iter().any(|v| v == call), "its own written voice: {call:?}");
+
+    // Walking into the shrub, and leaning on it: growth gives way, no knock.
+    for _ in 0..120 {
+        s.sim.walk(ActorId::Player, Vec3::new(0.0, 0.0, 5.0 / 60.0));
+        s.sim.step(1.0 / 60.0);
+    }
+    assert!(!s.sim.sounds.iter().any(|c| matches!(c.what, Heard::Hit { .. })), "a living shrub is not struck: {:?}", s.sim.sounds);
+    // Walking along it: it rustles, softly, as the traveler's own brushing.
+    let mut foley = crate::audio::foley::Foley::default();
+    let mut cmds = Vec::new();
+    let mut rustle: f32 = 0.0;
+    for _ in 0..60 {
+        s.sim.walk(ActorId::Player, Vec3::new(3.0 / 60.0, 0.0, 0.0));
+        s.sim.step(1.0 / 60.0);
+        foley.frame(&mut s.sim, 1.0 / 60.0, &mut cmds);
+        for c in cmds.drain(..) {
+            if let crate::audio::mix::Cmd::Texture { at: crate::audio::mix::At::Listener, drive, mat, roar, .. } = c {
+                assert!(mat.leafy > 0.5 && mat.hard < 0.5 && roar == 0.0, "{mat:?}");
+                rustle = rustle.max(drive);
+            }
+        }
+    }
+    assert!(rustle > 0.1, "brushing past it rustles: {rustle}");
+
+    // A boulder walked into squarely: one dull, quiet thud, no ring.
+    s.sim.player.pos = ground(&w, p.x + 2.0, p.z);
+    s.sim.sounds.clear();
+    cmds.clear();
+    for _ in 0..90 {
+        s.sim.walk(ActorId::Player, Vec3::new(0.0, 0.0, -4.0 / 60.0));
+        s.sim.step(1.0 / 60.0);
+    }
+    let hits: Vec<_> = s.sim.sounds.iter().filter(|c| matches!(c.what, Heard::Hit { .. })).cloned().collect();
+    assert_eq!(hits.len(), 1, "met once: {hits:?}");
+    let Heard::Hit { mat, mass, by, .. } = hits[0].what else { unreachable!() };
+    assert!(mat.hard > 0.6 && mass > 1000.0 && by.is_some(), "stone, heavy, met by a body: {:?}", hits[0]);
+    s.sim.sounds.retain(|c| matches!(c.what, Heard::Hit { .. }));
+    foley.frame(&mut s.sim, 1.0 / 60.0, &mut cmds);
+    let thud = cmds.iter().find_map(|c| if let crate::audio::mix::Cmd::Play(p) = c { Some(p.call.0[0].clone()) } else { None }).expect("a thud");
+    assert!(thud.ring < 0.05 && thud.hard < 0.2 && thud.loud < 0.3, "flesh on stone is a dull, quiet thud: {thud:?}");
+    cmds.clear();
+
+    // Fire crackles where it burns.
+    let stick = builtin_id(&w, "stick");
+    let fire_at = s.sim.player.pos + Vec3::new(4.0, 0.0, 4.0);
+    let id = s.sim.spawn_thing(stick, fire_at, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.things.get_mut(id).unwrap().props[P_FIRE] = 1.0;
+    for _ in 0..20 {
+        foley.frame(&mut s.sim, 1.0 / 60.0, &mut cmds);
+    }
+    let fire = cmds.iter().find_map(|c| if let crate::audio::mix::Cmd::Texture { at: crate::audio::mix::At::Point(p), drive, roar, .. } = c { (*roar > 0.0).then_some((*p, *drive)) } else { None }).expect("a fire is heard");
+    assert!((fire.0 - fire_at).length() < 3.0 && fire.1 > 0.2, "{fire:?}");
+    cmds.clear();
+    s.sim.sounds.clear();
+
+    // The foley makes voices of it all, and they sound.
+    s.sim.make_noise(rex, false);
+    foley.frame(&mut s.sim, 1.0 / 60.0, &mut cmds);
+    assert!(s.sim.sounds.is_empty(), "taken");
+    assert!(cmds.iter().any(|c| matches!(c, crate::audio::mix::Cmd::Play(_))));
+    let _ = rex;
+    let mut m = crate::audio::mix::Mixer::new(48000.0);
+    for c in cmds {
+        m.apply(c);
+    }
+    let e: f32 = m.render(1.5).iter().map(|x| x * x).sum();
+    assert!(e > 0.01, "heard: {e}");
+
+    // A thrown stone.
+    let stone = builtin_id(&w, "stone");
+    let id = s.sim.spawn_thing(stone, s.sim.player.pos + Vec3::new(0.3, 0.0, -0.3), 0.0, 1.0, Default::default(), true).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(id) }, 0.2);
+    assert_eq!(r["ok"], true, "{r}");
+    s.sim.sounds.clear();
+    let far = s.sim.player.pos + Vec3::new(-6.0, 0.0, -6.0);
+    let r = act_once(&mut s, ActorId::Player, Action::Throw { at: Some(Target::Point(far.to_array())), dir: None, force: Some(9.0) }, 4.0);
+    assert_eq!(r["ok"], true, "{r}");
+    let landed = s.sim.things.get(id).unwrap().pos;
+    let hit = s.sim.sounds.iter().find_map(|c| if let Heard::Hit { mat, mass, .. } = c.what { Some((c.at, mat, mass)) } else { None }).expect("the stone is heard landing");
+    assert!(hit.1.hard > 0.6 && hit.1.leafy < 0.5, "stone: {:?}", hit.1);
+    assert!((hit.0 - landed).length() < 4.0, "where it landed");
+}
+
+/// A world with sound never changes what happens: the same seed makes the
+/// same history whether or not anyone listens.
+#[test]
+fn listening_changes_nothing() {
+    let run = |listen: bool| {
+        let w = world("listen", 52);
+        let p = dry_spot(&w, 10.0, 0.4);
+        add_being(&w, "Rex", "dog", &[], p + Vec3::new(4.0, 0.0, -2.0));
+        add_being(&w, "Tib", "cat", &[], p + Vec3::new(-4.0, 0.0, 2.0));
+        let mut s = session(&w, 9, None);
+        let all = record(&mut s);
+        let mut foley = crate::audio::foley::Foley::default();
+        let mut cmds = Vec::new();
+        for _ in 0..600 {
+            s.step(0.1);
+            if listen {
+                foley.frame(&mut s.sim, 0.1, &mut cmds);
+                cmds.clear();
+            }
+        }
+        let v: Vec<String> = all.lock().iter().map(|e| format!("{} {} {}", e.t, e.kind, e.text)).collect();
+        v
+    };
+    assert_eq!(run(false), run(true));
+}

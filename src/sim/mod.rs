@@ -340,6 +340,12 @@ pub struct Sim {
     pub night: night::NightState,
     /// Happenings with one cause, told as one story (see `incident`).
     pub incidents: incident::Incidents,
+    /// What was made heard since the game last took them (see `audio`).
+    pub sounds: Vec<crate::audio::Cue>,
+    /// When each body last bumped into something (a bump is heard once).
+    bumped: HashMap<ActorId, f64>,
+    /// The last step's length (s): how fast a walk's delta was.
+    frame_dt: f32,
 }
 
 impl Sim {
@@ -385,6 +391,9 @@ impl Sim {
             made: std::collections::HashMap::new(),
             night: night::NightState::default(),
             incidents: incident::Incidents::default(),
+            sounds: Vec::new(),
+            bumped: HashMap::new(),
+            frame_dt: 1.0 / 60.0,
         };
         sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();
@@ -500,6 +509,27 @@ impl Sim {
     pub fn event(&mut self, kind: &str, actor: Option<ActorId>, subject: Option<String>, text: impl Into<String>, pos: Option<Vec3>, data: Value) {
         let e = SimEvent { t: (self.t * 1000.0).round() / 1000.0, kind: kind.into(), actor, subject, text: text.into(), pos: pos.map(|p| [(p.x * 10.0).round() / 10.0, (p.y * 10.0).round() / 10.0, (p.z * 10.0).round() / 10.0]), data };
         self.log.push(e);
+    }
+
+    /// Something is heard. Kept only for a game listening; a headless run
+    /// lets the oldest go.
+    pub fn cue(&mut self, at: Vec3, from: Option<ActorId>, what: crate::audio::Heard) {
+        if self.sounds.len() >= 256 {
+            self.sounds.drain(..64);
+        }
+        self.sounds.push(crate::audio::Cue { at, from, what });
+    }
+
+    /// A being's `i`th noise, heard from where it is.
+    pub fn cue_noise(&mut self, cid: i64, i: usize, gain: f32) {
+        let Some(n) = self.cast.get(cid) else { return };
+        let Some(call) = crate::audio::call::species_call(&n.species, i) else { return };
+        // Its register: its kind's, bent by how big this one is.
+        let ratio = (n.a.dims.mass / n.species.mass.max(0.1)).max(0.01).powf(1.0 / 3.0);
+        let pitch = crate::audio::individual_pitch(cid, ratio);
+        let at = n.a.pos + Vec3::Y * n.a.dims.height * 0.75;
+        let mass = n.species.mass;
+        self.cue(at, Some(ActorId::Npc(cid)), crate::audio::Heard::Call { call, mass, pitch, gain });
     }
 
     /// Tell the player, if they are close enough to notice.
@@ -624,6 +654,49 @@ impl Sim {
             a.moved = (to - from).length();
             a.pos = to;
         }
+        self.bump_sound(id, from, delta, to, r, &solids);
+    }
+
+    /// Walking into something solid is heard as physics says: by how
+    /// squarely and fast it was met, and by both bodies. A body meeting a
+    /// heavy, hard thing makes a dull thud at most; brushing past growth is
+    /// a rustle (the foley's), not a hit; only dry, dead growth met head-on
+    /// snaps. Heard once, not again while leaning on it.
+    fn bump_sound(&mut self, id: ActorId, from: Vec3, delta: Vec3, to: Vec3, r: f32, solids: &[Solid]) {
+        use crate::audio::call::Material;
+        let want = Vec3::new(delta.x, 0.0, delta.z).length();
+        let got = Vec3::new(to.x - from.x, 0.0, to.z - from.z).length();
+        if want < 1e-4 || got > want * 0.4 {
+            return;
+        }
+        let calm = if id == ActorId::Player { 0.8 } else { 3.0 };
+        let fresh = self.bumped.get(&id).is_none_or(|t| self.t - t > calm);
+        self.bumped.insert(id, self.t);
+        if !fresh {
+            return;
+        }
+        let dir = Vec3::new(delta.x, 0.0, delta.z) / want;
+        let ahead = from + dir * (r + 0.2);
+        let gap = |s: &Solid| (Vec3::new(s.inst.center().x, ahead.y, s.inst.center().z) - ahead).length() - s.inst.radius();
+        let Some(hit) = solids.iter().filter(|s| gap(s) < 0.8).min_by(|a, b| gap(a).total_cmp(&gap(b))) else { return };
+        let c = hit.inst.center();
+        let head_on = dir.dot(Vec3::new(c.x - from.x, 0.0, c.z - from.z).normalize_or_zero()).max(0.0);
+        let speed = (want / self.frame_dt.max(1e-3)).min(12.0) * head_on;
+        let ty = hit.ty.clone();
+        let scale = hit.inst.pos_scale[3].max(0.01);
+        let props = self.type_props.get(&self.vocab, &ty);
+        let mat = Material::of(&props, &ty.ct.meta.tags, Material::from_meta(&ty.ct.meta.sound).as_ref());
+        let mass = (props[props::P_MASS] * scale.powi(3)).max(0.01);
+        let body = self.actor(id).map(|a| a.dims.mass).unwrap_or(70.0);
+        // Growth gives way: it rustles as it's pushed (the foley hears that).
+        // Only dry, dead growth met squarely snaps.
+        if mat.leafy > 0.5 && !(mat.dry > 0.6 && head_on > 0.75) {
+            return;
+        }
+        if speed < 0.8 {
+            return;
+        }
+        self.cue(ahead + Vec3::Y * 0.8, None, crate::audio::Heard::Hit { mat, mass, speed, by: Some((Material::FLESH, body)) });
     }
 
     /// A new world version arrived (creation, region, undo).
@@ -697,6 +770,9 @@ impl Sim {
 
     pub fn step(&mut self, dt: f32) {
         let dt = dt.clamp(0.0, 0.25);
+        if dt > 0.0 {
+            self.frame_dt = dt;
+        }
         self.t += dt as f64;
         self.step_actors(dt);
         self.update_riders();

@@ -110,6 +110,75 @@
    "a low growl",
    "a soft whine"
   ],
+  "voice": [
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      420,
+      480,
+      330
+     ],
+     "len": 0.17,
+     "vowel": "ua",
+     "rough": 0.4,
+     "breath": 0.2,
+     "swell": 0,
+     "loud": 0.85
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      520,
+      600,
+      420
+     ],
+     "len": 0.13,
+     "times": 2,
+     "gap": 0.12,
+     "vowel": "a",
+     "rough": 0.3,
+     "breath": 0.15,
+     "swell": 0,
+     "loud": 0.8
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      95,
+      105,
+      90
+     ],
+     "len": 1.4,
+     "vowel": "o",
+     "rough": 0.9,
+     "breath": 0.3,
+     "swell": 0.4,
+     "loud": 0.45
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      900,
+      1050,
+      780
+     ],
+     "len": 0.9,
+     "vowel": "i",
+     "nasal": 0.7,
+     "breath": 0.3,
+     "wobble": 0.3,
+     "swell": 0.3,
+     "loud": 0.3
+    }
+   ]
+  ],
   "mass": 25,
   "description": "a loyal, playful dog",
   "needs": {
@@ -172,6 +241,53 @@
    "a soft purr",
    "a hiss"
   ],
+  "voice": [
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      550,
+      800,
+      500
+     ],
+     "len": 0.65,
+     "vowel": "iau",
+     "nasal": 0.35,
+     "rough": 0.05,
+     "breath": 0.1,
+     "swell": 0.15,
+     "loud": 0.5
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      25,
+      27,
+      24
+     ],
+     "len": 0.8,
+     "times": 3,
+     "gap": 0.1,
+     "vowel": "m",
+     "rough": 0.35,
+     "breath": 0.5,
+     "swell": 0.4,
+     "loud": 0.15
+    }
+   ],
+   [
+    {
+     "kind": "noise",
+     "len": 0.9,
+     "hard": 0.95,
+     "dry": 0.9,
+     "swell": 0.05,
+     "loud": 0.55
+    }
+   ]
+  ],
   "mass": 4.5,
   "description": "an aloof, curious cat",
   "needs": {
@@ -233,6 +349,37 @@
    "a soft whinny",
    "a snort"
   ],
+  "voice": [
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      700,
+      900,
+      450
+     ],
+     "len": 1.2,
+     "vowel": "ie",
+     "nasal": 0.5,
+     "rough": 0.3,
+     "wobble": 1.0,
+     "swell": 0.1,
+     "loud": 0.6
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": 60,
+     "len": 0.35,
+     "vowel": "n",
+     "breath": 1,
+     "rough": 0.5,
+     "swell": 0,
+     "loud": 0.5
+    }
+   ]
+  ],
   "mass": 500,
   "description": "a strong, gentle horse"
  },
@@ -289,6 +436,41 @@
   "sounds": [
    "a long howl",
    "a low growl"
+  ],
+  "voice": [
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      380,
+      560,
+      430
+     ],
+     "len": 2.6,
+     "vowel": "ou",
+     "rough": 0.05,
+     "breath": 0.15,
+     "wobble": 0.3,
+     "swell": 0.6,
+     "loud": 0.95
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      90,
+      100,
+      85
+     ],
+     "len": 1.3,
+     "vowel": "o",
+     "rough": 0.9,
+     "breath": 0.3,
+     "swell": 0.4,
+     "loud": 0.5
+    }
+   ]
   ],
   "mass": 40,
   "description": "a lean grey wolf",
@@ -347,6 +529,42 @@
    "a bleat",
    "a loud maa"
   ],
+  "voice": [
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      380,
+      400,
+      360
+     ],
+     "len": 0.7,
+     "vowel": "ea",
+     "nasal": 0.4,
+     "rough": 0.3,
+     "wobble": 1,
+     "swell": 0.1,
+     "loud": 0.6
+    }
+   ],
+   [
+    {
+     "kind": "voice",
+     "hz": [
+      330,
+      360,
+      300
+     ],
+     "len": 0.9,
+     "vowel": "ma",
+     "nasal": 0.4,
+     "rough": 0.35,
+     "wobble": 1,
+     "swell": 0.1,
+     "loud": 0.85
+    }
+   ]
+  ],
   "mass": 50,
   "description": "a stubborn goat"
  },
@@ -402,6 +620,20 @@
   },
   "sounds": [
    "a sharp snort"
+  ],
+  "voice": [
+   [
+    {
+     "kind": "voice",
+     "hz": 80,
+     "len": 0.25,
+     "vowel": "n",
+     "breath": 1,
+     "rough": 0.4,
+     "swell": 0,
+     "loud": 0.7
+    }
+   ]
   ],
   "mass": 90,
   "description": "a shy deer",
