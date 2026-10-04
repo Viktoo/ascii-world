@@ -36,8 +36,8 @@ Read this whole plan first, then `docs/emergence-plan.md` and
 `docs/night-plan.md` for intent. Work one phase at a time, in order.
 
 **Setup.**
-- Work in the worktree `/Users/viktor/Documents/personal/ascii-world-emergence`
-  on branch `increased-emergence`, never in the main folder (other work goes on there).
+- Work on branch `increased-emergence`. If other work is going on in the
+  same folder, use a separate git worktree for the branch.
 - `main` has moved ahead (the "sounds!" commit). Merge `main` into the
   branch before starting, fix conflicts, and get the tests green.
 - Commands: `cargo test --release` (all must pass), `cargo build --release`
