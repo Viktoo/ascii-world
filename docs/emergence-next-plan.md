@@ -20,6 +20,16 @@ code-written fallbacks kept small and derived from data.
   throw at and pick up, personality as numbers, small talk from what each one
   witnessed.
 
+What that changed so far: a world's own forces (curses, rot) are told, spread
+as incidents, avoided and fought (new worlds only: older worlds' properties
+have no metadata); people fetch tools their world's rules make useful; pets
+and simple animals sometimes plan with the LLM; small talk is about what each
+one saw. Fire behaves about as before.
+
+Known regressions to weigh: bare hands save fewer tufts than the old douse
+(about 5 of 50 against 12 in the test); shouts are generic ("Careful, the
+grass tuft!") rather than written for fire.
+
 ## Decisions
 
 - The **player's body stays out** of the rules pass: the traveler is never
@@ -32,6 +42,7 @@ code-written fallbacks kept small and derived from data.
 
 ## Order
 
+0. Vocabulary hygiene (small; makes every later phase sturdier).
 1. Bodies have properties (smallest; unlocks curses, weather, corruption on people).
 2. Goals as data (builds on missions; makes promises real).
 3. One scorer (needs goals as a source of things to do).
@@ -39,6 +50,26 @@ code-written fallbacks kept small and derived from data.
 
 Each phase ends with its proof as a test in `src/sim/tests.rs`, a headless
 run of a real world with no invariants broken, and a commit.
+
+## 0. Vocabulary hygiene
+
+Properties are capped (a genesis adds at most 8; 64 in all; none appear mid
+game), so the risk is not sprawl but meaning drifting and near-miss names.
+- **Deed answers are checked** like object types: a property the world
+  doesn't know ("curse" in a world of "cursed") is sent back to be fixed,
+  never silently dropped (today `interp.rs` ignores it).
+- **Aliases, once per world:** a near-miss name is mapped once (exact, then
+  known aliases, then one LLM ruling), stored with the world and reused.
+- **Units and anchors** in each property's metadata ("0.2 a blessed candle,
+  1 a saint's relic"), shown in every prompt that writes values, so scales
+  agree across types.
+- **Act properties apart:** `force` (and later `kindness`) say what an action
+  is doing right now, not what a thing is. They move out of the vocabulary
+  into a small set rules can read but nothing generated can write.
+- **Built-ins are earned:** none added without a phase that needs it.
+
+**Proof.** A deed answer with "curse: 1" in a "cursed" world is repaired and
+takes effect; the alias is reused without asking again; a type cannot set `force`.
 
 ## 1. Bodies have properties
 
@@ -157,6 +188,35 @@ something is; plus text), source (saw / told by X / guessed), how sure, when.
 causes; one who only heard of it believes the teller, less surely; a
 corrupted teller spreads a false cause and those who saw it themselves don't
 take it up. A long headless run keeps belief rows under the cap.
+
+## Measuring emergence
+
+Each phase must show more stories, not just more activity. A headless run of
+a test village and of a real world, before and after, reports:
+- distinct kinds of events per game day;
+- cause chains three or more steps long (incident causes, goals that needed
+  someone else, beliefs that changed a plan);
+- beliefs held differently by different people (phase 4);
+- goals that cross between characters (phase 2);
+- needs kept met, and nobody stuck.
+
+`pocket sim` gains these numbers; the phase's commit records them.
+
+## LLM cost
+
+The number of calls is set by `llm_per_min` and none of this raises it;
+what changes is who gets the calls and how long the prompts are. Decisions
+are about 1% of a world's spend today (types and regions are about 90%).
+- Bodies: no calls.
+- Goals: promises ride on the talk reply already made; starting goals on the
+  region call; the sim checks most goals itself; free-text goals get at most
+  one LLM check, at their deadline.
+- Scorer: the menu adds about 200 tokens a decision; with no LLM it is the
+  whole brain.
+- Beliefs: about 300 tokens of retrieval a decision or talk; passing them on
+  is pure sim, and so is corruption twisting them.
+
+Expected: decision prompts 30–60% longer by the end, a few percent on the bill.
 
 ## Not in this plan (next)
 
