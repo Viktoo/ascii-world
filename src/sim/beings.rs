@@ -24,7 +24,7 @@ impl Sim {
         (STRENGTH * (m / 70.0).powf(2.0 / 3.0)).clamp(0.3, 4000.0)
     }
 
-    /// The species' mind for an actor (the traveller is a person).
+    /// The species' mind for an actor (the traveler is a person).
     pub fn mind_of(&self, who: ActorId) -> Mind {
         match who {
             ActorId::Player => Mind::Sapient,
@@ -109,7 +109,7 @@ impl Sim {
         best.map(|b| b.1)
     }
 
-    /// The traveller spoke to (or called) an animal: it answers with a noise
+    /// The traveler spoke to (or called) an animal: it answers with a noise
     /// and its body, by how it feels about them. No words, no LLM.
     pub fn animal_answers(&mut self, cid: i64) {
         let me = ActorId::Npc(cid);
@@ -125,17 +125,17 @@ impl Sim {
             self.make_noise(cid, true);
             let _ = self.act(me, Action::Gesture { kind: "wag".into(), to: None });
             self.social.bond(me, ActorId::Player, 0.03, self.t);
-            self.set_doing(cid, "greeting the traveller");
+            self.set_doing(cid, "greeting the traveler");
         } else if aff < -0.25 {
             self.make_noise(cid, false);
             let away = (pos - player).normalize_or_zero() * 4.0;
-            self.plan(me, vec![Action::Goto { target: Target::Point((pos + away).to_array()), run: true }], "keep away from the traveller", false);
+            self.plan(me, vec![Action::Goto { target: Target::Point((pos + away).to_array()), run: true }], "keep away from the traveler", false);
             self.set_doing(cid, "backing away");
         } else {
             self.make_noise(cid, true);
             let _ = self.act(me, Action::Gesture { kind: "nod".into(), to: None });
             self.social.bond(me, ActorId::Player, 0.02, self.t);
-            self.set_doing(cid, "eyeing the traveller");
+            self.set_doing(cid, "eyeing the traveler");
         }
     }
 
@@ -146,7 +146,7 @@ impl Sim {
             .cast
             .npcs
             .iter()
-            .filter(|n| !n.dressed && !n.dead)
+            .filter(|n| !n.dressed && n.here())
             .map(|n| {
                 let mut v = n.def.persona.layers.clone();
                 if let Some(var) = n.species.varieties.iter().find(|v| v.name == n.def.persona.variety) {
@@ -230,7 +230,7 @@ impl Sim {
     pub fn animals_notice_throw(&mut self, at: Vec3) {
         let t = self.t;
         for n in self.cast.npcs.iter_mut() {
-            if !n.dead && n.species.mind != Mind::Sapient && n.temper.playful > 0.5 && !n.a.asleep && (n.a.pos - at).length() < 30.0 && n.plan.is_empty() {
+            if n.here() && n.species.mind != Mind::Sapient && n.temper.playful > 0.5 && !n.a.asleep && (n.a.pos - at).length() < 30.0 && n.plan.is_empty() {
                 n.think_at = n.think_at.min(t + 0.3);
                 if matches!(n.a.task, Some(super::actor::Task::Follow { .. }) | Some(super::actor::Task::Wait { .. }) | None) {
                     n.a.task = None;
@@ -278,7 +278,7 @@ impl Sim {
     /// Whether `a` would hunt `b`, from the taxonomy alone: a meat eater
     /// hunts what is clearly smaller than it (and its pack), never its own
     /// kind or kin; only the boldest go after people, and nobody hunts the
-    /// traveller.
+    /// traveler.
     pub fn hunts(&self, a: ActorId, b: ActorId) -> bool {
         if a == b || b == ActorId::Player {
             return false;
@@ -308,7 +308,7 @@ impl Sim {
         self.cast
             .npcs
             .iter()
-            .filter(|n| !n.dead && ActorId::Npc(n.def.id) != me && n.species.name == sp && (n.a.pos - p).length() < range)
+            .filter(|n| n.here() && ActorId::Npc(n.def.id) != me && n.species.name == sp && (n.a.pos - p).length() < range)
             .map(|n| (ActorId::Npc(n.def.id), n.a.pos))
             .collect()
     }
@@ -334,7 +334,11 @@ impl Sim {
             let d = (x.pos - pos).length();
             let ratio = (self.mass_of(o) / my_mass.max(0.1)).sqrt().min(3.0);
             let spooks = animal && sp.is_some_and(|s| s.diet.meat < 0.3 && wary >= 0.5) && self.species_of(o).is_some_and(|s| s.diet.meat > 0.5 && s.mind != Mind::Sapient) && !self.kin(me, o) && !self.used_to(me, o);
-            let keep = if self.hunts(o, me) {
+            let dark = self.species_of(o).is_some_and(|s| s.touch.harms()) && self.species_of(me).is_none_or(|s| !s.touch.harms());
+            let keep = if dark {
+                // Whatever's touch harms: everyone keeps away.
+                10.0 + 20.0 * wary
+            } else if self.hunts(o, me) {
                 (6.0 + 30.0 * wary * ratio).min(60.0)
             } else if spooks {
                 // Prey animals shy from any meat eater, however small.
@@ -750,7 +754,7 @@ impl Sim {
         }
         let need = if fx.turn_into.is_some() {
             0.0
-        } else if !fx.look.is_empty() || fx.grow.is_some() {
+        } else if !fx.look.is_empty() || fx.grow.is_some() || fx.reshape.is_some() {
             0.3
         } else if !fx.take_off.is_empty() {
             0.25
@@ -821,7 +825,7 @@ impl Sim {
         for m in fx.wear.iter().take(2) {
             let body = self.body_name(b);
             let at = self.actor(b).map(|a| a.pos).unwrap_or_default();
-            match self.type_by_name(&m.name).filter(|ty| ty.ct.meta.fits.as_deref().is_none_or(|f| f == body)) {
+            match self.type_by_name(&m.name).filter(|ty| ty.ct.meta.fits.as_deref().is_none_or(|f| self.snap.layer_fits(f, &body))) {
                 Some(ty) => {
                     let origin = super::things::Origin { made_by: Some(self.actor_name(actor)), ..Default::default() };
                     if let Some(id) = self.spawn_thing(ty.id, at, 0.0, 1.0, origin, false) {
@@ -881,6 +885,87 @@ impl Sim {
         }
     }
 
+    /// Rewrite one being's body as a deed says (a poofy tail, pointed
+    /// ears): its own body from then on, written from the one it has, with
+    /// the same roles, so its gestures and walk still work. Returns the
+    /// build its story waits on.
+    pub fn reshape_being(&mut self, by: ActorId, b: ActorId, change: &str) -> Result<Option<u64>, String> {
+        let ActorId::Npc(c) = b else { return Err("the traveler's own body stays as it is".into()) };
+        let change = change.trim();
+        if change.is_empty() || !self.has_llm {
+            return Ok(None);
+        }
+        let n = self.cast.get(c).ok_or("they are gone")?;
+        let ty = self.snap.type_of(n.body_ty).cloned().ok_or("they have no body to change")?;
+        let from = ty.name().to_string();
+        let first = n.name().split_whitespace().next().unwrap_or("").to_string();
+        // Type names hold 48 characters.
+        let mut name = format!("{} ({first} #{c})", n.species.name);
+        if name.chars().count() > 48 {
+            name = format!("{} (#{c})", n.species.name);
+        }
+        let id = self.next_id();
+        let change: String = change.chars().take(300).collect();
+        self.interp.building.insert(id, super::interp::PendingBuild { name: name.clone(), by: Some(by), change: change.clone(), body_of: Some(c), ..Default::default() });
+        self.request_now(super::Request::ReshapeBody { id, name, from, source: ty.ct.source.clone(), change });
+        Ok(Some(id))
+    }
+
+    /// A being's reshaped body is written (or came to nothing).
+    pub fn on_body_reshaped(&mut self, id: u64, cid: i64, b: super::interp::PendingBuild, type_id: Option<u32>) {
+        if let Some(by) = b.by {
+            self.deed_landed(by);
+        }
+        let who = ActorId::Npc(cid);
+        let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
+        let name = self.actor_name(who);
+        let body = type_id.and_then(|t| self.snap.type_of(t)).filter(|t| t.ct.meta.body.is_some()).map(|t| t.name().to_string());
+        let Some(body) = body.filter(|_| self.cast.get(cid).is_some()) else {
+            self.release_deeds(id, false);
+            if self.interp.stories.remove(&id).is_some() {
+                self.note_near(at, 30.0, Note::Info(format!("{} stays as they were.", super::physics::cap(&name))));
+            }
+            return;
+        };
+        let before = self.cast.get(cid).map(|n| n.a.dims.height).unwrap_or(1.0);
+        self.change_persona(cid, |p| p.body = body.clone());
+        // Drawn at another scale than the body it came from: same height.
+        let after = self.cast.get(cid).map(|n| n.a.dims.height).unwrap_or(before);
+        let r = before / after.max(0.01);
+        if !(0.67..=1.5).contains(&r) {
+            self.change_persona(cid, |p| p.size = Some((p.size_mul() * r).clamp(0.5, 4.0)));
+        }
+        self.tell_held_stories(id, at);
+        let by = b.by.map(|x| self.actor_name(x)).unwrap_or_default();
+        self.event("reshaped_being", b.by, Some(who.key()), format!("{by} changed {name}'s shape: {}", b.change), Some(at), json!({ "body": body, "change": b.change }));
+    }
+
+    /// Species still drawn with a generic body (a cat on the four-legged
+    /// "quadruped") get their own, written from it: once each, for those
+    /// about. Until it comes they keep the generic one.
+    pub fn ask_species_bodies(&mut self) {
+        if !self.has_llm || !self.cfg.own_bodies {
+            return;
+        }
+        let mut asks: Vec<(String, String)> = Vec::new();
+        for n in self.cast.npcs.iter().filter(|n| n.here() && !n.dead && !n.species.is_human()) {
+            let sp = &n.species;
+            if self.interp.bodies_asked.contains(&sp.name) || asks.iter().any(|a| a.0 == sp.name) {
+                continue;
+            }
+            let generic = self.snap.body_named(&sp.body).is_some_and(|b| b.builtin && crate::brain::TEMPLATE_BODIES.contains(&b.name()));
+            if generic {
+                asks.push((sp.name.clone(), serde_json::to_string(sp.as_ref()).unwrap_or_default()));
+            }
+        }
+        for (name, json) in asks {
+            let template = self.snap.species.get(&name).map(|s| s.body.clone()).unwrap_or_default();
+            self.interp.bodies_asked.insert(name);
+            let id = self.next_id();
+            self.request_now(super::Request::SpeciesBody { id, species: json, template });
+        }
+    }
+
     /// Whether this world has forces of its own (magic, curses…): its own
     /// properties, or the `sim.transform` setting.
     pub fn world_has_magic(&self) -> bool {
@@ -904,12 +989,13 @@ impl Sim {
             p.species = if name == "human" { String::new() } else { name.clone() };
             p.variety.clear();
             p.look.clear();
+            p.body.clear();
         });
         // Layers made for the old body fall off.
         let body = self.body_name(who);
         for id in self.worn_by(who) {
             let fits = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)).and_then(|ty| ty.ct.meta.fits.clone());
-            if fits.is_some_and(|f| f != body) {
+            if fits.is_some_and(|f| !self.snap.layer_fits(&f, &body)) {
                 if let Some(t) = self.things.get_mut(id) {
                     t.worn = None;
                     t.asleep = false;
@@ -966,7 +1052,7 @@ impl Sim {
             return Err("beings can't be made in this world".into());
         }
         let Some(sp) = self.snap.species.get(&nb.species).cloned() else { return Err(format!("no such species: {}", nb.species)) };
-        let n_of = self.cast.npcs.iter().filter(|n| !n.dead && n.species.name == sp.name).count();
+        let n_of = self.cast.npcs.iter().filter(|n| n.here() && n.species.name == sp.name).count();
         if n_of >= self.cfg.max_creatures * 4 {
             return Err("there are enough of them".into());
         }
@@ -979,7 +1065,7 @@ impl Sim {
             appearance: nb.description.chars().take(160).collect(),
             look: nb.look.iter().filter(|(_, v)| v.is_finite()).map(|(k, v)| (k.trim().to_lowercase(), *v)).collect(),
             size: nb.size.filter(|s| s.is_finite() && (*s - 1.0).abs() > 0.01).map(|s| s.clamp(0.5, 4.0)),
-            relationships: vec![format!("{}: owner and maker", if first == "the" { "the traveller" } else { &maker })],
+            relationships: vec![format!("{}: owner and maker", if first == "the" { "the traveler" } else { &maker })],
             ..Default::default()
         };
         let at = self.actor(by).map(|a| a.pos + a.forward() * 2.5).unwrap_or_default();

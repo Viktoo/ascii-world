@@ -1,7 +1,7 @@
 //! Random world prompts (`pocket new --random`): one reviewed part from each
 //! list in `builtin/prompts.json`, put together into a sentence. Variety
 //! comes from the lists, not from a model's habits; genesis then splits the
-//! sentence into the land and where the traveller begins.
+//! sentence into the land and where the traveler begins.
 
 use serde::Deserialize;
 

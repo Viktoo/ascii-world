@@ -37,9 +37,10 @@ pub struct Make {
     pub props: BTreeMap<String, f32>,
 }
 
-/// What a deed does to a being. Its body code is never rewritten: what it
-/// wears, its look sliders, its needs and feelings change, it can learn a
-/// trick, and (where the world has its own forces) become another species.
+/// What a deed does to a being: what it wears, its look sliders, its needs
+/// and feelings change, it can learn a trick, its body can be reshaped (its
+/// own from then on), and (where the world has its own forces) it can
+/// become another species.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct BeingFx {
     /// Added to its needs (hunger, fatigue, social, fun, curiosity).
@@ -66,6 +67,10 @@ pub struct BeingFx {
     /// Another species it turns into.
     #[serde(default, rename = "become")]
     pub turn_into: Option<String>,
+    /// What changes about its body's shape (a poofy tail): its body is
+    /// rewritten, for this being only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reshape: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -203,6 +208,8 @@ pub struct PendingBuild {
     pub change: String,
     /// A layer to put on someone when it exists: (wearer, by whom).
     pub wear_on: Option<(ActorId, ActorId)>,
+    /// A character whose body this is, reshaped (see `reshape_being`).
+    pub body_of: Option<i64>,
 }
 
 #[derive(Default)]
@@ -222,6 +229,8 @@ pub struct Interp {
     pub gestures: HashMap<u64, (ActorId, Option<Target>, String)>,
     /// Species' own versions of gestures already asked for (name@species).
     pub variants_asked: std::collections::HashSet<String>,
+    /// Species whose own body was asked for (see `ask_species_bodies`).
+    pub bodies_asked: std::collections::HashSet<String>,
     /// The trip (by its deadline) for which a character last asked its mount.
     pub mount_asked: HashMap<ActorId, u64>,
     pub hits: u64,
@@ -275,11 +284,11 @@ fn pieces_without_change(fx: &InterpEffect, p: &PendingInterp) -> bool {
     on_thing && loose && !reshaped
 }
 
-/// The cache key: who acts (the traveller makes outright, characters by the
+/// The cache key: who acts (the traveler makes outright, characters by the
 /// world's laws), the words, normalised, and the kinds of things involved.
 fn cache_key(who: ActorId, text: &str, held: &str, target: &str) -> String {
     let t: String = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty() && !matches!(*w, "the" | "a" | "an" | "my" | "i" | "to")).collect::<Vec<_>>().join(" ");
-    let by = if who == ActorId::Player { "traveller" } else { "character" };
+    let by = if who == ActorId::Player { "traveler" } else { "character" };
     format!("{by}|{t}|{}|{}", held.to_lowercase(), target.to_lowercase())
 }
 
@@ -297,8 +306,8 @@ fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<S
     // `changes`, `cut` and the being's needs and feelings are in `moved`.
     // New, removed and reshaped things, new beings and words show by themselves.
     if let Some(b) = being {
-        let BeingFx { needs: _, feel: _, look: _, grow: _, wear: _, take_off: _, learn: _, turn_into: _ } = b;
-        // Its look, size, layers, a trick and a new species show by themselves.
+        let BeingFx { needs: _, feel: _, look: _, grow: _, wear: _, take_off: _, learn: _, turn_into: _, reshape: _ } = b;
+        // Its look, size, layers, a trick, a new shape and a new species show by themselves.
     }
     let parts: Vec<String> = moved.into_iter().map(|(what, shifts)| format!("{what}: {}", shifts.join(", "))).collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
@@ -312,6 +321,11 @@ impl Sim {
         let target_name = target.as_ref().map(|r| r.name.clone()).unwrap_or_default();
         let key = cache_key(who, text, &held_name, &target_name);
         let name = self.actor_name(who);
+        // The traveler's deeds in words draw on their charges.
+        if who == ActorId::Player && self.has_llm && !self.spend_charge() {
+            self.notes.push(super::Note::Info("Your power is spent until dawn (✦ 0). Kindness and getting through the night bring it back.".into()));
+            return Ok(Outcome { ok: false, msg: "Your power is spent until dawn.".into(), pending: None, thing: None });
+        }
         self.deed_started(who, text, target.as_ref().map(|r| r.target.clone()));
         if let Some(fx) = super::persist::cached_interp(&self.db, &key) {
             self.interp.hits += 1;
@@ -402,7 +416,7 @@ impl Sim {
         let me = self.actor(who).cloned();
         let mut v = json!({
             "actor": self.actor_name(who),
-            "actor_is": if who == ActorId::Player { "the traveller" } else { "a character" },
+            "actor_is": if who == ActorId::Player { "the traveler" } else { "a character" },
             "time": crate::render::sky::time_label(self.t),
             "held": held.map(|h| self.describe_thing(h)),
         });
@@ -432,7 +446,7 @@ impl Sim {
                 near.push(self.thing_name(id));
             }
             v["nearby"] = json!(near);
-            let beings: Vec<Value> = self.cast.npcs.iter().filter(|n| !n.dead && ActorId::Npc(n.def.id) != who && (n.a.pos - m.pos).length() < 15.0).take(8).map(|n| json!({ "name": n.def.persona.name, "species": n.species.name })).collect();
+            let beings: Vec<Value> = self.cast.npcs.iter().filter(|n| n.here() && ActorId::Npc(n.def.id) != who && (n.a.pos - m.pos).length() < 15.0).take(8).map(|n| json!({ "name": n.def.persona.name, "species": n.species.name })).collect();
             if !beings.is_empty() {
                 v["beings_nearby"] = json!(beings);
             }
@@ -450,6 +464,9 @@ impl Sim {
             v["species_looks"] = self.species_looks();
         }
         v["properties"] = json!(self.vocab.names);
+        if let Some(l) = self.twist_line(who) {
+            v["darkness"] = json!(l);
+        }
         v.to_string()
     }
 
@@ -464,6 +481,10 @@ impl Sim {
                     self.deed_landed(p.actor);
                 }
                 if fx.changes_nothing() {
+                    // Nothing came of it: the charge isn't spent.
+                    if p.actor == ActorId::Player {
+                        self.refund_charge();
+                    }
                     // A "no" depends on the moment; never make it the rule.
                     match &fx.needs {
                         Some(need) => self.on_need(p.actor, &p.text, need, &fx.narration),
@@ -483,6 +504,9 @@ impl Sim {
             }
             Err(e) => {
                 self.deed_landed(p.actor);
+                if p.actor == ActorId::Player {
+                    self.refund_charge();
+                }
                 crate::log::error(format!("interpretation failed: {e}"));
                 self.note_near(self.actor(p.actor).map(|a| a.pos).unwrap_or_default(), 30.0, Note::seen("Nothing seems to happen.".into(), p.actor == ActorId::Player));
             }
@@ -512,7 +536,7 @@ impl Sim {
         things.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut seen = std::collections::HashSet::new();
         let things: Vec<String> = things.into_iter().filter(|(_, n)| !n.is_empty() && seen.insert(n.clone())).take(12).map(|(d, n)| format!("{n}, {d:.0} m")).collect();
-        let mut people: Vec<(f32, String)> = self.cast.npcs.iter().filter(|n| !n.dead).map(|n| {
+        let mut people: Vec<(f32, String)> = self.cast.npcs.iter().filter(|n| n.here()).map(|n| {
             let d = (n.a.pos - at).length();
             let about: String = n.def.persona.personality.chars().take(80).collect();
             (d, format!("{} ({}, {d:.0} m): {}", n.def.persona.name, n.species.name, about.trim()))
@@ -666,6 +690,13 @@ impl Sim {
             }
         }
         if let (Some(b), Some(bf)) = (being, &fx.being) {
+            if let Some(change) = bf.reshape.as_deref() {
+                match self.reshape_being(p.actor, b, change) {
+                    Ok(Some(rid)) => waits.push(rid),
+                    Ok(None) => {}
+                    Err(e) => crate::log::info(format!("reshaping a being failed: {e}")),
+                }
+            }
             self.apply_being(p.actor, b, bf);
             let feel = bf.feel.iter().filter(|(k, _)| b != p.actor && matches!(k.as_str(), "affection" | "love" | "liking" | "trust" | "rivalry" | "anger"));
             let shifts: Vec<String> = feel.chain(&bf.needs).filter_map(|(k, v)| shift(k, *v)).collect();
@@ -707,7 +738,7 @@ impl Sim {
     }
 
     /// The deeds waiting on build `id` are done, or came to nothing.
-    fn release_deeds(&mut self, id: u64, ok: bool) {
+    pub(super) fn release_deeds(&mut self, id: u64, ok: bool) {
         for (who, text, mut data) in self.interp.held_events.remove(&id).unwrap_or_default() {
             if !ok {
                 data["came_to_nothing"] = json!(true);
@@ -723,9 +754,10 @@ impl Sim {
         out.extend(i.pending.iter().map(|(id, p)| Work { id: *id, kind: WorkKind::Doing, who: Some(p.actor), what: p.text.clone() }));
         out.extend(i.creating.iter().map(|(id, c)| Work { id: *id, kind: WorkKind::Conjuring, who: Some(c.0), what: c.2.clone() }));
         out.extend(i.building.iter().map(|(id, b)| {
-            let kind = if b.reshape.is_empty() { WorkKind::Making } else { WorkKind::Reshaping };
-            let what = match b.reshape.first() {
-                Some((thing, _, _)) if !b.change.trim().is_empty() => format!("the {}: {}", self.thing_name(*thing), b.change.trim()),
+            let kind = if b.reshape.is_empty() && b.body_of.is_none() { WorkKind::Making } else { WorkKind::Reshaping };
+            let what = match (b.reshape.first(), b.body_of) {
+                (Some((thing, _, _)), _) if !b.change.trim().is_empty() => format!("the {}: {}", self.thing_name(*thing), b.change.trim()),
+                (_, Some(c)) => format!("{}: {}", self.actor_name(ActorId::Npc(c)), b.change.trim()),
                 _ => b.name.clone(),
             };
             Work { id: *id, kind, who: b.by, what }
@@ -751,7 +783,7 @@ impl Sim {
 
     /// Tell the stories held back for a build that is done (at `at`), if
     /// any. Returns whether there were any.
-    fn tell_held_stories(&mut self, id: u64, at: glam::Vec3) -> bool {
+    pub(super) fn tell_held_stories(&mut self, id: u64, at: glam::Vec3) -> bool {
         self.release_deeds(id, true);
         let Some(stories) = self.interp.stories.remove(&id) else { return false };
         let any = !stories.is_empty();
@@ -818,6 +850,10 @@ impl Sim {
     /// A type the world asked for was written (or failed).
     pub fn on_type_built(&mut self, id: u64, type_id: Option<u32>) {
         let Some(b) = self.interp.building.remove(&id) else { return };
+        if let Some(c) = b.body_of {
+            self.on_body_reshaped(id, c, b, type_id);
+            return;
+        }
         for who in b.place.iter().filter_map(|p| p.1).chain(b.reshape.iter().map(|r| r.1)) {
             self.deed_landed(who);
         }
@@ -920,7 +956,7 @@ impl Sim {
         };
         let placed = self.snap.instances.iter().find(|p| p.id == first).and_then(|p| self.snap.type_of(p.type_id).map(|t| (t.clone(), p.pos, p.scale)));
         let (name, pos) = placed.as_ref().map(|(t, p, _)| (t.name().to_string(), *p)).unwrap_or(("thing".into(), self.player.pos));
-        // The traveller's things appear out of nowhere; a character's are made by hand.
+        // The traveler's things appear out of nowhere; a character's are made by hand.
         let how = if who == ActorId::Player { super::surprise::Arrival::FromNowhere } else { super::surprise::Arrival::Seen };
         let sight = match &placed {
             Some((ty, _, scale)) => self.sight_of(ty, *scale, how),

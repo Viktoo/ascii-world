@@ -276,7 +276,7 @@ impl Sim {
         let words: Vec<String> = text.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-').filter(|w| !w.is_empty()).map(|w| w.trim_end_matches("'s").to_string()).collect();
         let from = self.actor(who)?.pos;
         let mut best: Option<(f32, ActorId)> = None;
-        for n in self.cast.npcs.iter().filter(|n| !n.dead && ActorId::Npc(n.def.id) != who) {
+        for n in self.cast.npcs.iter().filter(|n| n.here() && ActorId::Npc(n.def.id) != who) {
             let first = n.def.persona.name.split_whitespace().next().unwrap_or("").to_lowercase();
             if first.len() < 2 || matches!(first.as_str(), "the" | "a" | "an") || !words.contains(&first) {
                 continue;
@@ -337,7 +337,7 @@ impl Sim {
         if matches!(q.as_str(), "me" | "myself" | "self") {
             return Some(Target::Actor(from));
         }
-        if matches!(q.as_str(), "player" | "traveller" | "traveler" | "you") {
+        if matches!(q.as_str(), "player" | "traveler" | "traveller" | "you") {
             return Some(Target::Actor(ActorId::Player));
         }
         let score = |n: &str| -> Option<f32> {
@@ -1184,7 +1184,7 @@ impl Sim {
             return fail(format!("the {tname} is already being worn"));
         }
         let body = self.body_name(wearer);
-        if let Some(f) = ty.ct.meta.fits.as_deref().filter(|f| *f != body) {
+        if let Some(f) = ty.ct.meta.fits.as_deref().filter(|f| !self.snap.layer_fits(f, &body)) {
             return fail(format!("the {tname} is made for a {f} body, not {wname}'s"));
         }
         if self.worn_by(wearer).len() >= 3 {
@@ -1314,7 +1314,7 @@ impl Sim {
 
     /// The characters near enough to describe.
     pub fn npc_views(&self) -> Vec<crate::world::describe::NpcView> {
-        self.cast.npcs.iter().filter(|n| !n.dead).map(|n| crate::world::describe::NpcView { id: n.def.id, name: n.name().to_string(), pos: n.a.pos }).collect()
+        self.cast.npcs.iter().filter(|n| n.here()).map(|n| crate::world::describe::NpcView { id: n.def.id, name: n.name().to_string(), pos: n.a.pos }).collect()
     }
 }
 

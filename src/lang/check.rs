@@ -369,6 +369,10 @@ impl<'s> Cx<'s> {
                     Expression::StringLiteral(s) if ["biped", "quad", "slither", "hover"].contains(&s.value.as_str()) => b.gait = s.value.to_string(),
                     _ => bad(self, "meta.body.gait must be \"biped\", \"quad\", \"slither\" or \"hover\"".into()),
                 },
+                "from" => match &p.value {
+                    Expression::StringLiteral(s) if !s.value.trim().is_empty() && s.value.len() <= 64 => b.from = Some(s.value.trim().to_string()),
+                    _ => bad(self, "meta.body.from must be the name of the body it was written from".into()),
+                },
                 "flies" | "arms" => match &p.value {
                     Expression::BooleanLiteral(v) => {
                         if key == "flies" {
@@ -405,7 +409,7 @@ impl<'s> Cx<'s> {
                     }
                     _ => bad(self, "meta.body.look must be an object of [lo, hi] ranges, e.g. { height: [1.5, 2.0] }".into()),
                 },
-                _ => bad(self, format!("unknown key meta.body.{key} (height, eye, radius, reach, grip, seat, roles, gait, flies, arms, look)")),
+                _ => bad(self, format!("unknown key meta.body.{key} (height, eye, radius, reach, grip, seat, roles, gait, flies, arms, look, from)")),
             }
         }
         b.eye = eye.unwrap_or(b.height * 0.92).min(b.height * 1.2);

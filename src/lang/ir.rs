@@ -200,16 +200,21 @@ pub struct Body {
     /// biped | quad | slither | hover
     pub gait: String,
     pub flies: bool,
-    /// Two arms with the built-in figure's proportions (shoulders 1.42 m up
-    /// and 0.29 m out, arms 0.56 m, for a 1.75 m body): hands follow them.
+    /// Two arms with hands (big things are held in both). Bodies written
+    /// from the figure keep its arm maths; other arms hang from above the
+    /// grip, which is the right hand at rest.
     pub arms: bool,
     /// Look sliders (name, lo, hi), read as k.a … k.e.
     pub look: Vec<(String, f32, f32)>,
+    /// The body it was written from (a cat's body from the quadruped, one
+    /// cat's reshaped body from the cat's): layers and kin follow the line.
+    #[serde(default)]
+    pub from: Option<String>,
 }
 
 impl Default for Body {
     fn default() -> Self {
-        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new() }
+        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), from: None }
     }
 }
 

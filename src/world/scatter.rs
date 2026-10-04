@@ -205,11 +205,12 @@ impl ScatterCache {
     /// Scatter items (shown ones) whose position is within `radius` of `p`.
     pub fn items_near(&mut self, snap: &WorldSnapshot, p: Vec3, radius: f32) -> Vec<ScatterItem> {
         let mut out = Vec::new();
-        let n = (radius / CHUNK).ceil() as i32;
-        let c = chunk_of(p.x, p.z);
-        for dz in -n..=n {
-            for dx in -n..=n {
-                for it in self.get(snap, (c.0 + dx, c.1 + dz)).iter() {
+        // Only the chunks the circle touches (usually one).
+        let lo = chunk_of(p.x - radius, p.z - radius);
+        let hi = chunk_of(p.x + radius, p.z + radius);
+        for cz in lo.1..=hi.1 {
+            for cx in lo.0..=hi.0 {
+                for it in self.get(snap, (cx, cz)).iter() {
                     let d = it.inst.pos() - p;
                     if d.x * d.x + d.z * d.z <= radius * radius && self.overlay.shows(it.cell) {
                         out.push(it.clone());

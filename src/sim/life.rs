@@ -33,7 +33,7 @@ impl Sim {
     /// The young grow (their bodies refitted as they do).
     pub fn grow(&mut self, cid: i64) {
         let Some(n) = self.cast.get(cid) else { return };
-        if n.born <= 0.0 || n.growth >= 1.0 {
+        if n.born <= 0.0 || n.parents.is_empty() || n.growth >= 1.0 {
             return;
         }
         let g = self.growth_at(n.born);
@@ -56,7 +56,7 @@ impl Sim {
         let pos = n.a.pos;
         n.parents
             .iter()
-            .filter_map(|p| self.cast.get(*p).filter(|m| !m.dead).map(|m| (m.def.id, (m.a.pos - pos).length())))
+            .filter_map(|p| self.cast.get(*p).filter(|m| m.here()).map(|m| (m.def.id, (m.a.pos - pos).length())))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|x| ActorId::Npc(x.0))
     }
@@ -68,18 +68,19 @@ impl Sim {
         }
         let t = self.t;
         let gap = BIRTH_GAP_DAYS * DAY_SECONDS / self.cfg.life_speed as f64;
-        let ready: Vec<(i64, Vec3, u32, bool)> = self
+        let ready: Vec<(i64, Vec3, String, bool)> = self
             .cast
             .npcs
             .iter()
-            .filter(|n| !n.dead && !n.a.asleep && n.growth >= 0.99 && n.needs.hunger < 0.6 && t - n.last_birth > gap && n.a.riding.is_none())
+            .filter(|n| n.here() && !n.species.touch.harms() && !n.a.asleep && n.growth >= 0.99 && n.needs.hunger < 0.6 && t - n.last_birth > gap && n.a.riding.is_none())
             .filter(|n| self.dist_to_player(n.a.pos) <= self.cfg.medium)
-            .map(|n| (n.def.id, n.a.pos, n.body_ty, n.species.mind == Mind::Sapient))
+            .map(|n| (n.def.id, n.a.pos, self.snap.type_of(n.body_ty).map(|t| self.snap.body_root(t.name())).unwrap_or_default(), n.species.mind == Mind::Sapient))
             .collect();
         let mut pairs = Vec::new();
         for (i, (a, pa, ba, sa)) in ready.iter().enumerate() {
             for (b, pb, bb, sb) in ready.iter().skip(i + 1) {
-                // Mixing is open to any two of one body.
+                // Mixing is open to any two of one body's line (a reshaped
+                // cat is still a cat's mate).
                 if ba != bb || sa != sb || (*pa - *pb).length() > 8.0 {
                     continue;
                 }
@@ -99,7 +100,7 @@ impl Sim {
             let sp = self.cast.get(a).map(|n| n.species.root().to_string()).unwrap_or_default();
             let at = self.cast.get(a).map(|n| n.a.pos).unwrap_or_default();
             // A neighbourhood (about a region across) holds only so many.
-            let here = self.cast.npcs.iter().filter(|n| !n.dead && n.species.root() == sp && (n.a.pos - at).length() < 150.0).count();
+            let here = self.cast.npcs.iter().filter(|n| n.here() && n.species.root() == sp && (n.a.pos - at).length() < 150.0).count();
             let cap = self.cfg.max_creatures.max(2);
             if here >= cap {
                 continue;
@@ -138,6 +139,9 @@ impl Sim {
         let coin = self.rand();
         let (Some(na), Some(nb)) = (self.cast.get(a), self.cast.get(b)) else { return None };
         let species = if coin < 0.5 { na.def.persona.species.clone() } else { nb.def.persona.species.clone() };
+        // A reshaped body runs in the family: the young take after the
+        // parent whose species they are.
+        let own_body = if coin < 0.5 { na.def.persona.body.clone() } else { nb.def.persona.body.clone() };
         let variety = na.def.persona.variety.clone();
         let body = self.snap.type_of(na.body_ty).and_then(|t| t.ct.meta.body.clone()).unwrap_or_default();
         let (sa, sb) = (na.sliders, nb.sliders);
@@ -180,6 +184,7 @@ impl Sim {
             variety,
             look,
             temper: Some(temper),
+            body: own_body,
             personality: if sapient { "a small child, curious and playful".into() } else { String::new() },
             ..Default::default()
         };
@@ -196,7 +201,7 @@ impl Sim {
             r.familiarity = 1.0;
         }
         // Brothers and sisters.
-        let sibs: Vec<i64> = self.cast.npcs.iter().filter(|n| n.def.id != id && !n.dead && n.parents.iter().any(|p| *p == a || *p == b)).map(|n| n.def.id).collect();
+        let sibs: Vec<i64> = self.cast.npcs.iter().filter(|n| n.def.id != id && n.here() && n.parents.iter().any(|p| *p == a || *p == b)).map(|n| n.def.id).collect();
         for s in sibs {
             let r = self.social.rel_mut(kid, ActorId::Npc(s));
             r.family = true;

@@ -68,6 +68,18 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             brain.send(Cmd::EditType { id, name, source, change, spot, cuts, with });
             true
         }
+        Request::NewSpecies { id, brief, fixed } => {
+            brain.send(Cmd::NewSpecies { id, brief, fixed });
+            true
+        }
+        Request::SpeciesBody { id, species, template } => {
+            brain.send(Cmd::SpeciesBody { id, species, template });
+            true
+        }
+        Request::ReshapeBody { id, name, from, source, change } => {
+            brain.send(Cmd::ReshapeBody { id, name, from, source, change });
+            true
+        }
     }
 }
 
@@ -104,6 +116,10 @@ pub fn apply(sim: &mut Sim, ev: Event, talk: &mut HashMap<i64, String>) -> bool 
         }
         Event::GestureBuilt { id, result } => {
             sim.on_gesture_built(id, result);
+            true
+        }
+        Event::SpeciesMade { id, name } => {
+            sim.on_species_made(id, name);
             true
         }
         Event::Token { cid, text } => {
@@ -376,10 +392,10 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
         })
         .count() as u64;
     let mut population = BTreeMap::new();
-    for n in sim.cast.npcs.iter().filter(|n| !n.dead) {
+    for n in sim.cast.npcs.iter().filter(|n| n.here()) {
         *population.entry(n.species.name.clone()).or_insert(0) += 1;
     }
-    let following = sim.cast.npcs.iter().filter(|n| !n.dead && n.doing.starts_with("following")).count();
+    let following = sim.cast.npcs.iter().filter(|n| n.here() && n.doing.starts_with("following")).count();
     Metrics {
         game_hours: hours,
         events: events.len() as u64,

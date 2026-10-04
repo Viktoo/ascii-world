@@ -28,6 +28,7 @@ pub const P_HEALTH: usize = 16;
 pub const P_GROWTH: usize = 17;
 pub const P_STRANGE: usize = 18;
 pub const P_TOY: usize = 19;
+pub const P_CORRUPT: usize = 20;
 
 pub const AMBIENT_TEMP: f32 = 15.0;
 /// What one person can lift (kg); two together lift twice that.
@@ -57,6 +58,7 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("growth", 1.0, "how grown it is, 0..1 (living things grow)"),
     ("strange", 0.0, "how out of place it is in this world, 0..1: 0 is everyday here, 1 unheard of (a motor car among horse carts 0.9, a glowing rune stone where there is no magic 0.8); people are surprised by strange things"),
     ("toy", 0.0, "how much people play with it, 0..1: toss, catch, kick or roll it about for fun (a ball 1, a hoop 0.8, knucklebones 0.6; whatever this people plays with)"),
+    ("corruption", 0.0, "how much darkness has got into it, 0..1: corrupted things darken as if the night got into them, dim the light around them and work a little wrong"),
 ];
 
 /// Light enough to toss, and something people play with: a ball, a hoop,
@@ -268,7 +270,7 @@ pub fn sanitize(p: &mut Props) {
         }
         *v = v.clamp(-1e5, 1e5);
     }
-    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY] {
+    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_CORRUPT] {
         p[i] = p[i].clamp(0.0, 1.0);
     }
     p[P_LIGHT] = p[P_LIGHT].clamp(0.0, 2.0);

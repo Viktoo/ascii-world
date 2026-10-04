@@ -567,9 +567,9 @@ fn asked_for_a_ball_they_make_it_and_hand_it_over() {
     let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("You decide what a character") {
-            if user.contains("The traveller just said") {
+            if user.contains("The traveler just said") {
                 c2.lock().push("asked".to_string());
-                return r#"{"goal": "make the traveller a ball", "say": null, "steps": [{"do": "create", "text": "a leather ball"}, {"do": "give", "to": "the traveller"}]}"#.into();
+                return r#"{"goal": "make the traveler a ball", "say": null, "steps": [{"do": "create", "text": "a leather ball"}, {"do": "give", "to": "the traveler"}]}"#.into();
             }
             return r#"{"goal": "", "steps": []}"#.into();
         }
@@ -594,7 +594,7 @@ fn asked_for_a_ball_they_make_it_and_hand_it_over() {
     }
     let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
     assert_eq!(calls.lock().as_slice(), ["asked"], "{}", log.join("\n"));
-    let h = got.unwrap_or_else(|| panic!("the traveller was handed the ball:\n{}", log.join("\n")));
+    let h = got.unwrap_or_else(|| panic!("the traveler was handed the ball:\n{}", log.join("\n")));
     assert!(s.sim.thing_name(h).contains("ball"), "{}", s.sim.thing_name(h));
     sound(&s);
 }
@@ -614,8 +614,8 @@ fn a_deed_that_needs_a_place_is_done_there() {
     let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("You decide what a character") {
-            if user.contains("The traveller just said") {
-                return r#"{"goal": "make the traveller a burrito", "say": null, "steps": [{"do": "create", "text": "a burrito"}, {"do": "give", "to": "the traveller"}]}"#.into();
+            if user.contains("The traveler just said") {
+                return r#"{"goal": "make the traveler a burrito", "say": null, "steps": [{"do": "create", "text": "a burrito"}, {"do": "give", "to": "the traveler"}]}"#.into();
             }
             return r#"{"goal": "", "steps": []}"#.into();
         }
@@ -642,7 +642,7 @@ fn a_deed_that_needs_a_place_is_done_there() {
         }
     }
     let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
-    let h = got.unwrap_or_else(|| panic!("the traveller was handed a burrito:\n{}", log.join("\n")));
+    let h = got.unwrap_or_else(|| panic!("the traveler was handed a burrito:\n{}", log.join("\n")));
     assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
     let refusals: i64 = w.db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM interp_cache WHERE effect_json LIKE '%No grill%'", [], |r| r.get(0))?)).unwrap();
     assert_eq!(refusals, 0, "the refusal was not cached");
@@ -666,8 +666,8 @@ fn cooks_llm(w: &W) -> Arc<Llm> {
     Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("You decide what a character") {
-            if user.contains("The traveller just said") {
-                return r#"{"goal": "make the traveller a burrito", "say": null, "steps": [{"do": "create", "text": "a burrito"}, {"do": "give", "to": "the traveller"}]}"#.into();
+            if user.contains("The traveler just said") {
+                return r#"{"goal": "make the traveler a burrito", "say": null, "steps": [{"do": "create", "text": "a burrito"}, {"do": "give", "to": "the traveler"}]}"#.into();
             }
             if user.contains("You set out to") {
                 return r#"{"goal": "get a grill", "say": "I need a grill.", "steps": [{"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}]}"#.into();
@@ -718,7 +718,7 @@ fn a_need_nobody_has_is_asked_for_in_turn() {
         }
     }
     let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
-    let h = got.unwrap_or_else(|| panic!("the traveller was handed a burrito:\n{}", log.join("\n")));
+    let h = got.unwrap_or_else(|| panic!("the traveler was handed a burrito:\n{}", log.join("\n")));
     assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
     assert!(log.iter().any(|l| l.contains("Rosa wouldn't help Vic")), "Rosa was asked first and said no:\n{}", log.join("\n"));
     assert!(log.iter().any(|l| l.contains("Ben agreed to help Vic")), "{}", log.join("\n"));
@@ -756,7 +756,7 @@ fn a_mission_carries_on_after_a_restart() {
         }
     }
     let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
-    let h = got.unwrap_or_else(|| panic!("the traveller was handed a burrito after the restart:\n{}", log.join("\n")));
+    let h = got.unwrap_or_else(|| panic!("the traveler was handed a burrito after the restart:\n{}", log.join("\n")));
     assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
     sound(&s);
 }
@@ -1774,6 +1774,45 @@ fn species_lineup_picture() {
     render_png(&mut s, &w, cam, &out);
 }
 
+/// Render a cat three ways, side on: on the generic quadruped (as before
+/// cats had their own body), on its own body, and with a poofy tail.
+#[test]
+#[ignore]
+fn cat_bodies_picture() {
+    let out = std::env::var("POCKET_PNG").unwrap_or_else(|_| std::env::temp_dir().join("pocket-cats.png").to_string_lossy().into_owned());
+    let w = world("cats", 44);
+    let cat = fixture("species/cat.js");
+    add_type(&w, &cat);
+    add_type(&w, &cat.replace("name: \"cat\"", "name: \"fluffy cat\"").replace("const tr = 0.028 + clamp(k.b, 0, 1) * 0.05;", "const tr = 0.07 + clamp(k.b, 0, 1) * 0.04;"));
+    let row = |body: &str, size: f32| format!(r#"{{"name":"{body} kind","body":"{body}","size":{size},"mind":"simple","look":{{"hue":[0.07,0.07],"shade":[0.55,0.55]}}}}"#);
+    w.db.with(|c| db::put_species(c, "quadruped kind", &row("quadruped", 0.34))).unwrap();
+    w.db.with(|c| db::put_species(c, "cat kind", &row("cat", 1.06))).unwrap();
+    w.db.with(|c| db::put_species(c, "fluffy cat kind", &row("fluffy cat", 1.06))).unwrap();
+    let me = w.spawn;
+    let mut ids = Vec::new();
+    for (i, sp) in ["quadruped kind", "cat kind", "fluffy cat kind"].iter().enumerate() {
+        let x = (i as f32 - 1.0) * 0.75;
+        ids.push(add_being(&w, &format!("C{i}"), sp, &[], ground(&w, me.x + x, me.z + 2.0)));
+    }
+    let mut s = session(&w, 17, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    for id in &ids {
+        let n = s.sim.cast.get_mut(*id).unwrap();
+        n.a.yaw = -std::f32::consts::FRAC_PI_2;
+        n.a.pos.y = s.sim.snap.terrain.height(n.a.pos.x, n.a.pos.z);
+    }
+    if let Ok(g) = std::env::var("POCKET_GESTURE") {
+        for id in &ids {
+            let _ = s.sim.act(ActorId::Npc(*id), Action::Gesture { kind: g.clone(), to: None });
+        }
+        s.run(0.6, 0.05);
+    }
+    let y = s.sim.snap.terrain.height(me.x, me.z + 2.0);
+    let cam = crate::render::Camera { pos: Vec3::new(me.x, y + 0.45, me.z + 0.6), yaw: 0.0, pitch: -0.12, fov_y: 1.0 };
+    render_png(&mut s, &w, cam, &out);
+}
+
 /// Phase 2: a dog follows its person, brings back what they throw and gives
 /// it to them, and wags when they meet after a while apart. A cat that
 /// doesn't know you won't be hugged. Talking to a dog gets a noise and a
@@ -1959,7 +1998,9 @@ fn llm_written_species_live_hug_and_learn_their_own_gestures() {
             );
         }
         if user.contains("Body type to write: \"dragon\"") {
-            return format!("```js\n{dragon}\n```");
+            // Shown the quadruped only as an example: a `from` it adds anyway goes.
+            assert!(user.contains("Leave `from` out"));
+            return format!("```js\n{}\n```", dragon.replacen("body: {", "body: { from: \"quadruped\",", 1));
         }
         if user.contains("Body type to write: \"naga\"") {
             return format!("```js\n{naga}\n```");
@@ -1997,6 +2038,7 @@ fn llm_written_species_live_hug_and_learn_their_own_gestures() {
     let sp = s.sim.snap.species.clone();
     assert!(sp.get("dragon").is_some() && sp.get("naga").is_some(), "both species arrived");
     assert_eq!(s.sim.snap.body_type("dragon").map(|b| b.name().to_string()).as_deref(), Some("dragon"), "the dragon's body was written");
+    assert_eq!(s.sim.snap.body_line("dragon"), vec!["dragon".to_string()], "a dragon is of no quadruped's line");
     assert!(sp.attitude("naga", "human").is_some());
     let r = crate::world::region_of(s.sim.snap.spawn.x, s.sim.snap.spawn.z);
     s.brain.send(crate::brain::Cmd::Region(r));
@@ -2102,9 +2144,9 @@ fn fantasy_lineup_picture() {
 /// They wear them from the start, drawn in their own pose; armour slows them,
 /// the wool cloak catches fire and the iron doesn't; friends let each other
 /// dress them, strangers don't; what they wear is kept across a restart. In
-/// a world of giants, the small traveller is small.
+/// a world of giants, the small traveler is small.
 #[test]
-fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
+fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveler() {
     use super::actor::LEAN;
     let w = world("warriors", 49);
     let plate = fixture("layers/breastplate.js");
@@ -2117,7 +2159,7 @@ fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
     let llm = Llm::scripted(w.db.clone(), Arc::new(move |_sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if user.contains("Design the base layer") {
-            return format!("```json\n{}\n```\n```js\n{pine}\n```", serde_json::json!({ "name": "Giantsholm", "biomes": [], "sizes": { "human": 1.8 }, "traveller_height": 0.9 }));
+            return format!("```json\n{}\n```\n```js\n{pine}\n```", serde_json::json!({ "name": "Giantsholm", "biomes": [], "sizes": { "human": 1.8 }, "traveler_height": 0.9 }));
         }
         if user.contains("Plan the story layer") {
             let spawn: [f32; 3] = serde_json::from_str(&db2.kv_get("spawn").unwrap()).unwrap();
@@ -2155,14 +2197,14 @@ fn a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller() {
     s.brain.send(crate::brain::Cmd::Genesis);
     for _ in 0..600 {
         s.step(0.05);
-        if s.sim.snap.species.traveller_height.is_some() {
+        if s.sim.snap.species.traveler_height.is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    // A world of giants, and a small traveller.
+    // A world of giants, and a small traveler.
     let me = s.sim.player.dims;
-    assert!((me.eye - 0.85).abs() < 0.05, "the traveller's eyes are low ({:.2} m)", me.eye);
+    assert!((me.eye - 0.85).abs() < 0.05, "the traveler's eyes are low ({:.2} m)", me.eye);
     let r = crate::world::region_of(s.sim.snap.spawn.x, s.sim.snap.spawn.z);
     s.brain.send(crate::brain::Cmd::Region(r));
     for _ in 0..800 {
@@ -2278,7 +2320,7 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         let fx = |v: serde_json::Value| v.to_string();
         if user.contains("\"give the guard a red cloak\"") {
-            return fx(serde_json::json!({ "narration": "The traveller drapes a red cloak over the guard.", "being": { "wear": [{ "name": "red cloak", "description": "a red wool cloak", "props": { "burns": 0.8 } }] } }));
+            return fx(serde_json::json!({ "narration": "The traveler drapes a red cloak over the guard.", "being": { "wear": [{ "name": "red cloak", "description": "a red wool cloak", "props": { "burns": 0.8 } }] } }));
         }
         if user.contains("\"feed the horse an apple\"") {
             return fx(serde_json::json!({ "narration": "The horse crunches the apple.", "being": { "needs": { "hunger": -0.5 }, "feel": { "affection": 0.25, "trust": 0.2 } } }));
@@ -2347,7 +2389,7 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
     deed(&mut s, "teach Rex to sit", d);
     assert_eq!(s.sim.cast.get(rex).unwrap().tricks, vec!["sit".to_string()]);
     assert!(!events(&s.sim, "learned").is_empty());
-    // A curse: still Brann, still knows the traveller, now a toad; the cloak falls off.
+    // A curse: still Brann, still knows the traveler, now a toad; the cloak falls off.
     let fond = s.sim.social.affection(g, me);
     s.sim.player.pos = s.sim.actor(g).unwrap().pos + Vec3::new(0.0, 0.0, -1.5);
     deed(&mut s, "curse Brann into a toad", g);
@@ -2355,7 +2397,7 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
     assert_eq!(b.species.name, "toad");
     assert!(b.a.dims.height < 0.5 && !b.a.dims.arms, "{:?}", b.a.dims);
     assert_eq!(b.name(), "Brann");
-    assert!((s.sim.social.affection(g, me) - fond).abs() < 1e-4, "he still knows the traveller");
+    assert!((s.sim.social.affection(g, me) - fond).abs() < 1e-4, "he still knows the traveler");
     assert!(s.sim.worn_by(g).is_empty(), "the cloak fell off");
     assert!(!events(&s.sim, "transformed").is_empty());
     // Conjuring: not in a world that forbids it, until it allows it.
@@ -2366,10 +2408,11 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
     s.sim.cfg.create_beings = true;
     deed(&mut s, "conjure a hound", me);
     let mist = s.sim.cast.npcs.iter().find(|n| n.name() == "Mist").map(|n| n.def.id).expect("a hound appeared");
-    assert_eq!(s.sim.owner_of(mist), Some(me), "it is the traveller's");
+    assert_eq!(s.sim.owner_of(mist), Some(me), "it is the traveler's");
     let m = s.sim.cast.get(mist).unwrap();
     assert_eq!(m.def.persona.look.get("hue"), Some(&1.2), "made grey, as asked");
     assert_eq!(m.def.persona.size, Some(1.5));
+    assert_eq!(m.growth, 1.0, "made beings arrive grown, not as newborns");
     let h0 = m.a.dims.height;
     // Named, not pointed at: "make mist much larger" is done to Mist.
     s.sim.player.pos = s.sim.actor(ActorId::Npc(mist)).unwrap().pos + Vec3::new(0.0, 0.0, -3.0);
@@ -2397,7 +2440,7 @@ fn deeds_dress_feed_teach_curse_and_conjure_beings() {
 }
 
 /// Phase 7: a griffin flies over a house to its person and lands; the
-/// traveller rides a horse that knows them and steers it with the walk keys
+/// traveler rides a horse that knows them and steers it with the walk keys
 /// until a wolf spooks it and it throws them; a stranger's horse won't be
 /// ridden; a character rides her griffin to a far place and gets down there.
 #[test]
@@ -2442,7 +2485,7 @@ fn griffins_fly_horses_carry_and_bolt() {
     let x = s.sim.actor(g).unwrap();
     assert!(top > 3.0, "it flew ({top:.1} m up)");
     assert!((x.pos - s.sim.actor(i).unwrap().pos).length() < 6.0 && x.alt < 0.2, "and landed by Ilsa ({:.1} m, {:.1} up)", (x.pos - s.sim.actor(i).unwrap().pos).length(), x.alt);
-    // The traveller rides a horse that knows them.
+    // The traveler rides a horse that knows them.
     s.sim.social.bond(b, ActorId::Player, 0.6, s.sim.t);
     s.sim.player.pos = s.sim.actor(b).unwrap().pos + Vec3::new(1.2, 0.0, 0.0);
     let r = s.sim.act(ActorId::Player, Action::Ride { target: Target::Actor(b) });
@@ -2844,7 +2887,7 @@ fn an_untouched_toy_that_barely_bounces_is_played_with() {
     sound(&s);
 }
 
-/// Near the traveller something gets made every minute or so: the clock
+/// Near the traveler something gets made every minute or so: the clock
 /// turns the idlest person to their trade (at once while nothing has been
 /// made), and a making resets it.
 #[test]
@@ -2893,5 +2936,465 @@ fn the_maker_clock_sends_someone_to_their_trade_each_minute() {
     assert!(times[0] < 5.0, "nothing made yet: the first comes at once: {times:?}");
     assert!(times.windows(2).all(|w| w[1] - w[0] >= 50.0), "and never sooner after a making: {times:?}");
     assert!(s.sim.cast.last_made > start, "something was made");
+    sound(&s);
+}
+
+// ------------------------------------------------------------------ the dark
+
+/// Game time just before dusk on day `d` (by `secs` seconds).
+fn before_dusk(d: f64, secs: f64) -> f64 {
+    crate::render::sky::DAY_SECONDS * (d + super::night::DARK_FROM as f64) - secs
+}
+
+fn before_dawn(d: f64, secs: f64) -> f64 {
+    crate::render::sky::DAY_SECONDS * (d + 1.21) - secs
+}
+
+/// Run `secs` of game time (the sim takes at most a quarter second a step).
+fn run_for(s: &mut Session, secs: f32) {
+    for _ in 0..(secs / 0.25).ceil() as usize {
+        s.step(0.25);
+    }
+}
+
+fn the_dark(s: &Session) -> Vec<i64> {
+    s.sim.cast.npcs.iter().filter(|n| !n.dead && n.species.touch.harms()).map(|n| n.def.id).collect()
+}
+
+/// On normal, something comes out of the dark at dusk, creeps up from
+/// behind, touches the traveler (a charge and some corruption), and is gone
+/// at dawn, when the charges are topped up with a bonus for the night.
+#[test]
+fn the_dark_comes_at_dusk_touches_you_and_leaves_at_dawn() {
+    let w = world("dark", 7);
+    let mut s = session(&w, 7, None);
+    s.sim.cfg.difficulty = 2;
+    s.sim.player.pos = w.spawn;
+    s.sim.player.yaw = 0.0;
+    s.sim.t = before_dusk(1.0, 2.0);
+    let all = record(&mut s);
+    for _ in 0..40 {
+        s.step(0.1);
+    }
+    assert!(s.sim.dark(), "night has fallen");
+    assert_eq!(s.sim.charges(), Some(24), "normal starts with 24");
+    let dark = the_dark(&s);
+    assert_eq!(dark.len(), 1, "one comes on normal: {:?}", of(&all, "dark_came"));
+    let h = s.sim.cast.get(dark[0]).unwrap();
+    assert!(h.here() && h.species.about(true) && !h.species.about(false));
+    assert!(h.corruption > 0.9, "the dark is corrupt");
+    let d0 = (h.a.pos - s.sim.player.pos).length();
+    assert!(d0 > 35.0 && !s.sim.player_sees(h.a.pos), "it comes out of sight, behind: {d0:.0} m");
+    // The traveler stands still, looking away: it reaches them.
+    let mut touched = false;
+    for _ in 0..(120.0 / 0.1) as usize {
+        s.step(0.1);
+        if !of(&all, "touched").is_empty() {
+            touched = true;
+            break;
+        }
+    }
+    assert!(touched, "it reached the traveler; it is {:?}", s.sim.cast.get(dark[0]).map(|n| (n.doing.clone(), (n.a.pos - s.sim.player.pos).length())));
+    assert_eq!(s.sim.charges(), Some(23), "a touch takes a charge on normal");
+    assert!(s.sim.night.corruption > 0.2, "and lets something in");
+    // It draws back after.
+    for _ in 0..30 {
+        s.step(0.1);
+    }
+    assert_eq!(of(&all, "touched").len(), 1, "one touch, then it draws back");
+    // Dawn: it is gone (out of sight), the night is got through.
+    s.sim.player.yaw = std::f32::consts::PI;
+    s.sim.t = before_dawn(1.0, 1.0);
+    for _ in 0..(40.0 / 0.1) as usize {
+        s.step(0.1);
+    }
+    assert!(!s.sim.dark());
+    assert!(s.sim.cast.get(dark[0]).is_some_and(|n| n.away), "gone with the light");
+    let got = of(&all, "survived_night");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].data["untouched"], false);
+    assert_eq!(s.sim.charges(), Some(26), "topped up to 24, and 2 for the night");
+    // The next dusk it comes back (the same one), near the traveler again.
+    s.sim.t = before_dusk(2.0, 1.0);
+    for _ in 0..30 {
+        s.step(0.1);
+    }
+    assert_eq!(the_dark(&s), dark, "the same one comes back");
+    assert!(s.sim.cast.get(dark[0]).is_some_and(|n| n.here() && (n.a.pos - s.sim.player.pos).length() < 70.0));
+    sound(&s);
+}
+
+/// Watched, the dark's being stands still however near it is; at the very
+/// edge of the eye it still creeps closer.
+#[test]
+fn the_dark_freezes_when_watched_even_up_close() {
+    let w = world("dark close", 9);
+    let mut s = session(&w, 9, None);
+    s.sim.cfg.difficulty = 2;
+    s.sim.player.pos = w.spawn;
+    s.sim.player.yaw = 0.0;
+    s.sim.t = before_dusk(1.0, 2.0);
+    for _ in 0..40 {
+        s.step(0.1);
+    }
+    let dark = the_dark(&s);
+    assert_eq!(dark.len(), 1);
+    let put = |s: &mut Session, p: Vec3| {
+        let p = Vec3::new(p.x, s.sim.snap.terrain.height(p.x, p.z), p.z);
+        let n = s.sim.cast.get_mut(dark[0]).unwrap();
+        n.a.pos = p;
+        n.think_at = 0.0;
+    };
+    let me = s.sim.player.pos;
+    let f = s.sim.player.forward();
+    let all = record(&mut s);
+    put(&mut s, me + f * 2.5);
+    let at = s.sim.cast.get(dark[0]).unwrap().a.pos;
+    for _ in 0..30 {
+        s.step(0.1);
+    }
+    let moved = (s.sim.cast.get(dark[0]).unwrap().a.pos - at).length();
+    assert!(moved < 0.05, "looked at from 2.5 m it stays put: moved {moved:.2} m");
+    assert!(of(&all, "touched").is_empty(), "out of arm's reach: no touch");
+    // Within arm's reach looking doesn't save you.
+    put(&mut s, me + f * 1.2);
+    s.step(0.1);
+    assert_eq!(of(&all, "touched").len(), 1, "within arm's reach it touches you, watched or not");
+    if let Some(n) = s.sim.cast.get_mut(dark[0]) {
+        n.touched_at = -1e9;
+    }
+    // At the edge of the eye (95% of the way out), it comes on.
+    let r = s.sim.player.right();
+    let slope = 1.0;
+    put(&mut s, me + f * 10.0 + r * 10.0 * slope * 0.95);
+    let from = (s.sim.cast.get(dark[0]).unwrap().a.pos - me).length();
+    for _ in 0..30 {
+        s.step(0.1);
+    }
+    let to = (s.sim.cast.get(dark[0]).unwrap().a.pos - me).length();
+    assert!(to < from - 0.3, "at the edge of the eye it creeps closer: {from:.1} → {to:.1} m");
+}
+
+/// Every night horror is a "night walker" at the one pace; signs never say
+/// where, and what the game says of where is true.
+#[test]
+fn night_walkers_are_named_paced_and_placed_truly() {
+    let h = super::night::fallback_horror();
+    assert_eq!(h.name, "night walker");
+    assert!(h.signs.iter().all(|l| !l.to_lowercase().contains("behind")), "stock signs don't say where");
+    let mut odd = h.clone();
+    odd.moves.walk = 0.4;
+    odd.moves.run = 9.0;
+    odd.moves.fly = 6.0;
+    super::night::fit_horror(&mut odd);
+    assert_eq!((odd.moves.walk, odd.moves.run, odd.moves.fly), (h.moves.walk, h.moves.run, 0.0), "one pace for all");
+    let w = world("walkers", 21);
+    let mut s = session(&w, 21, None);
+    s.sim.cfg.difficulty = 2;
+    s.sim.player.pos = w.spawn;
+    s.sim.player.yaw = 0.0;
+    let me = s.sim.player.pos;
+    let (f, r) = (s.sim.player.forward(), s.sim.player.right());
+    assert_eq!(s.sim.where_is(me - f * 30.0), "behind you");
+    assert_eq!(s.sim.where_is(me - f * 5.0), "close behind you");
+    assert_eq!(s.sim.where_is(me + r * 30.0), "off to your right");
+    assert_eq!(s.sim.where_is(me - r * 30.0), "off to your left");
+    assert_eq!(s.sim.where_is(me + f * 30.0), "ahead of you, in the dark");
+    // It comes at dusk as the night walker.
+    s.sim.t = before_dusk(1.0, 2.0);
+    for _ in 0..40 {
+        s.step(0.1);
+    }
+    let dark = the_dark(&s);
+    assert_eq!(dark.len(), 1);
+    let n = s.sim.cast.get(dark[0]).unwrap();
+    assert_eq!(n.species.name, "night walker");
+    assert_eq!(s.sim.actor_name(ActorId::Npc(dark[0])), "the night walker");
+}
+
+/// Gone with the light stays gone: reopened by day, the dark's being isn't
+/// back, and nothing says it left again.
+#[test]
+fn the_dark_stays_away_by_day_after_reopening() {
+    let w = world("dark away", 13);
+    let h = {
+        let mut s = session(&w, 13, None);
+        s.sim.cfg.difficulty = 3;
+        s.sim.player.pos = w.spawn;
+        s.sim.t = before_dusk(1.0, 1.0);
+        run_for(&mut s, 3.0);
+        let h = the_dark(&s)[0];
+        s.sim.t = before_dawn(1.0, 1.0);
+        run_for(&mut s, 3.0);
+        assert!(s.sim.cast.get(h).is_some_and(|n| n.away), "gone at dawn");
+        s.sim.t = crate::render::sky::DAY_SECONDS * 2.45;
+        s.save();
+        h
+    };
+    let mut s = session(&w, 13, None);
+    assert!(!s.sim.dark());
+    s.step(0.1);
+    assert!(s.sim.cast.get(h).is_some_and(|n| n.away && !n.here()), "still away after reopening");
+    let told: Vec<String> = s.sim.drain_notes().iter().map(|n| n.text()).filter(|t| t.contains("gone with the light")).collect();
+    assert!(told.is_empty(), "nothing tells of it leaving again: {told:?}");
+}
+
+/// Peaceful: nothing comes, charges are unlimited, nothing twists.
+#[test]
+fn peaceful_nights_are_quiet_and_creation_is_free() {
+    let w = world("peace", 8);
+    let mut s = session(&w, 8, None);
+    assert_eq!(s.sim.cfg.difficulty, 0, "peaceful by default");
+    s.sim.t = before_dusk(1.0, 1.0);
+    for _ in 0..(60.0 / 0.1) as usize {
+        s.step(0.1);
+    }
+    assert!(s.sim.dark());
+    assert!(the_dark(&s).is_empty() && events(&s.sim, "dark_came").is_empty());
+    assert_eq!(s.sim.charges(), None);
+    assert!((0..100).all(|_| s.sim.spend_charge()));
+    assert_eq!(s.sim.night_status(), vec!["✦ ∞".to_string()]);
+    // Someone corrupted (a world made harder, then easier again) doesn't twist here.
+    let id = add_char(&w, "Ola", "kind", &[], w.spawn + Vec3::new(4.0, 0.0, 0.0));
+    let snap = s.sim.snap.clone();
+    let _ = (id, snap);
+    assert!(s.sim.twist_line(ActorId::Player).is_none());
+}
+
+/// The dark's kind is written slowly (or never comes back): the night
+/// doesn't wait forever, the stock horror comes, and the written kind joins
+/// later. A world past its first night asks for it at once.
+#[test]
+fn a_slow_writing_doesnt_keep_the_dark_away() {
+    use super::Request;
+    let w = world("slow dark", 12);
+    let mut s = session(&w, 12, None);
+    s.sim.has_llm = true;
+    s.sim.cfg.difficulty = 3;
+    s.sim.player.pos = w.spawn;
+    s.sim.player.yaw = 0.0;
+    s.sim.night.nights = 2;
+    // Step the sim alone: nothing answers its requests.
+    let run = |s: &mut Session, secs: f32| (0..(secs / 0.25).ceil() as usize).for_each(|_| s.sim.step(0.25));
+    s.sim.t = crate::render::sky::DAY_SECONDS * 2.4;
+    run(&mut s, 1.1);
+    let asked = |s: &mut Session| s.sim.drain_requests().into_iter().filter(|r| matches!(r, Request::NewSpecies { .. })).count();
+    assert_eq!(asked(&mut s), 1, "asked for by day, not at sunset");
+    s.sim.t = before_dusk(2.0, 1.0);
+    run(&mut s, 3.0);
+    assert!(s.sim.dark() && s.sim.night.hunting);
+    assert!(the_dark(&s).is_empty(), "waits a while for the writing");
+    run(&mut s, 60.0);
+    assert_eq!(the_dark(&s).len(), 1, "then the stock horror comes");
+    assert_eq!(asked(&mut s), 0, "and the writing isn't asked for twice");
+}
+
+/// Charges run out, deeds stop, and dawn brings them back; extra is kept.
+#[test]
+fn charges_run_out_and_dawn_tops_them_up() {
+    let w = world("charges", 9);
+    let mut s = session(&w, 9, None);
+    s.sim.cfg.difficulty = 3;
+    s.sim.t = crate::render::sky::DAY_SECONDS * 1.5;
+    run_for(&mut s, 1.1);
+    assert_eq!(s.sim.charges(), Some(12));
+    for _ in 0..12 {
+        assert!(s.sim.spend_charge());
+    }
+    assert!(!s.sim.spend_charge(), "spent");
+    assert_eq!(s.sim.charges(), Some(0));
+    // Dawn tops up to the start.
+    s.sim.t = before_dawn(1.0, 0.5);
+    run_for(&mut s, 0.1);
+    s.sim.night.was_night = Some(true);
+    s.sim.t = before_dawn(1.0, -1.0);
+    run_for(&mut s, 1.1);
+    assert_eq!(s.sim.charges(), Some(12));
+    // More than the start is kept at dawn.
+    s.sim.gain_charges(5, "test");
+    s.sim.night.was_night = Some(true);
+    run_for(&mut s, 1.1);
+    assert_eq!(s.sim.charges(), Some(17));
+    // Harder or easier keeps the same share: from hard (12) to normal (24) adds 12.
+    s.sim.cfg.difficulty = 2;
+    run_for(&mut s, 1.1);
+    assert_eq!(s.sim.charges(), Some(29));
+}
+
+/// It moves only while unwatched, and waits at the edge of a light.
+#[test]
+fn watched_it_stands_still_and_light_keeps_it_at_bay() {
+    let w = world("watched", 10);
+    let lantern = add_type(&w, &fixture("sims/lantern.js"));
+    let mut s = session(&w, 10, None);
+    s.sim.cfg.difficulty = 3;
+    s.sim.player.pos = w.spawn;
+    s.sim.player.yaw = 0.0;
+    s.sim.t = before_dusk(1.0, 1.0);
+    for _ in 0..30 {
+        s.step(0.1);
+    }
+    let h = the_dark(&s)[0];
+    // Put it in front of the traveler, 20 m away, watched.
+    let front = s.sim.player.pos + s.sim.player.forward() * 20.0;
+    let front = ground(&w, front.x, front.z);
+    s.sim.cast.get_mut(h).unwrap().a.pos = front;
+    for _ in 0..50 {
+        s.step(0.1);
+    }
+    let moved = (s.sim.cast.get(h).unwrap().a.pos - front).length();
+    assert!(moved < 0.2, "watched, it doesn't move ({moved:.2} m)");
+    // A lantern at the traveler's feet: turned away, it comes only to the light's edge.
+    s.sim.spawn_thing(lantern, s.sim.player.pos + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.player.yaw = std::f32::consts::PI;
+    let mut closest = f32::MAX;
+    for _ in 0..(60.0 / 0.1) as usize {
+        s.step(0.1);
+        closest = closest.min((s.sim.cast.get(h).unwrap().a.pos - s.sim.player.pos).length());
+    }
+    assert!(closest < 15.0, "unwatched, it came closer ({closest:.1} m)");
+    assert!(closest > 6.0, "but not into the light ({closest:.1} m)");
+    assert!(events(&s.sim, "touched").is_empty(), "the light kept it off");
+    assert!(s.sim.cast.get(h).unwrap().doing.contains("edge of the light"), "{}", s.sim.cast.get(h).unwrap().doing);
+}
+
+/// Corruption passes in talk (on hard), twists minds, and kindness from the
+/// traveler draws it out.
+#[test]
+fn corruption_spreads_twists_and_kindness_draws_it_out() {
+    let w = world("corrupt", 11);
+    let a = add_char(&w, "Ada", "generous", &[], w.spawn + Vec3::new(3.0, 0.0, 0.0));
+    let b = add_char(&w, "Bo", "curious", &[], w.spawn + Vec3::new(5.0, 0.0, 0.0));
+    let mut s = session(&w, 11, None);
+    s.sim.cfg.difficulty = 3;
+    s.sim.t = crate::render::sky::DAY_SECONDS * 1.45;
+    run_for(&mut s, 1.1);
+    s.sim.cast.get_mut(a).unwrap().corruption = 0.9;
+    assert!(s.sim.twist_line(ActorId::Npc(a)).is_some_and(|l| l.contains("never say")));
+    assert!(s.sim.twist_line(ActorId::Npc(b)).is_none());
+    assert!(s.sim.decide_context(a, "x").contains("Something dark has a hold on you"));
+    for _ in 0..8 {
+        s.sim.event("chatted", Some(ActorId::Npc(a)), Some(ActorId::Npc(b).key()), "Ada and Bo talked", None, serde_json::json!({}));
+        run_for(&mut s, 1.1);
+    }
+    let cb = s.sim.cast.get(b).unwrap().corruption;
+    assert!(cb >= 0.3, "talk carried it to Bo ({cb:.2})");
+    // Peaceful again: nothing twists, though the number stays.
+    s.sim.cfg.difficulty = 0;
+    assert!(s.sim.twist_line(ActorId::Npc(a)).is_none());
+    s.sim.cfg.difficulty = 3;
+    // Kindness: gifts and hugs from the traveler.
+    for _ in 0..12 {
+        s.sim.event("gesture", Some(ActorId::Player), Some(ActorId::Npc(a).key()), "the traveler hugs Ada", None, serde_json::json!({ "kind": "hug" }));
+        run_for(&mut s, 1.1);
+    }
+    assert!(s.sim.cast.get(a).unwrap().corruption < 0.1);
+    assert_eq!(events(&s.sim, "cleansed").len(), 1, "the dark goes out of Ada");
+}
+
+#[test]
+fn species_hours_and_touch_read_and_default() {
+    let old: crate::world::species::Species = serde_json::from_value(serde_json::json!({ "name": "owl", "body": "quadruped" })).unwrap();
+    assert!(old.about(true) && old.about(false) && !old.touch.any() && old.want.is_empty());
+    let mut moth: crate::world::species::Species = serde_json::from_value(serde_json::json!({
+        "name": "Lamp Moth", "body": "moth", "active": "night", "want": "the traveler",
+        "touch": { "glow": 3.0, "needs": { "fatigue": 0.3, "bogus": 1.0 } }, "shuns": [" Wet "]
+    }))
+    .unwrap();
+    moth.sanitize();
+    assert!(moth.about(true) && !moth.about(false));
+    assert_eq!(moth.want, "traveler");
+    assert_eq!(moth.touch.glow, 1.0);
+    assert!(!moth.touch.harms() && moth.touch.any());
+    assert_eq!(moth.touch.needs.len(), 1);
+    assert_eq!(moth.shuns, vec!["wet".to_string()]);
+    let j = serde_json::to_value(&old).unwrap();
+    assert!(j.get("active").is_none() && j.get("touch").is_none(), "nothing new written for plain species");
+    let h = super::night::fallback_horror();
+    assert!(h.touch.harms() && h.moves_unseen && h.want == "traveler" && h.shuns == vec!["light".to_string()]);
+    assert!(h.signs.len() >= 4, "it gives signs of itself");
+}
+
+/// Bodies are written, not fixed: cats on the generic quadruped get their
+/// own body, written from it (at the height they had), in the background.
+/// A deed makes one cat's tail poofy: that cat alone gets its own body,
+/// written from the cat's, with every role it had. A collar made for the
+/// quadruped still fits it, it is still a mate for a plain cat, and it all
+/// stays after a restart.
+#[test]
+fn species_get_own_bodies_and_one_being_can_be_reshaped() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let w = world("own-bodies", 61);
+    let cat = fixture("species/cat.js");
+    let fluffy = cat.replace("const tr = 0.028 + clamp(k.b, 0, 1) * 0.05;", "const tr = 0.07 + clamp(k.b, 0, 1) * 0.04;").replace("from: \"quadruped\", ", "");
+    assert_ne!(cat, fluffy);
+    let from_template = Arc::new(AtomicBool::new(false));
+    let kept_roles = Arc::new(AtomicBool::new(false));
+    let (ft, kr) = (from_template.clone(), kept_roles.clone());
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |_sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if user.contains("Body type to write: \"cat\"") {
+            ft.store(user.contains("An existing body, \"quadruped\"") && user.contains("export function sdf"), Ordering::SeqCst);
+            return format!("```js\n{cat}\n```");
+        }
+        if user.contains("Reshape a body") {
+            kr.store(user.contains("written from the body \"cat\"") && user.contains("spread") && user.contains("a big poofy tail"), Ordering::SeqCst);
+            return format!("```js\n{fluffy}\n```");
+        }
+        if user.contains("\"make Tom's tail poofy\"") {
+            return serde_json::json!({ "narration": "Tom's tail puffs up like a bottlebrush.", "being": { "reshape": "a big poofy tail, three times as thick" } }).to_string();
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let p = dry_spot(&w, 8.0, 0.9);
+    let tom = add_being(&w, "Tom", "cat", &[], p);
+    let mia = add_being(&w, "Mia", "cat", &[], p + Vec3::new(1.5, 0.0, 0.0));
+    let mut s = session(&w, 31, Some(llm));
+    calm(&mut s);
+    let body_of = |s: &Session, c: i64| s.sim.snap.type_of(s.sim.cast.get(c).unwrap().body_ty).unwrap().name().to_string();
+    assert_eq!(body_of(&s, tom), "quadruped", "a cat starts on the generic body");
+    let h0 = s.sim.cast.get(tom).unwrap().a.dims.height;
+    let roles0 = s.sim.cast.get(tom).unwrap().a.roles;
+    for _ in 0..600 {
+        s.step(0.05);
+        if body_of(&s, tom) == "cat" && body_of(&s, mia) == "cat" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(s.sim.snap.species.get("cat").unwrap().body, "cat", "the cat species has its own body");
+    assert_eq!(body_of(&s, tom), "cat");
+    assert!(from_template.load(Ordering::SeqCst), "written from the quadruped, shown as an example");
+    assert_eq!(s.sim.snap.body_line("cat"), vec!["cat".to_string(), "quadruped".to_string()]);
+    let h1 = s.sim.cast.get(tom).unwrap().a.dims.height;
+    assert!((h1 / h0 - 1.0).abs() < 0.1, "as tall as before: {h0} -> {h1}");
+    assert_eq!(s.sim.cast.get(tom).unwrap().a.roles, roles0);
+    // One cat's tail.
+    let (me, t) = (ActorId::Player, ActorId::Npc(tom));
+    s.sim.social.bond(t, me, 0.6, s.sim.t);
+    s.sim.player.pos = s.sim.actor(t).unwrap().pos + Vec3::new(0.0, 0.0, -1.5);
+    act_once(&mut s, me, Action::Do { text: "make Tom's tail poofy".into(), on: Some(Target::Actor(t)), at: None }, 0.3);
+    for _ in 0..400 {
+        s.step(0.05);
+        if s.sim.interp.pending.is_empty() && s.sim.interp.building.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(kept_roles.load(Ordering::SeqCst), "the reshape keeps the cat's roles");
+    let own = body_of(&s, tom);
+    assert!(own.starts_with("cat (Tom"), "{own}");
+    assert_eq!(s.sim.cast.get(tom).unwrap().def.persona.body, own);
+    assert_eq!(body_of(&s, mia), "cat", "only Tom changed");
+    assert_eq!(s.sim.snap.body_line(&own), vec![own.clone(), "cat".to_string(), "quadruped".to_string()]);
+    assert_eq!(s.sim.cast.get(tom).unwrap().a.roles, roles0, "his gestures still work");
+    assert!(s.sim.snap.layer_fits("quadruped", &own) && s.sim.snap.layer_fits("cat", &own) && !s.sim.snap.layer_fits(&own, "cat"));
+    assert_eq!(s.sim.snap.body_root(&own), s.sim.snap.body_root("cat"), "still a mate for a plain cat");
+    assert!(!events(&s.sim, "reshaped_being").is_empty());
+    s.save();
+    drop(s);
+    let s = session(&w, 32, None);
+    assert_eq!(body_of(&s, tom), own, "his own body after a restart");
+    assert_eq!(body_of(&s, mia), "cat");
     sound(&s);
 }

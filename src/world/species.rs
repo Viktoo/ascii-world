@@ -147,6 +147,54 @@ impl Default for NeedRates {
     }
 }
 
+/// The hours a being is about; outside them it is away (not drawn, not met).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Active {
+    #[default]
+    Always,
+    Day,
+    Night,
+}
+
+impl Active {
+    pub fn at(self, night: bool) -> bool {
+        match self {
+            Active::Always => true,
+            Active::Day => !night,
+            Active::Night => night,
+        }
+    }
+}
+
+/// What a being's touch does to whatever it goes after (see `Species::want`).
+/// Harm (`charges`, `corruption`) is scaled by the world's difficulty; on
+/// peaceful worlds it is nothing.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Touch {
+    /// Takes this many of the traveler's charges (times the difficulty's drain).
+    #[serde(default)]
+    pub charges: f32,
+    /// Adds this much corruption (0..1).
+    #[serde(default)]
+    pub corruption: f32,
+    /// Makes them glow for a while (0..1), like a firefly's dust.
+    #[serde(default)]
+    pub glow: f32,
+    /// Changes to needs ("fatigue": 0.3 makes them sleepy).
+    #[serde(default)]
+    pub needs: BTreeMap<String, f32>,
+}
+
+impl Touch {
+    pub fn harms(&self) -> bool {
+        self.charges > 0.0 || self.corruption > 0.0
+    }
+    pub fn any(&self) -> bool {
+        self.harms() || self.glow > 0.0 || !self.needs.is_empty()
+    }
+}
+
 /// A named set of look ranges (and, later, default layers) within a species.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Variety {
@@ -199,6 +247,33 @@ pub struct Species {
     /// The species it descends from (a line that drifted into its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kin_of: Option<String>,
+    /// When it is about: always, by day or by night (owls, moths, horrors).
+    #[serde(default, skip_serializing_if = "is_always")]
+    pub active: Active,
+    /// What it goes after: a species name, "traveler", "anyone", or "".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub want: String,
+    /// What its touch does to what it goes after.
+    #[serde(default, skip_serializing_if = "no_touch")]
+    pub touch: Touch,
+    /// Properties it won't come near ("light", "fire", "wet").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shuns: Vec<String>,
+    /// It moves only while the traveler isn't looking at it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub moves_unseen: bool,
+    /// What the traveler notices when it is near but out of sight ("You
+    /// hear a rustle behind you."), written for the species.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signs: Vec<String>,
+}
+
+fn is_always(a: &Active) -> bool {
+    *a == Active::Always
+}
+
+fn no_touch(t: &Touch) -> bool {
+    !t.any()
 }
 
 fn mass() -> f32 {
@@ -231,6 +306,25 @@ impl Species {
         self.sounds.truncate(6);
         self.varieties.truncate(6);
         self.description = self.description.chars().take(160).collect();
+        self.want = self.want.trim().to_lowercase();
+        if matches!(self.want.as_str(), "player" | "the traveler" | "traveller" | "the traveller" | "you") {
+            self.want = "traveler".into();
+        }
+        let t = &mut self.touch;
+        for v in [&mut t.charges, &mut t.corruption, &mut t.glow] {
+            *v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+        }
+        t.needs.retain(|k, v| v.is_finite() && matches!(k.as_str(), "hunger" | "fatigue" | "social" | "fun" | "curiosity"));
+        for v in t.needs.values_mut() {
+            *v = v.clamp(-1.0, 1.0);
+        }
+        self.signs = self.signs.iter().map(|s| s.trim().chars().take(120).collect::<String>()).filter(|s| !s.is_empty()).take(8).collect();
+        self.shuns = self.shuns.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).take(4).collect();
+    }
+
+    /// About at this time of day?
+    pub fn about(&self, night: bool) -> bool {
+        self.active.at(night)
     }
 
     /// The oldest species of its family (itself, unless it descends from one).
@@ -260,8 +354,8 @@ pub struct SpeciesBook {
     pub list: Vec<Arc<Species>>,
     /// The universe's size multiplier per species ("everyone is a giant").
     pub sizes: BTreeMap<String, f32>,
-    /// The traveller's height (m).
-    pub traveller_height: Option<f32>,
+    /// The traveler's height (m).
+    pub traveler_height: Option<f32>,
     /// Starting feelings between peoples (only the start: each pair's own
     /// history takes over).
     pub attitudes: Vec<Attitude>,
@@ -285,8 +379,8 @@ pub struct Attitude {
 pub struct SpeciesWorld {
     #[serde(default)]
     pub sizes: BTreeMap<String, f32>,
-    #[serde(default)]
-    pub traveller_height: Option<f32>,
+    #[serde(default, alias = "traveller_height")]
+    pub traveler_height: Option<f32>,
     #[serde(default)]
     pub attitudes: Vec<Attitude>,
 }
@@ -304,13 +398,19 @@ impl SpeciesBook {
         let mut b = SpeciesBook::builtin();
         for (name, json) in rows {
             match serde_json::from_str::<Species>(json) {
-                Ok(s) => b.add(s),
+                Ok(mut s) => {
+                    // Saved before the American spelling.
+                    if s.want == "traveller" {
+                        s.want = "traveler".into();
+                    }
+                    b.add(s)
+                }
                 Err(e) => crate::log::info(format!("species {name}: unreadable ({e})")),
             }
         }
         if let Some(w) = world.and_then(|w| serde_json::from_str::<SpeciesWorld>(w).ok()) {
             b.sizes = w.sizes;
-            b.traveller_height = w.traveller_height;
+            b.traveler_height = w.traveler_height;
             b.attitudes = w.attitudes;
         }
         b
@@ -378,13 +478,22 @@ pub struct Dims {
     /// The instance scale the renderer uses.
     pub scale: f32,
     pub arms: bool,
+    /// Arms built like the human figure's (its line starts at "figure"):
+    /// hands follow the figure's arm maths; other arms swing from the grip.
+    pub human_arms: bool,
     pub flies: bool,
     pub mass: f32,
+    /// How the walk phase moves: radians per metre walked, and per second
+    /// at rest (hovering bodies keep bobbing).
+    pub stride: f32,
+    pub idle: f32,
 }
 
 impl Default for Dims {
     fn default() -> Self {
-        Dims::of(&Body { arms: true, ..Body::default() }, 1.75, 1.0, 70.0)
+        let mut d = Dims::of(&Body { arms: true, ..Body::default() }, 1.75, 1.0, 70.0);
+        d.human_arms = true;
+        d
     }
 }
 
@@ -405,10 +514,27 @@ impl Dims {
             ratio: r,
             scale,
             arms: b.arms,
+            human_arms: false,
             flies: b.flies,
             mass,
+            stride: stride(&b.gait, b.height * r, b.radius * r),
+            idle: if b.gait == "hover" { 2.0 } else { 0.0 },
         }
     }
+}
+
+/// Walk phase per metre for a gait at this size: one full cycle of the
+/// legs (two steps) covers about 1.1 body heights upright (3.2 rad/m for a
+/// person), 1.3 on four legs, and one wave runs along about three footprint
+/// radii of a slithering body. Hovering bodies drift.
+pub fn stride(gait: &str, height: f32, radius: f32) -> f32 {
+    let cycle = match gait {
+        "quad" => 1.3 * height,
+        "slither" => 3.0 * radius,
+        "hover" => 2.5 * height,
+        _ => 1.12 * height,
+    };
+    std::f32::consts::TAU / cycle.max(0.1)
 }
 
 /// The k.a … k.e values of a character's body: their own sliders, else a
@@ -442,5 +568,16 @@ mod tests {
         look.insert("shirt_hue".into(), 0.25);
         assert_eq!(look_value(&look, "shirt"), Some(0.25));
         assert!(b.get("human").unwrap().sleeps_at(23.0) && !b.get("human").unwrap().sleeps_at(12.0));
+    }
+
+    #[test]
+    fn walk_phase_follows_size_and_gait() {
+        // A person keeps the old 3.2 rad/m; a cat steps much faster per metre
+        // than a horse; a snake's wave runs by its footprint.
+        assert!((stride("biped", 1.75, 0.35) - 3.2).abs() < 0.01);
+        assert!(stride("quad", 0.32, 0.12) > 3.0 * stride("quad", 1.7, 0.5));
+        assert!(stride("slither", 0.3, 0.4) < stride("slither", 0.3, 0.1));
+        let hover = Dims::of(&Body { gait: "hover".into(), ..Body::default() }, 1.75, 1.0, 1.0);
+        assert!(hover.idle > 0.0 && Dims::of(&Body::default(), 1.75, 1.0, 1.0).idle == 0.0);
     }
 }

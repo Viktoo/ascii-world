@@ -21,7 +21,7 @@ pub struct Origin {
     /// Scatter cell it was picked from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell: Option<(i32, i32)>,
-    /// Who made it ("the traveller", a character's name).
+    /// Who made it ("the traveler", a character's name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
     /// What it was made from (names).

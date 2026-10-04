@@ -35,8 +35,24 @@ pub struct Cell {
 #[derive(Default)]
 pub struct Field {
     pub cells: BTreeMap<(i32, i32), Cell>,
-    /// Cells present at the last save (to delete the ones that healed).
-    pub saved: std::collections::HashSet<(i32, i32)>,
+    /// Cells present at the last save, with what they were then (to write
+    /// only the ones that changed, and delete the ones that healed).
+    pub saved: std::collections::HashMap<(i32, i32), u64>,
+}
+
+impl Cell {
+    /// A fingerprint of what a save writes for this cell.
+    pub fn save_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for (i, p) in self.props.iter().enumerate() {
+            // A cooling cell's exact heat isn't worth a write every save.
+            let p = if i == P_TEMP { (p / 25.0).round() } else { *p };
+            p.to_bits().hash(&mut h);
+        }
+        self.active.hash(&mut h);
+        h.finish()
+    }
 }
 
 impl Field {
@@ -222,6 +238,7 @@ impl Sim {
         // Neighbours: other entities, untouched scatter cells and placed objects.
         if max_near > 0.0 {
             let mut extra: Vec<Ent> = Vec::new();
+            let mut extra_keys: std::collections::HashSet<Key> = std::collections::HashSet::new();
             for i in 0..acting {
                 let e = &ents[i];
                 // Only look around if some pair rule could fire for it.
@@ -233,7 +250,7 @@ impl Sim {
                 let p = e.pos;
                 for it in self.cache.items_near(&snap, p, r + 2.0) {
                     let key = Key::Cell(it.cell.0, it.cell.1);
-                    if index.contains_key(&key) || extra.iter().any(|x| x.key == key) || self.things.taken.contains_key(&it.cell) {
+                    if index.contains_key(&key) || extra_keys.contains(&key) || self.things.taken.contains_key(&it.cell) {
                         continue;
                     }
                     let Some(ty) = snap.type_of(it.inst.info[0]) else { continue };
@@ -242,6 +259,7 @@ impl Sim {
                         None => scaled((*self.type_props.get(&self.vocab, ty)).clone(), it.inst.pos_scale[3]),
                     };
                     let pos = it.inst.pos();
+                    extra_keys.insert(key);
                     extra.push(Ent {
                         key,
                         pos,
@@ -261,11 +279,12 @@ impl Sim {
                         continue;
                     }
                     let key = Key::Inst(pl.id);
-                    if extra.iter().any(|x| x.key == key) {
+                    if extra_keys.contains(&key) {
                         continue;
                     }
                     let Some(ty) = snap.type_of(pl.type_id) else { continue };
                     let props = scaled((*self.type_props.get(&self.vocab, ty)).clone(), pl.scale);
+                    extra_keys.insert(key);
                     extra.push(Ent {
                         key,
                         pos: pl.pos + Vec3::Y * ty.sphere_cy.min(2.0) * pl.scale,

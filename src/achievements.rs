@@ -74,7 +74,11 @@ pub const ALL: &[Def] = &[
     a("domesticated", "Generations", "Domesticated", "Feed a family for generations until it's tamer than its ancestors.", Diamond),
     a("a_name_of_their_own", "Generations", "A Name of Their Own", "That family gets a name of its own.", Diamond),
     a("origin_of_species", "Generations", "Origin of Species", "It becomes a whole new species.", Diamond),
-    a("life_goes_on", "Emergence", "Life Goes On", "Be gone a whole day and come back to a birth, a fire or something new.", Gold),
+    a("first_night", "The dark", "First Night", "Something comes for you in the night. Be there at dawn.", Silver),
+    a("not_a_scratch", "The dark", "Not a Scratch", "Get through a night the dark came without once being touched.", Gold),
+    a("talked_back", "The dark", "Talked Back", "Draw the darkness out of someone with kindness.", Gold),
+    a("twisted", "The dark", "Twisted", "Make something while the dark has hold of you.", Silver),
+        a("life_goes_on", "Emergence", "Life Goes On", "Be gone a whole day and come back to a birth, a fire or something new.", Gold),
     a("nobody_touched_it", "Emergence", "Nobody Touched It", "A character makes something new for their own reasons.", Gold),
     a("pocket_universe", "Emergence", "Pocket Universe", "Earn every challenge.", Diamond),
 ];
@@ -218,7 +222,8 @@ impl Tracker {
     }
 
     fn complete(&mut self, got: &mut Vec<&'static Def>) {
-        if ALL.iter().all(|d| d.id == "pocket_universe" || self.earned.contains_key(d.id)) {
+        // The dark only comes in some worlds: its challenges are extra.
+        if ALL.iter().all(|d| d.id == "pocket_universe" || d.group == "The dark" || self.earned.contains_key(d.id)) {
             self.earn("pocket_universe", got);
         }
     }
@@ -271,6 +276,10 @@ fn check(id: &str, cx: &mut Cx, e: Option<&SimEvent>) -> bool {
     let at_player = e.subject.as_deref() == Some("player");
     match id {
         "word_made_real" => e.kind == "made" && by_player,
+        "first_night" => e.kind == "survived_night" && by_player,
+        "not_a_scratch" => e.kind == "survived_night" && by_player && e.data.get("untouched").and_then(Value::as_bool) == Some(true),
+        "talked_back" => e.kind == "cleansed" && by_player,
+        "twisted" => e.kind == "made" && by_player && sim.night.corruption >= crate::sim::night::TWISTED && sim.level().twist,
         "second_draft" => e.kind == "reshaped" && by_player,
         "tinkerer" => (e.kind == "used" && by_player) || used_unplanned(e),
         "lost_and_found" => e.kind == "through" && by_player,
@@ -313,7 +322,7 @@ fn check(id: &str, cx: &mut Cx, e: Option<&SimEvent>) -> bool {
             e.kind == "fled"
                 && e.data.get("herd").and_then(Value::as_bool) == Some(true)
                 && near(sim, e, 60.0)
-                && e.pos.is_some_and(|p| sim.cast.npcs.iter().filter(|n| !n.dead && n.doing.starts_with("fleeing") && (n.a.pos - glam::Vec3::from(p)).length() < 40.0).count() >= 3)
+                && e.pos.is_some_and(|p| sim.cast.npcs.iter().filter(|n| n.here() && n.doing.starts_with("fleeing") && (n.a.pos - glam::Vec3::from(p)).length() < 40.0).count() >= 3)
         }
         "dressed_up" => e.kind == "wore" && by_player && e.data.get("on").and_then(actor).is_some_and(|o| o != ActorId::Player),
         "makeover" => {
@@ -375,7 +384,7 @@ fn check_state(id: &str, cx: &mut Cx) -> bool {
     match id {
         "tagalong" => {
             let follow = format!("following {}", sim.actor_name(ActorId::Player));
-            sim.cast.npcs.iter().any(|n| !n.dead && n.doing == follow && is_being(sim, ActorId::Npc(n.def.id)))
+            sim.cast.npcs.iter().any(|n| n.here() && n.doing == follow && is_being(sim, ActorId::Npc(n.def.id)))
         }
         "unlikely_friends" => {
             let mut hit = false;
@@ -403,7 +412,7 @@ fn check_state(id: &str, cx: &mut Cx) -> bool {
             let Some(kids) = cx.note.as_array() else { return false };
             kids.iter().filter_map(Value::as_i64).any(|k| sim.cast.get(k).is_some_and(|n| !n.dead && n.growth >= 1.0))
         }
-        "kin_of_kin" => sim.cast.npcs.iter().filter(|n| !n.dead && (n.a.pos - me).length() < 10.0).any(|n| {
+        "kin_of_kin" => sim.cast.npcs.iter().filter(|n| n.here() && (n.a.pos - me).length() < 10.0).any(|n| {
             n.parents.iter().filter_map(|p| sim.cast.get(*p)).flat_map(|p| p.parents.iter()).any(|g| sim.social.rel(ActorId::Player, ActorId::Npc(*g)).is_some_and(|r| r.familiarity > 0.2))
         }),
         _ => false,

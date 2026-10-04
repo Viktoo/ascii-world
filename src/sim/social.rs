@@ -948,6 +948,10 @@ impl Sim {
     /// otherwise in a few plain words. They also pass on news (gossip).
     fn converse(&mut self, a: i64, b: i64) {
         let (Some(pa), Some(_)) = (self.cast.get(a).map(|n| n.a.pos), self.cast.get(b)) else { return };
+        // With the dark close, people fall quiet.
+        if self.dread_near(pa, 35.0) {
+            return;
+        }
         // Without shared words there is no talk and no news: a noise, a look.
         if !self.speaks(ActorId::Npc(a)) || !self.speaks(ActorId::Npc(b)) {
             for x in [a, b] {

@@ -761,9 +761,10 @@ impl App {
         let view = describe(&self.snap, &mut self.sim.cache, &npcs, &cam, 1.6, self.sim.t);
         let seen: Vec<String> = view.visible.iter().take(10).map(|s| format!("{} ({:.0} m {})", s.name, s.distance, s.third)).collect();
         let place = view.region.clone().unwrap_or_else(|| view.biome.clone());
-        let held = self.sim.player.held.map(|h| format!(" The traveller is holding {}.", crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
+        let held = self.sim.player.held.map(|h| format!(" The traveler is holding {}.", crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
+        let dark = self.sim.talking_to.and_then(|cid| self.sim.twist_line(ActorId::Npc(cid))).map(|l| format!(" {l}")).unwrap_or_default();
         format!(
-            "It is {} in {}. Visible around you: {}. Recently the traveller {}.{held}",
+            "It is {} in {}. Visible around you: {}. Recently the traveler {}.{held}{dark}",
             view.time,
             place,
             if seen.is_empty() { "open land".into() } else { seen.join(", ") },
@@ -782,7 +783,7 @@ impl App {
         self.conv.entry(cid).or_default().push((true, text.clone()));
         self.replying = Some(cid);
         let name = self.sim.actor_name(ActorId::Npc(cid));
-        self.sim.event("said", Some(ActorId::Player), Some(ActorId::Npc(cid).key()), format!("the traveller said to {name}: \"{text}\""), Some(self.pos()), serde_json::json!({ "text": text }));
+        self.sim.event("said", Some(ActorId::Player), Some(ActorId::Npc(cid).key()), format!("the traveler said to {name}: \"{text}\""), Some(self.pos()), serde_json::json!({ "text": text }));
         self.brain.send(Cmd::Talk { cid, text, context, history });
     }
 
@@ -952,7 +953,9 @@ impl App {
         self.cam_y += (eye - self.cam_y) * (dt * 10.0).min(1.0);
 
         // The living world.
+        let t0 = Instant::now();
         self.sim.step(dt);
+        slow("sim step", t0, || format!("{} active cells, {} things, {} characters", self.sim.field.active(), self.sim.things.map.len(), self.sim.cast.npcs.len()));
         for r in self.sim.drain_requests() {
             if self.budget_paused && !matches!(r, crate::sim::Request::Witness { .. }) {
                 continue;
@@ -984,7 +987,7 @@ impl App {
         let yaw = self.yaw();
         let f = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let mut best: Option<(f32, i64, String)> = None;
-        for n in self.sim.cast.npcs.iter().filter(|n| !n.dead) {
+        for n in self.sim.cast.npcs.iter().filter(|n| n.here()) {
             let d = n.a.pos - me;
             let dist = Vec3::new(d.x, 0.0, d.z).length();
             if dist > TALK_RANGE || n.a.asleep && dist > 2.0 {
@@ -1061,7 +1064,9 @@ impl App {
 
     pub fn save_characters(&mut self) {
         self.last_char_save = Instant::now();
+        let t0 = Instant::now();
         crate::sim::persist::save(&mut self.sim);
+        slow("save", t0, || format!("{} cells", self.sim.field.cells.len()));
     }
 
     /// Queue story plans for unplanned regions within 2 regions, nearest and
@@ -1102,6 +1107,7 @@ impl App {
         let (pw, ph, pa) = self.pixel_size();
         let cam = self.camera();
         let aspect = pw as f32 / ph as f32 * pa;
+        self.sim.night.view_slope = (cam.fov_y * 0.5).tan() * aspect;
         let now = Instant::now();
         let mut fade = HashMap::new();
         self.appear.retain(|id, t| {
@@ -1231,6 +1237,7 @@ impl App {
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
         });
         let mut parts = vec![place, sky::time_label(self.sim.t).to_string()];
+        parts.extend(self.sim.night_status());
         if let Some(h) = self.sim.player.held {
             parts.push(format!("holding {}", self.sim.thing_name(h)));
         }
@@ -1381,7 +1388,7 @@ impl App {
         let (pw, ph, pa) = self.pixel_size();
         let aspect = pw as f32 / ph as f32 * pa;
         let mut labels = Vec::new();
-        for n in self.sim.cast.npcs.iter().filter(|n| !n.dead) {
+        for n in self.sim.cast.npcs.iter().filter(|n| n.here()) {
             let head = n.a.pos + Vec3::Y * (n.a.dims.height + 0.35);
             let v = head - cam.pos;
             let d = v.length();
@@ -2155,7 +2162,7 @@ mod tests {
     fn achievements_pop_up_are_kept_and_listed() {
         let (mut app, db) = make_app(false);
         let p = app.pos();
-        app.sim.event("made", Some(ActorId::Player), Some("instance:1".into()), "the traveller made a lamp", Some(p), serde_json::json!({}));
+        app.sim.event("made", Some(ActorId::Player), Some("instance:1".into()), "the traveler made a lamp", Some(p), serde_json::json!({}));
         drive(&mut app, 0.2, |_, _| true);
         assert!(app.achievements.earned("word_made_real").is_some());
         assert!(app.achievements.earned("first_spark").is_none());
@@ -2172,7 +2179,7 @@ mod tests {
         assert_eq!(other.achievements.count(), 0, "another world starts with none");
         // Each is earned once.
         app.toasts.clear();
-        app.sim.event("made", Some(ActorId::Player), Some("instance:2".into()), "the traveller made a cup", Some(p), serde_json::json!({}));
+        app.sim.event("made", Some(ActorId::Player), Some("instance:2".into()), "the traveler made a cup", Some(p), serde_json::json!({}));
         drive(&mut app, 0.2, |_, _| true);
         assert!(app.toasts.is_empty());
         // F3 opens the list; 1 and 2 switch pages.
@@ -2223,7 +2230,7 @@ mod tests {
     fn a_poke_is_no_makeover() {
         let (mut app, _db) = make_app(false);
         let p = app.pos();
-        let deed = |app: &mut App, data: serde_json::Value| app.sim.event("deed_on", Some(ActorId::Player), Some("npc:7".into()), "the traveller did something to the moth", Some(p), data);
+        let deed = |app: &mut App, data: serde_json::Value| app.sim.event("deed_on", Some(ActorId::Player), Some("npc:7".into()), "the traveler did something to the moth", Some(p), data);
         deed(&mut app, serde_json::json!({ "mood": true, "looks": false, "trust": -0.2 }));
         drive(&mut app, 0.1, |_, _| true);
         assert!(app.achievements.earned("trust_issues").is_some());
@@ -2289,6 +2296,11 @@ mod tests {
         for _ in 0..5 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));
         }
+        assert_eq!(app.sim.cfg.difficulty, 0, "peaceful by default");
+        app.on_key(key(KeyCode::Right, KeyEventKind::Press));
+        assert_eq!(app.sim.level().name, "easy");
+        assert_eq!(app.db.kv_get("sim.difficulty").as_deref(), Some("1"));
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
         let was = app.sim.cfg.max_creatures;
         app.on_key(key(KeyCode::Right, KeyEventKind::Press));
         assert!(app.sim.cfg.max_creatures > was);
@@ -2320,7 +2332,7 @@ mod tests {
                     a.on_key(key(KeyCode::F(2), KeyEventKind::Press));
                     a.compose();
                     let txt = screen_text(a);
-                    assert!(txt.contains("stick") || txt.contains("traveller"), "inspect panel shows something:\n{txt}");
+                    assert!(txt.contains("stick") || txt.contains("traveler"), "inspect panel shows something:\n{txt}");
                     a.on_key(key(KeyCode::Char('f'), KeyEventKind::Press));
                     assert_eq!(a.sim.player.held, None, "thrown with f");
                     assert!(!a.sim.things.get(id).unwrap().asleep, "flying");
@@ -2362,4 +2374,19 @@ mod tests {
         app.shutdown();
     }
 
+}
+
+/// Log a main-thread stall (what made the game choppy), at most every few seconds.
+fn slow(what: &str, t0: Instant, detail: impl FnOnce() -> String) {
+    static LAST: parking_lot::Mutex<Option<Instant>> = parking_lot::Mutex::new(None);
+    let ms = t0.elapsed().as_secs_f32() * 1000.0;
+    if ms < 50.0 {
+        return;
+    }
+    let mut last = LAST.lock();
+    if last.is_some_and(|l| l.elapsed() < Duration::from_secs(5)) {
+        return;
+    }
+    *last = Some(Instant::now());
+    crate::log::info(format!("slow {what}: {ms:.0} ms ({})", detail()));
 }

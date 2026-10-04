@@ -89,7 +89,7 @@ impl Sim {
         self.cast
             .npcs
             .iter()
-            .filter(|n| !n.dead && !n.a.asleep && n.a.dims.seat.is_some() && (n.a.pos - p).length() < range)
+            .filter(|n| n.here() && !n.a.asleep && n.a.dims.seat.is_some() && (n.a.pos - p).length() < range)
             .map(|n| ActorId::Npc(n.def.id))
             .find(|m| self.owner_of(match m { ActorId::Npc(c) => *c, _ => 0 }) == Some(who) && self.rider_of(*m).is_none())
     }
@@ -215,7 +215,7 @@ impl Sim {
         }
     }
 
-    /// The traveller steers what they ride: walk keys move it at its pace,
+    /// The traveler steers what they ride: walk keys move it at its pace,
     /// and on a flyer, looking up or down climbs or dives.
     pub fn drive(&mut self, dir: Vec3, pitch: f32, dt: f32) {
         let Some(m) = self.player.riding else { return };
@@ -242,7 +242,7 @@ impl Sim {
             }
             self.walk(m, delta);
             if let Some(a) = self.actor_mut(m) {
-                a.phase += a.moved * 3.2;
+                a.phase += a.moved * a.dims.stride;
             }
         }
         self.update_riders();

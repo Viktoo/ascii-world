@@ -7,8 +7,21 @@ README lists them). Where the build differs from the plan:
 
 - **Sliders:** a body has at most five (they are k.a … k.e). The human figure keeps
   its five (height, build, skin, shirt, trousers).
-- **One shared four-legged body** (`src/builtin/quadruped.js`) serves dogs, cats,
-  horses, wolves, goats and deer, with different sliders and sizes.
+- **Generic bodies are starting points, not fixtures.** `figure` and `quadruped` are
+  templates: a non-human species named with one (the built-in dogs, cats, horses…)
+  gets its own body written from it in the background once it is about
+  (`Sim::ask_species_bodies`, `POCKET_SIM_OWN_BODIES=0` turns it off), and keeps its
+  height (`size` is rescaled). New bodies get the closest template as an example of
+  the contract. Without an LLM the templates are what everyone wears.
+- **A body's line:** `meta.body.from` names the body it was written from. Layers made
+  for any body up the line fit (a quadruped's collar on a cat's body), and births pair
+  any two whose lines start at the same body.
+- **One being's body can be reshaped** by a deed (`being.reshape`: "a poofy tail"): its
+  own body (`Persona::body`), written from the one it has with every role kept, so
+  gestures and walking still work. Its young take after it.
+- **Gait** sets how the walk phase runs: per metre by body size (biped, quad), along
+  the body (slither), or with time too (hover). Hands of bodies with arms that don't
+  start at the figure swing from the grip.
 - **Mounts** need three times the rider's mass (not 1.8× the size) and a `seat`.
 - **Spooking:** besides predators that would hunt them, plant eaters with any
   wariness keep their distance from meat eaters (a horse from a wolf it could
@@ -71,8 +84,8 @@ These carry over from `emergence-plan.md`, applied to bodies and minds.
    open sliders and layers that a world, a region, a culture or one person can
    set. "A warrior village" or "everyone is a giant" changes values and adds
    layers. It never needs new engine code.
-7. **The traveller stays the traveller.** The player is always a human-shaped
-   traveller, but their size and dress are values like anyone else's.
+7. **The traveler stays the traveler.** The player is always a human-shaped
+   traveler, but their size and dress are values like anyone else's.
 
 ## What exists today
 
@@ -238,7 +251,7 @@ armour, a cloak and a hat.
 **World-scale values.** Genesis can set:
 
 - per-species size multipliers ("everyone is a giant": human height ×1.8)
-- the traveller's own size ("I'm small": traveller height 0.9 m)
+- the traveler's own size ("I'm small": traveler height 0.9 m)
 
 Eye height, reach, speed, what you can lift and contact distance all follow
 from size (see 5), so "small among giants" plays out without special code.
@@ -306,8 +319,8 @@ Characters carry you, things are heavy, and doors are high.
 - **While riding:** the rider follows the seat each step and their pose
   switches to sitting (`crouch`). The rider can still talk, hold one thing,
   and use or throw it.
-- **The traveller steering:** walk keys drive the mount at the mount's speed.
-  The camera moves to seat height plus the traveller's eye height. Turning
+- **The traveler steering:** walk keys drive the mount at the mount's speed.
+  The camera moves to seat height plus the traveler's eye height. Turning
   works as on foot, and a flying mount climbs and dives with look up and down.
 - **A character riding:** they give the mount a `goto`. The scorer picks
   riding for long trips when they own or are close to a mount.
@@ -389,7 +402,7 @@ the same body module with new ranges. Universe rules can push drift on purpose
 - **Genesis.** The universe call adds a `species` list: 1–5 species that fit the
   world (earth: human plus a few animals. magic: the peoples and beasts of that
   world). Each gets its body module in its own ```js block, like base types.
-- **Looks at genesis.** The same call can set size multipliers, the traveller's
+- **Looks at genesis.** The same call can set size multipliers, the traveler's
   size, and starting varieties with their layers ("a warrior culture": armour
   and shields for humans).
 - **Regions.** The region plan's characters get `"species": "name"`, plus an
@@ -439,10 +452,10 @@ emergence plan.
      once, then reuses it.
 5. **Looks and layers.** Body-declared sliders, varieties, layer modules
    rendered in the same instance, the `wear` verb, world size multipliers and
-   the traveller's size.
+   the traveler's size.
    - *Proof (scripted model):* "a warrior village" gives its people an armour
      variety, and the armour tilts with `lean` and burns off in a fire. In
-     "a world where I'm small and everyone is big", the traveller's eye height,
+     "a world where I'm small and everyone is big", the traveler's eye height,
      reach and lifting all scale, and a character can carry them.
 6. **Doing, editing and creating with beings.** Layer edits with consent,
    interpreter answers on beings, species `transform` by universe rules, and
@@ -451,10 +464,10 @@ emergence plan.
      agrees. A cursed character becomes another species and still remembers
      the player. A refused edit changes nothing.
 7. **Flight and riding.** Altitude, clearance, landing, flying as part of
-   `goto`, the `ride` and `dismount` verbs with consent, traveller steering
+   `goto`, the `ride` and `dismount` verbs with consent, traveler steering
    and camera, and mounts that bolt in fear.
    - *Proof:* a griffin flies over a house to its owner across a lake, lands,
-     and is greeted. It never passes through a solid. The traveller rides a
+     and is greeted. It never passes through a solid. The traveler rides a
      horse that knows them, steers it with the walk keys, and the horse bolts
      and throws them when a wolf appears. A stranger's horse refuses them. A
      character rides a griffin to the next village, and both arrive.
@@ -482,7 +495,7 @@ emergence plan.
 
 ## Decided
 
-- The player stays the traveller (a human-shaped body). Their size and dress
+- The player stays the traveler (a human-shaped body). Their size and dress
   can vary, but playing as another species is out for now.
 - Breeding and change over time are in (phase 8).
 

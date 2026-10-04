@@ -131,7 +131,7 @@ impl Sim {
         // What happened there while nobody watched.
         let happened: Vec<String> = self.log.recent.iter().rev().take((self.log.total - before) as usize).filter(|e| matches!(e.kind.as_str(), "ignited" | "burnt_out" | "doused" | "grown" | "died")).map(|e| e.text.clone()).collect();
         let night = self.night();
-        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| !n.dead).filter(|n| region_of(n.a.pos.x, n.a.pos.z) == r || region_of(n.def.home.x, n.def.home.z) == r).map(|n| n.def.id).collect();
+        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| n.here()).filter(|n| region_of(n.a.pos.x, n.a.pos.z) == r || region_of(n.def.home.x, n.def.home.z) == r).map(|n| n.def.id).collect();
         for cid in ids {
             let Some(n) = self.cast.get_mut(cid) else { continue };
             n.needs.hunger = (n.needs.hunger + missed / 900.0).min(1.0);
@@ -158,9 +158,9 @@ impl Sim {
                 n.last_sim = t0;
             }
             let text = if happened.is_empty() {
-                "While the traveller was away, the days went on as usual.".to_string()
+                "While the traveler was away, the days went on as usual.".to_string()
             } else {
-                format!("While the traveller was away: {}.", happened.iter().take(4).cloned().collect::<Vec<_>>().join("; "))
+                format!("While the traveler was away: {}.", happened.iter().take(4).cloned().collect::<Vec<_>>().join("; "))
             };
             self.out.push(Request::Witness { cid, text, importance: if happened.is_empty() { 0.2 } else { 0.5 } });
         }

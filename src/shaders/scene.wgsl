@@ -297,11 +297,18 @@ fn point_light(p: vec3f, n: vec3f) -> vec3f {
   return sum;
 }
 
-// Generic looks every object can have: charred, wet, highlighted.
+// Generic looks every object can have: charred, wet, highlighted (fx.w > 0)
+// or corrupted (fx.w < 0: the dark creeping over it).
 fn apply_fx(albedo: vec3f, fx: vec4f) -> vec3f {
   var a = mix(albedo, vec3f(0.07, 0.06, 0.055), clamp(fx.x, 0.0, 1.0));
   a = a * (1.0 - 0.35 * clamp(fx.y, 0.0, 1.0));
+  a = mix(a, vec3f(0.04, 0.03, 0.03), clamp(-fx.w, 0.0, 1.0) * 0.7);
   return mix(a, vec3f(1.0, 0.97, 0.8), clamp(fx.w, 0.0, 1.0) * 0.28);
+}
+
+// The faint dull red corrupted things give off, like embers under ash.
+fn corrupt_glow(fx: vec4f) -> vec3f {
+  return vec3f(0.3, 0.02, 0.01) * clamp(-fx.w, 0.0, 1.0) * 0.12;
 }
 
 fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
@@ -370,7 +377,9 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       albedo = apply_fx(base, i.fx);
       // Only the parts marked with glow() shine, unless the type marks none.
       let lit = select(1.0, raw.w, type_marks_glow(i.info.x));
-      glow = base * clamp(i.fx.z, 0.0, 2.0) * lit;
+      // The dark's own (charred past 1): whatever glows on it glows red.
+      let gc = select(base, vec3f(1.0, 0.07, 0.03), i.fx.x > 1.5);
+      glow = gc * clamp(i.fx.z, 0.0, 2.0) * lit + corrupt_glow(i.fx);
       let o1 = map_scene(p + n * 0.15).z;
       let o2 = map_scene(p + n * 0.5).z;
       ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);

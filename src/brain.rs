@@ -40,6 +40,14 @@ pub enum Cmd {
     BuildGesture { id: u64, name: String, body: String },
     /// Rewrite one thing's shape code. Answered by `Event::TypeBuilt`.
     EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
+    /// Write a new species from a brief (`fixed` laid over it). Answered by `Event::SpeciesMade`.
+    NewSpecies { id: u64, brief: String, fixed: Value },
+    /// A species (JSON) on a generic body gets its own, written from
+    /// `template`. Answered by `Event::TypeBuilt`.
+    SpeciesBody { id: u64, species: String, template: String },
+    /// One being's body reshaped: `source` (the body `from`) changed as
+    /// `change` says, as the body `name`. Answered by `Event::TypeBuilt`.
+    ReshapeBody { id: u64, name: String, from: String, source: String, change: String },
 }
 
 pub enum Event {
@@ -65,6 +73,8 @@ pub enum Event {
     Progress { task: Task, frac: f32 },
     /// Something named as the world is made: ("shaping", "lighthouse").
     Made { task: Task, verb: &'static str, name: String },
+    /// A species was written (None: it failed).
+    SpeciesMade { id: u64, name: Option<String> },
 }
 
 enum CMsg {
@@ -79,7 +89,7 @@ struct Info {
     terrain: Arc<Terrain>,
     neighbours: Vec<String>,
     look: Arc<Look>,
-    /// The region the traveller begins in.
+    /// The region the traveler begins in.
     start: (i32, i32),
 }
 
@@ -192,8 +202,9 @@ impl Brain {
                         Cmd::Interpret { id, .. } => Some(Event::Interpreted { id, result: Err("no LLM".into()) }),
                         Cmd::Create { id, .. } => Some(Event::Created { id, instances: vec![] }),
                         Cmd::Chat { a, b, .. } => Some(Event::ChatLines { a, b, lines: vec![] }),
-                        Cmd::BuildType { id, .. } | Cmd::EditType { id, .. } => Some(Event::TypeBuilt { id, type_id: None }),
+                        Cmd::BuildType { id, .. } | Cmd::EditType { id, .. } | Cmd::SpeciesBody { id, .. } | Cmd::ReshapeBody { id, .. } => Some(Event::TypeBuilt { id, type_id: None }),
                         Cmd::BuildGesture { id, .. } => Some(Event::GestureBuilt { id, result: Err("no LLM".into()) }),
+                        Cmd::NewSpecies { id, .. } => Some(Event::SpeciesMade { id, name: None }),
                         _ => None,
                     };
                     if let Some(r) = reply {
@@ -385,13 +396,81 @@ async fn run(ctx: Ctx, cmd: Cmd) {
                 character: name,
                 persona,
                 event,
-                context: format!("{context}\nWhat they remember of the traveller: {summary}\nTheir latest memories: {}", if recent.is_empty() { "none".into() } else { recent.join(" | ") }),
+                context: format!("{context}\nWhat they remember of the traveler: {summary}\nTheir latest memories: {}", if recent.is_empty() { "none".into() } else { recent.join(" | ") }),
             };
             let d = ctx.decider.decide(dctx).await;
             let _ = ctx.events.send(Event::Decision { cid, decision: d });
         }
+        Cmd::NewSpecies { id, brief, fixed } => {
+            let _ = ctx.events.send(Event::Building(1));
+            let name = match new_species(&ctx, &brief, &fixed).await {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    crate::log::error(format!("new species failed: {e:#}"));
+                    None
+                }
+            };
+            let _ = ctx.events.send(Event::SpeciesMade { id, name });
+            let _ = ctx.events.send(Event::Building(-1));
+        }
+        Cmd::SpeciesBody { id, species, template } => {
+            let _ = ctx.events.send(Event::Building(1));
+            let type_id = match species_body(&ctx, &species, &template).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    crate::log::error(format!("a species' own body failed: {e:#}"));
+                    None
+                }
+            };
+            let _ = ctx.events.send(Event::TypeBuilt { id, type_id });
+            let _ = ctx.events.send(Event::Building(-1));
+        }
+        Cmd::ReshapeBody { id, name, from, source, change } => {
+            let _ = ctx.events.send(Event::Building(1));
+            let type_id = match reshape_body(&ctx, &name, &from, &source, &change).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    crate::log::error(format!("reshaping the body '{name}' failed: {e:#}"));
+                    None
+                }
+            };
+            let _ = ctx.events.send(Event::TypeBuilt { id, type_id });
+            let _ = ctx.events.send(Event::Building(-1));
+        }
         Cmd::Undo | Cmd::History | Cmd::Witness { .. } => {}
     }
+}
+
+/// One species from a brief: written, its body built if new, stored, and
+/// the snapshot flipped so the body can be drawn.
+async fn new_species(ctx: &Ctx, brief: &str, fixed: &Value) -> anyhow::Result<String> {
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let task = prompts::species_task(brief, &species_list(&ctx.db));
+    let mut req = Req::new(Role::Builder, system.clone(), task);
+    req.max_tokens = 2000;
+    let reply = ctx.llm.complete(&req, "species").await?;
+    let mut v = extract_json(&reply)?;
+    if let Some(s) = v.get("species").cloned() {
+        v = s;
+    }
+    if let Some(a) = v.as_array().and_then(|a| a.first()).cloned() {
+        v = a;
+    }
+    if let (Some(o), Some(f)) = (v.as_object_mut(), fixed.as_object()) {
+        for (k, x) in f {
+            o.insert(k.clone(), x.clone());
+        }
+    }
+    let (types, names) = species_from(ctx, &system, &[v], 1).await;
+    let name = names.into_iter().next().ok_or_else(|| anyhow::anyhow!("the species was unreadable"))?;
+    if !types.is_empty() {
+        let ok = ctx
+            .commit(CommitRequest { kind: "species", summary: format!("new species: {name}"), new_types: types, placements: vec![], nudge: true, region: None, look: None })
+            .await
+            .map_err(|d| anyhow::anyhow!(format_diags(&d)))?;
+        let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
+    }
+    Ok(name)
 }
 
 fn budget_msg(e: &anyhow::Error) -> Option<String> {
@@ -422,7 +501,8 @@ async fn validate(code: String, known: Vec<String>) -> Result<NewType, Vec<Diag>
 }
 
 /// Ask for a type, validate it, and feed errors back up to two times.
-async fn build_type(ctx: &Ctx, system: &str, task: String, name: &str, extra_tags: &[&str]) -> anyhow::Result<NewType> {
+/// `roles`: roles a body must still answer to (a reshaped body keeps them).
+async fn build_type(ctx: &Ctx, system: &str, task: String, name: &str, extra_tags: &[&str], roles: &[String]) -> anyhow::Result<NewType> {
     let mut msgs = vec![Msg { user: true, text: task }];
     let mut last = String::new();
     let mut last_code = String::new();
@@ -437,6 +517,10 @@ async fn build_type(ctx: &Ctx, system: &str, task: String, name: &str, extra_tag
                 last_code = code.clone();
                 match validate(code, ctx.known_props()).await {
                     Ok(t) if extra_tags.contains(&"body") && t.ct.meta.body.is_none() => vec![Diag::new(Stage::Allowlist, 0, "a body needs meta.body (height, eye, radius, reach, grip, roles, gait…); see the body rules above".into())],
+                    Ok(t) if t.ct.meta.body.as_ref().is_some_and(|b| roles.iter().any(|r| !b.roles.contains(r))) => {
+                        let missing: Vec<&String> = roles.iter().filter(|r| !t.ct.meta.body.as_ref().is_some_and(|b| b.roles.contains(r))).collect();
+                        vec![Diag::new(Stage::Allowlist, 0, format!("the body must still answer to every role it had; missing: {}", missing.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(", ")))]
+                    }
                     Ok(t) => return Ok(t),
                     Err(d) => d,
                 }
@@ -506,13 +590,98 @@ fn species_list(db: &Db) -> String {
     book.list.iter().map(|s| format!("- {} ({}; body {}, {:?} mind, speech {:?})", s.name, if s.description.is_empty() { "people" } else { &s.description }, s.body, s.mind, s.speech).to_lowercase()).collect::<Vec<_>>().join("\n")
 }
 
+/// Generic bodies a species starts from: a species named with one gets its
+/// own body written from it (a cat's from the quadruped).
+pub const TEMPLATE_BODIES: [&str; 2] = ["figure", "quadruped"];
+
+/// A body's code, from the stored types (built-in or written).
+fn body_source(db: &Db, name: &str) -> String {
+    db.types().unwrap_or_default().into_iter().rev().find(|t| t.name == name && (t.status == "builtin" || t.status == "ok")).map(|t| t.code).unwrap_or_default()
+}
+
+/// A written body as the one asked for: its name, and the body it was
+/// written from in `meta.body.from` (in the source too, so it survives a
+/// reload), or none.
+fn own_body(mut t: NewType, name: &str, from: Option<&str>) -> NewType {
+    let mut ct = (*t.ct).clone();
+    if ct.meta.name != name {
+        ct.source = rename_meta(&ct.source, &ct.meta.name, name);
+        ct.meta.name = name.to_string();
+    }
+    if let (Some(from), Some(b)) = (from, ct.meta.body.as_mut()) {
+        let old = b.from.as_deref().map(|o| [format!("from: \"{o}\""), format!("from: '{o}'")]);
+        let src = match old.and_then(|o| o.into_iter().find(|o| ct.source.contains(o.as_str()))) {
+            Some(o) => Some(ct.source.replacen(&o, &format!("from: \"{}\"", from.replace(['\\', '"'], "")), 1)),
+            None if b.from.is_none() => insert_body_from(&ct.source, from),
+            None => None,
+        };
+        if let Some(src) = src {
+            ct.source = src;
+            b.from = Some(from.to_string());
+        }
+    } else if let (None, Some(b)) = (from, ct.meta.body.as_mut()) {
+        // Not of any body's line: a `from` it was given goes.
+        if let Some(o) = b.from.take() {
+            for q in [format!("from: \"{o}\","), format!("from: '{o}',"), format!("from: \"{o}\""), format!("from: '{o}'")] {
+                if ct.source.contains(&q) {
+                    ct.source = ct.source.replacen(&q, "", 1);
+                    break;
+                }
+            }
+        }
+    }
+    t.ct = Arc::new(ct);
+    t
+}
+
+/// Add `from: "<name>"` at the start of a module's `body: { … }` meta.
+fn insert_body_from(src: &str, from: &str) -> Option<String> {
+    let esc = from.replace(['\\', '"'], "");
+    for (i, _) in src.match_indices("body:") {
+        let rest = &src[i + 5..];
+        let gap = rest.len() - rest.trim_start().len();
+        if rest.trim_start().starts_with('{') {
+            let j = i + 5 + gap;
+            return Some(format!("{} from: \"{esc}\",{}", &src[..=j], &src[j + 1..]));
+        }
+    }
+    None
+}
+
+/// A body's standing height, from its stored code.
+fn body_height(db: &Db, name: &str) -> Option<f32> {
+    compile(&body_source(db, name)).ok()?.meta.body.map(|b| b.height)
+}
+
+/// A species' size against its own body, written at its natural size, that
+/// keeps the height it had on the generic body (a cat at 0.34 of the
+/// one-metre quadruped stays 0.34 m tall on its own 0.32 m body).
+fn size_on_own_body(size: f32, template_height: Option<f32>, own_height: f32) -> f32 {
+    match template_height {
+        Some(th) if size.is_finite() && own_height > 0.01 => (size * th / own_height).clamp(0.2, 12.0),
+        _ => size,
+    }
+}
+
+/// Write one species' body: its own, written from a generic body
+/// (`derived`: it is of that body's line), or a new one that only takes
+/// `template` as an example of the contract (a dragon is no quadruped).
+async fn write_body(ctx: &Ctx, system: &str, name: &str, desc: &str, species: &str, template: &str, derived: bool) -> anyhow::Result<NewType> {
+    let src = body_source(&ctx.db, template);
+    let task = prompts::body_task(name, desc, species, (!src.is_empty()).then_some((template, src.as_str())), derived);
+    let t = build_type(ctx, system, task, name, &["body"], &[]).await?;
+    Ok(own_body(t, name, Some(template).filter(|_| derived)))
+}
+
 /// Species the LLM described (at genesis or in a region plan): any body
-/// nobody has yet is written first, then the species is stored. Returns the
-/// new body types (to commit) and the species' names.
+/// nobody has yet is written first (all at once), and a species on a
+/// generic body gets its own, written from it. Returns the new body types
+/// (to commit) and the species' names.
 async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (Vec<NewType>, Vec<String>) {
     let mut bodies = body_names(&ctx.db);
-    let mut types = Vec::new();
-    let mut names = Vec::new();
+    // (species value, its body, what to write it from: (template, description),
+    // the generic body its own one comes from).
+    let mut plans: Vec<(Value, String, Option<(String, String)>, Option<String>)> = Vec::new();
     for v in list.iter().take(max) {
         let mut v = v.clone();
         let Some(o) = v.as_object_mut() else { continue };
@@ -522,26 +691,68 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
         }
         o.insert("name".into(), Value::String(name.clone()));
         let sapient = o.get("mind").and_then(|x| x.as_str()).is_none_or(|m| m == "sapient");
+        let fallback = if sapient { "figure" } else { "quadruped" };
         let mut body = o.get("body").and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
         if body.is_empty() || body == "human" || body == "person" {
-            body = if sapient { "figure".into() } else { "quadruped".into() };
+            body = fallback.into();
         }
-        if !bodies.contains(&body) {
-            let desc = o.get("body_description").or_else(|| o.get("description")).and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let task = prompts::body_task(&body, &desc, &v.to_string());
-            match build_type(ctx, system, task, &body, &["body"]).await {
-                Ok(t) => {
-                    body = t.ct.meta.name.clone();
-                    bodies.insert(body.clone());
-                    types.push(t);
-                }
-                Err(e) => {
-                    crate::log::info(format!("body for {name} failed: {e:#}"));
-                    body = if sapient { "figure".into() } else { "quadruped".into() };
-                }
+        let desc = o.get("body_description").or_else(|| o.get("description")).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let mut template_of = None;
+        let write = if name == "human" {
+            None
+        } else if TEMPLATE_BODIES.contains(&body.as_str()) {
+            // Its own body, from the generic one (named after the species).
+            let template = std::mem::replace(&mut body, name.clone());
+            template_of = Some(template.clone());
+            (!bodies.contains(&body)).then(|| (template, desc))
+        } else if !bodies.contains(&body) {
+            Some((fallback.to_string(), desc))
+        } else {
+            None
+        };
+        if write.is_some() {
+            // Two species naming one new body share one writing.
+            bodies.insert(body.clone());
+        }
+        plans.push((v, body, write, template_of));
+    }
+    let futs = plans.iter().map(|(v, body, write, template_of)| async move {
+        let (template, desc) = write.as_ref()?;
+        match write_body(ctx, system, body, desc, &v.to_string(), template, template_of.is_some()).await {
+            Ok(t) => Some((body.clone(), Ok(t))),
+            Err(e) => Some((body.clone(), Err(e))),
+        }
+    });
+    let mut types = Vec::new();
+    let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (body, res) in futures_util::future::join_all(futs).await.into_iter().flatten() {
+        match res {
+            Ok(t) => types.push(t),
+            Err(e) => {
+                crate::log::info(format!("body {body} failed: {e:#}"));
+                failed.insert(body);
             }
         }
+    }
+    let mut names = Vec::new();
+    for (mut v, mut body, write, template_of) in plans {
+        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if failed.contains(&body) {
+            // Its body couldn't be written: the generic one it started from.
+            let sapient = v.get("mind").and_then(|x| x.as_str()).is_none_or(|m| m == "sapient");
+            body = write.map(|w| w.0).unwrap_or_else(|| if sapient { "figure".into() } else { "quadruped".into() });
+        }
         if let Some(o) = v.as_object_mut() {
+            // A body of its own from a generic one: its sliders are its own
+            // (the generic ranges don't apply), and it keeps its height.
+            if let Some(template) = template_of.filter(|_| !TEMPLATE_BODIES.contains(&body.as_str())) {
+                o.remove("look");
+                let own = types.iter().find(|t| t.ct.meta.name == body).and_then(|t| t.ct.meta.body.as_ref()).map(|b| b.height).or_else(|| body_height(&ctx.db, &body));
+                let size = o.get("size").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32;
+                if let Some(h) = own {
+                    o.insert("size".into(), serde_json::json!(size_on_own_body(size, body_height(&ctx.db, &template), h)));
+                }
+            }
             o.insert("body".into(), Value::String(body));
             o.remove("body_description");
         }
@@ -558,6 +769,53 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
         }
     }
     (types, names)
+}
+
+/// A species still on a generic body gets its own, written from it: stored
+/// with the species and committed. Returns the new body's type id.
+async fn species_body(ctx: &Ctx, species: &str, template: &str) -> anyhow::Result<u32> {
+    let mut sp: crate::world::species::Species = serde_json::from_str(species)?;
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let desc = if sp.description.is_empty() { sp.name.clone() } else { format!("{}: {}", sp.name, sp.description) };
+    let t = write_body(ctx, &system, &sp.name, &desc, species, template, true).await?;
+    let old = serde_json::to_string(&sp)?;
+    if let Some(h) = t.ct.meta.body.as_ref().map(|b| b.height) {
+        sp.size = size_on_own_body(sp.size, body_height(&ctx.db, template), h);
+    }
+    sp.body = sp.name.clone();
+    sp.look.clear();
+    let new = serde_json::to_string(&sp)?;
+    // Stored first: the commit's snapshot carries the species with it.
+    ctx.db.with(|c| crate::db::put_species(c, &sp.name, &new))?;
+    let ok = match ctx.commit(CommitRequest { kind: "species", summary: format!("{}'s own body", sp.name), new_types: vec![t], placements: vec![], nudge: true, region: None, look: None }).await {
+        Ok(ok) => ok,
+        Err(d) => {
+            let _ = ctx.db.with(|c| crate::db::put_species(c, &sp.name, &old));
+            anyhow::bail!(format_diags(&d));
+        }
+    };
+    let id = ok.snapshot.body_named(&sp.name).map(|e| e.id).ok_or_else(|| anyhow::anyhow!("body vanished"))?;
+    let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
+    Ok(id)
+}
+
+/// One being's body reshaped (a poofy tail): written from its body now,
+/// keeping every role. Returns the new body's type id.
+async fn reshape_body(ctx: &Ctx, name: &str, from: &str, source: &str, change: &str) -> anyhow::Result<u32> {
+    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let roles = crate::lang::compile(source).ok().and_then(|ct| ct.meta.body.map(|b| b.roles)).unwrap_or_default();
+    let task = prompts::body_reshape_task(name, from, source, change, &roles);
+    let t = build_type(ctx, &system, task, name, &["body"], &roles).await?;
+    let t = own_body(t, name, Some(from));
+    let ok = ctx
+        // Not a "reshaped: " commit: those one-off types are dropped once no
+        // placed thing uses them, and nothing is placed in a body.
+        .commit(CommitRequest { kind: "interp", summary: format!("own body: {name}"), new_types: vec![t], placements: vec![], nudge: true, region: None, look: None })
+        .await
+        .map_err(|d| anyhow::anyhow!(format_diags(&d)))?;
+    let id = ok.snapshot.body_named(name).map(|e| e.id).ok_or_else(|| anyhow::anyhow!("body vanished"))?;
+    let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
+    Ok(id)
 }
 
 /// Varieties a plan describes, added to (or replacing ones of) their species.
@@ -587,7 +845,7 @@ fn varieties_from(db: &Db, list: &[Value]) {
 }
 
 /// World-wide species settings from the genesis plan (attitudes, sizes, the
-/// traveller's height).
+/// traveler's height).
 fn species_world_from(db: &Db, v: &Value) {
     let mut w: crate::world::species::SpeciesWorld = db.kv_get("species.world").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let mut changed = false;
@@ -610,8 +868,8 @@ fn species_world_from(db: &Db, v: &Value) {
         w.sizes = s.into_iter().filter(|(_, v)| v.is_finite()).map(|(k, v)| (k.trim().to_lowercase(), v.clamp(0.2, 6.0))).collect();
         changed = true;
     }
-    if let Some(h) = v.get("traveller_height").and_then(|x| x.as_f64()).filter(|h| h.is_finite()) {
-        w.traveller_height = Some((h as f32).clamp(0.3, 12.0));
+    if let Some(h) = v.get("traveler_height").or_else(|| v.get("traveller_height")).and_then(|x| x.as_f64()).filter(|h| h.is_finite()) {
+        w.traveler_height = Some((h as f32).clamp(0.3, 12.0));
         changed = true;
     }
     if changed {
@@ -664,7 +922,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
                 Err(d) if d.iter().all(|x| x.stage.repairable()) => {
                     let name = code.split("name:").nth(1).and_then(|s| s.split('"').nth(1)).unwrap_or("object").to_string();
                     let task = format!("This base type failed validation:\n```js\n{code}\n```\nErrors:\n{}\n\n{}", format_diags(&d), prompts::TYPE_TASK);
-                    build_type(ctx, system, task, &name, &[]).await.ok().map(|mut t| {
+                    build_type(ctx, system, task, &name, &[], &[]).await.ok().map(|mut t| {
                         if !t.ct.meta.tags.iter().any(|x| x == "base") {
                             let mut ct = (*t.ct).clone();
                             ct.meta.tags.push("base".into());
@@ -817,9 +1075,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     );
     let task = format!("{task}\nSpecies in this universe:\n{}", species_list(&ctx.db));
     let task = if r == info.start && !info.look.start.is_empty() {
-        format!("{task}\n\nThe traveller begins in this region: {}\nPlan the region around it.", info.look.start)
+        format!("{task}\n\nThe traveler begins in this region: {}\nPlan the region around it.", info.look.start)
     } else if !info.look.land.is_empty() {
-        format!("{task}\n\nThe traveller did not begin here: make this region its own place in the land, different from its neighbours.")
+        format!("{task}\n\nThe traveler did not begin here: make this region its own place in the land, different from its neighbours.")
     } else {
         task
     };
@@ -863,7 +1121,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let system = system.clone();
         let tags: &[&str] = if is_layer { &["layer"] } else { &[] };
         async move {
-            let res = build_type(ctx, &system, task, &name, tags).await;
+            let res = build_type(ctx, &system, task, &name, tags, &[]).await;
             let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             pace::step(&ctx.events, Task::Region(r), 0.6 + 0.3 * k as f32 / n_specs as f32);
             (name.clone(), res)
@@ -1258,7 +1516,7 @@ async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3
         }
         None => (task, &[]),
     };
-    let t = build_type(ctx, &system, task, name, tags).await?;
+    let t = build_type(ctx, &system, task, name, tags, &[]).await?;
     let tname = t.ct.meta.name.clone();
     let ok = ctx
         .commit(CommitRequest { kind: "interp", summary: format!("new kind of thing: {tname}"), new_types: vec![t], placements: vec![], nudge: true, region: None, look: None })
@@ -1274,7 +1532,7 @@ async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3
 async fn edit_item_type(ctx: &Ctx, name: &str, source: &str, change: &str, spot: &str, cuts: &[[f32; 4]], with: Option<&(String, String, f32)>) -> anyhow::Result<u32> {
     let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
     let task = prompts::edit_task(name, source, change, spot, cuts, with);
-    let mut t = build_type(ctx, &system, task, name, &[]).await?;
+    let mut t = build_type(ctx, &system, task, name, &[], &[]).await?;
     // The thing is found again by name: insist on the one asked for.
     if t.ct.meta.name != name {
         let mut ct = (*t.ct).clone();
@@ -1323,7 +1581,7 @@ async fn talk(ctx: &Ctx, cid: i64, text: &str, context: &str, history: &[(bool, 
     let persona: Persona = serde_json::from_str(&row.persona_json).unwrap_or_default();
     let region = ctx.db.regions()?.into_iter().find(|r| format!("{},{}", r.rx, r.rz) == row.region);
     let rinfo = region.map(|r| region_info_from_plan(&r.plan_json)).unwrap_or_default();
-    let summary = ctx.db.summary(cid).map(|s| s.0).unwrap_or_else(|| "I have not met the traveller before.".into());
+    let summary = ctx.db.summary(cid).map(|s| s.0).unwrap_or_else(|| "I have not met the traveler before.".into());
     let mems = ctx.db.memories(cid)?;
     // Most relevant and most recent memories.
     let q = words(text);
@@ -1361,7 +1619,7 @@ async fn talk(ctx: &Ctx, cid: i64, text: &str, context: &str, history: &[(bool, 
         rinfo.facts.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n")
     );
     let tail = format!(
-        "Your memory of the traveller so far: {summary}\n\nSpecific memories:\n{}\n\nRight now: {context}",
+        "Your memory of the traveler so far: {summary}\n\nSpecific memories:\n{}\n\nRight now: {context}",
         if memories.is_empty() { "(none yet)".into() } else { memories.join("\n") }
     );
     let mut messages: Vec<Msg> = history.iter().rev().take(8).rev().map(|(u, t)| Msg { user: *u, text: t.clone() }).collect();
@@ -1377,7 +1635,7 @@ async fn talk(ctx: &Ctx, cid: i64, text: &str, context: &str, history: &[(bool, 
     })
     .await?;
     let now = crate::db::now();
-    let mem = format!("The traveller said: \"{}\" I replied: \"{}\"", text.trim(), reply.trim());
+    let mem = format!("The traveler said: \"{}\" I replied: \"{}\"", text.trim(), reply.trim());
     ctx.db.add_memory(cid, now, &mem, importance(&mem))?;
     // Refresh the rolling summary every few memories.
     let n = ctx.db.memories(cid)?.len();
@@ -1416,5 +1674,22 @@ mod tests {
         let n = region_notes(&t, (0, 0));
         assert!(n.contains("Water covers"));
         assert_eq!(n.lines().filter(|l| l.len() == 9 && l.chars().all(|c| "~.-+^".contains(c))).count(), 9);
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+
+    #[test]
+    fn written_bodies_keep_their_line_in_the_source() {
+        let src = "export const meta = { name: \"x\", bounds: [1, 1, 1], tags: [\"body\"],\n  body: { height: 1, roles: [] } };";
+        let out = insert_body_from(src, "quadruped").unwrap();
+        assert!(out.contains("body: { from: \"quadruped\", height: 1"), "{out}");
+        // A comment that says "body:" first is skipped.
+        let src2 = format!("// body: a test\n{src}");
+        assert!(insert_body_from(&src2, "cat").unwrap().contains("body: { from: \"cat\","));
+        assert!((size_on_own_body(0.34, Some(1.0), 0.32) - 1.0625).abs() < 1e-3);
+        assert_eq!(size_on_own_body(2.0, None, 5.0), 2.0);
     }
 }

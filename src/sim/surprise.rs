@@ -110,7 +110,7 @@ impl Sim {
 
     /// Characters within `range` who can see it take in the news.
     pub fn startle(&mut self, range: f32, news: &News, except: &[ActorId]) {
-        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| !n.dead && !n.a.asleep && (n.a.pos - news.at).length() < range && !except.contains(&ActorId::Npc(n.def.id))).map(|n| n.def.id).collect();
+        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| n.here() && !n.a.asleep && (n.a.pos - news.at).length() < range && !except.contains(&ActorId::Npc(n.def.id))).map(|n| n.def.id).collect();
         for cid in ids {
             self.startle_one(cid, news);
         }

@@ -72,6 +72,12 @@ pub struct SavedState {
     /// simulation's own shape (`sim::needs::Work`), so it carries on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<serde_json::Value>,
+    /// How much darkness has got into them (0..1).
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub corruption: f32,
+    /// Gone outside their hours (night beings by day).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub away: bool,
 }
 
 fn is_zero_i(v: &i64) -> bool {

@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/figure.js"),
     include_str!("builtin/quadruped.js"),
+    include_str!("builtin/nightwalker.js"),
     include_str!("builtin/tree.js"),
     include_str!("builtin/pine.js"),
     include_str!("builtin/rock.js"),

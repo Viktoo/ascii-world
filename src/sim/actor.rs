@@ -434,11 +434,20 @@ impl Actor {
     }
 
     /// Where a held thing sits. Bodies with arms hold it between both hands
-    /// (big things) or in the right hand, following the pose (the same arm
-    /// the figure draws); others hold it at their grip (a mouth, a claw),
-    /// pushed forward a little by the reach roles.
+    /// (big things) or in the right hand, following the pose: arms built
+    /// like the figure's follow its arm maths; other arms swing from the
+    /// grip (the right hand at rest). Bodies without arms hold it at their
+    /// grip (a mouth, a claw), pushed forward a little by the reach roles.
     pub fn hand(&self, big: bool) -> Vec3 {
-        let w = if self.dims.arms {
+        let w = if self.dims.arms && !self.dims.human_arms {
+            let r = self.grip_hand(1.0, R_RAISE, R_FWD);
+            if big {
+                let m = (self.grip_hand(-1.0, L_RAISE, L_FWD) + r) * 0.5;
+                Vec3::new(m.x, m.y, m.z + 0.08 * self.dims.ratio)
+            } else {
+                r
+            }
+        } else if self.dims.arms {
             let r = self.hand_local(1.0, R_RAISE, R_FWD);
             let local = if big {
                 let l = self.hand_local(-1.0, L_RAISE, L_FWD);
@@ -461,6 +470,18 @@ impl Actor {
     pub fn seat(&self) -> Option<Vec3> {
         let s = Vec3::from_array(self.dims.seat?);
         Some(self.pos + self.right() * s.x + Vec3::Y * s.y + self.forward() * s.z)
+    }
+
+    /// A hand of an arm that hangs from above the grip (local, scaled):
+    /// raised sideways and swung forward as the figure's arm is.
+    fn grip_hand(&self, side: f32, raise: usize, fwd: usize) -> Vec3 {
+        let p = &self.pose;
+        let g = Vec3::from_array(self.dims.grip);
+        let len = (self.dims.height * 0.32).min(g.y.max(0.05));
+        let shoulder = Vec3::new(g.x.abs() * side, g.y + len, g.z);
+        let a = p[raise].clamp(0.0, 1.0) * 3.0;
+        let f = p[fwd].clamp(0.0, 1.0) * 1.45;
+        shoulder + Vec3::new(side * len * a.sin(), -len * a.cos() * f.cos(), len * a.cos() * f.sin())
     }
 
     /// A hand in the figure's own frame (x right, y up, z forward; metres
@@ -504,6 +525,10 @@ impl Actor {
     /// Ease the pose towards what the body is doing now.
     pub fn update_pose(&mut self, t: f64, dt: f32, holding_big: Option<bool>) {
         let mut goal = [0.0f32; 8];
+        // Hovering bodies keep drifting (their phase bobs them) at rest.
+        if !self.asleep {
+            self.phase += dt * self.dims.idle;
+        }
         if let Some(big) = holding_big {
             goal[R_FWD] = 0.55;
             if big {

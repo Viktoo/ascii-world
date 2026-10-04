@@ -59,7 +59,7 @@ fn section(r: &CreationRow) -> (u8, &'static str) {
 
 fn maker(r: &CreationRow) -> &str {
     match r.made_by.as_str() {
-        "the traveller" => "you",
+        "the traveler" => "you",
         "" => "not recorded",
         m => m,
     }
@@ -177,7 +177,7 @@ impl App {
         for p in &self.snap.instances {
             add(format!("type:{}", p.type_id), p.pos);
         }
-        for n in self.sim.cast.npcs.iter().filter(|n| !n.dead) {
+        for n in self.sim.cast.npcs.iter().filter(|n| n.here()) {
             add(format!("being:{}", n.def.id), n.a.pos);
         }
         out

@@ -131,9 +131,22 @@ pub struct Npc {
     pub shock_at: f64,
     /// Grown-up fraction (0.3 newborn … 1 adult).
     pub growth: f32,
+    /// Out of its hours (see `Species::active`): not drawn, simulated or met.
+    pub away: bool,
+    /// How much darkness has got into them (0..1; see `night`).
+    pub corruption: f32,
+    /// A glow someone's touch left on them (0..1), fading.
+    pub glow: f32,
+    /// When its touch last landed (it draws back for a while after).
+    pub touched_at: f64,
 }
 
 impl Npc {
+    /// In the world right now: alive and within its hours.
+    pub fn here(&self) -> bool {
+        !self.dead && !self.away
+    }
+
     pub fn name(&self) -> &str {
         &self.def.persona.name
     }
@@ -144,7 +157,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work() }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), corruption: self.corruption, away: self.away }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -213,7 +226,7 @@ impl Cast {
         if fresh_book {
             for n in self.npcs.iter_mut() {
                 let species = snap.species.of(&n.def.persona.species);
-                let body_ty = snap.body_type(&species.body).map(|b| b.id).unwrap_or(0);
+                let body_ty = body_for(&n.def.persona, &species, snap).map(|b| b.id).unwrap_or(0);
                 if species.as_ref() != n.species.as_ref() || body_ty != n.body_ty {
                     fit(n, snap, seed);
                 }
@@ -248,7 +261,7 @@ impl Cast {
             a,
             needs,
             traits,
-            doing: "idle".into(),
+            doing: if s.away { "away" } else { "idle" }.into(),
             goal: s.goal.clone(),
             plan: VecDeque::new(),
             plan_from_llm: false,
@@ -281,7 +294,12 @@ impl Cast {
             habit: s.habit,
             habit_at: s.t,
             shock_at: f64::MIN,
-            growth: if s.born > 0.0 { 0.3 } else { 1.0 },
+            // Only the born grow up; beings made by deeds arrive grown.
+            growth: if s.born > 0.0 && !s.parents.is_empty() { 0.3 } else { 1.0 },
+            away: s.away,
+            corruption: s.corruption.clamp(0.0, 1.0),
+            glow: 0.0,
+            touched_at: f64::MIN,
         };
         if let Some(w) = s.work.as_ref() {
             n.restore_work(w);
@@ -304,13 +322,14 @@ impl Cast {
 /// temper (on arrival, and again when its species changes).
 pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {
     let species = snap.species.of(&n.def.persona.species);
-    let body = snap.body_type(&species.body);
+    let body = body_for(&n.def.persona, &species, snap);
     let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
     let variety = species.varieties.iter().find(|v| v.name == n.def.persona.variety);
     let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
     n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
     // The young are smaller, all over.
     n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name) * n.def.persona.size_mul() * n.growth.clamp(0.2, 1.0));
+    n.a.dims.human_arms = n.a.dims.arms && body.is_some_and(|b| snap.body_root(b.name()) == "figure");
     n.a.roles = super::actor::role_mask(&bmeta);
     n.a.species = if species.is_human() { String::new() } else { species.name.clone() };
     n.traits = Traits::from_persona(&n.def.persona, rng);
@@ -320,6 +339,12 @@ pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {
     }
     n.body_ty = body.map(|b| b.id).unwrap_or(0);
     n.species = species;
+}
+
+/// The body a character lives in: their own (reshaped) one while it
+/// exists, else their species'.
+pub fn body_for<'a>(p: &crate::world::Persona, species: &Species, snap: &'a WorldSnapshot) -> Option<&'a Arc<crate::world::TypeEntry>> {
+    Some(p.body.as_str()).filter(|b| !b.is_empty()).and_then(|b| snap.body_named(b)).or_else(|| snap.body_type(&species.body))
 }
 
 /// Size numbers for a character: people draw their own height (a slider);
@@ -483,10 +508,17 @@ impl Sim {
         let near = self.cfg.near;
         let medium = self.cfg.medium;
         let hz = self.cfg.medium_hz;
+        let mut worn: HashMap<ActorId, f32> = HashMap::new();
+        for t in self.things.live() {
+            if let Some(w) = t.worn {
+                *worn.entry(w).or_default() += t.mass();
+            }
+        }
+        self.worn_mass = Some(worn);
         for i in 0..self.cast.npcs.len() {
             let (cid, d) = {
                 let n = &self.cast.npcs[i];
-                if n.dead {
+                if !n.here() {
                     continue;
                 }
                 (n.def.id, self.dist_to_player(n.a.pos))
@@ -503,6 +535,7 @@ impl Sim {
                 }
             }
         }
+        self.worn_mass = None;
     }
 
     fn held_size(&self, who: ActorId) -> Option<bool> {
@@ -713,11 +746,14 @@ impl Sim {
         !(done || failed)
     }
 
-    /// Walking and running speeds (m/s): the traveller's stride, or the
+    /// Walking and running speeds (m/s): the traveler's stride, or the
     /// species' own.
     pub fn speeds(&self, who: ActorId) -> (f32, f32) {
         // Armour and loads slow a body down.
-        let worn: f32 = self.things.live().filter(|t| t.worn == Some(who)).map(|t| t.mass()).sum();
+        let worn: f32 = match &self.worn_mass {
+            Some(m) => m.get(&who).copied().unwrap_or(0.0),
+            None => self.things.live().filter(|t| t.worn == Some(who)).map(|t| t.mass()).sum(),
+        };
         let k = (1.0 - worn / (self.strength(who) * 3.0)).clamp(0.5, 1.0);
         let (w, r) = self.base_speeds(who);
         (w * k, r * k)
@@ -755,7 +791,7 @@ impl Sim {
         let moved = self.actor(who).map(|a| a.moved).unwrap_or(0.0);
         let blocked = moved < speed * dt * 0.15 && len >= 0.3;
         if let Some(a) = self.actor_mut(who) {
-            a.phase += moved * 3.2;
+            a.phase += moved * a.dims.stride;
             a.stuck = if blocked { a.stuck + dt } else { 0.0 };
             // Someone in the way for a moment is not a wall.
             a.stuck < 1.5
@@ -794,7 +830,7 @@ impl Sim {
                 n.a.task = None;
                 n.a.asleep = false;
                 n.a.face(player - n.a.pos, dt * 4.0);
-                n.doing = "talking with the traveller".into();
+                n.doing = "talking with the traveler".into();
                 n.needs.social = (n.needs.social - dt / 60.0).max(0.0);
             }
             let held_big = self.held_size(ActorId::Npc(cid));
@@ -809,7 +845,7 @@ impl Sim {
         if dp < 9.0 && !n.a.asleep {
             if t - n.last_player_near > 240.0 {
                 n.last_player_near = t;
-                let ctx = format!("The traveller has come within a few metres of you. It is {}.", crate::render::sky::time_label(t));
+                let ctx = format!("The traveler has come within a few metres of you. It is {}.", crate::render::sky::time_label(t));
                 if self.has_llm && near && sapient {
                     let context = self.decide_context(cid, &ctx);
                     self.request(Request::Decide { cid, event: "player_near".into(), context }, player);
@@ -818,8 +854,11 @@ impl Sim {
         }
         // Night: home and to bed.
         let Some(n) = self.cast.get_mut(cid) else { return };
-        if night && !n.a.asleep && n.a.task.is_none() && n.mission.is_none() && !n.plan.iter().any(|a| matches!(a, Action::Sleep)) && !self.social.busy(ActorId::Npc(cid)) {
+        if night && !n.a.asleep && n.a.task.is_none() && n.mission.is_none() && !n.plan.iter().any(|a| matches!(a, Action::Sleep)) && !self.social.busy(ActorId::Npc(cid)) && n.species.want.is_empty() {
             let home = n.def.home;
+            // With the dark about, people sleep by the nearest light.
+            let home = if sapient { self.night_shelter(home) } else { home };
+            let Some(n) = self.cast.get_mut(cid) else { return };
             n.plan = vec![Action::GoHome, Action::Sleep].into();
             n.goal = "go home to sleep".into();
             n.doing = "heading home".into();
@@ -841,6 +880,31 @@ impl Sim {
         }
         self.need_tick(cid);
         let asleep = self.cast.get(cid).is_some_and(|n| n.a.asleep);
+        // Some beings move only while the traveler isn't looking, however
+        // near (the edge of the eye doesn't count: there it can be seen creeping).
+        // Drawing back after its touch it may be seen going.
+        let drawing_back = self.cast.get(cid).is_some_and(|n| n.species.touch.any() && self.t - n.touched_at < super::night::TOUCH_GAP);
+        let watched = !drawing_back && self.cast.get(cid).is_some_and(|n| n.species.moves_unseen && n.a.riding.is_none()) && self.actor(ActorId::Npc(cid)).is_some_and(|a| self.player_watches(a.pos, a.dims.radius));
+        if watched {
+            // Within arm's reach looking doesn't save you: it reaches out.
+            if self.watched_reach(cid) {
+                self.touch(cid, ActorId::Player);
+            }
+            if let Some(n) = self.cast.get_mut(cid) {
+                n.a.face(player - n.a.pos, dt * 2.0);
+                n.a.update_pose(t, dt, None);
+            }
+            return;
+        }
+        // Going after something: look again every second or so, mid-stride
+        // (its quarry moves, steps into the light, comes within reach).
+        if !asleep && self.cast.get(cid).is_some_and(|n| !n.species.want.is_empty() && t >= n.think_at) && !self.social.busy(ActorId::Npc(cid)) {
+            if !self.pursue_want(cid) {
+                if let Some(n) = self.cast.get_mut(cid) {
+                    n.think_at = t + 2.0;
+                }
+            }
+        }
         if !asleep {
             let me = ActorId::Npc(cid);
             self.step_plan(me);
@@ -883,6 +947,10 @@ impl Sim {
                 n.think_at = s.t + secs;
             }
         };
+        // Something it goes after (a night horror, a firefly drawn to you).
+        if self.pursue_want(cid) {
+            return;
+        }
         // 0. What they wear is on fire: off with it.
         if self.mind_of(me) == crate::world::species::Mind::Sapient {
             if let Some(id) = self.worn_by(me).into_iter().find(|id| self.things.get(*id).is_some_and(|t| t.props[P_FIRE] > 0.05)) {
@@ -978,7 +1046,7 @@ impl Sim {
         if can_work {
             consider(&mut best, 0.1 + tr.crafty * 0.45, "work");
         }
-        // Near the traveller, something gets made every minute or so: when
+        // Near the traveler, something gets made every minute or so: when
         // it is due, the idlest person about turns to their trade.
         let maker_turn = self.maker_turn(cid);
         if maker_turn {
@@ -1014,7 +1082,7 @@ impl Sim {
                 let mut steps = vec![Action::Goto { target: Target::Actor(other), run: false }];
                 if other == ActorId::Player {
                     let first = oname.split_whitespace().next().unwrap_or("").to_string();
-                    steps.push(Action::Say { text: template_line("greet", if first == "the" { "traveller" } else { &first }, hour, k), to: Some(Target::Actor(other)) });
+                    steps.push(Action::Say { text: template_line("greet", if first == "the" { "traveler" } else { &first }, hour, k), to: Some(Target::Actor(other)) });
                 }
                 let hug_ok = aff > 0.6 && other != ActorId::Player && self.social.rel(me, other).is_some_and(|r| r.family || r.partner || r.affection > 0.7);
                 if hug_ok && k % 3 == 0 {
@@ -1159,7 +1227,7 @@ impl Sim {
     }
 
     /// Whether the maker clock is due and this character is the one to answer
-    /// it: the person near the traveller who has gone longest without working.
+    /// it: the person near the traveler who has gone longest without working.
     fn maker_turn(&self, cid: i64) -> bool {
         let t = self.t;
         let gap = self.cfg.maker_secs as f64;
@@ -1168,7 +1236,7 @@ impl Sim {
         }
         let player = self.player.pos;
         let ready = |n: &Npc| {
-            !n.dead
+            n.here()
                 && !n.a.asleep
                 && n.species.mind == crate::world::species::Mind::Sapient
                 && n.a.task.is_none()
@@ -1384,11 +1452,11 @@ impl Sim {
         self.ask_planner(cid, event, what, false);
     }
 
-    /// The traveller said something to a character and they answered: they
+    /// The traveler said something to a character and they answered: they
     /// may now do what was asked (make it and hand it over, show the way…).
     pub fn asked(&mut self, cid: i64, said: &str, replied: &str) {
         let what = format!(
-            "The traveller just said to you: \"{said}\". You answered: \"{replied}\". If they asked you to do, make, fetch, give or show something and you agreed, do it now: to make something for them, a \"do\" step that makes it, then a \"give\" step to the traveller (it is handed over once made). If you refused, or nothing was asked, reply with no steps. Set \"say\" to null: you have already answered."
+            "The traveler just said to you: \"{said}\". You answered: \"{replied}\". If they asked you to do, make, fetch, give or show something and you agreed, do it now: to make something for them, a \"do\" step that makes it, then a \"give\" step to the traveler (it is handed over once made). If you refused, or nothing was asked, reply with no steps. Set \"say\" to null: you have already answered."
         );
         self.ask_planner(cid, "asked", &what, true);
     }
@@ -1463,13 +1531,14 @@ impl Sim {
             let rel = self.social.rel(me, o).map(|r| r.describe()).unwrap_or_else(|| "a stranger".into());
             let doing = match o {
                 ActorId::Npc(c) => self.cast.get(c).map(|x| x.doing.clone()).unwrap_or_default(),
-                ActorId::Player => "the traveller".into(),
+                ActorId::Player => "the traveler".into(),
             };
             people.push(format!("{} ({d:.0} m, {rel}{}{})", self.actor_name(o), if doing.is_empty() { "" } else { ", " }, doing));
         }
         let recent: Vec<String> = self.log.recent.iter().rev().filter(|e| e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 40.0) && self.t - e.t < 300.0).take(6).map(|e| e.text.clone()).collect();
+        let twist = self.twist_line(me).map(|l| format!("\n{l}")).unwrap_or_default();
         format!(
-            "{what}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
+            "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
             crate::render::sky::time_label(self.t),
             held.unwrap_or_else(|| "nothing".into()),
             if goal.is_empty() { "none".into() } else { goal },
@@ -1548,7 +1617,7 @@ impl Sim {
             self.animal_answers(cid);
             return;
         }
-        let context = self.decide_context(cid, "The traveller is talking to you.");
+        let context = self.decide_context(cid, "The traveler is talking to you.");
         self.request_now(Request::Talk { cid, text: text.to_string(), context });
     }
 

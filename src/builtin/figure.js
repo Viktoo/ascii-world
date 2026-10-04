@@ -1,4 +1,5 @@
-// Built-in human body. Look: a = height (m), b = build, c = skin tone,
+// Built-in human body (and the template other upright peoples' bodies are
+// written from). Look: a = height (m), b = build, c = skin tone,
 // d = shirt hue, e = trousers hue, f = walk phase (radians). Faces +z.
 // Roles (live pose): s0/s1 = left/right arm raised sideways (0 down … 1 up),
 // s2/s3 = left/right arm reaching forward (0 … 1), s4 = lean forward (radians),

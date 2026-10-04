@@ -1,5 +1,6 @@
-// Built-in four-legged body (dogs, cats, horses, wolves, goats, deer…), about
-// 1 m to the top of the head at scale 1; species set the scale. Faces +z.
+// Built-in generic four-legged body, about 1 m to the top of the head at
+// scale 1; species set the scale. Faces +z. A template: with an LLM, each
+// species on it (dogs, cats, horses…) gets its own body written from it.
 // Look: a = leg length, b = body length, c = ears (short … tall), d = coat
 // hue (0 … 1 round the wheel; 1 … 1.2 fades to grey), e = coat shade (black
 // … white). f = walk phase (radians).

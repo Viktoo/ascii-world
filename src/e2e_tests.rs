@@ -37,7 +37,7 @@ fn script(sys: &str, msgs: &[Msg], db: &Db, calls: &Mutex<Calls>) -> String {
     let lighthouse = fixture("good/lighthouse.js");
     if sys.contains("You are a character in Pocket Universe") {
         note!("dialogue");
-        return if sys.contains("The traveller said") {
+        return if sys.contains("The traveler said") {
             "Ah, you came back. Did you find the keeper?".into()
         } else {
             "You look like you fell from the sky.".into()
@@ -45,11 +45,11 @@ fn script(sys: &str, msgs: &[Msg], db: &Db, calls: &Mutex<Calls>) -> String {
     }
     if sys.contains("You decide what a character") {
         note!("decide");
-        return r#"{"action": "approach", "line": "You look lost, traveller."}"#.into();
+        return r#"{"action": "approach", "line": "You look lost, traveler."}"#.into();
     }
     if sys.contains("Update this character's private memory summary") {
         note!("summary");
-        return "I met a traveller who fell from the sky.".into();
+        return "I met a traveler who fell from the sky.".into();
     }
     if user.contains("That failed validation") {
         note!("repair");
@@ -185,7 +185,7 @@ fn story_pipeline_end_to_end() {
     {
         let c = calls.lock();
         let plan = &c.log.iter().find(|(k, _)| k == "region").unwrap().1;
-        assert!(plan.contains("The traveller begins in this region: the lighthouse keeper has vanished"), "the starting region gets the start");
+        assert!(plan.contains("The traveler begins in this region: the lighthouse keeper has vanished"), "the starting region gets the start");
         assert!(plan.contains("fishing villages") && !plan.contains("rainy coastal valley"), "regions are planned from the land, not the prompt");
     }
 

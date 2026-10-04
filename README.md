@@ -44,7 +44,7 @@ cargo build --release      # → target/release/pocket
 | Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
 | Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
 | Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
-| Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
+| Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
 | Creations | `3` in settings (`Esc`, or `F3` then `3`) | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
 | Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
@@ -63,6 +63,39 @@ steer the mount; on a flyer, look up or down to climb or dive.
 Contact gestures need the other person's consent: characters decide by how they feel
 about you. A gesture nobody knows yet (`/gesture salute`) is written once by the LLM as
 key poses, kept with the world, and anyone can do it after.
+
+### Difficulty and the night
+
+Each world has a difficulty (`pocket new --difficulty normal`, or `Difficulty` in
+settings, `Esc`). New worlds start on normal (worlds made before difficulty existed stay
+peaceful). On peaceful nothing comes at night. On the others,
+something comes for you at night, because you can make things out of nothing:
+
+| | Peaceful | Easy | Normal | Hard |
+|---|---|---|---|---|
+| charges (`✦`, start and dawn top-up) | ∞ | ∞ | 24 | 12 |
+| night horrors | none | some nights, 1 | every night | every night, more over time |
+| their touch | – | corruption | ✦ −1, corruption | ✦ −4, corruption |
+| corruption passes in talk and gifts | no | no | slowly | yes |
+
+- Every `/` action costs a charge (none if nothing came of it). Dawn tops you back up to
+  the start; charges earned above it are kept: +2 for a night got through, +1 when you
+  are kind to someone (a gift, something done together; up to 4 a day). At `✦ 0` actions
+  wait for dawn.
+- The horror is written by the LLM for this world (a fallback one without an LLM), written in
+  the background from sunset. At nightfall it comes: out of the dark behind you, moves only while you aren't looking at it, waits at
+  the edge of any light (a lantern, a fire), and is gone at dawn. Animals bolt from it and
+  people fall quiet. At night people sleep by the nearest light.
+- Corruption glows purple, dims light, and twists minds: a corrupted character's words,
+  plans and makings turn their own nature bad; your own creations come out a little
+  wrong. It fades by day and faster in light; talking kindly, gifts and hugs draw it out
+  of someone.
+- The status bar shows what matters: `night in 3m · ✦ 18 · corrupted 20% · 2 corrupted near`.
+
+Species can keep hours (`"active": "night"`: owls, moths), go after something
+(`"want"`), touch it (`"touch"`: a glow, needs, charges, corruption), shun a property
+(`"shuns": ["light"]`) and move only unseen (`"moves_unseen"`). Peaceful worlds use the
+same fields, minus the harm.
 
 `F2` shows the raw truth about what you point at: a thing's properties, state, origin,
 behaviour code and the rules that last fired on it; a character's needs, plan, goal,
@@ -102,6 +135,7 @@ relationships, recent decisions and memories.
 | `POCKET_SIM_CREATE_BEINGS` | `0`: actions can't bring new beings into the world (default: they can, `/conjure a hound`). |
 | `POCKET_SIM_LIFE_SPEED` | How fast lives go: births and growing up (default 1; 0 stops births). |
 | `POCKET_SIM_MAX_CREATURES` | How many of one kind a neighbourhood holds before births stop (default 24). |
+| `POCKET_DIFFICULTY` | `0` peaceful, `1` easy, `2` normal, `3` hard, for worlds that have none set (new worlds get normal). Normally set per world in settings. |
 | `POCKET_SIM_MAKER_SECS` | Near you, someone makes something at least this often, in seconds (default 60; 0 turns it off). |
 | `POCKET_SIM_MAX_LOOSE` | Past this many small loose things around a maker, new work uses some up (default 20). |
 | `POCKET_SIM_MAX_AWAKE`, `POCKET_SIM_MAX_FLAMES`, `POCKET_SIM_MAX_THINGS`, `POCKET_SIM_CHAT_RANGE`, `POCKET_SIM_RULES_HZ`, `POCKET_SIM_BEHAVIOR_HZ`, `POCKET_SIM_MEDIUM_LLM` | Further limits. Each can also be set per universe in its `kv` table as `sim.<name>`. |
@@ -149,7 +183,7 @@ region, one call plans it (name, mood, lore facts, landmarks, a settlement, char
 new object types are generated, and the result fades in (dithered) when ready, with a
 log line like *"The fog lifts over Pinewood Vale."* Region planning waits for the
 universe's look (palette, biomes, base types) from the first call at `pocket new`.
-That call also splits the prompt into the whole **land** and where the traveller
+That call also splits the prompt into the whole **land** and where the traveler
 **starts**: every region is planned from the land, and only the first one from the start,
 so a one-village prompt doesn't repeat in every region. Random prompts
 (`src/random_world.rs`) put together one reviewed part from each list in
@@ -256,7 +290,7 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   the LLM decides what happens, but must answer as property changes, state, new things
   (written by the builder if new) and removals. Answers are cached by (who, what, with
   what, on what), so the same cause gives the same effect; answers that change nothing
-  are never cached. The traveller's `/` makes things outright; characters follow the
+  are never cached. The traveler's `/` makes things outright; characters follow the
   world's laws. Small inputs common in the world (ingredients, foil, nails) are always at
   hand; rare ones aren't.
 - *Needs* (`src/sim/needs.rs`). When a character's deed can't be done as things are, the
@@ -303,9 +337,9 @@ nobody has yet.
   variety's ranges. *Layers* (clothing, armour, a saddle) are types written against a
   body's code and drawn in its frame and pose; they are live things, so a cloak burns
   and armour slows you. The world can scale species ("everyone is a giant") and the
-  traveller's own height.
+  traveler's own height.
 - *Behaviour* reads only the axes: a meat eater hunts what is clearly smaller than it
-  and its pack, never its kin or the traveller; prey keeps its distance (wary animals
+  and its pack, never its kin or the traveler; prey keeps its distance (wary animals
   from any bigger stranger), herds run together, packs hunt together, pets follow
   their person, greet them and fetch what they throw. Animals answer in noises and
   gestures and never use the LLM; only shared words carry talk and gossip. Peoples
@@ -399,8 +433,9 @@ How the acceptance criteria are covered:
 | A dog follows its person, fetches and gives back; a wary cat won't be hugged; a dog answers in noises | `sim::tests::a_dog_follows_and_fetches_and_a_wary_cat_keeps_its_distance` |
 | Wolves chase goats (never people), the herd bolts together; elves and orcs warm by playing | `sim::tests::wolves_chase_a_herd_and_peoples_warm_to_each_other` |
 | LLM-written species and bodies; a dragon's wing hug; a naga's own cheer, written once | `sim::tests::llm_written_species_live_hug_and_learn_their_own_gestures` |
-| A warrior village wears its armour; the cloak burns, the plate doesn't; giants and a small traveller | `sim::tests::a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveller` |
+| A warrior village wears its armour; the cloak burns, the plate doesn't; giants and a small traveler | `sim::tests::a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveler` |
 | Dressing needs consent; feeding, teaching, a curse into a toad, conjuring where allowed | `sim::tests::deeds_dress_feed_teach_curse_and_conjure_beings` |
+| Cats on the generic quadruped get their own body written from it; one cat's tail made poofy (its own body, same roles, still fits a quadruped's collar and mates with a plain cat) | `sim::tests::species_get_own_bodies_and_one_being_can_be_reshaped`, `cat_bodies_picture` (ignored, renders them) |
 | A griffin flies over a house; riding a horse until a wolf spooks it; a long ride on a griffin | `sim::tests::griffins_fly_horses_carry_and_bolt` |
 | Young are born and grow up; a fed wolf line turns tame and gets a name; same seed, same history | `sim::tests::families_grow_and_a_fed_wolf_line_turns_tame` |
 | 1,000 things and 50 people at over 10× real time | `sim::tests::a_thousand_things_and_fifty_people_run_fast` (~29×) |
@@ -420,8 +455,10 @@ The LLM-dependent tests use a scripted model in-process (no network).
 - The terrain makes lakes and coasts, not brooks: water stops fire because no fuel
   stands in it and heat reaches about 6 m.
 - Physics is deliberately a toy: spheres against shapes, no stacking or joints.
-- Bodies are one shape each with eight pose roles; gestures are stylised. Nothing
-  smaller than a cat: at terminal resolution it would be a pixel.
+- Bodies are one shape each with eight pose roles and five look sliders; gestures
+  are stylised. Every body moves the same way over the ground (gait only sets how its
+  walk animation runs): nothing burrows or climbs yet. Nothing smaller than a cat: at
+  terminal resolution it would be a pixel.
 - Layers can't change what a body can do (wings on a saddle); see the plan's parking lot.
 - The LLM paths (plans, interpretation, overheard talk, new types on demand, universe
   rules at genesis) are tested with a scripted model; tune the prompts in

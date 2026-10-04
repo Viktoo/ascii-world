@@ -69,7 +69,8 @@ pub struct GpuInst {
     /// Live state k.s0 … k.s7 (behaviour code, poses).
     pub s0: [f32; 4],
     pub s1: [f32; 4],
-    /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1.
+    /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1
+    /// (below 0: corrupted, darkened with a dull red glow).
     pub fx: [f32; 4],
     pub info: [u32; 4],
     /// Cuts taken out of the shape, in its local frame: centre xyz and size

@@ -114,7 +114,7 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 {
   "name": "short name of the land",
   "land": "the whole land in one or two sentences",
-  "start": "where the traveller begins, in one sentence",
+  "start": "where the traveler begins, in one sentence",
   "palette": {
     "sky_day": [r,g,b], "horizon_day": [r,g,b], "sky_dusk": [r,g,b], "horizon_dusk": [r,g,b],
     "sky_night": [r,g,b], "horizon_night": [r,g,b], "sun": [r,g,b], "water": [r,g,b],
@@ -125,7 +125,7 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
       "scatter": { "tree": 0.3, "bush": 0.5, "rock": 0.2, "grass": 2.0 } }
   ]
 }
-- land and start: the description above may name one place or one event; the world is far larger. "land" widens it into a whole country with room for many different places (other villages, wild country, neighbours who live differently): its geography, peoples, ways of life and any strangeness. "start" keeps the particular place and situation the description names (the vanished keeper, the wedding), or "" if it names none. Every region is planned from "land"; only the traveller's first region from "start".
+- land and start: the description above may name one place or one event; the world is far larger. "land" widens it into a whole country with room for many different places (other villages, wild country, neighbours who live differently): its geography, peoples, ways of life and any strangeness. "start" keeps the particular place and situation the description names (the vanished keeper, the wedding), or "" if it names none. Every region is planned from "land"; only the traveler's first region from "start".
 - 3 to 6 biomes. base = mean ground height in metres (-10..30; below 0 makes lakes and coast), amp = hill height in metres (2..50; keep towns, cities and farmland at 2..6 so buildings stand on level ground, and save big hills for wild land), rough 0 (rolling) .. 1 (craggy), ground/ground2 = two ground colours that blend.
 - scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3). Use the tags of your base types below; "grass" tufts already exist.
 - fog: 1 = clear air, up to 3 = misty.
@@ -142,10 +142,11 @@ Optionally, the universe's peoples and beasts beyond plain humans (people always
                  "move": { "walk": 1.4, "run": 3.5, "fly": 0, "swim": 0.8 }, "life": { "sleep": [23, 6] }, "mass": 60,
                  "look": { "height": [1.85, 2.0], "build": [0.7, 0.85], "skin": [0.0, 0.25] }, "sounds": [], "description": "tall, quiet forest folk" } ],
   "attitudes": [ { "a": "elf", "b": "orc", "affection": -0.4, "trust": -0.3, "rivalry": 0.3 } ],
-  "sizes": { "human": 1.0 }, "traveller_height": 1.75
-- body: "figure" (a person's body; its look sliders are height in metres 1.3–2.0, build 0.7–1.4, skin 0–1, shirt and trousers hue 0–1), "quadruped" (a four-legged animal about 1 m tall at size 1; sliders legs, length, ears, hue, shade, all 0–1), or a new body name with "body_description": what it looks like and how it moves (a dragon with wings, a serpent body, a giant beetle); new bodies are written for you. Nothing smaller than a cat (about 0.3 m).
+  "sizes": { "human": 1.0 }, "traveler_height": 1.75
+- body: a body name with "body_description": what it looks like and how it moves (a sleek cat with pointed ears and a long tail, an elephant with a trunk it raises, a slow sloth, a snake, a dragon with wings); bodies are written for you. "figure" (a plain person; look sliders height in metres 1.3–2.0, build 0.7–1.4, skin 0–1, shirt and trousers hue 0–1) and "quadruped" (a plain four-legged animal about 1 m tall at size 1; sliders legs, length, ears, hue, shade, all 0–1) are generic starting points: a species named with one gets its own body written from it. Nothing smaller than a cat (about 0.3 m).
 - mind: "sapient" (people: talk, plan, make things), "simple" (clever animals), "instinct" (beasts). speech: "words", "sounds" (noises listed in "sounds") or "none". social: solitary, pair, pack, herd or village. temper and diet values 0–1; size multiplies the body (a quadruped at 1.8 is horse-sized); mass in kg; move speeds in m/s; sleep: [from hour, to hour].
-- attitudes: how peoples start out feeling about each other (-0.8..0.8); only the start, people's own history takes over. sizes: multiply a species everywhere ("everyone is a giant": "human": 1.8). traveller_height: the player's own height in metres (only if the world says they are small or big).
+- optional, for beings that keep odd hours or go after something: "active": "night" or "day" (owls, moths, fireflies; default always about), "want": what it goes after ("traveler", "anyone" or a species name), "touch": what its touch does to what it goes after ({ "glow": 0–1, "needs": { "fatigue": 0.3 } }), "shuns": properties it won't come near (["light"], ["wet"]), "moves_unseen": true for one that moves only while nobody watches, "signs": short lines of what a traveler notices when it is near but out of sight ("An owl calls.", "The air smells of wet fur."; never where it is: the game says that). Most species need none of these.
+- attitudes: how peoples start out feeling about each other (-0.8..0.8); only the start, people's own history takes over. sizes: multiply a species everywhere ("everyone is a giant": "human": 1.8). traveler_height: the player's own height in metres (only if the world says they are small or big).
 
 2. Then 4 to 8 base object types, each in its own ```js block, following the module rules exactly. These are scattered across the land by the scatter densities (trees, rocks, bushes, flowers, reeds…), so each must be small to medium (bounds under ~8 m) and varied per instance with hash(k.seed). Give each the scatter tag it fills (e.g. "tree", "rock", "bush", "flower") and fitting meta.props (trees and grass burn and are alive).
 "#;
@@ -197,23 +198,62 @@ The body's code:
     )
 }
 
+/// The body rules every body follows (written new, from a template, or
+/// reshaped).
+const BODY_RULES: &str = r#"A body is an object type that beings live in. Besides the usual module rules it has `meta.body` and its shape moves with a pose:
+- Draw it at its natural size in metres, standing on y = 0, facing +z. Give it the tags ["body"].
+- meta.body = { height: m, eye: m (eye height), radius: m (footprint radius for walking), reach: m, grip: [x, y, z] (where it holds a thing: the right hand at rest, a mouth or a claw), seat: [x, y, z] (only if it can be ridden: where a rider sits), roles: [...], gait: "biped" | "quad" | "slither" | "hover", flies: true|false, arms: true|false (two hands that hold things), look: { name: [lo, hi], ... } }
+- gait says how its walk phase runs: "biped" and "quad" step (one cycle of k.f is about one stride), "slither" sends a wave along the body (a snake, an eel, a worm), "hover" drifts and bobs even at rest (a wisp, a jellyfish, a ghost).
+- Pose roles, read as k.s0 … k.s7 (each 0 at rest; give each the meaning that fits this body and list only the ones it answers to in roles): k.s0 / k.s1 raise_l / raise_r (raise a left / right limb or wing, 0 … 1), k.s2 / k.s3 reach_l / reach_r (reach forward or wrap around someone, 0 … 1: a hug), k.s4 lean (bend forward, radians -0.3 … 0.6), k.s5 head (head down, -1 … 1; negative raises it: an elephant lifting its trunk, a horse throwing its head up), k.s6 crouch (0 standing … 1 lying down; a snake coils), k.s7 spread (tail, wings, frill or hood, -1 … 1: a wag, wings out, a fluffed tail). Use "raise" / "reach" in roles for both sides. Every listed role must visibly move the shape.
+- k.f is its walk phase in radians (swing legs, undulate a tail or a whole body with sin(k.f)).
+- look: up to 5 sliders, read as k.a … k.e in that order, each between its lo and hi (colours, horn length, proportions); vary them per being. Use hash(k.seed) for small details. For a coat, hide or skin colour use "hue": [0, 1.2] (round the colour wheel; above 1 fades to grey) and "shade": [0, 1] (black … white), as the quadruped does, so deeds can colour any being the same way.
+- Make it read as what it is from a few metres away at low resolution: the silhouette carries it (ear shape, snout length, tail thickness, neck, how it stands).
+- Keep it cheap: about 12–20 primitives. Stay inside meta.bounds in every pose."#;
+
 /// Writing the body of a species: a type with `meta.body` that answers to
-/// pose roles, drawn at its natural size.
-pub fn body_task(name: &str, description: &str, species: &str) -> String {
+/// pose roles, drawn at its natural size. `template`: an existing body (name,
+/// code) to start from, or to learn the contract from.
+/// `derived`: the body is that template's own kind (a cat's from the
+/// quadruped), not just shown it as an example.
+pub fn body_task(name: &str, description: &str, species: &str, template: Option<(&str, &str)>, derived: bool) -> String {
+    let template = match template {
+        Some((tname, src)) => {
+            let line = if derived { format!(" Add `from: \"{tname}\"` to meta.body.") } else { " Leave `from` out of meta.body: this body is its own kind.".to_string() };
+            format!(
+                "\n\nAn existing body, \"{tname}\", as an example of the contract (how roles, sliders and the walk phase move a shape). It is an example, not a limit: keep what fits this species and change anything that doesn't (head, ears, snout, tail, neck, legs, how many limbs, proportions, colours), so it looks like a {name} and nothing else.{line}\n```js\n{src}\n```"
+            )
+        }
+        None => String::new(),
+    };
     format!(
         r#"Body type to write: "{name}"
 What it looks like and how it moves: {description}
 The species that lives in it: {species}
 
-A body is an object type that beings live in. Besides the usual module rules it has `meta.body` and its shape moves with a pose:
-- Draw it at its natural size in metres, standing on y = 0, facing +z. Give it the tags ["body"].
-- meta.body = {{ height: m, eye: m (eye height), radius: m (footprint radius for walking), reach: m, grip: [x, y, z] (where it holds a thing: hand, mouth or claw), seat: [x, y, z] (only if it can be ridden: where a rider sits), roles: [...], gait: "biped" | "quad" | "slither" | "hover", flies: true|false, arms: false, look: {{ name: [lo, hi], ... }} }}
-- Pose roles, read as k.s0 … k.s7 (each 0 at rest; give each the meaning that fits this body and list only the ones it answers to in roles): k.s0 / k.s1 raise_l / raise_r (raise a left / right limb or wing, 0 … 1), k.s2 / k.s3 reach_l / reach_r (reach forward or wrap around someone, 0 … 1: a hug), k.s4 lean (bend forward, radians -0.3 … 0.6), k.s5 head (head down, -1 … 1), k.s6 crouch (0 standing … 1 lying down), k.s7 spread (tail, wings or frill, -1 … 1). Use "raise" / "reach" in roles for both sides. Every listed role must visibly move the shape.
-- k.f is its walk phase in radians (swing legs, undulate a tail with sin(k.f)).
-- look: up to 5 sliders, read as k.a … k.e in that order, each between its lo and hi (colours, horn length, proportions); vary them per being. Use hash(k.seed) for small details.
-- Keep it cheap: about 12–18 primitives. Stay inside meta.bounds in every pose.
+{BODY_RULES}{template}
 
 Write it as one ```js block containing the complete module."#
+    )
+}
+
+/// Reshaping one being's body: its body's code and the change. The roles
+/// stay, so its gestures and walk keep working.
+pub fn body_reshape_task(name: &str, from: &str, source: &str, change: &str, roles: &[String]) -> String {
+    format!(
+        r#"Reshape a body: this being's own body from now on, written from the body "{from}" below.
+The change: {change}
+
+Rewrite the module with the change made clearly visible at low resolution (a fluffy tail is much thicker and rounder, pointed ears are tall triangles; exaggerate a little), and everything else as it was. Name it "{name}" and add `from: "{from}"` to meta.body. Keep the frame (standing on y = 0, facing +z), the size, the look sliders (their names and order) and k.f. It must still answer to every role it has now ({roles}), moving the changed parts with them where they belong (a tail with spread, a head part with head). Grow meta.bounds if the change needs room.
+
+{BODY_RULES}
+
+The body now:
+```js
+{source}
+```
+
+Write it as one ```js block containing the complete module."#,
+        roles = roles.join(", ")
     )
 }
 
@@ -262,7 +302,7 @@ pub fn repair(errors: &str) -> String {
     format!("That failed validation:\n{errors}\n\nFix every problem and reply again in the same format, with the complete corrected answer.")
 }
 
-pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveller (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. What you agree to do (make something, give it, show the way, follow) you really do right after you speak, so say you will do it or are starting on it, never that it is already done or already in their hands.";
+pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveler (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. What you agree to do (make something, give it, show the way, follow) you really do right after you speak, so say you will do it or are starting on it, never that it is already done or already in their hands.";
 
 pub const DECIDER_TASK: &str = r#"You decide what a character in a small simulated world does next, given an event and what they know. Reply with one JSON object only:
 {"goal": "a few words", "say": "what they say now (one short sentence in their voice) or null", "steps": [ ... ]}
@@ -273,13 +313,13 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "gesture", "kind": "wave|bow|nod|point|cheer|shrug|dance|sit|handshake|high_five|hug|kiss", "to": "Ola"}
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
-  {"do": "follow", "target": "the traveller"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
+  {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
-When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveller stands may be the traveller's doing.
+When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveler stands may be the traveler's doing.
 Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
-For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveller"}] with "say" set, or nothing."#;
+For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveler"}] with "say" set, or nothing."#;
 
-pub const SUMMARY_TASK: &str = "Update this character's private memory summary. Write at most 120 words in the first person, covering what they know and feel about the traveller (the player), promises, recurring topics, and notable things they witnessed. Keep the important older points. Plain text only.";
+pub const SUMMARY_TASK: &str = "Update this character's private memory summary. Write at most 120 words in the first person, covering what they know and feel about the traveler (the player), promises, recurring topics, and notable things they witnessed. Keep the important older points. Plain text only.";
 
 pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a small simulated world. Someone says, in words, what they do or make. Decide what happens, as changes to things, not just words. Reply with one JSON object only:
 {
@@ -290,7 +330,7 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
   "make": [ { "text": "what to make and where, in words, e.g. a stone well by the path" } ],
   "cut": [ { "target": "target", "size_m": 0.25, "shape": "round" | "square" } ],
   "reshape": [ { "target": "target", "name": "a new name for the changed thing, different from its current name, e.g. slate cottage with the door open", "change": "what changes about its shape, precisely", "with": "held" | null } ],
-  "being": { "needs": { "hunger": -0.5 }, "feel": { "affection": 0.1, "trust": 0.1 }, "look": { "<slider>": number }, "grow": 1.5 | null, "wear": [ { "name": "red cloak", "description": "…", "props": { "burns": 0.7 } } ], "take_off": [ "helmet" ], "learn": "sit" | null, "become": "toad" | null },
+  "being": { "needs": { "hunger": -0.5 }, "feel": { "affection": 0.1, "trust": 0.1 }, "look": { "<slider>": number }, "grow": 1.5 | null, "wear": [ { "name": "red cloak", "description": "…", "props": { "burns": 0.7 } } ], "take_off": [ "helmet" ], "learn": "sit" | null, "become": "toad" | null, "reshape": "what changes about its body's shape" | null },
   "beings": [ { "species": "dog", "name": "…", "description": "…", "look": { "<slider>": number }, "size": 1.0 } ],
   "say": "a few words the actor says, or null",
   "needs": { "kind": "place" | "thing" | "someone" | "time", "what": "…", "hour": null } or null (only for a character, when it can't be done as things are),
@@ -299,7 +339,7 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
 - "held" is what the actor holds; "target" is what the middle of their view points at (a thing with its distance, or the ground or a far point). Use only property names from the list. Set "cache": false if the result depends on chance or the moment.
 - Prefer small, plausible results. Things can be made from things (carving wood makes a carving; replace the wood). Materials worked into something new are used up ("replace" one, "remove" any other); tools used to work them are not. A made thing can be made into something else again. If nothing would happen, say so in the narration and change nothing.
 - The world only holds things about the size of a cat and up. Smaller inputs that are common in this world (ingredients, tortillas, foil, thread, nails, paint, seeds, small tools) are never there to see but are always at hand: never refuse or fail for lack of them. Rare or special small things (a phoenix feather, a dragon's scale, a royal seal) are not at hand. Real things that are there (the held thing, the target, wood, stone, a building) are used when the words name them.
-- "actor_is" says who acts. The traveller makes what they ask outright, from nothing if need be: a burrito, a lantern, a tree, a house. Always do it, in the universe's own style, and never refuse it.
+- "actor_is" says who acts. The traveler makes what they ask outright, from nothing if need be: a burrito, a lantern, a tree, a house. Always do it, in the universe's own style, and never refuse it.
 - A character follows the world's laws: they can make or do what someone like them ("actor_about") could, in this world, as things are. When it can't be done as things are, change nothing, say why in the narration, and name the one thing it needs in "needs":
   - "place": where the work is done (cooking needs a grill or kitchen, forging a forge, a blessing an altar)
   - "thing": something real it is made from or needs (a big log for a canoe, a rare small thing, a key)
@@ -312,7 +352,7 @@ pub const INTERPRET_TASK: &str = r#"You are the physics and common sense of a sm
   - "cut": take a piece out (punch a hole, dig, bite, chip, carve a notch). size_m is the radius in metres; a cut deeper than a wall is thick goes right through. It shows at once; the engine places it, you only say how big.
   - "reshape": change the shape itself: remove a part of it (the door cover, a roof tile, a branch), open or bend it, make the roof a dome, add a chimney. With "with": "held", work the held thing into it (add the stick to the wall, mount the wheel on the boat, hang the lantern on the post): it becomes part of the target and is used up. Describe the change precisely, including where.
 - Taking a piece off a thing is two changes: "reshape" the target without the piece, and "create" the piece as a new thing (it lands nearby).
-- When the target is a person or creature, use "being" (never "cut" or "reshape" on them): "needs" are added to what they need (feeding lowers hunger), "feel" is added to how they feel about the actor, "look" sets their look sliders within the ranges given (their colour too), "grow" multiplies their size (2 = twice as big, 0.7 = smaller), "wear" puts clothing, armour or gear on them (a layer; it is made if nobody has made one, for their body), "take_off" removes what they wear, "learn" teaches a gesture they can do from now on (sit, bow, wave, a new one), "become" turns them into another species listed in species_here, only when world_has_magic is true (a curse, a spell). They may refuse what they don't want from someone they don't trust; the world checks that.
+- When the target is a person or creature, use "being" (never the top-level "cut" or "reshape" on them): "needs" are added to what they need (feeding lowers hunger), "feel" is added to how they feel about the actor, "look" sets their look sliders within the ranges given (their colour too), "reshape" changes the shape of their body itself, for this one being, when no look slider does it (a poofy tail, pointed ears, a longer neck, horns, a trunk, wings; say precisely what and how much), "grow" multiplies their size (2 = twice as big, 0.7 = smaller), "wear" puts clothing, armour or gear on them (a layer; it is made if nobody has made one, for their body), "take_off" removes what they wear, "learn" teaches a gesture they can do from now on (sit, bow, wave, a new one), "become" turns them into another species listed in species_here, only when world_has_magic is true (a curse, a spell). They may refuse what they don't want from someone they don't trust; the world checks that.
 - "beings" brings new beings of a listed species into the world (a conjured hound, a clay golem), only when beings_can_be_made is true; they belong to the actor. Give each the "look" sliders of its species ("species_looks") that match what was asked (colour, build), and "size" when asked bigger or smaller than usual (1 = usual, 0.5–4).
 - Beings in "beings_nearby" can be meant by name ("make Remy bigger"): the target is then that being.
 - Colours on look sliders: a hue slider runs round the colour wheel (0 red, 0.08 orange or ginger, 0.15 yellow, 0.33 green, 0.5 cyan, 0.66 blue, 0.8 purple); on a "quadruped", hue above 1 fades the colour out (1.2 = grey with no colour at all, e.g. a grey or silver cat), and shade runs from 0 black to 1 white (a white cat: shade 1, hue 1.2; black: shade 0)."#;
@@ -324,3 +364,19 @@ pub const GESTURE_TASK: &str = r#"You animate a simple body in a small 3D world 
  "frames": [{"t": 0, "pose": {}}, {"t": 0.3, "pose": {"raise_r": 0.6, "reach_r": 0.2}}, …, {"t": 1, "pose": {}}]}
 Pose roles (all default 0, the body at rest). For a person: raise_l / raise_r: left / right arm raised sideways, 0 down … 0.5 level … 1 straight up. reach_l / reach_r: arm reaching forward, 0 … 1 straight ahead. lean: bend forward at the hips in radians, -0.3 … 0.6. head: head tipped down, -1 … 1. crouch: 0 standing … 1 crouching. spread: a tail, wings or frill (-1 … 1), for bodies that have one. Other bodies give each role their own meaning (described with the body); use only the roles that body has.
 Start and end at rest ({}), 3 to 8 frames, t from 0 to 1. Set "contact": true only for things done touching another (an embrace, a dance hold, a forehead touch)."#;
+
+/// One new species from a brief, in the genesis species format.
+pub fn species_task(brief: &str, existing: &str) -> String {
+    format!(
+        r#"{brief}
+
+Species this world already has (don't repeat them):
+{existing}
+
+Reply with one ```json block holding one species object in this format:
+{{ "name": "…", "plural": "…", "body": "a body name", "body_description": "how the body looks and moves, if it is a new body", "size": 1.0,
+  "move": {{ "walk": 1.2, "run": 3.0 }}, "mass": 60, "look": {{ }}, "sounds": ["…"], "signs": ["…"], "description": "…" }}
+- body: a body name with "body_description" (how it looks and moves; it is written for you). "figure" (a plain person) and "quadruped" (a plain four-legged animal) are generic starting points: a species named with one gets its own body written from it. Nothing smaller than a cat.
+- size multiplies the body; mass in kg; move speeds in m/s."#
+    )
+}

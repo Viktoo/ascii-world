@@ -46,12 +46,16 @@ pub fn layer_inst(wearer: &GpuInst, body: &TypeEntry, layer: &TypeEntry, fx: [f3
     g
 }
 
+/// `FX_CHAR` for the dark's own: blackened, and what glows on it glows red.
+pub const DARK_OWN: f32 = 2.0;
+
 /// Generic looks from properties.
 pub fn look(p: &Props) -> [f32; 4] {
     let mut fx = [0.0; 4];
     fx[FX_CHAR] = p[P_CHAR].clamp(0.0, 1.0);
     fx[FX_WET] = (p[P_WET] * 0.6).clamp(0.0, 1.0);
     fx[FX_GLOW] = (p[P_LIGHT] * 0.9 + p[P_FIRE] * 0.4 + ((p[P_TEMP] - 400.0) / 800.0).max(0.0)).min(2.0);
+    fx[FX_HIGHLIGHT] = -p[P_CORRUPT].clamp(0.0, 1.0);
     fx
 }
 
@@ -106,16 +110,35 @@ impl Sim {
         }
         for n in &self.cast.npcs {
             let Some(body) = self.snap.type_of(n.body_ty).or(figure) else { continue };
-            if n.dead {
+            if !n.here() {
                 continue;
             }
             {
                 if (n.a.pos - cam).length() < 200.0 {
                     let mut g = n.gpu(body);
+                    // Corruption shows as the dark creeping over them; a touch's glow as light.
+                    // The dark's own beings are black whatever colours their body has:
+                    // only their eyes show (the parts marked glow()), always, and red
+                    // (charred past 1 is the renderer's sign for that).
+                    let of_the_dark = n.species.touch.harms();
+                    g.fx[FX_GLOW] = n.glow;
+                    if of_the_dark {
+                        g.fx[FX_CHAR] = DARK_OWN;
+                        g.fx[FX_GLOW] = if body.ct.marks_glow() { 1.6 } else { 0.0 };
+                    } else {
+                        g.fx[FX_HIGHLIGHT] = -n.corruption;
+                    }
                     if hover_actor == Some(ActorId::Npc(n.def.id)) {
                         g.fx[FX_HIGHLIGHT] = 0.5;
                     }
                     insts.push(g);
+                    if of_the_dark {
+                        let p = n.a.pos + Vec3::Y * n.a.dims.eye;
+                        lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(1.0, 0.08, 0.04), intensity: 0.12, reach: 1.6 }));
+                    } else if n.glow > 0.05 && n.glow > n.corruption {
+                        let p = n.a.pos + Vec3::Y * n.a.dims.height * 0.6;
+                        lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(0.95, 0.9, 0.5), intensity: 0.5 * n.glow, reach: 3.0 + 4.0 * n.glow }));
+                    }
                     // What they wear, drawn in their frame and pose.
                     for t in worn.get(&ActorId::Npc(n.def.id)).map(|v| v.as_slice()).unwrap_or(&[]) {
                         let Some(ty) = self.snap.type_of(t.type_id) else { continue };
@@ -123,6 +146,13 @@ impl Sim {
                     }
                 }
             }
+        }
+        // A glow or the dark on the traveler lights the ground about them.
+        let (pc, pg) = (self.night.corruption, self.night.glow);
+        if pc > 0.15 || pg > 0.05 {
+            let p = self.player.pos + Vec3::Y * 1.2;
+            let (color, k) = if pc >= pg { (Vec3::new(0.6, 0.05, 0.03), pc * 0.35) } else { (Vec3::new(0.95, 0.9, 0.5), pg) };
+            lights.push(((p - cam).length(), PointLight { pos: p, color, intensity: 0.4 * k, reach: 3.0 + 4.0 * k }));
         }
         for t in self.things.live() {
             if !near(t.pos) || t.worn.is_some() {
@@ -175,6 +205,17 @@ impl Sim {
                 insts.push(g);
                 let flicker = 0.85 + 0.15 * ((self.t as f32 * 9.0 + b.seed).sin() * (self.t as f32 * 5.3 + b.seed * 0.3).cos());
                 lights.push((*d, PointLight { pos: p + Vec3::Y * 0.5 * s, color: Vec3::new(1.0, 0.55, 0.22), intensity: (0.5 + 0.7 * b.fire * (b.size / 1.5).min(2.0)) * flicker, reach: 6.0 + 5.0 * s.min(4.0) }));
+            }
+        }
+        // Lights dim near the corrupted.
+        let dark: Vec<(Vec3, f32)> = self.cast.npcs.iter().filter(|n| n.here() && n.corruption > 0.5).map(|n| (n.a.pos, n.corruption)).collect();
+        if !dark.is_empty() {
+            for (_, l) in lights.iter_mut() {
+                if l.color.z > l.color.x {
+                    continue;
+                }
+                let k = dark.iter().map(|(p, c)| c * (1.0 - (*p - l.pos).length() / 12.0).clamp(0.0, 1.0)).fold(0.0f32, f32::max);
+                l.intensity *= 1.0 - 0.7 * k;
             }
         }
         lights.sort_by(|a, b| a.0.total_cmp(&b.0));

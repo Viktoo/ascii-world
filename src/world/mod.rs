@@ -48,7 +48,7 @@ pub struct Look {
     /// worlds, which keep using the prompt itself.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub land: String,
-    /// The prompt's own situation, where the traveller begins: only the
+    /// The prompt's own situation, where the traveler begins: only the
     /// starting region is planned around it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub start: String,
@@ -174,6 +174,9 @@ pub struct Persona {
     /// Their own size against their species' (a big tom: 1.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f32>,
+    /// Their own body, when theirs was reshaped (else their species').
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
 }
 
 impl Persona {
@@ -269,6 +272,38 @@ impl WorldSnapshot {
             }
         }
         found.or_else(|| self.figure_type.and_then(|f| self.type_of(f)))
+    }
+
+    /// A body type with exactly this name (no fallback).
+    pub fn body_named(&self, name: &str) -> Option<&Arc<TypeEntry>> {
+        self.body_type(name).filter(|t| t.ct.meta.name == name)
+    }
+
+    /// A body and the bodies it was written from, nearest first ("cat
+    /// (Whiskers)", "cat", "quadruped").
+    pub fn body_line(&self, name: &str) -> Vec<String> {
+        let mut out = vec![name.to_string()];
+        let mut at = name.to_string();
+        while out.len() < 8 {
+            let Some(from) = self.body_named(&at).and_then(|t| t.ct.meta.body.as_ref()).and_then(|b| b.from.clone()) else { break };
+            if out.contains(&from) {
+                break;
+            }
+            out.push(from.clone());
+            at = from;
+        }
+        out
+    }
+
+    /// The oldest body of a body's line (itself, unless written from another).
+    pub fn body_root(&self, name: &str) -> String {
+        self.body_line(name).pop().unwrap_or_else(|| name.to_string())
+    }
+
+    /// Would a layer made for `fits` sit on `body`? Made for it, or for a
+    /// body it was written from (a quadruped's collar on a cat's own body).
+    pub fn layer_fits(&self, fits: &str, body: &str) -> bool {
+        fits == body || self.body_line(body).iter().any(|b| b == fits)
     }
 
     pub fn region_name(&self, r: (i32, i32)) -> Option<&str> {

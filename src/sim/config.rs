@@ -48,12 +48,14 @@ pub struct SimConfig {
     /// ...and across the whole world, at most one character this often (s):
     /// each piece of work may add a type, and every type slows shader builds.
     pub work_gap_secs: f32,
-    /// Near the traveller, someone makes something at least this often (s):
+    /// Near the traveler, someone makes something at least this often (s):
     /// when nothing has been made for this long, the idlest person nearby
     /// turns to their trade, whatever the gaps above say.
     pub maker_secs: f32,
     /// Past this many small loose things around a maker, new work uses some up.
     pub max_loose: usize,
+    /// How hard the world is: 0 peaceful, 1 easy, 2 normal, 3 hard (see `night`).
+    pub difficulty: u8,
     /// Predators kill what they catch (off: they only chase, and give up).
     /// On by default; births refill what is lost.
     pub hunting: bool,
@@ -65,6 +67,9 @@ pub struct SimConfig {
     pub create_beings: bool,
     /// How fast lives go (births, growing up), 1 = as designed.
     pub life_speed: f32,
+    /// Species still drawn with a shared template body (a cat on the
+    /// four-legged "quadruped") get their own body written from it.
+    pub own_bodies: bool,
 }
 
 impl Default for SimConfig {
@@ -86,11 +91,13 @@ impl Default for SimConfig {
             work_gap_secs: 120.0,
             maker_secs: 60.0,
             max_loose: 20,
+            difficulty: 0,
             hunting: true,
             max_creatures: 24,
             transform: false,
             create_beings: true,
             life_speed: 1.0,
+            own_bodies: true,
         }
     }
 }
@@ -125,6 +132,7 @@ impl SimConfig {
             ("maker_secs", "POCKET_SIM_MAKER_SECS"),
             ("max_loose", "POCKET_SIM_MAX_LOOSE"),
             ("max_creatures", "POCKET_SIM_MAX_CREATURES"),
+            ("difficulty", "POCKET_DIFFICULTY"),
             ("life_speed", "POCKET_SIM_LIFE_SPEED"),
         ] {
             set(key, env, &mut c);
@@ -148,6 +156,9 @@ impl SimConfig {
         }
         if let Some(v) = flag("create_beings", "POCKET_SIM_CREATE_BEINGS") {
             c.create_beings = v;
+        }
+        if let Some(v) = flag("own_bodies", "POCKET_SIM_OWN_BODIES") {
+            c.own_bodies = v;
         }
         let ml = kv("sim.medium_llm").or_else(|| std::env::var("POCKET_SIM_MEDIUM_LLM").ok());
         if let Some(v) = ml {
@@ -176,8 +187,10 @@ impl SimConfig {
             "max_creatures" => self.max_creatures = v.clamp(1.0, 10_000.0) as usize,
             "life_speed" => self.life_speed = v.clamp(0.0, 1000.0),
             "hunting" => self.hunting = v > 0.5,
+            "difficulty" => self.difficulty = v.clamp(0.0, 3.0).round() as u8,
             "transform" => self.transform = v > 0.5,
             "create_beings" => self.create_beings = v > 0.5,
+            "own_bodies" => self.own_bodies = v > 0.5,
             _ => {}
         }
     }

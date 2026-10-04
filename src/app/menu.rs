@@ -25,6 +25,7 @@ enum Row {
     Details,
     Fps,
     Shadows,
+    Difficulty,
     Radius,
     ShowWork,
     Creatures,
@@ -33,7 +34,7 @@ enum Row {
     Beings,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Radius, Row::ShowWork, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
 
 pub struct Menu {
     sel: usize,
@@ -225,6 +226,10 @@ impl App {
             Row::Shadows => s.shadows = !s.shadows,
             Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
             Row::ShowWork => s.show_work = s.show_work.next(dir),
+            Row::Difficulty => {
+                let d = (self.sim.cfg.difficulty as i32 + dir).clamp(0, 3);
+                self.set_world("difficulty", d as f64);
+            }
             Row::Creatures => self.set_world("max_creatures", step(CREATURES, self.sim.cfg.max_creatures as f64, dir)),
             Row::LifeSpeed => self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, dir)),
             Row::Hunting => self.set_world("hunting", if self.sim.cfg.hunting { 0.0 } else { 1.0 }),
@@ -260,6 +265,7 @@ impl App {
             Row::Shadows => ("Shadows", on(s.shadows)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
             Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
+            Row::Difficulty => ("Difficulty (this world)", self.sim.level().name.to_string()),
             Row::Creatures => ("Most of one kind of creature", format!("{} per region", self.sim.cfg.max_creatures)),
             Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
             Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),

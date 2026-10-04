@@ -236,12 +236,15 @@ pub fn load(sim: &mut Sim) {
         }
     }
     sim.social.dirty = false;
+    if let Some(st) = db.kv_get("sim.night").and_then(|j| serde_json::from_str(&j).ok()) {
+        sim.night = st;
+    }
     if let Some(j) = db.kv_get("sim.region_seen") {
         if let Ok(v) = serde_json::from_str::<Vec<((i32, i32), f64)>>(&j) {
             sim.region_seen = v.into_iter().collect();
         }
     }
-    sim.field.saved = sim.field.cells.keys().copied().collect();
+    sim.field.saved = sim.field.cells.iter().map(|(k, c)| (*k, c.save_hash())).collect();
     // Used-up scatter (eaten, burnt away) stays gone until it regrows.
     let spent: Vec<(i32, i32, f64)> = db
         .with(|c| {
@@ -293,22 +296,29 @@ pub fn save(sim: &mut Sim) {
         t.dirty = false;
     }
     sim.things.map.retain(|_, t| !t.removed);
-    // Cells: store the difference from the item's type.
+    // Cells: store the difference from the item's type, for the ones that
+    // changed since the last save (a burnt steppe has tens of thousands).
     let snap = sim.snap.clone();
     let mut cell_rows = Vec::new();
+    let mut now_cells = std::collections::HashMap::with_capacity(sim.field.cells.len());
     for ((gx, gz), c) in &sim.field.cells {
+        let h = c.save_hash();
+        now_cells.insert((*gx, *gz), h);
+        if sim.field.saved.get(&(*gx, *gz)) == Some(&h) {
+            continue;
+        }
         let Some(ty) = snap.type_of(c.type_id) else { continue };
         let base = sim.type_props.get(&vocab, ty);
         cell_rows.push((*gx, *gz, serde_json::Value::Object(diff(&vocab, &c.props, &base)).to_string(), c.active));
     }
-    let now_cells: HashSet<(i32, i32)> = sim.field.cells.keys().copied().collect();
-    let gone_cells: Vec<(i32, i32)> = sim.field.saved.difference(&now_cells).copied().collect();
+    let gone_cells: Vec<(i32, i32)> = sim.field.saved.keys().filter(|k| !now_cells.contains_key(*k)).copied().collect();
     sim.field.saved = now_cells;
     let rels: Vec<((i64, i64), String)> = if sim.social.dirty { sim.social.rels.iter().map(|(k, r)| (*k, serde_json::to_string(r).unwrap_or_default())).collect() } else { Vec::new() };
     sim.social.dirty = false;
     let events = std::mem::take(&mut sim.log.unsaved);
     let npc_states: Vec<(i64, String)> = sim.cast.npcs.iter().map(|n| (n.def.id, serde_json::to_string(&n.saved(sim.t)).unwrap_or_default())).collect();
     let seen: Vec<((i32, i32), f64)> = sim.region_seen.iter().map(|(k, v)| (*k, *v)).collect();
+    let night = serde_json::to_string(&sim.night).unwrap_or_default();
     let spent: Vec<((i32, i32), f64)> = sim.things.spent_cells.iter().map(|(k, v)| (*k, *v)).collect();
     let r = db.tx(|tx| {
         for r in &thing_rows {
@@ -348,6 +358,7 @@ pub fn save(sim: &mut Sim) {
             tx.execute("UPDATE characters SET state_json = ?1 WHERE id = ?2", params![s, id])?;
         }
         crate::db::kv_set(tx, "sim.region_seen", &serde_json::to_string(&seen)?)?;
+        crate::db::kv_set(tx, "sim.night", &night)?;
         tx.execute("DELETE FROM spent_cells", [])?;
         for ((gx, gz), t) in &spent {
             tx.execute("INSERT INTO spent_cells(gx, gz, t) VALUES (?1, ?2, ?3)", params![gx, gz, t])?;

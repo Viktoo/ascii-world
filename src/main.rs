@@ -34,7 +34,8 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
 
-  pocket new [\"<prompt>\"] [--out FILE]   create a universe: check or edit the prompt
+  pocket new [\"<prompt>\"] [--out FILE] [--difficulty peaceful|easy|normal(default)|hard]
+                                         create a universe: check or edit the prompt
                                          (a random one if none given), then step in
   pocket prompts [--sample N]            print N random prompts (default 20)
   pocket [FILE]                          reopen FILE, or your last universe
@@ -90,7 +91,10 @@ fn run(args: Vec<String>) -> Result<()> {
                 Some(p) => PathBuf::from(p),
                 None => default_path(&prompt),
             };
+            let difficulty = flag(&args, "--difficulty").unwrap_or_else(|| NEW_DIFFICULTY.into());
+            let n = sim::night::LEVELS.iter().position(|l| l.name == difficulty.trim().to_lowercase()).with_context(|| format!("difficulty is one of peaceful, easy, normal, hard (not {difficulty})"))?;
             create_universe(&path, &prompt)?;
+            db::Db::open(&path)?.kv_set("sim.difficulty", &n.to_string())?;
             play(&path, true)
         }
         Some("list") | Some("ls") => match picker::pick()? {
@@ -152,11 +156,16 @@ fn default_path(prompt: &str) -> PathBuf {
     p
 }
 
+/// New worlds start here (older worlds, made before difficulty, stay peaceful).
+const NEW_DIFFICULTY: &str = "normal";
+
 fn create_universe(path: &Path, prompt: &str) -> Result<()> {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
     let seed = noise::pcg((t as u32) ^ ((t >> 32) as u32) ^ std::process::id());
     let look = serde_json::to_string(&world::Look::default())?;
-    db::Db::create(path, seed, prompt.trim(), &look)?;
+    let db = db::Db::create(path, seed, prompt.trim(), &look)?;
+    let n = sim::night::LEVELS.iter().position(|l| l.name == NEW_DIFFICULTY).unwrap_or(0);
+    db.kv_set("sim.difficulty", &n.to_string())?;
     Ok(())
 }
 

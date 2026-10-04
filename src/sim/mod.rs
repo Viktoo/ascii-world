@@ -20,6 +20,7 @@ pub mod interp;
 pub mod life;
 pub mod motion;
 pub mod needs;
+pub mod night;
 pub mod npc;
 pub mod persist;
 pub mod physics;
@@ -150,6 +151,15 @@ pub enum Request {
     /// `spot` (JSON, the type's own coordinates), with `cuts` baked in and
     /// maybe another thing worked in (name, source, its size relative to this one).
     EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
+    /// Write a new species from a brief, with `fixed` fields laid over what
+    /// is written. Answered through `on_species_made`.
+    NewSpecies { id: u64, brief: String, fixed: Value },
+    /// A species (JSON) still on a generic body gets its own, written from
+    /// `template`. Answered through `on_type_built`.
+    SpeciesBody { id: u64, species: String, template: String },
+    /// Rewrite one being's body (`source`, the body `from`) as `change`
+    /// says, as its own body `name`. Answered through `on_type_built`.
+    ReshapeBody { id: u64, name: String, from: String, source: String, change: String },
 }
 
 impl Request {
@@ -272,6 +282,8 @@ struct Queued {
 
 pub struct Sim {
     pub cfg: SimConfig,
+    /// What each body wears (kg), tallied once a frame while actors step.
+    worn_mass: Option<HashMap<ActorId, f32>>,
     pub db: Arc<Db>,
     pub snap: Arc<WorldSnapshot>,
     pub cache: ScatterCache,
@@ -316,6 +328,8 @@ pub struct Sim {
     fresh: Vec<(i64, f64)>,
     /// Placed objects someone is known to have made, and who (told by `on_created`).
     pub made: std::collections::HashMap<i64, ActorId>,
+    /// Night, corruption and the traveler's charges (see `night`).
+    pub night: night::NightState,
 }
 
 impl Sim {
@@ -323,6 +337,7 @@ impl Sim {
         let cfg = SimConfig::load(|k| db.kv_get(k));
         let mut sim = Sim {
             cfg,
+            worn_mass: None,
             db: db.clone(),
             snap: snap.clone(),
             cache: ScatterCache::default(),
@@ -358,8 +373,9 @@ impl Sim {
             player_plan: VecDeque::new(),
             fresh: Vec::new(),
             made: std::collections::HashMap::new(),
+            night: night::NightState::default(),
         };
-        sim.player.dims = traveller_dims(&snap);
+        sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();
         persist::load_gestures(&sim.db);
         sim.cast.sync(&snap, seed);
@@ -437,13 +453,13 @@ impl Sim {
 
     pub fn actor_ids(&self) -> Vec<ActorId> {
         let mut v = vec![ActorId::Player];
-        v.extend(self.cast.npcs.iter().filter(|n| !n.dead).map(|n| ActorId::Npc(n.def.id)));
+        v.extend(self.cast.npcs.iter().filter(|n| n.here()).map(|n| ActorId::Npc(n.def.id)));
         v
     }
 
     pub fn actor_name(&self, id: ActorId) -> String {
         match id {
-            ActorId::Player => "the traveller".into(),
+            ActorId::Player => "the traveler".into(),
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.name().to_string()).unwrap_or_else(|| "someone".into()),
         }
     }
@@ -487,7 +503,7 @@ impl Sim {
 
     /// Characters within `range` of `at` who can see it remember it.
     pub fn witness(&mut self, at: Vec3, range: f32, text: &str, importance: f32, except: &[ActorId]) {
-        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| !n.dead && (n.a.pos - at).length() < range && !n.a.asleep && !except.contains(&ActorId::Npc(n.def.id))).map(|n| n.def.id).collect();
+        let ids: Vec<i64> = self.cast.npcs.iter().filter(|n| n.here() && (n.a.pos - at).length() < range && !n.a.asleep && !except.contains(&ActorId::Npc(n.def.id))).map(|n| n.def.id).collect();
         for cid in ids {
             if let Some(n) = self.cast.get_mut(cid) {
                 if n.recently_witnessed(text, self.t) {
@@ -616,7 +632,7 @@ impl Sim {
         self.snap = snap.clone();
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
-        self.player.dims = traveller_dims(&snap);
+        self.player.dims = traveler_dims(&snap);
         self.social.seed_from_personas(&self.cast, &snap.species);
         self.dress_new();
         self.sync_overlay();
@@ -690,10 +706,16 @@ impl Sim {
             self.acc_life = 0.0;
             self.step_life();
         }
+        // The first step after loading: who is about at this hour, before anyone is drawn.
+        if self.night.was_night.is_none() {
+            self.step_night();
+        }
         self.acc_regions += dt;
         if self.acc_regions >= 1.0 {
             self.acc_regions = 0.0;
             self.step_regions();
+            self.ask_species_bodies();
+            self.step_night();
         }
         self.pump_requests(dt);
     }
@@ -729,16 +751,16 @@ impl Sim {
             seen.push((self.plain_surprise(sight), p.pos, ty.name().to_string(), sight, by.is_some()));
         }
         seen.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, at, name, sight, by_traveller) in seen {
-            // The traveller asked for it out loud, right there: that is seen too.
-            let there = by_traveller && self.dist_to_player(at) < 30.0;
-            let near: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| !n.dead && !n.a.asleep && (n.a.pos - at).length() < 60.0).map(|n| (n.def.id, n.a.pos)).collect();
+        for (_, at, name, sight, by_traveler) in seen {
+            // The traveler asked for it out loud, right there: that is seen too.
+            let there = by_traveler && self.dist_to_player(at) < 30.0;
+            let near: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| n.here() && !n.a.asleep && (n.a.pos - at).length() < 60.0).map(|n| (n.def.id, n.a.pos)).collect();
             for (cid, pos) in near {
                 let dir = compass(at - pos);
                 let (memory, tell) = if there {
-                    (format!("A {name} appeared {dir} of me, out of nowhere, right where the traveller stood."), format!("A {name} just appeared {dir} of you, out of nowhere, right where the traveller is standing."))
+                    (format!("A {name} appeared {dir} of me, out of nowhere, right where the traveler stood."), format!("A {name} just appeared {dir} of you, out of nowhere, right where the traveler is standing."))
                 } else {
-                    (format!("A {name} appeared {dir} of me, out of nowhere, after the traveller arrived."), format!("A {name} just appeared {dir} of you, out of nowhere."))
+                    (format!("A {name} appeared {dir} of me, out of nowhere, after the traveler arrived."), format!("A {name} just appeared {dir} of you, out of nowhere."))
                 };
                 let what = format!("the {name}");
                 let news = surprise::News { at, sight, memory: &memory, importance: 0.5, event: "new_building", tell: &tell, what: &what };
@@ -798,18 +820,20 @@ impl Sim {
     }
 }
 
-/// The traveller's body: a person of the universe's chosen height (1.75 m
+/// The traveler's body: a person of the universe's chosen height (1.75 m
 /// unless the world says otherwise).
-pub fn traveller_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
+pub fn traveler_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
     let human = snap.species.of("human");
     let Some(body) = snap.body_type(&human.body).and_then(|t| t.ct.meta.body.clone()) else { return Default::default() };
-    let h = snap.species.traveller_height.filter(|h| h.is_finite()).unwrap_or(1.75).clamp(0.3, 12.0);
+    let h = snap.species.traveler_height.filter(|h| h.is_finite()).unwrap_or(1.75).clamp(0.3, 12.0);
     let own = h.clamp(1.3, 2.0);
     let mut sliders = [own, 1.0, 0.3, 0.6, 0.1];
     if let Some(i) = body.slider("height") {
         sliders[i] = own;
     }
-    npc::body_dims(&body, &human, &sliders, h / own)
+    let mut d = npc::body_dims(&body, &human, &sliders, h / own);
+    d.human_arms = d.arms && snap.body_root(&human.body) == "figure";
+    d
 }
 
 /// Short compass word for a direction.

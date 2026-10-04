@@ -253,7 +253,7 @@ impl Sim {
         let mut people: Vec<(f32, String)> = Vec::new();
         if !m.no_ask {
             for n in &self.cast.npcs {
-                if n.def.id == c || n.dead || self.mind_of(ActorId::Npc(n.def.id)) != crate::world::species::Mind::Sapient {
+                if n.def.id == c || !n.here() || self.mind_of(ActorId::Npc(n.def.id)) != crate::world::species::Mind::Sapient {
                     continue;
                 }
                 let d = (n.a.pos - at).length();
@@ -345,7 +345,7 @@ impl Sim {
         let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
         if self.mission(who).is_none() {
             // Asking on its own: a mission with nothing to resume.
-            let ActorId::Npc(c) = who else { return Err(super::actions::ActErr::Fail("the traveller asks in words".into())) };
+            let ActorId::Npc(c) = who else { return Err(super::actions::ActErr::Fail("the traveler asks in words".into())) };
             let t = self.t;
             if let Some(n) = self.cast.get_mut(c) {
                 n.mission = Some(Mission { text: String::new(), deliver: None, need: Need { kind: "thing".into(), what: what.to_string(), hour: None }, stage: Stage::OnTheWay, candidates: vec![], asked: vec![], no_ask: false, until: t + ASK_SECS });
