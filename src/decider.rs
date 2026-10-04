@@ -67,7 +67,7 @@ pub fn parse_decision(v: &serde_json::Value) -> Option<Decision> {
     let mut d: Decision = serde_json::from_value(v.clone()).ok()?;
     d.line = d.line.filter(|s| !s.trim().is_empty());
     d.say = d.say.filter(|s| !s.trim().is_empty() && s != "null");
-    if d.action.is_empty() && d.steps.is_empty() && d.say.is_none() {
+    if d.action.is_empty() && d.steps.is_empty() && d.say.is_none() && d.promise.is_none() && d.aim.is_none() && d.kept.is_none() {
         return None;
     }
     Some(d)

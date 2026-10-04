@@ -15,6 +15,7 @@ pub mod beings;
 pub mod catchup;
 pub mod config;
 pub mod env;
+pub mod goals;
 pub mod headless;
 pub mod incident;
 pub mod inspect;
@@ -343,6 +344,8 @@ pub struct Sim {
     pub night: night::NightState,
     /// Happenings with one cause, told as one story (see `incident`).
     pub incidents: incident::Incidents,
+    /// What people want and have promised (see `goals`).
+    pub goals: goals::Goals,
     /// Which property crossings are news (from the vocabulary).
     pub watch: Arc<Vec<env::Watch>>,
     /// Requests dropped for waiting too long (see `SimConfig::queue_wait`).
@@ -398,6 +401,7 @@ impl Sim {
             made: std::collections::HashMap::new(),
             night: night::NightState::default(),
             incidents: incident::Incidents::default(),
+            goals: goals::Goals::default(),
             watch: Arc::new(Vec::new()),
             dropped: 0,
             sounds: Vec::new(),
@@ -410,6 +414,7 @@ impl Sim {
         sim.cast.sync(&snap, seed);
         persist::load(&mut sim);
         sim.fit_bodies();
+        sim.seed_goals();
         sim.social.seed_from_personas(&sim.cast, &snap.species);
         sim.dress_new();
         sim.sync_overlay();
@@ -742,6 +747,7 @@ impl Sim {
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
         self.fit_bodies();
+        self.seed_goals();
         self.player.dims = traveler_dims(&snap);
         self.social.seed_from_personas(&self.cast, &snap.species);
         self.dress_new();
@@ -831,6 +837,7 @@ impl Sim {
             self.ask_species_bodies();
             self.step_night();
             self.feel_bodies(1.0);
+            self.step_goals(1.0);
         }
         self.pump_requests(dt);
     }

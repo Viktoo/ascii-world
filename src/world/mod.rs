@@ -182,6 +182,22 @@ pub struct Persona {
     /// are read from the words.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub traits: std::collections::BTreeMap<String, f32>,
+    /// What they are after in life, as goals (written with their region):
+    /// words, and where it can be, a want the world can check.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aims: Vec<AimSpec>,
+}
+
+/// One aim as generation writes it: `{"text": "win Mara's heart", "want":
+/// {"kind": "affection", "with": "Mara", "at_least": 0.6}}`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct AimSpec {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub why: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub want: Option<serde_json::Value>,
 }
 
 impl Persona {

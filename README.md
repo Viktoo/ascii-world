@@ -353,6 +353,17 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   what is around. The character uses what is there, waits for the hour, makes it, asks
   up to three people in turn (who decide by their own lives; one hop, they never ask
   on), or gives up and says why. Then they go back to the deed and hand on the result.
+- *Goals* (`src/sim/goals.rs`). What people want is data: a row with its owner, what
+  they want (a condition the sim checks where it can: a thing in hand, someone having
+  something, being somewhere, a thing being somewhere, an incident being over, feeling
+  for someone; words otherwise), why, priority, deadline, who it was promised to and
+  what they did toward it. Goals come from who people are (their persona's aims), from
+  missions, from promises (agreeing in talk or to someone's ask), from trouble (pushing
+  back a fire) and from the planner's own aims. Every few seconds the sim checks them:
+  a goal met is done (remembered; a promisee is glad and trusts them more), one past its
+  deadline or no longer possible is given up (remembered; a promisee trusts them less).
+  Goals in words get one look from the owner's planner at their deadline. Open goals and
+  ones closed lately are in the planner's context; they are saved in the `goals` table.
 - *Minds* (`src/sim/npc.rs`). Needs (hunger, tiredness, loneliness, boredom, curiosity)
   drift; traits come from the persona's words. When idle, a character scores a few
   options (eat, rest, seek company, play, look at something new, flee a fire, gather
@@ -415,7 +426,7 @@ nobody has yet.
 `instances`, `regions`, `characters`, `memories`, `summaries`, `player`, `llm_usage`),
 plus a small `kv` table for the spawn point and current version, and the live world:
 `things`, `cells` (changed scatter), `spent_cells`, `relationships`, `vocab` and `rules`
-(the universe's own), `interp_cache`, `events` (the latest 5,000) and `origins` (who
+(the universe's own), `goals`, `interp_cache`, `events` (the latest 5,000) and `origins` (who
 made what). Only LLM-written source is stored; WGSL and bytecode are rebuilt on load.
 Opening an older world adds the new tables and built-in types.
 

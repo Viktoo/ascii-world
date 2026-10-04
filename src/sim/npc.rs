@@ -1083,6 +1083,9 @@ impl Sim {
         steps.push(Action::Apply { with: tool.map(Target::Thing), to: Some(target), secs: None });
         self.plan(me, steps, &format!("stop the {noun}"), false);
         self.set_aim(cid, Aim::Counter(id), &format!("fighting the {noun}"));
+        if was != Aim::Counter(id) {
+            self.add_goal(cid, super::goals::Want::Over { incident: id }, &format!("stop the {noun}"), "it threatens us", 0.9, None, None, super::goals::Source::Incident);
+        }
         true
     }
 
@@ -1654,7 +1657,7 @@ impl Sim {
     /// may now do what was asked (make it and hand it over, show the way…).
     pub fn asked(&mut self, cid: i64, said: &str, replied: &str) {
         let what = format!(
-            "The traveler just said to you: \"{said}\". You answered: \"{replied}\". If they asked you to do, make, fetch, give or show something and you agreed, do it now: to make something for them, a \"do\" step that makes it, then a \"give\" step to the traveler (it is handed over once made). If you refused, or nothing was asked, reply with no steps. Set \"say\" to null: you have already answered."
+            "The traveler just said to you: \"{said}\". You answered: \"{replied}\". If they asked you to do, make, fetch, give or show something and you agreed, it is a promise: set \"promise\" and start on it now (to make something for them, a \"do\" step that makes it, then a \"give\" step to the traveler; it is handed over once made). If you refused, or nothing was asked, reply with no steps and no promise. Set \"say\" to null: you have already answered."
         );
         self.ask_planner(cid, "asked", &what, true);
     }
@@ -1756,6 +1759,8 @@ impl Sim {
         let twist = if meanings.is_empty() { twist } else { format!("{twist}\nWhat those numbers mean: {}.", meanings.join("; ")) };
         let twist = format!("{twist}{}", self.trouble_line(pos).map(|l| format!("\n{l}")).unwrap_or_default());
         let twist = format!("{twist}{}", self.body_line(cid).map(|l| format!("\nOn your own body: {l}.")).unwrap_or_default());
+        let twist = format!("{twist}{}", self.goals_line(cid).map(|l| format!("\nYour goals: {l}.")).unwrap_or_default());
+        let twist = format!("{twist}{}", self.goals_done_line(cid).map(|l| format!("\nLately: {l}.")).unwrap_or_default());
         format!(
             "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
             crate::render::sky::time_label(self.t),
@@ -1784,6 +1789,7 @@ impl Sim {
         let summary = d.goal.clone().unwrap_or_else(|| d.action.clone());
         n.log_decision(t, format!("decided: {summary}"));
         let mut steps: Vec<Action> = d.steps.iter().filter_map(parse_step).take(10).collect();
+        self.decision_goals(cid, &d, &steps);
         let said = d.say.as_ref().is_some_and(|s| !s.trim().is_empty());
         let mut steps = self.need_decision(cid, std::mem::take(&mut steps), said);
         // Making something and then giving it: the thing takes a while to be

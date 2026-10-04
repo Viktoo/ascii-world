@@ -4030,3 +4030,98 @@ export function color(x, y, z, k) { return rgb(150, 80, 50); }
     }
     sound(&s);
 }
+
+// ------------------------------------------------------------ goals as data
+
+/// Asked for a ball, a character promises (a goal with the traveler as
+/// promisee, in their planner's context), makes it over time and hands it
+/// over; the sim sees the condition met and closes the goal by itself.
+#[test]
+fn a_promised_ball_is_made_handed_over_and_the_goal_closes_itself() {
+    let w = world("promise", 55);
+    let spot = dry_spot(&w, 10.0, 0.4);
+    let a = add_char(&w, "Tam", "a kind toymaker", &[], spot);
+    let ball = fixture("sims/ball.js");
+    let contexts = Arc::new(Mutex::new(Vec::<String>::new()));
+    let c2 = contexts.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("You decide what a character") {
+            c2.lock().push(user.to_string());
+            if user.contains("The traveler just said") {
+                return r#"{"goal": "make the traveler a ball", "say": null, "promise": {"text": "make the traveler a ball", "to": "the traveler", "what": "a ball", "within_hours": 6}, "steps": [{"do": "create", "text": "a leather ball"}, {"do": "give", "to": "the traveler"}]}"#.into();
+            }
+            return r#"{"goal": "", "steps": []}"#.into();
+        }
+        if sys.contains("physics and common sense") && user.contains("ball") {
+            return r#"{"narration": "", "make": [{"text": "a leather ball"}]}"#.into();
+        }
+        if user.contains("is making something in the world") {
+            return format!("```json\n{{\"summary\": \"a leather ball\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 1}}]}}\n```\n```js\n{ball}\n```");
+        }
+        r#"{"lines": []}"#.into()
+    }));
+    let mut s = session(&w, 55, Some(llm));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    let all = record(&mut s);
+    s.sim.asked(a, "Could you make me a ball?", "Of course, I'll make you one.");
+    let mut handed = false;
+    for _ in 0..(150.0 / 0.1) as usize {
+        s.step(0.1);
+        handed |= s.sim.player.held.is_some();
+        if handed && !of(&all, "goal_met").is_empty() {
+            break;
+        }
+    }
+    let log: Vec<String> = all.lock().iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    let set = of(&all, "goal_set");
+    assert!(set.iter().any(|e| e.data["crosses"] == true && e.text.contains("promised the traveler")), "a promise across two: {}", log.join("\n"));
+    assert_eq!(set.len(), 1, "one promise, not two: {set:?}");
+    assert!(handed, "handed over:\n{}", log.join("\n"));
+    let met = of(&all, "goal_met");
+    assert!(met.iter().any(|e| e.text.contains("kept their promise to the traveler")), "the goal closed itself:\n{}", log.join("\n"));
+    let g = s.sim.goals.list.iter().find(|g| g.owner == a && g.source == super::goals::Source::Promise).unwrap();
+    assert_eq!(g.status, super::goals::Status::Done);
+    assert!(!g.steps.is_empty(), "what they did toward it is kept");
+    // Kept across a restart.
+    s.save();
+    drop(s);
+    let s = session(&w, 55, None);
+    assert!(s.sim.goals.list.iter().any(|g| g.owner == a && g.status == super::goals::Status::Done), "kept with the world");
+    sound(&s);
+}
+
+/// A promise not kept by its deadline is given up: told, remembered by the
+/// one who made it, and the one it was made to trusts them less.
+#[test]
+fn a_promise_not_kept_by_its_deadline_is_dropped_remembered_and_costs_trust() {
+    let w = world("broken", 56);
+    let spot = dry_spot(&w, 10.0, 0.4);
+    let a = add_char(&w, "Vel", "busy and forgetful", &[], spot);
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("You decide what a character") && user.contains("The traveler just said") {
+            return r#"{"goal": "", "say": null, "promise": {"text": "bring the traveler a lantern", "to": "the traveler", "what": "a lantern", "within_hours": 1}, "steps": []}"#.into();
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let mut s = session(&w, 56, Some(llm));
+    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
+    let all = record(&mut s);
+    let me = ActorId::Npc(a);
+    let trust0 = s.sim.social.rel(ActorId::Player, me).map(|r| r.trust).unwrap_or(0.0);
+    s.sim.asked(a, "Could you bring me a lantern later?", "Yes, later today.");
+    s.run(2.0, 0.1);
+    let ctx = s.sim.decide_context(a, "x");
+    assert!(ctx.contains("Your goals: bring the traveler a lantern (promised to the traveler"), "{ctx}");
+    s.run((super::headless::hour_s() * 1.3) as f32, 0.1);
+    let dropped = of(&all, "goal_dropped");
+    assert!(dropped.iter().any(|e| e.text.contains("broke their promise to the traveler")), "{:?}", all.lock().iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    let trust1 = s.sim.social.rel(ActorId::Player, me).map(|r| r.trust).unwrap_or(0.0);
+    assert!(trust1 < trust0 - 0.1, "it costs trust ({trust0:.2} → {trust1:.2})");
+    s.pump(std::time::Duration::from_secs(2));
+    let mems = w.db.memories(a).unwrap();
+    assert!(mems.iter().any(|m| m.text.contains("didn't keep my promise")), "remembered: {:?}", mems.iter().map(|m| m.text.clone()).collect::<Vec<_>>());
+    assert!(s.sim.decide_context(a, "x").contains("Lately: bring the traveler a lantern (given up)"));
+    sound(&s);
+}

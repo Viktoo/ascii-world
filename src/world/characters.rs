@@ -114,4 +114,13 @@ pub struct Decision {
     pub say: Option<String>,
     #[serde(default)]
     pub steps: Vec<serde_json::Value>,
+    /// A promise they make now (see `sim::goals::Pledge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promise: Option<serde_json::Value>,
+    /// A longer aim of their own they take on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<serde_json::Value>,
+    /// Whether a goal that came due was met (asked at its deadline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<bool>,
 }

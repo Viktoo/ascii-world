@@ -64,6 +64,9 @@ pub struct Mission {
     pub no_ask: bool,
     /// When the current stage gives out.
     pub until: f64,
+    /// The goal it is (see `goals`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<u64>,
 }
 
 /// What a character is in the middle of, kept between sessions.
@@ -199,7 +202,11 @@ impl Sim {
         let Some(n) = self.cast.get_mut(c) else { return };
         let deliver = n.deliver.take();
         let no_ask = n.helping.or(n.asked_by).is_some_and(|(_, until)| t <= until);
-        n.mission = Some(Mission { text: text.to_string(), deliver, need: need.clone(), stage: Stage::OnTheWay, candidates: vec![], asked: vec![], no_ask, until: t + ASK_SECS });
+        n.mission = Some(Mission { text: text.to_string(), deliver, need: need.clone(), stage: Stage::OnTheWay, candidates: vec![], asked: vec![], no_ask, until: t + ASK_SECS, goal: None });
+        let gid = self.mission_goal(c, text, need);
+        if let Some(m) = self.mission_mut(who) {
+            m.goal = Some(gid);
+        }
         self.meet_need(who);
     }
 
@@ -316,6 +323,11 @@ impl Sim {
                 let (a, b) = (self.actor_name(me), self.actor_name(asker));
                 let at = self.actor(me).map(|x| x.pos);
                 self.event("agreed", Some(me), Some(asker.key()), format!("{a} agreed to help {b}"), at, json!({}));
+                // Saying yes is a promise: kept when they have it.
+                if let Some(what) = self.mission(asker).map(|m| m.need.what.clone()) {
+                    let hours = (ASK_SECS / super::headless::hour_s()) as f32;
+                    self.promise(cid, asker, &format!("get {b} {what}"), Some(&what), Some(hours));
+                }
             }
             return steps;
         }
@@ -348,7 +360,7 @@ impl Sim {
             let ActorId::Npc(c) = who else { return Err(super::actions::ActErr::Fail("the traveler asks in words".into())) };
             let t = self.t;
             if let Some(n) = self.cast.get_mut(c) {
-                n.mission = Some(Mission { text: String::new(), deliver: None, need: Need { kind: "thing".into(), what: what.to_string(), hour: None }, stage: Stage::OnTheWay, candidates: vec![], asked: vec![], no_ask: false, until: t + ASK_SECS });
+                n.mission = Some(Mission { text: String::new(), deliver: None, need: Need { kind: "thing".into(), what: what.to_string(), hour: None }, stage: Stage::OnTheWay, candidates: vec![], asked: vec![], no_ask: false, until: t + ASK_SECS, goal: None });
             }
         }
         let asked = self.mission(who).map(|m| m.asked.clone()).unwrap_or_default();
@@ -494,10 +506,14 @@ impl Sim {
     /// The deed was tried again (or an ask came to its end): the mission is over.
     pub fn deed_done(&mut self, who: ActorId, text: &str) {
         let ActorId::Npc(c) = who else { return };
+        let mut done = None;
         if let Some(n) = self.cast.get_mut(c) {
             if n.mission.as_ref().is_some_and(|m| m.stage == Stage::Resumed && m.text == text) {
-                n.mission = None;
+                done = n.mission.take().and_then(|m| m.goal);
             }
+        }
+        if let Some(g) = done {
+            self.close_goal(g, true, "");
         }
     }
 
@@ -527,6 +543,9 @@ impl Sim {
         let Some(n) = self.cast.get_mut(c) else { return };
         let helping = n.helping.take();
         let Some(m) = n.mission.take() else { return };
+        if let Some(g) = m.goal {
+            self.close_goal(g, false, why);
+        }
         let name = self.actor_name(who);
         let goal = if m.text.is_empty() { format!("get {}", m.need.what) } else { m.text.clone() };
         let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
@@ -536,6 +555,20 @@ impl Sim {
         if let Some((asker, _)) = helping {
             self.refused(asker, who);
         }
+    }
+
+    /// A deed that needs something is a goal: to have the thing, be at the
+    /// place, get help, or wait for the hour.
+    fn mission_goal(&mut self, cid: i64, text: &str, need: &Need) -> u64 {
+        use super::goals::{Source, Want};
+        let what = need.what.trim().to_string();
+        let (want, words) = match need.kind.trim().to_lowercase().as_str() {
+            "thing" => (Want::Hold { what: what.clone() }, format!("get {what} to {text}")),
+            "place" => (Want::Be { place: what.clone() }, format!("go to the {what} to {text}")),
+            _ => (Want::Words { text: format!("{text} (it needs {what})") }, format!("{text} (it needs {what})")),
+        };
+        let deadline = Some(self.t + ASK_SECS * 2.0);
+        self.add_goal(cid, want, &words, text, 0.6, deadline, None, Source::Mission)
     }
 
     /// Stages run out: an ask nobody answered is a no; anything else, give up.

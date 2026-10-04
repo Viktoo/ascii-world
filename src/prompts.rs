@@ -161,6 +161,7 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
       "name": "…", "age": 30, "appearance": "…",
       "look": { "height": 1.75, "build": 1.0, "skin": 0.0-1.0, "shirt_hue": 0.0-1.0, "trousers_hue": 0.0-1.0 },
       "personality": "…", "goals": "…", "voice": "how they speak",
+      "aims": [ { "text": "win Mara's heart", "want": { "kind": "affection", "with": "Mara", "at_least": 0.6 } } ],
       "traits": { "sociable": 0-1, "playful": 0-1, "curious": 0-1, "brave": 0-1, "generous": 0-1, "crafty": 0-1 },
       "home": "where they live", "home_x": 0-256, "home_z": 0-256,
       "relationships": ["Name: relation"], "species": "human", "variety": "", "layers": [] } ],
@@ -174,6 +175,7 @@ Rules:
 - Reuse existing types by exact name when they fit; only invent new_types the region really needs (a settlement needs at least one building type).
 - Put things on dry land (see the terrain notes), settlements on gentle ground, landmarks where they would be seen.
 - Give each character a trade or daily work in "goals" (what they make, mend or tend, and something they want to make or improve), e.g. "mends the fishing nets; wants to build a proper boat".
+- "aims": one or two things they are after, as goals; where the world can check it, a "want": {"kind": "hold", "what": "a proper boat"} (have it in hand), {"kind": "has", "who": "Ola", "what": "a doll"} (someone else has it), {"kind": "be", "place": "the shrine"}, or {"kind": "affection", "with": "Mara", "at_least": 0.6}; otherwise words only.
 - Characters live near the settlement or a landmark. home_x/home_z is where they stand by day: a spot a few metres outside their house (never the building's own coordinates). Give them distinct voices, goals and relationships with each other ("Name: relation", e.g. "Ola: daughter", "Bren: rival", "Tam: husband"): families, couples, friends and rivals make a village come alive. Weave in the region facts and the neighbouring regions.
 - things: small loose things lying about where people live and work, that they pick up, use, play with and make other things from. Give each character 1–2 things of their trade (what they work with or on: a fisher's net and a basket of fish, a smith's tongs and an iron bar, a weaver's spindle and a bundle of wool), "near" them. Give a settlement 1 pastime thing its people toss, catch, kick or roll about for fun, in their own style (a leather ball, a hoop, a straw doll; an orc camp might toss a skull), "near": "", with props { "toy": 1 } and a light mass. Each is under 1 m and 25 kg; at most 12 things. Reuse existing types by exact name when they fit (a trade's tools often repeat); new ones go in new_types with fitting props and tags.
 - Characters are people by default; give "species" (one of the species listed below) for anyone else who talks and plans (an elf, an orc). Their "look" uses their body's sliders.
@@ -300,7 +302,7 @@ pub fn repair(errors: &str) -> String {
     format!("That failed validation:\n{errors}\n\nFix every problem and reply again in the same format, with the complete corrected answer.")
 }
 
-pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveler (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. What you agree to do (make something, give it, show the way, follow) you really do right after you speak, so say you will do it or are starting on it, never that it is already done or already in their hands.";
+pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveler (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. If you agree to do something, say you will do it or are starting on it; it isn't done yet.";
 
 pub const DECIDER_TASK: &str = r#"You decide what a character in a small simulated world does next, given an event and what they know. Reply with one JSON object only:
 {"goal": "a few words", "say": "what they say now (one short sentence in their voice) or null", "steps": [ ... ]}
@@ -314,6 +316,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
   {"do": "apply", "with": "wet cloak", "to": "burning hut"}   (work something against something for a few seconds: beat out flames, press, rub, smear; without "with", their own hands; without "to", the nearest trouble)
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
+Optional, in the same object: "promise": {"text": "make Ola a ball", "to": "Ola", "what": "a ball" or null (the thing they will hand over), "within_hours": 3} when they agree to do something for someone (they are held to it); "aim": {"text": "a few words", "within_hours": 24} for a longer aim of their own; "kept": true or false when asked whether a goal that came due was met.
 When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveler stands may be the traveler's doing.
 Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
 For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveler"}] with "say" set, or nothing."#;

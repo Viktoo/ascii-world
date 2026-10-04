@@ -1180,6 +1180,7 @@ impl Sim {
         }
         self.social.bond(who, to, 0.12, self.t);
         self.kind_touch(who, to, 1.0, super::body::GIFT_SECS, super::body::HAND, false, who == ActorId::Player);
+        self.goals_on_gift(who, to, id);
         self.on_gift(to, who, id);
         self.need_given(who, to);
         Ok(Outcome::ok(format!("{name} gives the {tname} to {other}")).thing(id))

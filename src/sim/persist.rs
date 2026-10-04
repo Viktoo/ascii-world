@@ -284,6 +284,16 @@ pub fn load(sim: &mut Sim) {
     if let Some(st) = db.kv_get("sim.incidents").and_then(|j| serde_json::from_str(&j).ok()) {
         sim.incidents = st;
     }
+    let goals: Vec<String> = db
+        .with(|c| {
+            let mut st = c.prepare("SELECT json FROM goals ORDER BY id")?;
+            let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+    sim.goals.list = goals.iter().filter_map(|j| serde_json::from_str(j).ok()).collect();
+    sim.goals.next = sim.goals.list.iter().map(|g| g.id + 1).max().unwrap_or(1);
+    sim.goals.seen = sim.log.total;
     if let Some(j) = db.kv_get("sim.region_seen") {
         if let Ok(v) = serde_json::from_str::<Vec<((i32, i32), f64)>>(&j) {
             sim.region_seen = v.into_iter().collect();
@@ -363,6 +373,7 @@ pub fn save(sim: &mut Sim) {
     // The parts of an incident are counted on it; only its first is kept.
     let events: Vec<_> = std::mem::take(&mut sim.log.unsaved).into_iter().filter(|e| e.data.get("part").and_then(|v| v.as_bool()) != Some(true)).collect();
     let incidents = serde_json::to_string(&sim.incidents).unwrap_or_default();
+    let goals: Vec<(u64, i64, String, String)> = sim.goals.list.iter().map(|g| (g.id, g.owner, format!("{:?}", g.status).to_lowercase(), serde_json::to_string(g).unwrap_or_default())).collect();
     let npc_states: Vec<(i64, String)> = sim
         .cast
         .npcs
@@ -416,6 +427,10 @@ pub fn save(sim: &mut Sim) {
         crate::db::kv_set(tx, "sim.region_seen", &serde_json::to_string(&seen)?)?;
         crate::db::kv_set(tx, "sim.night", &night)?;
         crate::db::kv_set(tx, "sim.incidents", &incidents)?;
+        tx.execute("DELETE FROM goals", [])?;
+        for (id, owner, status, j) in &goals {
+            tx.execute("INSERT INTO goals(id, owner, status, json) VALUES (?1, ?2, ?3, ?4)", params![*id as i64, owner, status, j])?;
+        }
         tx.execute("DELETE FROM spent_cells", [])?;
         for ((gx, gz), t) in &spent {
             tx.execute("INSERT INTO spent_cells(gx, gz, t) VALUES (?1, ?2, ?3)", params![gx, gz, t])?;
