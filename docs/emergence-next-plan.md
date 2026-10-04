@@ -30,6 +30,75 @@ Known regressions to weigh: bare hands save fewer tufts than the old douse
 (about 5 of 50 against 12 in the test); shouts are generic ("Careful, the
 grass tuft!") rather than written for fire.
 
+## For the agent doing this
+
+Read this whole plan first, then `docs/emergence-plan.md` and
+`docs/night-plan.md` for intent. Work one phase at a time, in order.
+
+**Setup.**
+- Work in the worktree `/Users/viktor/Documents/personal/ascii-world-emergence`
+  on branch `increased-emergence`, never in the main folder (other work goes on there).
+- `main` has moved ahead (the "sounds!" commit). Merge `main` into the
+  branch before starting, fix conflicts, and get the tests green.
+- Commands: `cargo test --release` (all must pass), `cargo build --release`
+  at the end of each phase. A headless run of a real world:
+  `target/release/pocket sim COPY.pocket --hours 6 --no-llm --events out.jsonl`.
+  Always run it on a **copy** of a file from `~/.pocket/universes/`,
+  never on the original.
+
+**Rules of the house.**
+- No behaviour keyed on names, tags, event-kind strings or `doing` text:
+  properties, taxonomy, typed `Aim`, vocabulary metadata.
+- Match the surrounding style: short plain-English doc comments that say
+  why, as in the rest of `src/sim`.
+- Keep the night system's behaviour (its difficulty table, charges, what
+  horrors do) as it is; only move how it is built onto the new primitives.
+- The traveler's body is never in the rules pass.
+- Every phase ends with its proof test(s) in `src/sim/tests.rs`, the
+  measurements below recorded in the commit message, the README updated where it
+  describes what changed, and one commit (ending with the Co-Authored-By line the
+  harness gives).
+- Test helpers already there: `world`, `world_with`, `add_type`, `place`,
+  `add_char`, `session`, `record`, `of`, `events`, `dry_spot`,
+  `grass_patch`, `clear_scatter`, `plant_grass`, `sound`. The curse test
+  (`a_villager_lifts_a_spreading_curse_with_a_charm_nobody_told_them_about`)
+  is a good model for a universe property with metadata.
+
+**Where things are.**
+- Phase 0:
+  - `src/sim/interp.rs` sets properties by name and skips unknown ones (search `vocab.id(k)`);
+  - `src/brain.rs` `validate` has the unknown-property check for types, to copy;
+  - `src/sim/props.rs` `PropMeta`, `Vocab`, `P_FORCE`;
+  - `src/sim/actions.rs` `apply` / `body_props`;
+  - the "beaten out" rule is in `src/sim/rules.rs` `builtin_specs`.
+- Phase 1:
+  - `src/sim/actor.rs` `Actor`, and `src/sim/npc.rs` `Npc` (fields `corruption`, `glow`);
+  - `SavedState` in `src/world/characters.rs`;
+  - `Species` in `src/world/species.rs` (add `props`);
+  - the rules pass `rules_pass` and `Key` in `src/sim/env.rs`;
+  - `src/sim/night.rs`: `corruption_of`, `add_corruption` and `night_events` (the event-name checks to remove);
+  - gestures with contact in `src/sim/social.rs`;
+  - `contact()` in `src/sim/actions.rs`.
+- Phase 2:
+  - missions in `src/sim/needs.rs`;
+  - talk in `src/brain.rs` (`Cmd::Talk`) and `DIALOGUE_RULES` in `src/prompts.rs`;
+  - `decide_context` and `on_decision` in `src/sim/npc.rs`;
+  - tables in `src/db.rs`, saving in `src/sim/persist.rs`.
+- Phase 3:
+  - `think` and `counter_trouble` in `src/sim/npc.rs`;
+  - `think_animal` in `src/sim/beings.rs`;
+  - settings in `src/sim/config.rs`;
+  - the planner prompt `DECIDER_TASK` in `src/prompts.rs`.
+- Phase 4:
+  - `witness` in `src/sim/mod.rs`;
+  - gossip in `src/sim/social.rs` (search "told me");
+  - memory retrieval in `src/brain.rs` (search "overlap").
+- Measurements: the report of `run_sim_cli` in `src/sim/headless.rs`.
+
+**When to stop and ask.** A change to what the player sees or can do that
+this plan doesn't describe; a test that only passes by weakening it; a
+measurement that gets worse after a phase.
+
 ## Decisions
 
 - The **player's body stays out** of the rules pass: the traveler is never
