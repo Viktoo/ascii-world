@@ -318,7 +318,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
 Optional, in the same object: "promise": {"text": "make Ola a ball", "to": "Ola", "what": "a ball" or null (the thing they will hand over), "within_hours": 3} when they agree to do something for someone (they are held to it); "aim": {"text": "a few words", "within_hours": 24} for a longer aim of their own; "kept": true or false when asked whether a goal that came due was met.
 When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveler stands may be the traveler's doing.
-Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
+They are told what they could do now, best first: what is really there. Pick from it, or anything else that fits who they are. Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
 For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveler"}] with "say" set, or nothing."#;
 
 pub const SUMMARY_TASK: &str = "Update this character's private memory summary. Write at most 120 words in the first person, covering what they know and feel about the traveler (the player), promises, recurring topics, and notable things they witnessed. Keep the important older points. Plain text only.";

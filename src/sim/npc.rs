@@ -37,6 +37,19 @@ pub enum Aim {
     Other,
 }
 
+/// How someone will push back a trouble: which one, with what, where.
+#[derive(Clone, Debug)]
+pub struct CounterPlan {
+    pub id: u32,
+    pub noun: String,
+    pub tool: Option<ThingId>,
+    pub target: Target,
+    pub at: Vec3,
+    pub held: Option<ThingId>,
+    pub pos: Vec3,
+    pub was: Aim,
+}
+
 /// Personality as numbers (0..1), read from the persona's words.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct Traits {
@@ -159,6 +172,8 @@ pub struct Npc {
     pub deed: Option<(String, Option<Target>, f64)>,
     /// Loaded with work under way: fix up what was waiting on an answer.
     pub restored: bool,
+    /// Times in a row a walk was blocked and they stepped aside to try again.
+    pub detours: u8,
     pub dead: bool,
     pub dressed: bool,
     /// Gestures it was taught (an animal's tricks), done when greeting.
@@ -350,6 +365,7 @@ impl Cast {
             helping: None,
             deed: None,
             restored: false,
+            detours: 0,
             dead: s.dead,
             dressed: s.dressed,
             tricks: s.tricks.clone(),
@@ -537,7 +553,7 @@ pub fn template(kind: &str, other: &str, hour: f32, k: u32) -> String {
     template_line(kind, other, hour, k)
 }
 
-fn template_line(kind: &str, other: &str, hour: f32, k: u32) -> String {
+pub(super) fn template_line(kind: &str, other: &str, hour: f32, k: u32) -> String {
     let pick = |v: &[&str]| v[(k as usize) % v.len()].replace("{o}", other);
     match kind {
         "greet" => {
@@ -803,11 +819,41 @@ impl Sim {
                     let _ = self.dismount(who);
                 }
             }
+            if let (true, ActorId::Npc(c)) = (done, who) {
+                if let Some(n) = self.cast.get_mut(c) {
+                    n.detours = 0;
+                }
+            }
             if failed {
                 if let ActorId::Npc(c) = who {
+                    // Blocked on the way: step aside (one way, then the
+                    // other) and try again before giving up on the plan.
+                    let aside = match &task {
+                        Task::Goto { target, run, .. } if self.cast.get(c).is_some_and(|n| n.detours < 2) => {
+                            let goal = self.resolve(target, who).map(|r| r.pos).unwrap_or(me);
+                            let away = Vec3::new(goal.x - me.x, 0.0, goal.z - me.z);
+                            let d = away.normalize_or_zero();
+                            let tries = self.cast.get(c).map(|n| n.detours).unwrap_or(0);
+                            let side = Vec3::new(-d.z, 0.0, d.x) * if tries == 0 { 3.0 } else { -6.0 } - d * 1.0;
+                            let p = me + side;
+                            // Close by, whatever blocks them is what they came to.
+                            (away.length() > 4.0 && self.snap.terrain.height(p.x, p.z) > crate::terrain::WATER_LEVEL + 0.2).then(|| (Action::Goto { target: Target::Point(p.to_array()), run: false }, Action::Goto { target: target.clone(), run: *run }))
+                        }
+                        _ => None,
+                    };
                     if let Some(n) = self.cast.get_mut(c) {
-                        n.plan.clear();
-                        n.think_at = now + 1.0;
+                        match aside {
+                            Some((step, again)) => {
+                                n.detours += 1;
+                                n.plan.push_front(again);
+                                n.plan.push_front(step);
+                            }
+                            None => {
+                                n.detours = 0;
+                                n.plan.clear();
+                                n.think_at = now + 1.0;
+                            }
+                        }
                     }
                 }
             }
@@ -980,7 +1026,7 @@ impl Sim {
             self.run_task(me, dt);
             let idle = self.cast.get(cid).is_some_and(|n| n.a.task.is_none() && n.plan.is_empty());
             if idle && !self.social.busy(me) && t >= self.cast.get(cid).map(|n| n.think_at).unwrap_or(0.0) {
-                self.think(cid);
+                self.decide(cid);
             }
         }
         self.grow(cid);
@@ -1000,29 +1046,30 @@ impl Sim {
 
     // ------------------------------------------------------------ choosing
 
-    /// Push back a going incident (a fire, a spreading curse) near them or
-    /// their home, if they are willing: people grown and sapient who are
-    /// brave, whose home is at stake, or who see someone they know already at
-    /// it. Nothing here knows what the trouble is: they imagine working each
-    /// tool to hand against it (their hands, what they hold, what lies about)
-    /// by the world's rules, and take the one that pushes it back most. With
-    /// no tool that helps, they don't try. True if they set out.
-    fn counter_trouble(&mut self, cid: i64) -> bool {
+    /// How they would push back a going incident (a fire, a spreading curse)
+    /// near them or their home, if they are willing: people grown and
+    /// sapient who are brave, whose home is at stake, or who see someone
+    /// they know already at it. Nothing here knows what the trouble is: they
+    /// imagine working each tool to hand against it (their hands, what they
+    /// hold, what lies about) by the world's rules, and take the one that
+    /// pushes it back most. With no tool that helps, they don't try. Nothing
+    /// is done yet.
+    pub(super) fn counter_plan(&mut self, cid: i64) -> Option<CounterPlan> {
         let me = ActorId::Npc(cid);
-        let Some(n) = self.cast.get(cid) else { return false };
+        let n = self.cast.get(cid)?;
         if self.mind_of(me) != crate::world::species::Mind::Sapient || n.growth < 0.8 || n.a.riding.is_some() {
-            return false;
+            return None;
         }
         let (pos, home, brave, held, was) = (n.a.pos, n.def.home, n.traits.brave, n.a.held, n.aim.clone());
         let pick = |s: &Sim, p: Vec3, r: f32| s.incidents_near(p, r).into_iter().find(|i| !i.live.is_empty()).map(|i| (i.id, i.cause.subject.clone(), i.live.clone(), i.prop.clone(), i.words.noun.clone()));
         let near_home = pick(self, home, 40.0);
         let home_threatened = near_home.is_some();
-        let Some((id, cause, live, prop, noun)) = pick(self, pos, 50.0).or(near_home) else { return false };
-        let Some(pi) = self.vocab.id(&prop) else { return false };
+        let (id, cause, live, prop, noun) = pick(self, pos, 50.0).or(near_home)?;
+        let pi = self.vocab.id(&prop)?;
         // Courage is catching: someone they know is already at it.
         let neighbour_fights = self.cast.npcs.iter().any(|o| o.def.id != cid && o.here() && o.aim == Aim::Counter(id) && (o.a.pos - pos).length() < 40.0 && self.social.rel(me, ActorId::Npc(o.def.id)).is_some_and(|r| r.familiarity > 0.2));
         if !(brave > 0.45 || home_threatened || neighbour_fights) {
-            return false;
+            return None;
         }
         // Where to work: what started it while it goes on, else the part
         // nearest what is at stake that nobody else has gone for.
@@ -1040,8 +1087,8 @@ impl Sim {
         let parts: Vec<(Target, Vec3)> = self.trouble_parts(pos, 60.0).into_iter().filter(|(t, _)| live.contains(&Self::part_key(t))).collect();
         let free: Vec<(Target, Vec3)> = parts.iter().filter(|(t, _)| !claimed.contains(&Self::part_key(t))).cloned().collect();
         let parts = if free.is_empty() { parts } else { free };
-        let Some((target, at)) = parts.iter().find(|(t, _)| Self::part_key(t) == cause).or_else(|| parts.iter().min_by(|a, b| (a.1 - guard).length().total_cmp(&(b.1 - guard).length()))).cloned() else { return false };
-        let Some((before, _, _)) = self.part_props(&target) else { return false };
+        let (target, at) = parts.iter().find(|(t, _)| Self::part_key(t) == cause).or_else(|| parts.iter().min_by(|a, b| (a.1 - guard).length().total_cmp(&(b.1 - guard).length()))).cloned()?;
+        let (before, _, _) = self.part_props(&target)?;
         // Imagine each tool to hand at work on it; take the one that pushes it back most.
         let mut tools: Vec<(Option<ThingId>, Props, f32)> = vec![(None, self.body_props(me), 0.0)];
         if let Some(h) = held.and_then(|h| self.things.get(h)) {
@@ -1064,7 +1111,14 @@ impl Sim {
                 best = Some((tool, score));
             }
         }
-        let Some((tool, _)) = best else { return false };
+        let (tool, _) = best?;
+        Some(CounterPlan { id, noun, tool, target, at, held, pos, was })
+    }
+
+    /// Set out to push the trouble back as planned.
+    pub(super) fn do_counter(&mut self, cid: i64, p: CounterPlan) {
+        let me = ActorId::Npc(cid);
+        let CounterPlan { id, noun, tool, target, at, held, pos, was } = p;
         if was != Aim::Counter(id) {
             let k = self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32;
             let line = template_line("rally", &noun, self.hour(), k);
@@ -1086,12 +1140,11 @@ impl Sim {
         if was != Aim::Counter(id) {
             self.add_goal(cid, super::goals::Want::Over { incident: id }, &format!("stop the {noun}"), "it threatens us", 0.9, None, None, super::goals::Source::Incident);
         }
-        true
     }
 
     /// Harm close by (what burns, what is cursed…), nearest first, with
     /// its size and name.
-    fn hazards_near(&self, pos: Vec3, r: f32) -> Vec<(Vec3, f32, String)> {
+    pub(super) fn hazards_near(&self, pos: Vec3, r: f32) -> Vec<(Vec3, f32, String)> {
         let vocab = self.vocab.clone();
         let mut v: Vec<(Vec3, f32, String)> = Vec::new();
         for t in self.things.live().filter(|t| !t.held() && t.worn.is_none() && (t.pos - pos).length() < r + 4.0 && vocab.harm(&t.props) > 0.05) {
@@ -1106,319 +1159,9 @@ impl Sim {
         v
     }
 
-    /// Pick what to do next from needs, surroundings and personality.
-    fn think(&mut self, cid: i64) {
-        let t = self.t;
-        let Some(n) = self.cast.get(cid) else { return };
-        let me = ActorId::Npc(cid);
-        let pos = n.a.pos;
-        let needs = n.needs;
-        let tr = n.traits;
-        let home = n.def.home;
-        let held = n.a.held;
-        let name = n.name().to_string();
-        let next_think = |s: &mut Sim, secs: f64| {
-            if let Some(n) = s.cast.get_mut(cid) {
-                n.think_at = s.t + secs;
-            }
-        };
-        // Something it goes after (a night horror, a firefly drawn to you).
-        if self.pursue_want(cid) {
-            return;
-        }
-        // 0. What they wear harms them (it burns, it is cursed): off with it.
-        if self.mind_of(me) == crate::world::species::Mind::Sapient {
-            let vocab = self.vocab.clone();
-            if let Some(id) = self.worn_by(me).into_iter().find(|id| self.things.get(*id).is_some_and(|t| vocab.harm(&t.props) > 0.05)) {
-                let what = self.thing_name(id);
-                let line = template_line("alarm", &what, self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
-                self.say(me, &line, None);
-                let mut steps = Vec::new();
-                if held.is_some() {
-                    steps.push(Action::Drop);
-                }
-                steps.push(Action::TakeOff { target: Some(Target::Thing(id)), from: None });
-                steps.push(Action::Drop);
-                self.plan(me, steps, &format!("get the {what} off"), false);
-                self.set_aim(cid, Aim::Avoid, &format!("tearing off the {what}"));
-                next_think(self, 2.0);
-                return;
-            }
-        }
-        // What they hold hurts them: they let go of it.
-        if let Some(h) = held.filter(|h| self.things.get(*h).is_some_and(|t| self.vocab.harm(&t.props) > 0.05)) {
-            let what = self.thing_name(h);
-            self.plan(me, vec![Action::Drop], &format!("let go of the {what}"), false);
-            self.set_aim(cid, Aim::Avoid, &format!("dropping the {what}"));
-            next_think(self, 2.0);
-            return;
-        }
-        // 1. Trouble near them or their home: the willing push it back, the
-        // rest keep clear of what harms (and the curious watch).
-        if self.counter_trouble(cid) {
-            next_think(self, 1.2);
-            return;
-        }
-        if let Some((at, size, what)) = self.hazards_near(pos, 9.0).into_iter().next() {
-            let away = (pos - at).normalize_or_zero();
-            let dest = pos + if away == Vec3::ZERO { Vec3::X } else { away } * (12.0 + size * 2.0);
-            let line = template_line("alarm", &what, self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
-            self.say(me, &line, None);
-            self.plan(me, vec![Action::Goto { target: Target::Point(dest.to_array()), run: true }], &format!("get away from the {what}"), false);
-            self.set_aim(cid, Aim::Avoid, &format!("getting away from the {what}"));
-            next_think(self, 3.0);
-            return;
-        }
-        let watch = self.incidents_near(pos, 45.0).first().map(|i| (i.centre(), i.extent(), i.words.noun.clone()));
-        if let Some((c, extent, noun)) = watch {
-            if tr.curious + tr.brave > 0.9 && needs.curiosity > 0.2 {
-                let d = (c - pos).length();
-                let spot = c + (pos - c).normalize_or_zero() * (12.0 + extent * 0.5).min(d);
-                self.plan(me, vec![Action::Goto { target: Target::Point(spot.to_array()), run: false }, Action::Wait { secs: 8.0 }], &format!("watch the {noun}"), false);
-                self.set_doing(cid, &format!("watching the {noun}"));
-                next_think(self, 6.0);
-                return;
-            }
-        }
-        if self.mind_of(me) != crate::world::species::Mind::Sapient {
-            self.think_animal(cid);
-            return;
-        }
-        // Something that would hunt them: get away (people too).
-        if let Some((from, at)) = self.threat(me) {
-            self.flee(cid, from, at);
-            return;
-        }
-        // Candidate scores.
-        let mut best: (f32, &str) = (0.15 + 0.1 * self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0), "wander");
-        fn consider(best: &mut (f32, &'static str), score: f32, what: &'static str) {
-            if score > best.0 {
-                *best = (score, what);
-            }
-        }
-        let food = self.nearest_matching(pos, 30.0, |p| p[P_EDIBLE] > 0.05 && p[P_MASS] < 5.0);
-        if needs.hunger > 0.5 {
-            consider(&mut best, needs.hunger * if food.is_some() || held.is_some_and(|h| self.things.get(h).is_some_and(|x| x.props[P_EDIBLE] > 0.0)) { 1.1 } else { 0.3 }, "eat");
-        }
-        let friend = self.best_company(cid, 35.0);
-        if let Some((_, aff)) = friend {
-            consider(&mut best, needs.social * (0.5 + tr.sociable) * (0.6 + aff.max(0.0)), "socialize");
-        }
-        let ball = self.nearest_matching(pos, 30.0, is_toy);
-        if ball.is_some() || held.is_some_and(|h| self.things.get(h).is_some_and(|x| is_toy(&x.props))) {
-            consider(&mut best, needs.fun * (0.4 + tr.playful) * 1.2, "play");
-        }
-        let novelty = self.novelty_near(cid, pos, 40.0);
-        if novelty.is_some() {
-            consider(&mut best, needs.curiosity * (0.5 + tr.curious) * 1.3, "look");
-        }
-        if needs.fatigue > 0.7 && !self.night() {
-            consider(&mut best, needs.fatigue * 0.8, "rest");
-        }
-        // Loose small things lying about (sticks, stones): bring some home, or toss one.
-        let loose = if held.is_none() { self.loose_thing(pos, home, 14.0) } else { None };
-        if loose.is_some() {
-            let pile = self.things.near(home, 4.0).len() as f32;
-            if (pos - home).length() > 6.0 {
-                consider(&mut best, 0.18 + tr.crafty * 0.35 - pile * 0.04, "gather");
-            }
-            if ball.is_none() {
-                consider(&mut best, needs.fun * tr.playful * 0.75, "toss");
-            }
-        }
-        // Their craft: make, fix or improve something nearby. Rare, and only
-        // when nothing is already being built, since each piece of work may
-        // add a type to the world.
-        let can_work = self.has_llm
-            && self.interp.building.is_empty()
-            && t - self.cast.last_work > self.cfg.work_gap_secs as f64
-            && self.cast.get(cid).is_some_and(|n| t - n.last_work > self.cfg.work_secs as f64 && t >= n.next_llm);
-        if can_work {
-            consider(&mut best, 0.1 + tr.crafty * 0.45, "work");
-        }
-        // Near the traveler, something gets made every minute or so: when
-        // it is due, the idlest person about turns to their trade.
-        let maker_turn = self.maker_turn(cid);
-        if maker_turn {
-            consider(&mut best, 2.0, "work");
-        }
-        if needs.fun > 0.85 && best.1 == "wander" {
-            consider(&mut best, 0.5, "bored");
-        }
-        let choice = best.1;
-        let hour = self.hour();
-        let k = self.cast.get_mut(cid).map(|n| crate::noise::pcg(n.rng)).unwrap_or(0);
-        match choice {
-            "eat" => {
-                if let Some(h) = held.filter(|h| self.things.get(*h).is_some_and(|x| x.props[P_EDIBLE] > 0.0)) {
-                    self.plan(me, vec![Action::Eat { target: Some(Target::Thing(h)) }], "eat", false);
-                } else if let Some((tg, _)) = food {
-                    let mut steps = Vec::new();
-                    if held.is_some() {
-                        steps.push(Action::Drop);
-                    }
-                    steps.push(Action::Eat { target: Some(tg) });
-                    self.plan(me, steps, "find something to eat", false);
-                } else {
-                    self.ask(cid, "hungry", "You are hungry and see nothing to eat nearby.");
-                    self.wander(cid, home, 25.0);
-                }
-                self.set_doing(cid, "looking for food");
-                next_think(self, 4.0);
-            }
-            "socialize" => {
-                let Some((other, aff)) = friend else { return };
-                let oname = self.actor_name(other);
-                let mut steps = vec![Action::Goto { target: Target::Actor(other), run: false }];
-                if other == ActorId::Player {
-                    let first = oname.split_whitespace().next().unwrap_or("").to_string();
-                    steps.push(Action::Say { text: template_line("greet", if first == "the" { "traveler" } else { &first }, hour, k), to: Some(Target::Actor(other)) });
-                }
-                let hug_ok = aff > 0.6 && other != ActorId::Player && self.social.rel(me, other).is_some_and(|r| r.family || r.partner || r.affection > 0.7);
-                if hug_ok && k % 3 == 0 {
-                    steps.push(Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(other)) });
-                } else {
-                    steps.push(Action::Gesture { kind: "wave".into(), to: Some(Target::Actor(other)) });
-                }
-                self.plan(me, steps, &format!("spend time with {oname}"), false);
-                if let ActorId::Npc(o) = other {
-                    self.social.want_chat(cid, o, t);
-                }
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.social = (n.needs.social - 0.35).max(0.0);
-                }
-                self.set_doing(cid, &format!("seeking out {oname}"));
-                next_think(self, 8.0);
-            }
-            "play" => {
-                let ball_id = held.filter(|h| self.things.get(*h).is_some_and(|x| is_toy(&x.props))).or_else(|| ball.as_ref().and_then(|(tg, _)| self.liven(tg)));
-                let Some(ball_id) = ball_id else { return };
-                let partner = self.best_company(cid, 25.0).map(|x| x.0);
-                if let Some(p) = partner {
-                    if self.propose(me, p, "catch", Some(ball_id)).is_ok() {
-                        self.set_doing(cid, "suggesting a game of catch");
-                        next_think(self, 6.0);
-                        return;
-                    }
-                }
-                // Alone: throw it at something that looks like it is for throwing at, or up in the air.
-                let mark = self.throwing_mark(pos, 30.0);
-                let mut steps = Vec::new();
-                if held != Some(ball_id) {
-                    if held.is_some() {
-                        steps.push(Action::Drop);
-                    }
-                    steps.push(Action::Hold { target: Target::Thing(ball_id) });
-                }
-                match mark {
-                    Some((mt, mp)) => {
-                        let stand = mp + (pos - mp).normalize_or_zero() * 5.0;
-                        steps.push(Action::Goto { target: Target::Point(stand.to_array()), run: false });
-                        steps.push(Action::Throw { at: Some(mt), dir: None, force: None });
-                        self.set_doing(cid, "throwing at a target");
-                    }
-                    None => {
-                        steps.push(Action::Throw { at: None, dir: Some([0.1, 1.0, 0.1]), force: Some(6.0) });
-                        self.set_doing(cid, "tossing a ball");
-                    }
-                }
-                self.plan(me, steps, "play", false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.fun = (n.needs.fun - 0.2).max(0.0);
-                    n.a.catching = t + 4.0;
-                }
-                next_think(self, 5.0);
-            }
-            "look" => {
-                let Some((tg, p, what)) = novelty else { return };
-                let stand = p + (pos - p).normalize_or_zero() * 3.0;
-                self.plan(me, vec![Action::Goto { target: Target::Point(stand.to_array()), run: false }, Action::Wait { secs: 5.0 }], &format!("look at the {what}"), false);
-                let _ = tg;
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.curiosity = (n.needs.curiosity - 0.4).max(0.0);
-                }
-                self.social.seen_novelty(cid, &what);
-                self.set_doing(cid, &format!("looking at the {what}"));
-                next_think(self, 6.0);
-            }
-            "gather" => {
-                let Some((tg, _)) = loose else { return };
-                let n = self.things.near(home, 4.0).len() as f32;
-                let a = n * 1.1 + cid as f32;
-                let spot = home + Vec3::new(a.cos(), 0.0, a.sin()) * (1.4 + (n * 0.15).min(1.5));
-                let spot = Vec3::new(spot.x, self.snap.terrain.height(spot.x, spot.z), spot.z);
-                self.plan(me, vec![Action::Hold { target: tg }, Action::Goto { target: Target::Point(spot.to_array()), run: false }, Action::Place { at: spot.to_array() }], "bring it home", false);
-                self.set_doing(cid, "gathering things to bring home");
-                next_think(self, 8.0);
-            }
-            "toss" => {
-                let Some((tg, _)) = loose else { return };
-                let throw = match self.throwing_mark(pos, 25.0) {
-                    Some((mt, _)) => Action::Throw { at: Some(mt), dir: None, force: None },
-                    None => {
-                        let a = self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0) * std::f32::consts::TAU;
-                        Action::Throw { at: None, dir: Some([a.cos(), 0.6, a.sin()]), force: Some(7.0 + 5.0 * (a.sin() * 0.5 + 0.5)) }
-                    }
-                };
-                self.plan(me, vec![Action::Hold { target: tg }, throw], "throw something for fun", false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.fun = (n.needs.fun - 0.12).max(0.0);
-                }
-                self.set_doing(cid, "throwing stones");
-                next_think(self, 5.0);
-            }
-            "rest" => {
-                self.plan(me, vec![Action::Gesture { kind: "sit".into(), to: None }, Action::Wait { secs: 15.0 }], "rest", false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.fatigue = (n.needs.fatigue - 0.25).max(0.0);
-                }
-                self.set_doing(cid, "resting");
-                next_think(self, 16.0);
-            }
-            "work" => {
-                self.cast.last_work = t;
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.last_work = t;
-                }
-                let crowded = if self.loose_near(pos, 15.0) > self.cfg.max_loose {
-                    " Many things already lie about here: make your new thing from some of them, using them up, rather than adding more."
-                } else {
-                    ""
-                };
-                let what = format!("You have a little time for your craft or daily work. Look at what is around you: your tools, things lying about, things others made. Make something new from one or two of them, or fix or improve something, in a way that fits who you are: hold what you work with, then a \"do\" step in words that names what you use. What you make stays here for anyone to use.{crowded} If nothing fits, carry on as you were.");
-                self.ask_planner(cid, "work", &what, maker_turn);
-                self.set_doing(cid, "thinking about work");
-                next_think(self, 8.0);
-            }
-            "bored" => {
-                let since = self.cast.get(cid).map(|n| n.bored_since).unwrap_or(f64::MAX);
-                if since == f64::MAX {
-                    if let Some(n) = self.cast.get_mut(cid) {
-                        n.bored_since = t;
-                    }
-                } else if t - since > 45.0 {
-                    if let Some(n) = self.cast.get_mut(cid) {
-                        n.bored_since = f64::MAX;
-                    }
-                    self.ask(cid, "bored", "You are bored: nothing to play with and nobody around to play with. You could make something, fix or improve something nearby, find someone, or go somewhere.");
-                }
-                self.wander(cid, home, 30.0);
-                self.set_doing(cid, "at a loose end");
-                next_think(self, 6.0);
-            }
-            _ => {
-                self.wander(cid, home, 17.0);
-                self.set_doing(cid, "pottering about");
-                let r = self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.5);
-                next_think(self, 3.0 + r as f64 * 6.0);
-            }
-        }
-        let _ = name;
-    }
-
     /// Whether the maker clock is due and this character is the one to answer
     /// it: the person near the traveler who has gone longest without working.
-    fn maker_turn(&self, cid: i64) -> bool {
+    pub(super) fn maker_turn(&self, cid: i64) -> bool {
         let t = self.t;
         let gap = self.cfg.maker_secs as f64;
         if !self.has_llm || gap <= 0.0 || t - self.cast.last_made < gap || t - self.cast.last_work < gap * 0.5 || self.interp.building.len() >= 2 {
@@ -1557,7 +1300,7 @@ impl Sim {
 
     /// A small loose thing worth picking up (not food, not alive, not already
     /// in someone's pile at home).
-    fn loose_thing(&mut self, p: Vec3, home: Vec3, range: f32) -> Option<(Target, Vec3)> {
+    pub(super) fn loose_thing(&mut self, p: Vec3, home: Vec3, range: f32) -> Option<(Target, Vec3)> {
         let homes: Vec<Vec3> = self.cast.npcs.iter().map(|n| n.def.home).collect();
         let near_a_home = |q: Vec3| homes.iter().any(|h| (*h - q).length() < 5.0);
         let mut best: Option<(f32, Target, Vec3)> = None;
@@ -1591,7 +1334,7 @@ impl Sim {
     }
 
     /// Something made recently that this character hasn't looked at yet.
-    fn novelty_near(&self, cid: i64, p: Vec3, range: f32) -> Option<(Target, Vec3, String)> {
+    pub(super) fn novelty_near(&self, cid: i64, p: Vec3, range: f32) -> Option<(Target, Vec3, String)> {
         let mut best: Option<(f32, Target, Vec3, String)> = None;
         for t in self.things.live() {
             if self.t - t.born > 600.0 || t.held() {
@@ -1614,7 +1357,7 @@ impl Sim {
 
     /// Something that looks made for throwing things at (a hoop, a goal, a
     /// target, a basket, a bell…), by its tags or name.
-    fn throwing_mark(&self, p: Vec3, range: f32) -> Option<(Target, Vec3)> {
+    pub(super) fn throwing_mark(&self, p: Vec3, range: f32) -> Option<(Target, Vec3)> {
         // What people aim at is a property ("mark"), whatever it is called.
         let mut best: Option<(f32, Target, Vec3)> = None;
         let vocab = self.vocab.clone();
@@ -1761,6 +1504,7 @@ impl Sim {
         let twist = format!("{twist}{}", self.body_line(cid).map(|l| format!("\nOn your own body: {l}.")).unwrap_or_default());
         let twist = format!("{twist}{}", self.goals_line(cid).map(|l| format!("\nYour goals: {l}.")).unwrap_or_default());
         let twist = format!("{twist}{}", self.goals_done_line(cid).map(|l| format!("\nLately: {l}.")).unwrap_or_default());
+        let twist = format!("{twist}{}", self.menu_line(cid).map(|l| format!("\nThings you could do now (best first): {l}.")).unwrap_or_default());
         format!(
             "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
             crate::render::sky::time_label(self.t),

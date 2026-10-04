@@ -207,7 +207,7 @@ impl Sim {
     }
 
     /// Something thrown lately by someone this animal likes, for fetching.
-    fn fetchable(&self, cid: i64, range: f32) -> Option<(ThingId, ActorId)> {
+    pub(super) fn fetchable(&self, cid: i64, range: f32) -> Option<(ThingId, ActorId)> {
         let me = ActorId::Npc(cid);
         let pos = self.actor(me)?.pos;
         let strength = self.strength(me);
@@ -232,16 +232,17 @@ impl Sim {
     pub fn animals_notice_throw(&mut self, at: Vec3) {
         let t = self.t;
         for n in self.cast.npcs.iter_mut() {
-            if n.here() && n.species.mind != Mind::Sapient && n.temper.playful > 0.5 && !n.a.asleep && (n.a.pos - at).length() < 30.0 && n.plan.is_empty() {
+            // Pottering about or tagging along, not running from or after something.
+            let idle = matches!(n.aim, super::npc::Aim::Idle | super::npc::Aim::Other | super::npc::Aim::Follow(_));
+            if n.here() && n.species.mind != Mind::Sapient && n.temper.playful > 0.5 && !n.a.asleep && (n.a.pos - at).length() < 30.0 && idle {
                 n.think_at = n.think_at.min(t + 0.3);
-                if matches!(n.a.task, Some(super::actor::Task::Follow { .. }) | Some(super::actor::Task::Wait { .. }) | None) {
-                    n.a.task = None;
-                }
+                n.plan.clear();
+                n.a.task = None;
             }
         }
     }
 
-    fn species_of(&self, who: ActorId) -> Option<&std::sync::Arc<crate::world::species::Species>> {
+    pub(super) fn species_of(&self, who: ActorId) -> Option<&std::sync::Arc<crate::world::species::Species>> {
         match who {
             ActorId::Player => None,
             ActorId::Npc(c) => self.cast.get(c).map(|n| &n.species),
@@ -305,7 +306,7 @@ impl Sim {
     }
 
     /// Others of the same species near `p` (a herd, a pack).
-    fn kind_near(&self, me: ActorId, p: Vec3, range: f32) -> Vec<(ActorId, Vec3)> {
+    pub(super) fn kind_near(&self, me: ActorId, p: Vec3, range: f32) -> Vec<(ActorId, Vec3)> {
         let Some(sp) = self.species_of(me).map(|s| s.name.clone()) else { return Vec::new() };
         self.cast
             .npcs
@@ -434,7 +435,7 @@ impl Sim {
     }
 
     /// The nearest prey a hungry predator could chase.
-    fn prey_near(&self, me: ActorId, range: f32) -> Option<(ActorId, Vec3)> {
+    pub(super) fn prey_near(&self, me: ActorId, range: f32) -> Option<(ActorId, Vec3)> {
         let pos = self.actor(me)?.pos;
         let mut best: Option<(f32, ActorId, Vec3)> = None;
         for o in self.actor_ids() {
@@ -448,7 +449,7 @@ impl Sim {
     }
 
     /// Start chasing: the prey notices, and the pack joins in.
-    fn chase(&mut self, cid: i64, prey: ActorId) {
+    pub(super) fn chase(&mut self, cid: i64, prey: ActorId) {
         let me = ActorId::Npc(cid);
         let pos = self.actor(me).map(|a| a.pos).unwrap_or_default();
         let mut hunters = vec![me];
@@ -483,7 +484,7 @@ impl Sim {
 
     /// A predator reached its prey: in a hunting universe it is killed;
     /// otherwise the chase ends there and the predator gives up, winded.
-    fn caught(&mut self, cid: i64, prey: ActorId) {
+    pub(super) fn caught(&mut self, cid: i64, prey: ActorId) {
         let me = ActorId::Npc(cid);
         let name = self.actor_name(me);
         let pname = self.actor_name(prey);
@@ -531,206 +532,6 @@ impl Sim {
         self.note_near(pos, 40.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
         self.witness(pos, 40.0, &msg, 0.8, &[who]);
         self.event("died", Some(who), None, msg, Some(pos), json!({}));
-    }
-
-    /// What an animal does next: cheap scoring, no LLM, through the same
-    /// actions as everyone else.
-    pub(super) fn think_animal(&mut self, cid: i64) {
-        let t = self.t;
-        let me = ActorId::Npc(cid);
-        let Some(n) = self.cast.get(cid) else { return };
-        let pos = n.a.pos;
-        let needs = n.needs;
-        let temper = n.temper;
-        let home = n.def.home;
-        let held = n.a.held;
-        let next = |s: &mut Sim, secs: f64| {
-            if let Some(n) = s.cast.get_mut(cid) {
-                n.think_at = s.t + secs;
-            }
-        };
-        // Carrying someone: it goes where it is steered, unless it takes fright
-        // (then a mount that isn't fully tame throws its rider and bolts).
-        if let Some(rider) = self.rider_of(me) {
-            if let Some((from, at)) = self.threat(me) {
-                if temper.tame < 0.85 {
-                    self.throw_rider(me);
-                }
-                self.flee(cid, from, at);
-                return;
-            }
-            let rn = self.actor_name(rider);
-            self.set_doing(cid, &format!("carrying {rn}"));
-            next(self, 1.0);
-            return;
-        }
-        // Danger first.
-        if let Some((from, at)) = self.threat(me) {
-            self.flee(cid, from, at);
-            return;
-        }
-        // A simple mind, now and then, thinks past its instincts (the LLM
-        // planner, when there is one and the world allows it); meanwhile
-        // instinct carries on below.
-        if self.mind_of(me) == crate::world::species::Mind::Simple && !self.social.busy(me) {
-            let sp = self.cast.get(cid).map(|n| n.species.name.clone()).unwrap_or_default();
-            let what = format!("You are a {sp}: a simple mind, no words, only sounds and gestures. Choose what you do next from your needs and what is around you, as a {sp} would.");
-            self.ask_planner(cid, "instinct", &what, false);
-        }
-        // A predator next to what it chased.
-        if self.cast.get(cid).is_some_and(|n| matches!(n.aim, super::npc::Aim::Chase(_))) {
-            if let Some((prey, pp)) = self.prey_near(me, 60.0) {
-                if (pp - pos).length() < 1.8 + self.contact_gap(me, prey) {
-                    self.caught(cid, prey);
-                    self.set_doing(cid, "panting");
-                    next(self, 6.0);
-                    return;
-                }
-                if needs.fatigue < 0.9 && (pp - pos).length() < 45.0 {
-                    self.chase(cid, prey);
-                    return;
-                }
-            }
-            self.set_doing(cid, "giving up the hunt");
-        }
-        // Hungry meat eaters hunt.
-        if needs.hunger > 0.5 && needs.fatigue < 0.8 {
-            if let Some((prey, _)) = self.prey_near(me, 40.0) {
-                self.chase(cid, prey);
-                return;
-            }
-        }
-        // Bring back what was thrown.
-        if held.is_none() && temper.playful > 0.5 {
-            if let Some((id, by)) = self.fetchable(cid, 30.0) {
-                self.plan(me, vec![Action::Hold { target: Target::Thing(id) }, Action::Goto { target: Target::Actor(by), run: true }, Action::Give { to: Target::Actor(by) }], "fetch", false);
-                self.set_doing(cid, "fetching");
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.fun = (n.needs.fun - 0.15).max(0.0);
-                }
-                self.event("fetch", Some(me), Some(format!("thing:{id}")), format!("{} runs after the {}", self.actor_name(me), self.thing_name(id)), Some(pos), json!({ "for": by }));
-                next(self, 3.0);
-                return;
-            }
-        }
-        // Holding something with nothing to do with it: bring it to its person, or drop it.
-        if let Some(h) = held {
-            let to = self.owner_of(cid).filter(|o| self.actor(*o).is_some_and(|a| (a.pos - pos).length() < 40.0 && a.held.is_none()));
-            match to {
-                Some(o) if (self.actor(o).map(|a| a.pos).unwrap_or(pos) - pos).length() > 1.6 => {
-                    self.plan(me, vec![Action::Goto { target: Target::Actor(o), run: false }, Action::Give { to: Target::Actor(o) }], "bring it back", false);
-                }
-                _ => {
-                    let _ = h;
-                    self.plan(me, vec![Action::Drop], "", false);
-                }
-            }
-            next(self, 3.0);
-            return;
-        }
-        // The young keep to a parent; others to their person.
-        let owner = self.parent_of(cid).or_else(|| self.owner_of(cid));
-        let owner_at = owner.and_then(|o| self.actor(o).filter(|a| !a.asleep).map(|a| a.pos));
-        let mut best: (f32, &str) = (0.15 + 0.1 * self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0), "wander");
-        fn consider(best: &mut (f32, &'static str), score: f32, what: &'static str) {
-            if score > best.0 {
-                *best = (score, what);
-            }
-        }
-        if let Some(op) = owner_at {
-            let d = (op - pos).length();
-            if d < 80.0 && d > 4.0 {
-                consider(&mut best, 0.35 + needs.social * 0.6, "follow");
-            }
-        }
-        let food = self.food_for(cid, pos, 25.0);
-        if needs.hunger > 0.45 && food.is_some() {
-            consider(&mut best, needs.hunger * 1.1, "eat");
-        }
-        if needs.fatigue > 0.6 {
-            consider(&mut best, needs.fatigue * 0.8, "rest");
-        }
-        if needs.fun > 0.5 && temper.playful > 0.5 {
-            consider(&mut best, needs.fun * temper.playful * 0.7, "play");
-        }
-        // Herds and packs keep together.
-        let group = self.species_of(me).is_some_and(|s| s.group());
-        let kin = if group { self.kind_near(me, pos, 80.0) } else { Vec::new() };
-        let kin_centre = (!kin.is_empty()).then(|| kin.iter().fold(Vec3::ZERO, |a, (_, p)| a + *p) / kin.len() as f32);
-        if let Some(c) = kin_centre {
-            let d = (c - pos).length();
-            if d > 10.0 {
-                consider(&mut best, 0.3 + needs.social * 0.6 + (d / 60.0).min(0.4), "group");
-            }
-        }
-        match best.1 {
-            "follow" => {
-                let o = owner.unwrap_or(ActorId::Player);
-                let last = self.cast.get(cid).map(|n| n.last_greet).unwrap_or(f64::MIN);
-                let mut steps = vec![Action::Goto { target: Target::Actor(o), run: true }];
-                // A greeting after time apart (with a trick it was taught).
-                if t - last > 120.0 {
-                    let trick = self.cast.get(cid).and_then(|n| n.tricks.last().cloned());
-                    steps.push(Action::Gesture { kind: trick.unwrap_or_else(|| "wag".into()), to: None });
-                    if let Some(n) = self.cast.get_mut(cid) {
-                        n.last_greet = t;
-                    }
-                    self.make_noise(cid, true);
-                }
-                steps.push(Action::Follow { target: Target::Actor(o), secs: Some(10.0) });
-                let oname = self.actor_name(o);
-                self.plan(me, steps, &format!("stay with {oname}"), false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.social = (n.needs.social - 0.2).max(0.0);
-                }
-                self.set_aim(cid, super::npc::Aim::Follow(o), &format!("following {oname}"));
-                next(self, 4.0);
-            }
-            "group" => {
-                let Some(c) = kin_centre else { return };
-                let a = self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0) * std::f32::consts::TAU;
-                let p = c + Vec3::new(a.cos(), 0.0, a.sin()) * 3.0;
-                self.plan(me, vec![Action::Goto { target: Target::Point([p.x, 0.0, p.z]), run: false }], "keep with the others", false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.social = (n.needs.social - 0.25).max(0.0);
-                }
-                self.set_doing(cid, "rejoining the others");
-                next(self, 5.0);
-            }
-            "eat" => {
-                let Some((tg, _)) = food else { return };
-                self.plan(me, vec![Action::Eat { target: Some(tg) }], "eat", false);
-                self.set_doing(cid, "grazing");
-                next(self, 4.0);
-            }
-            "rest" => {
-                self.plan(me, vec![Action::Gesture { kind: "sit".into(), to: None }, Action::Wait { secs: 15.0 }], "rest", false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.fatigue = (n.needs.fatigue - 0.25).max(0.0);
-                }
-                self.set_doing(cid, "lying down");
-                next(self, 16.0);
-            }
-            "play" => {
-                // Dash about near its person (or home).
-                let centre = owner_at.unwrap_or(home);
-                let a = self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.0) * std::f32::consts::TAU;
-                let p = centre + Vec3::new(a.cos(), 0.0, a.sin()) * 6.0;
-                self.plan(me, vec![Action::Goto { target: Target::Point([p.x, 0.0, p.z]), run: true }, Action::Gesture { kind: "wag".into(), to: None }], "play", false);
-                if let Some(n) = self.cast.get_mut(cid) {
-                    n.needs.fun = (n.needs.fun - 0.2).max(0.0);
-                }
-                self.set_doing(cid, "dashing about");
-                next(self, 4.0);
-            }
-            _ => {
-                let centre = owner_at.or(kin_centre).unwrap_or(home);
-                self.wander(cid, centre, 12.0);
-                self.set_doing(cid, "sniffing about");
-                let r = self.cast.get_mut(cid).map(|n| n.rand()).unwrap_or(0.5);
-                next(self, 4.0 + r as f64 * 6.0);
-            }
-        }
     }
 
     /// Something this species eats, near `p`: food anyone eats, and for

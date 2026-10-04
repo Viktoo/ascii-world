@@ -128,6 +128,8 @@ pub struct Joint {
     pub phase: u8,
     pub next: f64,
     pub count: u32,
+    /// When someone first went for a ball lying about (catch).
+    pub fetch_from: Option<f64>,
 }
 
 impl Joint {
@@ -167,6 +169,8 @@ pub struct Social {
     seeded: HashSet<i64>,
     next_id: u64,
     pub dirty: bool,
+    /// When each asked another to do something together (asker, asked).
+    pub asked_at: HashMap<(i64, i64), f64>,
 }
 
 fn key(a: ActorId, b: ActorId) -> (i64, i64) {
@@ -330,6 +334,7 @@ impl Sim {
         }
         let delay = 0.8 + self.rand() as f64 * 0.8;
         self.social.proposals.retain(|p| !(p.from == from && p.to == to));
+        self.social.asked_at.insert((from.code(), to.code()), self.t);
         self.social.proposals.push(Proposal { from, to, activity: act.clone(), thing, at: self.t, answer_at: self.t + delay });
         let fname = self.actor_name(from);
         let tname = self.actor_name(to);
@@ -466,7 +471,7 @@ impl Sim {
         }
         let names = format!("{} and {}", self.actor_name(a), self.actor_name(b));
         self.event("together", Some(a), Some(b.key()), format!("{names}: {label}"), self.actor(a).map(|x| x.pos), json!({ "kind": format!("{kind:?}") }));
-        self.social.joints.push(Joint { id, kind, a, b, started: t, until, phase: 0, next: t + 0.5, count: 0 });
+        self.social.joints.push(Joint { id, kind, a, b, started: t, until, phase: 0, next: t + 0.5, count: 0, fetch_from: None });
     }
 
     fn end_joint(&mut self, id: u64, why: &str) {
@@ -630,10 +635,16 @@ impl Sim {
                         set(self, &|x| {
                             x.next = t + 5.0;
                             x.phase = 1;
+                            x.fetch_from = None;
                         });
                     }
                     Some(_) => self.end_joint(id, "someone else took the ball"),
                     None => {
+                        // Gone for it a while and still not got it: out of reach.
+                        if j.fetch_from.is_some_and(|f| t - f > 20.0) {
+                            self.end_joint(id, "the ball is out of reach");
+                            return;
+                        }
                         // In the air, or lying somewhere: whoever is nearest fetches it.
                         if b.asleep && t > j.next - 3.5 {
                             let da = (pa - b.pos).length();
@@ -646,10 +657,14 @@ impl Sim {
                                             let other = self.actor_name(j.other(fetch));
                                             self.say_template(fetch, "missed", &other);
                                         }
-                                        self.plan(fetch, vec![Action::Hold { target: Target::Thing(ball) }], "fetch the ball", false);
+                                        // Hands full of something else: put it down first.
+                                        let busy_hands = self.actor(fetch).and_then(|x| x.held).is_some_and(|h| h != ball);
+                                        let steps = if busy_hands { vec![Action::Drop, Action::Hold { target: Target::Thing(ball) }] } else { vec![Action::Hold { target: Target::Thing(ball) }] };
+                                        self.plan(fetch, steps, "fetch the ball", false);
                                         set(self, &|x| {
                                             x.next = t + 2.0;
                                             x.phase = 2;
+                                            x.fetch_from = x.fetch_from.or(Some(t));
                                         });
                                     }
                                 }

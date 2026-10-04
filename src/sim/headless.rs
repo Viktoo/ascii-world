@@ -349,6 +349,10 @@ pub struct Emergence {
     pub needs_met: f32,
     /// Awake beings that went nowhere and did nothing in the last game hour.
     pub stuck: usize,
+    /// Which needs are pressing (0.8 or more) at the end, and how many.
+    pub pressing: BTreeMap<String, usize>,
+    /// What the stuck were doing.
+    pub stuck_doing: BTreeMap<String, usize>,
 }
 
 /// The longest run of events where each follows the last within 15 s and
@@ -409,23 +413,28 @@ pub fn emergence(sim: &Sim, events: &[SimEvent], hours: f32, hour_ago: &HashMap<
     let has = |e: &SimEvent, k: &str| e.data.get(k).is_some_and(|v| !v.is_null());
     let with_cause = events.iter().filter(|e| ["cause", "incident", "goal", "belief"].iter().any(|k| has(e, k))).count() as u64;
     let goals_crossing = events.iter().filter(|e| e.data.get("crosses").and_then(|v| v.as_bool()) == Some(true)).count() as u64;
-    let awake: Vec<&super::npc::Npc> = sim.cast.npcs.iter().filter(|n| n.here() && !n.a.asleep).collect();
+    // Beyond `medium` time stands still: only those living count.
+    let awake: Vec<&super::npc::Npc> = sim.cast.npcs.iter().filter(|n| n.here() && !n.a.asleep && sim.dist_to_player(n.a.pos) <= sim.cfg.medium).collect();
     let mut met = 0;
     let mut all = 0;
+    let mut pressing: BTreeMap<String, usize> = BTreeMap::new();
     for n in &awake {
         let x = &n.needs;
-        for v in [x.hunger, x.fatigue, x.social, x.fun, x.curiosity] {
+        for (k, v) in [("hunger", x.hunger), ("fatigue", x.fatigue), ("social", x.social), ("fun", x.fun), ("curiosity", x.curiosity)] {
             all += 1;
             met += (v < 0.8) as usize;
+            if v >= 0.8 {
+                *pressing.entry(k.to_string()).or_default() += 1;
+            }
         }
     }
     let acted: std::collections::HashSet<ActorId> = events.iter().filter(|e| e.t > sim.t - hour_s()).filter_map(|e| e.actor).collect();
-    let stuck = if hours < 1.5 {
-        0
-    } else {
-        awake.iter().filter(|n| hour_ago.get(&n.def.id).is_some_and(|p| (*p - n.a.pos).length() < 0.5) && !acted.contains(&ActorId::Npc(n.def.id))).count()
-    };
-    Emergence { kinds_per_day, chains_3plus: stories(events), with_cause, goals_crossing, needs_met: if all == 0 { 1.0 } else { met as f32 / all as f32 }, stuck }
+    let stuck_ones: Vec<&&super::npc::Npc> = if hours < 1.5 { Vec::new() } else { awake.iter().filter(|n| hour_ago.get(&n.def.id).is_some_and(|p| (*p - n.a.pos).length() < 0.5) && !acted.contains(&ActorId::Npc(n.def.id))).collect() };
+    let mut stuck_doing: BTreeMap<String, usize> = BTreeMap::new();
+    for n in &stuck_ones {
+        *stuck_doing.entry(format!("{}: {}", n.species.name, n.doing)).or_default() += 1;
+    }
+    Emergence { kinds_per_day, chains_3plus: stories(events), with_cause, goals_crossing, needs_met: if all == 0 { 1.0 } else { met as f32 / all as f32 }, stuck: stuck_ones.len(), pressing, stuck_doing }
 }
 
 pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i64, Vec3>, start_rels: &BTreeMap<(i64, i64), f32>, hour_ago: &HashMap<i64, Vec3>) -> Metrics {

@@ -31,6 +31,7 @@ pub mod pick;
 pub mod props;
 pub mod render;
 pub mod rules;
+pub mod scorer;
 pub mod shape;
 pub mod social;
 pub mod surprise;

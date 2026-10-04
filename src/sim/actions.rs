@@ -725,7 +725,10 @@ impl Sim {
                 let id = me.held.ok_or(ActErr::Fail("not holding anything to give".into()))?;
                 let r = self.resolve(&to, who).ok_or_else(|| not_found(&to))?;
                 let Target::Actor(other) = r.target else { return fail("give it to whom?") };
-                if (r.pos - me.pos).length() > self.reach_of(who) + 0.4 {
+                // Handed across to their body, not their middle (a dog's
+                // short reach still meets its person's hand).
+                let their = self.actor(other).map(|a| a.dims.radius).unwrap_or(0.3);
+                if (r.pos - me.pos).length() > self.reach_of(who) + 0.4 + their {
                     return Err(ActErr::TooFar { at: r.pos, dist: (r.pos - me.pos).length() });
                 }
                 self.give(who, other, id)

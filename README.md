@@ -364,12 +364,20 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   deadline or no longer possible is given up (remembered; a promisee trusts them less).
   Goals in words get one look from the owner's planner at their deadline. Open goals and
   ones closed lately are in the planner's context; they are saved in the `goals` table.
-- *Minds* (`src/sim/npc.rs`). Needs (hunger, tiredness, loneliness, boredom, curiosity)
-  drift; traits come from the persona's words. When idle, a character scores a few
-  options (eat, rest, seek company, play, look at something new, flee a fire, gather
-  loose things home, toss stones, wander) and turns the best into a plan of shared
-  actions. For big moments (the player comes near, something appears, boredom, a gift)
-  the LLM writes a goal and steps, within a per-minute budget, nearest first.
+- *Minds* (`src/sim/npc.rs`, `src/sim/scorer.rs`). Needs (hunger, tiredness, loneliness,
+  boredom, curiosity) drift; traits come from the persona's words (or numbers). One
+  scorer decides every body's free moments, people's and animals' alike: the world
+  offers things to do (food by `edible`, toys and marks for fun, new things and places
+  to see, company weighted by feeling, home, trouble to fight or watch, the next step of
+  each goal), each scored by one formula (need × relief × how much their nature cares,
+  minus cost) from one small hand-made table of which verb relieves which need; harm
+  and threats score far above everything. One is drawn, weighted to the best, from the
+  world's seeded numbers, so a seed replays the same day. Species and mind only decide
+  which verbs a body has. With an LLM the planner is the main brain: when its turn
+  comes it hears the best few things to do as a menu of what is really there and may
+  choose anything; between its decisions, and with no LLM at all, the scorer is the
+  brain. For big moments (the player comes near, something appears, a gift) the LLM
+  writes a goal and steps, within a per-minute budget, nearest first.
 - *Life together* (`src/sim/social.rs`). Relationships (affection, trust, rivalry,
   family, partners) are seeded from the personas and change with what people do.
   Proposals and shared activities are built from primitives: catch is throw plus catch,
