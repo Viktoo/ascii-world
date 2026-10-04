@@ -483,6 +483,11 @@ fn interpreter_lights_the_lantern_and_caches_the_answer() {
     assert_eq!(*calls.lock(), 1, "cached: no second call");
     assert_eq!(s.sim.things.get(l2).unwrap().props[P_LIGHT], 1.0, "the same cause, the same effect");
     assert!(s.sim.interp.hits >= 1);
+    // A soaked lantern is another matter: not answered from the dry one's case.
+    let l3 = s.sim.spawn_thing(lantern, p + Vec3::new(0.6, 0.0, -0.6), 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.things.get_mut(l3).unwrap().props[P_WET] = 0.6;
+    act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(l3)), at: None }, 1.0);
+    assert_eq!(*calls.lock(), 2, "a wet lantern is asked about afresh");
     sound(&s);
 }
 

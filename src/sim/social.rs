@@ -1016,27 +1016,17 @@ impl Sim {
             out.push((a, super::npc::template("greet", &bf, hour, k)));
             out.push((b, super::npc::template("greet", &af, hour, k / 7)));
         }
-        // Something notable that happened near them lately.
-        let pa = self.actor(ActorId::Npc(a)).map(|x| x.pos).unwrap_or_default();
-        let pb = self.actor(ActorId::Npc(b)).map(|x| x.pos).unwrap_or_default();
-        let notable = ["incident", "incident_end", "broke", "through", "made", "transformed", "caught", "carry", "hug", "kiss", "spawned"];
-        // The most surprising wins; a shock stays news for longer.
-        let surprise = |e: &super::SimEvent| e.data.get("surprise").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-        let seen = self
-            .log
-            .recent
-            .iter()
-            .rev()
-            .take(400)
-            .filter(|e| {
-                notable.contains(&e.kind.as_str()) && t - e.t < 600.0 * (1.0 + 2.0 * surprise(e) as f64) && e.pos.is_some_and(|p| (Vec3::from(p) - pa).length() < 45.0) && e.actor != Some(ActorId::Npc(a)) && e.actor != Some(ActorId::Npc(b))
-            })
-            .fold(None::<&super::SimEvent>, |best, e| if best.is_none_or(|x| surprise(e) > surprise(x)) { Some(e) } else { best });
+        // What they saw lately that mattered most to them (whatever it was:
+        // nothing here lists what counts as news); something big stays news
+        // for longer.
+        let fresh = |n: &super::npc::Npc| n.news.iter().filter(|(at, _, imp)| *imp >= 0.3 && t - at < 600.0 * (1.0 + 2.0 * *imp as f64)).cloned().collect::<Vec<_>>();
+        let mine = self.cast.get(a).map(fresh).unwrap_or_default();
+        let theirs = self.cast.get(b).map(fresh).unwrap_or_default();
+        let seen = mine.iter().max_by(|x, y| x.2.total_cmp(&y.2).then(x.0.total_cmp(&y.0)));
         match seen {
-            Some(e) => {
-                let both = e.pos.is_some_and(|p| (Vec3::from(p) - pb).length() < 45.0);
-                // Told as it happened: "The stick broke", "A boomerang came into being", "Oyunaa made a rack".
-                out.push((a, format!("Did you see? {}.", super::physics::cap(e.text.trim_end_matches('.')))));
+            Some((_, text, _)) => {
+                let both = theirs.iter().any(|(_, x, _)| x == text);
+                out.push((a, format!("Have you heard? {}", super::physics::cap(text.trim()))));
                 let reply = if both { ["I saw it too!", "I did. Strange times.", "Hard to miss."][(k % 3) as usize] } else { ["No! Really?", "I missed that.", "You're joking."][(k % 3) as usize] };
                 out.push((b, reply.to_string()));
             }

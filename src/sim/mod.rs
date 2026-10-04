@@ -286,6 +286,8 @@ struct Queued {
     req: Request,
     dist: f32,
     at: f64,
+    /// How much it matters, 0..1.
+    weight: f32,
 }
 
 pub struct Sim {
@@ -342,6 +344,8 @@ pub struct Sim {
     pub incidents: incident::Incidents,
     /// Which property crossings are news (from the vocabulary).
     pub watch: Arc<Vec<env::Watch>>,
+    /// Requests dropped for waiting too long (see `SimConfig::queue_wait`).
+    pub dropped: u64,
 }
 
 impl Sim {
@@ -388,6 +392,7 @@ impl Sim {
             night: night::NightState::default(),
             incidents: incident::Incidents::default(),
             watch: Arc::new(Vec::new()),
+            dropped: 0,
         };
         sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();
@@ -528,6 +533,7 @@ impl Sim {
                     continue;
                 }
                 n.curiosity_bump(importance);
+                n.hear_news(self.t, text, importance);
             }
             self.out.push(Request::Witness { cid, text: text.to_string(), importance });
         }
@@ -537,6 +543,12 @@ impl Sim {
 
     /// Queue a request that costs LLM budget; nearer ones go first.
     pub fn request(&mut self, req: Request, at: Vec3) {
+        self.request_weighted(req, at, 0.5);
+    }
+
+    /// Queue a request that costs LLM budget, weighted by how much it
+    /// matters (0..1: a surprise, trouble, someone talking to them).
+    pub fn request_weighted(&mut self, req: Request, at: Vec3, weight: f32) {
         if !self.has_llm {
             return;
         }
@@ -545,7 +557,7 @@ impl Sim {
             return;
         }
         let dist = self.dist_to_player(at);
-        self.queue.push(Queued { req, dist, at: self.t });
+        self.queue.push(Queued { req, dist, at: self.t, weight: weight.clamp(0.0, 1.0) });
     }
 
     /// Player-initiated requests skip the queue.
@@ -559,8 +571,12 @@ impl Sim {
         let per_s = self.cfg.llm_per_min / 60.0;
         self.budget = (self.budget + per_s * dt).min((self.cfg.llm_per_min / 6.0).max(1.0));
         let now = self.t;
-        self.queue.retain(|q| now - q.at < 20.0);
-        self.queue.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+        let wait = self.cfg.queue_wait as f64;
+        let before = self.queue.len();
+        self.queue.retain(|q| now - q.at < wait);
+        self.dropped += (before - self.queue.len()) as u64;
+        // What matters most goes first; nearer breaks ties.
+        self.queue.sort_by(|a, b| (a.dist / (0.25 + a.weight)).total_cmp(&(b.dist / (0.25 + b.weight))));
         while self.budget >= 1.0 && !self.queue.is_empty() {
             let q = self.queue.remove(0);
             self.budget -= 1.0;

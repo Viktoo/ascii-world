@@ -257,9 +257,13 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   are spheres against the terrain and the signed distance fields of nearby solids, so a
   ball bounces off any shape the LLM wrote. Things at rest sleep. A thing falling through
   an opening (a hoop, a well) is noticed, whatever the shape.
-- *Properties and rules.* 20 built-in properties (`mass`, `bounce`, `burns`, `temp`,
+- *Properties and rules.* 23 built-in properties (`mass`, `bounce`, `burns`, `temp`,
   `wet`, `light`, `edible`, `alive`, `fragile`, `fire`, `fuel`, `heat`, `char`,
-  `health`, `growth`, `strange`, `toy`, …). Rules are data (`src/sim/rules.rs`), applied a few times a
+  `health`, `growth`, `strange`, `toy`, `force`, `mark`, …). Each property's vocabulary
+  entry (`PropMeta`) says when a change is news ("caught fire", "was put out"), whether it
+  spreads as incidents and the words for them, how harmful it is, and whether it carries
+  over when a thing turns into another; fire is one entry, not code. A universe's own
+  properties get the same from genesis. Rules are data (`src/sim/rules.rs`), applied a few times a
   second to live things, changed scatter cells and placed objects next to something
   happening: heat warms what is near (never to burning point), flames ignite what burns near them, fire consumes fuel and chars, water
   soaks and douses, living things grow, broken lamps spill burning oil. A universe's
@@ -271,9 +275,19 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   tufts started at one lantern, thrown by someone. The log has one line per incident,
   rewritten as it grows and when it ends; the save keeps its start and end, not every
   tuft. Fires that grow into each other merge. Witnesses remember the cause, and it is
-  in characters' context when they plan and talk. People grown and sapient fight one
-  near them or their home (`douse`): the brave, those whose home is at stake, and anyone
-  who sees a neighbour already at it.
+  in characters' context when they plan and talk. People grown and sapient push back one
+  near them or their home: the brave, those whose home is at stake, and anyone who sees
+  someone they know already at it. Nothing tells them how: they imagine working each
+  tool to hand (their hands, what they hold, what lies about) against it by the world's
+  rules (`Sim::foresee`) and take what pushes it back most, with the general verb
+  `apply` (hands beat out flames by the "beaten out" rule; a holy charm lifts a curse by
+  a universe's own rule). What harms (by its properties) is kept clear of and taken off.
+- *Minds and the LLM.* How often sapient and simple minds may ask the planner, and how
+  long a request may wait, are settings (`plan_secs`, `simple_plan_secs`, `queue_wait`);
+  waiting requests go by how much they matter, then distance. The planner sees every
+  property that stands out on a thing, with what it means. Small talk brings up what each
+  one saw lately that mattered most. Personality can come as numbers from generation
+  (`traits`), read from the words otherwise.
 - *Surprise* (`src/sim/surprise.rs`). One number, 0..1, for how much something breaks
   what an onlooker thinks can happen: from how it came about (made by hand, changed,
   out of nowhere), its size against theirs, and its `strange` property (how out of place

@@ -59,7 +59,7 @@ Maths: abs, min (2–8 args), max (2–8 args), clamp(x, lo, hi), floor, ceil, r
 ## Properties (meta.props)
 Every thing has a few numbers the world's rules act on. Give the ones that matter for this object; the rest default sensibly from tags and size:
 __PROPS__
-Examples: a wooden hut { burns: 0.4 }; a lantern { light: 1, heat: 120, fragile: 0.6, burns: 0.6, fuel: 0.5 } (oil inside: if it breaks, it burns); a ball { bounce: 0.8, mass: 0.6 }; an apple { edible: 0.4, mass: 0.2 }; a bucket of water { wet: 1, mass: 8 }; a sapling { alive: 1, growth: 0.1, burns: 0.5 }; a motor car in a world of horse carts { mass: 1200, strange: 0.9 }. Only use the property names listed. The world does the rest: fire spreads to what burns, water puts it out, fragile things break when hit hard, living things grow.
+Examples: a wooden hut { burns: 0.4 }; a lantern { light: 1, heat: 120, fragile: 0.6, burns: 0.6, fuel: 0.5 } (oil inside: if it breaks, it burns); a ball { bounce: 0.8, mass: 0.6 }; a hoop on a pole { mark: 1, mass: 30 }; an apple { edible: 0.4, mass: 0.2 }; a bucket of water { wet: 1, mass: 8 }; a sapling { alive: 1, growth: 0.1, burns: 0.5 }; a motor car in a world of horse carts { mass: 1200, strange: 0.9 }. Only use the property names listed. The world does the rest: fire spreads to what burns, water puts it out, fragile things break when hit hard, living things grow.
 
 ## Behaviour (optional): tick, use, touch
 An object can act on its own with these optional exports. They run on the CPU a few times a second near people; they never draw anything themselves, but the shape and colour functions can read their state as k.s0 … k.s7.
@@ -167,6 +167,7 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
       "name": "…", "age": 30, "appearance": "…",
       "look": { "height": 1.75, "build": 1.0, "skin": 0.0-1.0, "shirt_hue": 0.0-1.0, "trousers_hue": 0.0-1.0 },
       "personality": "…", "goals": "…", "voice": "how they speak",
+      "traits": { "sociable": 0-1, "playful": 0-1, "curious": 0-1, "brave": 0-1, "generous": 0-1, "crafty": 0-1 },
       "home": "where they live", "home_x": 0-256, "home_z": 0-256,
       "relationships": ["Name: relation"], "species": "human", "variety": "", "layers": [] } ],
   "creatures": [ { "species": "goat", "count": 4, "x": 0-256, "z": 0-256, "names": [], "owner": "Name of their person, or empty", "description": "…" } ],

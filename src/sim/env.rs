@@ -644,7 +644,7 @@ impl Sim {
         // People notice the first of a kind nearby, not every tuft.
         if first {
             self.note_near(pos, 40.0, Note::Ambient(format!("{}.", super::physics::cap(text))));
-            self.witness(pos, 45.0, &format!("I saw {text}."), 0.3, &[]);
+            self.witness(pos, 45.0, &format!("{}.", super::physics::cap(text)), 0.3, &[]);
         }
     }
 

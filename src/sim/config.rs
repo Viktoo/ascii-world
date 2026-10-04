@@ -30,6 +30,14 @@ pub struct SimConfig {
     pub medium_llm: bool,
     /// Global budget of LLM decisions per real minute, shared by all tiers.
     pub llm_per_min: f32,
+    /// A sapient character asks the planner at most this often (game s).
+    pub plan_secs: f32,
+    /// A simple mind (most animals) asks the planner at most this often
+    /// (game s); 0: never, they live by instinct alone.
+    pub simple_plan_secs: f32,
+    /// A request still waiting for budget after this long (real s) is
+    /// dropped (the moment has passed); the drops are counted.
+    pub queue_wait: f32,
     pub far: FarMode,
     /// Rule passes per second.
     pub rules_hz: f32,
@@ -80,6 +88,9 @@ impl Default for SimConfig {
             medium_hz: 2.0,
             medium_llm: true,
             llm_per_min: 12.0,
+            plan_secs: 60.0,
+            simple_plan_secs: 300.0,
+            queue_wait: 20.0,
             far: FarMode::Frozen,
             rules_hz: 4.0,
             behavior_hz: 4.0,
@@ -121,6 +132,9 @@ impl SimConfig {
             ("medium", "POCKET_SIM_MEDIUM"),
             ("medium_hz", "POCKET_SIM_MEDIUM_HZ"),
             ("llm_per_min", "POCKET_LLM_PER_MIN"),
+            ("plan_secs", "POCKET_SIM_PLAN_SECS"),
+            ("simple_plan_secs", "POCKET_SIM_SIMPLE_PLAN_SECS"),
+            ("queue_wait", "POCKET_SIM_QUEUE_WAIT"),
             ("rules_hz", "POCKET_SIM_RULES_HZ"),
             ("behavior_hz", "POCKET_SIM_BEHAVIOR_HZ"),
             ("max_awake", "POCKET_SIM_MAX_AWAKE"),
@@ -174,6 +188,9 @@ impl SimConfig {
             "medium" => self.medium = v.clamp(10.0, 20000.0),
             "medium_hz" => self.medium_hz = v.clamp(0.05, 60.0),
             "llm_per_min" => self.llm_per_min = v.clamp(0.0, 600.0),
+            "plan_secs" => self.plan_secs = v.clamp(0.0, 1e7),
+            "simple_plan_secs" => self.simple_plan_secs = v.clamp(0.0, 1e7),
+            "queue_wait" => self.queue_wait = v.clamp(0.5, 1e5),
             "rules_hz" => self.rules_hz = v.clamp(0.25, 30.0),
             "behavior_hz" => self.behavior_hz = v.clamp(0.25, 30.0),
             "max_awake" => self.max_awake = v.clamp(1.0, 100_000.0) as usize,

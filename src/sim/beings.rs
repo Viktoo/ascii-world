@@ -567,6 +567,14 @@ impl Sim {
             self.flee(cid, from, at);
             return;
         }
+        // A simple mind, now and then, thinks past its instincts (the LLM
+        // planner, when there is one and the world allows it); meanwhile
+        // instinct carries on below.
+        if self.mind_of(me) == crate::world::species::Mind::Simple && !self.social.busy(me) {
+            let sp = self.cast.get(cid).map(|n| n.species.name.clone()).unwrap_or_default();
+            let what = format!("You are a {sp}: a simple mind, no words, only sounds and gestures. Choose what you do next from your needs and what is around you, as a {sp} would.");
+            self.ask_planner(cid, "instinct", &what, false);
+        }
         // A predator next to what it chased.
         if self.cast.get(cid).is_some_and(|n| matches!(n.aim, super::npc::Aim::Chase(_))) {
             if let Some((prey, pp)) = self.prey_near(me, 60.0) {

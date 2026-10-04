@@ -314,12 +314,41 @@ fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<S
 }
 
 impl Sim {
+    /// A thing's state in a few coarse words, for cache keys: the
+    /// properties well away from their defaults, bucketed ("[fire:4 wet:0]").
+    pub fn state_sig(&self, p: &[f32]) -> String {
+        let mut v = Vec::new();
+        for (i, x) in p.iter().enumerate() {
+            if i == P_MASS || i == P_SOLID || i == P_FORCE || i == P_TEMP {
+                continue;
+            }
+            let d = self.vocab.defaults.get(i).copied().unwrap_or(0.0);
+            let unit = d.abs().max(1.0);
+            if (x - d).abs() > unit * 0.2 {
+                v.push(format!("{}:{}", self.vocab.names[i], ((x / unit) * 4.0).round() as i32));
+            }
+        }
+        let hot = p.get(P_TEMP).copied().unwrap_or(15.0);
+        if hot > 100.0 {
+            v.push(format!("temp:{}", (hot / 200.0).round() as i32));
+        }
+        if v.is_empty() { String::new() } else { format!(" [{}]", v.join(" ")) }
+    }
+
     /// Ask the world what an action does (cached, else the LLM).
     pub fn interpret(&mut self, who: ActorId, text: &str, target: Option<Resolved>, hit: Option<glam::Vec3>) -> Result<Outcome, ActErr> {
         let held = self.actor(who).and_then(|a| a.held);
         let held_name = held.map(|h| self.thing_name(h)).unwrap_or_default();
         let target_name = target.as_ref().map(|r| r.name.clone()).unwrap_or_default();
-        let key = cache_key(who, text, &held_name, &target_name);
+        // The same words on a thing in another state are another deed (a
+        // soaked lantern doesn't light like a dry one): the key carries both
+        // things' state, coarsely.
+        let held_state = held.and_then(|h| self.things.get(h)).map(|t| self.state_sig(&t.props)).unwrap_or_default();
+        let target_state = match target.as_ref().map(|r| r.target.clone()) {
+            Some(t @ (Target::Thing(_) | Target::Cell(_))) => self.part_props(&t).map(|(p, _, _)| self.state_sig(&p)).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let key = cache_key(who, text, &format!("{held_name}{held_state}"), &format!("{target_name}{target_state}"));
         let name = self.actor_name(who);
         // The traveler's deeds in words draw on their charges.
         if who == ActorId::Player && self.has_llm && !self.spend_charge() {

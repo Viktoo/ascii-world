@@ -63,6 +63,27 @@ impl Traits {
             generous: clamp(0.5 + 0.15 * has(&["generous", "kind", "giving", "caring", "gentle"]) - 0.2 * has(&["greedy", "stingy", "selfish", "miser"]) + jitter(5)),
             crafty: clamp(0.35 + 0.2 * has(&["smith", "carpenter", "maker", "tinker", "builder", "artist", "craft", "inventor", "potter", "weaver", "mender"]) + jitter(6)),
         }
+        .given(&p.traits)
+    }
+
+    /// Numbers the persona's author gave outright win over words read.
+    fn given(mut self, t: &std::collections::BTreeMap<String, f32>) -> Traits {
+        for (k, v) in t {
+            let v = v.clamp(0.0, 1.0);
+            if !v.is_finite() {
+                continue;
+            }
+            match k.trim().to_lowercase().as_str() {
+                "sociable" => self.sociable = v,
+                "playful" => self.playful = v,
+                "curious" => self.curious = v,
+                "brave" => self.brave = v,
+                "generous" => self.generous = v,
+                "crafty" => self.crafty = v,
+                _ => {}
+            }
+        }
+        self
     }
 }
 
@@ -113,6 +134,9 @@ pub struct Npc {
     pub next_llm: f64,
     pub rng: u32,
     witnessed: VecDeque<(u64, f64)>,
+    /// What they saw lately that mattered (when, the memory, how much it
+    /// mattered): what they bring up when they stop to talk.
+    pub news: VecDeque<(f64, String, f32)>,
     pub last_player_near: f64,
     acc: f32,
     pub last_sim: f64,
@@ -214,6 +238,14 @@ impl Npc {
         false
     }
 
+    /// Keep something seen as news to tell (the most recent few).
+    pub fn hear_news(&mut self, t: f64, text: &str, importance: f32) {
+        self.news.push_back((t, text.to_string(), importance));
+        while self.news.len() > 8 {
+            self.news.pop_front();
+        }
+    }
+
     pub fn curiosity_bump(&mut self, amount: f32) {
         self.needs.curiosity = (self.needs.curiosity + amount * self.traits.curious).min(1.0);
     }
@@ -291,6 +323,7 @@ impl Cast {
             next_llm: 0.0,
             rng,
             witnessed: VecDeque::new(),
+            news: VecDeque::new(),
             last_player_near: f64::MIN,
             acc: 0.0,
             last_sim: s.t,
@@ -1516,9 +1549,13 @@ impl Sim {
             }
         }
         let snap = self.snap.clone();
+        let vocab = self.vocab.clone();
         for it in self.cache.items_near(&snap, p, range) {
             let Some(ty) = snap.type_of(it.inst.info[0]) else { continue };
-            if !(ty.has_tag("stick") || ty.has_tag("stone")) || near_a_home(it.inst.pos()) || self.field.cells.contains_key(&it.cell) {
+            // Loose is a matter of properties: small, not living, not food, harmless.
+            let pr = scaled((*self.type_props.get(&vocab, ty)).clone(), it.inst.pos_scale[3]);
+            let loose = pr[P_MASS] <= 3.0 && pr[P_ALIVE] <= 0.0 && pr[P_EDIBLE] <= 0.0 && vocab.harm(&pr) <= 0.0;
+            if !loose || near_a_home(it.inst.pos()) || self.field.cells.contains_key(&it.cell) {
                 continue;
             }
             let d = (it.inst.pos() - p).length();
@@ -1555,16 +1592,18 @@ impl Sim {
     /// Something that looks made for throwing things at (a hoop, a goal, a
     /// target, a basket, a bell…), by its tags or name.
     fn throwing_mark(&self, p: Vec3, range: f32) -> Option<(Target, Vec3)> {
-        const WORDS: &[&str] = &["hoop", "goal", "target", "basket", "net", "ring", "bell", "bucket", "bin", "barrel"];
-        let fits = |ty: &TypeEntry| WORDS.iter().any(|w| ty.has_tag(w) || ty.name().to_lowercase().contains(w));
+        // What people aim at is a property ("mark"), whatever it is called.
         let mut best: Option<(f32, Target, Vec3)> = None;
+        let vocab = self.vocab.clone();
+        let mut marks: HashMap<u32, bool> = HashMap::new();
         for pl in &self.snap.instances {
             let d = (pl.pos - p).length();
             if d > range {
                 continue;
             }
             let Some(ty) = self.snap.type_of(pl.type_id) else { continue };
-            if fits(ty) && best.as_ref().is_none_or(|b| d < b.0) {
+            let fits = *marks.entry(ty.id).or_insert_with(|| super::props::type_props(&vocab, ty)[P_MARK] >= 0.4);
+            if fits && best.as_ref().is_none_or(|b| d < b.0) {
                 let target = match self.things.by_instance.get(&pl.id) {
                     Some(t) => Target::Thing(*t),
                     None => Target::Instance(pl.id),
@@ -1577,8 +1616,7 @@ impl Sim {
             if d > range || t.held() {
                 continue;
             }
-            let Some(ty) = self.snap.type_of(t.type_id) else { continue };
-            if fits(ty) && best.as_ref().is_none_or(|b| d < b.0) {
+            if t.props[P_MARK] >= 0.4 && best.as_ref().is_none_or(|b| d < b.0) {
                 best = Some((d, Target::Thing(t.id), t.pos));
             }
         }
@@ -1603,7 +1641,15 @@ impl Sim {
 
     /// Ask the planner what to do about an event. Returns whether it was asked.
     pub(super) fn ask_planner(&mut self, cid: i64, event: &str, what: &str, now: bool) -> bool {
-        if !self.has_llm || self.mind_of(ActorId::Npc(cid)) != crate::world::species::Mind::Sapient {
+        use crate::world::species::Mind;
+        // Sapient minds plan often, simple ones (most animals) now and then,
+        // instinct never: all of it a setting, not a law.
+        let every = match self.mind_of(ActorId::Npc(cid)) {
+            Mind::Sapient => self.cfg.plan_secs,
+            Mind::Simple if self.cfg.simple_plan_secs > 0.0 => self.cfg.simple_plan_secs,
+            _ => return false,
+        };
+        if !self.has_llm {
             return false;
         }
         let t = self.t;
@@ -1611,13 +1657,13 @@ impl Sim {
         if t < n.next_llm && !now {
             return false;
         }
-        n.next_llm = t + 60.0;
+        n.next_llm = t + every as f64;
         let pos = n.a.pos;
         if self.dist_to_player(pos) > self.cfg.near && !self.cfg.medium_llm {
             return false;
         }
         let context = self.decide_context(cid, what);
-        self.request(Request::Decide { cid, event: event.into(), context }, pos);
+        self.request_weighted(Request::Decide { cid, event: event.into(), context }, pos, if now { 0.9 } else { 0.5 });
         true
     }
 
@@ -1634,17 +1680,26 @@ impl Sim {
         let needs = n.needs;
         let goal = n.goal.clone();
         let mut things = Vec::new();
+        let mut shown = std::collections::BTreeSet::new();
         for id in self.things.near(pos, 25.0).into_iter().take(12) {
             let Some(t) = self.things.get(id) else { continue };
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };
-            let mut notes = Vec::new();
-            for (i, label) in [(P_BOUNCE, "bouncy"), (P_EDIBLE, "edible"), (P_FIRE, "on fire"), (P_LIGHT, "gives light"), (P_WET, "wet"), (P_FRAGILE, "fragile")] {
-                if t.props[i] > 0.4 {
-                    notes.push(label);
+            // Whatever stands out about it, in the world's own terms (a
+            // universe's curse as much as fire): properties well off their default.
+            let mut notes: Vec<String> = Vec::new();
+            for (i, v) in t.props.iter().enumerate() {
+                if i == P_MASS || i == P_SOLID || i == P_FORCE {
+                    continue;
+                }
+                let d = self.vocab.defaults.get(i).copied().unwrap_or(0.0);
+                let scale = if i == P_TEMP { 30.0 } else { d.abs().max(1.0) * 0.3 };
+                if (v - d).abs() > scale {
+                    notes.push(format!("{} {}", self.vocab.names[i], if v.abs() >= 10.0 { format!("{v:.0}") } else { format!("{v:.1}") }));
+                    shown.insert(i);
                 }
             }
             if t.mass() > STRENGTH && !t.anchored {
-                notes.push("needs two to carry");
+                notes.push("needs two to carry".into());
             }
             let by = t.origin.made_by.clone().map(|m| format!(", made by {m}")).unwrap_or_default();
             things.push(format!("{} ({:.0} m{}{}{})", ty.name(), (t.pos - pos).length(), if notes.is_empty() { "" } else { ", " }, notes.join(", "), by));
@@ -1677,6 +1732,8 @@ impl Sim {
         }
         let recent: Vec<String> = self.log.recent.iter().rev().filter(|e| e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 40.0) && self.t - e.t < 300.0).take(6).map(|e| e.text.clone()).collect();
         let twist = self.twist_line(me).map(|l| format!("\n{l}")).unwrap_or_default();
+        let meanings: Vec<String> = shown.iter().map(|i| format!("{}: {}", self.vocab.names[*i], self.vocab.meanings[*i])).collect();
+        let twist = if meanings.is_empty() { twist } else { format!("{twist}\nWhat those numbers mean: {}.", meanings.join("; ")) };
         let twist = format!("{twist}{}", self.trouble_line(pos).map(|l| format!("\n{l}")).unwrap_or_default());
         format!(
             "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",

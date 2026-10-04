@@ -177,6 +177,11 @@ pub struct Persona {
     /// Their own body, when theirs was reshaped (else their species').
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
+    /// Personality as numbers 0..1 (sociable, playful, curious, brave,
+    /// generous, crafty), when whoever wrote them gave them; otherwise they
+    /// are read from the words.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub traits: std::collections::BTreeMap<String, f32>,
 }
 
 impl Persona {
