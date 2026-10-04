@@ -1407,6 +1407,12 @@ impl Sim {
 
     /// Ask the planner what to do about an event. Returns whether it was asked.
     pub(super) fn ask_planner(&mut self, cid: i64, event: &str, what: &str, now: bool) -> bool {
+        self.ask_planner_weighted(cid, event, what, now, if now { 0.9 } else { 0.5 })
+    }
+
+    /// The same, with how much it matters against other waiting requests
+    /// (a free moment matters less than anything that happened).
+    pub(super) fn ask_planner_weighted(&mut self, cid: i64, event: &str, what: &str, now: bool, weight: f32) -> bool {
         use crate::world::species::Mind;
         // Sapient minds plan often, simple ones (most animals) now and then,
         // instinct never: all of it a setting, not a law.
@@ -1429,7 +1435,7 @@ impl Sim {
             return false;
         }
         let context = self.decide_context(cid, what);
-        self.request_weighted(Request::Decide { cid, event: event.into(), context }, pos, if now { 0.9 } else { 0.5 });
+        self.request_weighted(Request::Decide { cid, event: event.into(), context }, pos, weight);
         true
     }
 

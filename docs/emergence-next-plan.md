@@ -5,6 +5,39 @@ still makes sense in five years, when LLM calls are nearly free: general
 primitives that behaviour emerges from, the LLM as the main brain, and
 code-written fallbacks kept small and derived from data.
 
+## Status (2026-10-04)
+
+All five phases are built, one commit each, with their proofs in
+`src/sim/tests.rs` and their numbers in the commit messages. Where the build
+differs from the plan:
+
+- **Phase 0.** A deed that sets an act property (`force`) has it left out
+  quietly rather than sent back (it is never meaningful, and a repair costs a
+  call). Names nothing maps to are sent back once, then left out with a log line.
+- **Phase 1.** Two more built-ins than `body` and `kindness`: `susceptible`
+  (how readily darkness takes a body; set from the difficulty's spread), which
+  is the "property the difficulty table sets". `body` and `susceptible` are
+  engine-only like act properties. Corruption no longer passes in talk, only by
+  touch (hugs, gifts, standing close); kindness between characters eases it
+  too, not only the traveler's, and a corrupted heart's touch isn't warm. A
+  body's `light` (a touch's glow) fades by a rule unless the body keeps a
+  heat of 500° or more. Corruption still fades by day in engine code.
+- **Phase 2.** Promises ride on the planner's reply to being asked (`asked`),
+  not on the talk reply itself; making something and handing it over is
+  taken as a promise even when the planner doesn't say so; agreeing to
+  another character's ask is one too. Starting goals come from the persona's
+  `goals` words or the region plan's new structured `aims`.
+- **Phase 3.** The scorer also offers going somewhere new to see (places as a
+  source; curiosity had no outlet without an LLM). Idle characters ask the
+  planner at a lower weight than anything that happened. Old bugs the
+  scorer's variety exposed were fixed (see the phase 3 commit). The fire
+  test's "5 tufts saved" held only on its own seed under both the old ladders
+  and the scorer (mean about 3.5 over 8 seeds); it now asserts 3 and that the
+  same fire with nobody fighting saves none.
+- **Phase 4.** Claims kept: incident causes, where things lie (toys, food),
+  who made what. Between sources other than one's own eyes, the surer claim
+  wins (so a guess gives way to a confident witness's word, or a rumour).
+
 ## Already on the branch
 
 - **Property metadata** (`PropMeta`): when a change is news, whether it

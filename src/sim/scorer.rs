@@ -561,7 +561,7 @@ impl Sim {
                     format!("You are a {sp}: a simple mind, no words, only sounds and gestures. Choose what you do next from your needs and what is around you, as a {sp} would.")
                 }
             };
-            self.ask_planner(cid, "idle", &what, false);
+            self.ask_planner_weighted(cid, "idle", &what, false, 0.3);
         }
         let Some(a) = self.draw_choice(cid, v) else { return };
         self.carry_out(cid, a.verb);
