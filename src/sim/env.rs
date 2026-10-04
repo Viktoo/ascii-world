@@ -6,6 +6,7 @@
 //! become events that characters see and remember.
 
 use super::props::*;
+use super::props::Crossing;
 use super::rules::{self, EntView, Rule, RuleSpec};
 use super::things::{Origin, Thing, ThingId};
 use super::{Note, Sim};
@@ -68,8 +69,6 @@ pub struct Burning {
     pub size: f32,
     pub fire: f32,
     pub seed: f32,
-    /// Carried by someone (a torch, not a wildfire).
-    pub held: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -125,6 +124,10 @@ impl Sim {
                 Err(e) => crate::log::error(format!("universe rule skipped: {e}")),
             }
         }
+        for (name, meta) in super::persist::universe_meta(&self.db) {
+            vocab.set_meta(&name, meta);
+        }
+        self.watch = Arc::new(watches(&vocab));
         self.vocab = Arc::new(vocab);
         self.rules = Arc::new(all);
         self.universe_rules = kept;
@@ -150,39 +153,138 @@ impl Sim {
         for t in self.things.live() {
             if t.props[P_FIRE] > 0.0 {
                 let r = self.snap.type_of(t.type_id).map(|ty| ty.ct.meta.bounds[0].max(ty.ct.meta.bounds[2]) * t.scale).unwrap_or(0.5);
-                out.push(Burning { pos: t.pos, size: r.clamp(0.2, 4.0), fire: t.props[P_FIRE], seed: t.id as f32, held: t.held() });
+                out.push(Burning { pos: t.pos, size: r.clamp(0.2, 4.0), fire: t.props[P_FIRE], seed: t.id as f32 });
             }
         }
         for ((x, z), c) in &self.field.cells {
             if c.props[P_FIRE] > 0.0 {
-                out.push(Burning { pos: c.pos, size: c.size.clamp(0.2, 4.0), fire: c.props[P_FIRE], seed: (*x * 31 + *z) as f32, held: false });
+                out.push(Burning { pos: c.pos, size: c.size.clamp(0.2, 4.0), fire: c.props[P_FIRE], seed: (*x * 31 + *z) as f32 });
             }
         }
         out
     }
 
-    /// What burns, as targets (things and scatter cells), and where.
-    pub fn burning_parts(&self) -> Vec<(super::Target, Vec3)> {
-        let things = self.things.live().filter(|t| t.props[P_FIRE] > 0.0 && !t.held() && t.worn.is_none()).map(|t| (super::Target::Thing(t.id), t.pos));
-        let cells = self.field.cells.iter().filter(|(_, c)| c.props[P_FIRE] > 0.0).map(|(k, c)| (super::Target::Cell([k.0, k.1]), c.pos));
-        things.chain(cells).collect()
+    /// "thing:3", "cell:4,5", … (as events and incidents name parts).
+    pub fn part_key(t: &super::Target) -> String {
+        match t {
+            super::Target::Thing(id) => format!("thing:{id}"),
+            super::Target::Cell(c) => format!("cell:{},{}", c[0], c[1]),
+            super::Target::Instance(i) => format!("instance:{i}"),
+            super::Target::Actor(a) => a.key(),
+            _ => String::new(),
+        }
     }
 
-    /// Soak what burns within `r` of a point (a beating with something wet).
-    /// Returns how many were soaked.
-    pub fn soak_near(&mut self, p: Vec3, r: f32) -> usize {
-        let mut n = 0;
-        for t in self.things.map.values_mut().filter(|t| !t.removed && t.props[P_FIRE] > 0.0 && (t.pos - p).length() <= r) {
-            t.props[P_WET] = t.props[P_WET].max(0.9);
-            t.dirty = true;
-            n += 1;
+    /// A part's properties, where it is and its name: a live thing, or a
+    /// scatter cell (changed or as it grew).
+    pub fn part_props(&mut self, t: &super::Target) -> Option<(Props, Vec3, String)> {
+        match t {
+            super::Target::Thing(id) => self.things.get(*id).map(|th| (th.props.clone(), th.pos, self.thing_name(th.id))),
+            super::Target::Instance(i) => {
+                let id = self.promote_instance(*i)?;
+                self.part_props(&super::Target::Thing(id))
+            }
+            super::Target::Cell(c) => {
+                let cell = (c[0], c[1]);
+                if self.things.taken.contains_key(&cell) {
+                    return None;
+                }
+                let snap = self.snap.clone();
+                if let Some(x) = self.field.cells.get(&cell) {
+                    let name = snap.type_of(x.type_id).map(|t| t.name().to_string()).unwrap_or_default();
+                    return Some((x.props.clone(), x.pos, name));
+                }
+                let it = self.cache.item_at(&snap, cell)?;
+                let ty = snap.type_of(it.inst.info[0])?;
+                Some((scaled((*self.type_props.get(&self.vocab, ty)).clone(), it.inst.pos_scale[3]), it.inst.pos(), ty.name().to_string()))
+            }
+            _ => None,
         }
-        for c in self.field.cells.values_mut().filter(|c| c.props[P_FIRE] > 0.0 && (c.pos - p).length() <= r) {
-            c.props[P_WET] = c.props[P_WET].max(0.9);
-            c.active = true;
-            n += 1;
+    }
+
+    /// Write a part's properties back (the rules carry on from there).
+    pub fn set_part_props(&mut self, t: &super::Target, p: Props) {
+        match t {
+            super::Target::Thing(id) => {
+                if let Some(th) = self.things.get_mut(*id) {
+                    th.props = p;
+                    th.dirty = true;
+                    th.asleep = false;
+                }
+            }
+            super::Target::Instance(i) => {
+                if let Some(id) = self.promote_instance(*i) {
+                    self.set_part_props(&super::Target::Thing(id), p);
+                }
+            }
+            super::Target::Cell(c) => {
+                let cell = (c[0], c[1]);
+                if let Some(x) = self.field.cells.get_mut(&cell) {
+                    x.props = p;
+                    x.active = true;
+                } else {
+                    let snap = self.snap.clone();
+                    let Some(it) = self.cache.item_at(&snap, cell) else { return };
+                    let size = snap.type_of(it.inst.info[0]).map(|t| t.radius() * it.inst.pos_scale[3]).unwrap_or(0.5);
+                    let pos = it.inst.pos();
+                    let water = snap.terrain.height(pos.x, pos.z) < WATER_LEVEL;
+                    self.field.cells.insert(cell, Cell { props: p, type_id: it.inst.info[0], pos, size, small: size < 0.9, water, active: true, fired: Vec::new(), spent_at: None });
+                }
+                self.sync_overlay();
+            }
+            _ => {}
         }
-        n
+    }
+
+    /// Parts within `r` of a point, as targets: live things and scatter
+    /// items (changed or not), nearest first.
+    pub fn parts_near(&mut self, p: Vec3, r: f32) -> Vec<(super::Target, Vec3)> {
+        let mut v: Vec<(super::Target, Vec3)> = self.things.live().filter(|t| !t.held() && t.worn.is_none() && (t.pos - p).length() <= r).map(|t| (super::Target::Thing(t.id), t.pos)).collect();
+        let snap = self.snap.clone();
+        for it in self.cache.items_near(&snap, p, r) {
+            if self.things.taken.contains_key(&it.cell) {
+                continue;
+            }
+            let at = self.field.cells.get(&it.cell).map(|c| c.pos).unwrap_or_else(|| it.inst.pos());
+            if (at - p).length() <= r {
+                v.push((super::Target::Cell([it.cell.0, it.cell.1]), at));
+            }
+        }
+        v.sort_by(|a, b| (a.1 - p).length().total_cmp(&(b.1 - p).length()));
+        v
+    }
+
+    /// What `secs` of working `tool` against `part` would do, by the world's
+    /// rules (both ways, plus each one's own rules meanwhile). Nothing is
+    /// changed: this is how anyone imagines a deed before doing it.
+    pub fn foresee(&self, tool: &Props, part: &Props, secs: f32) -> (Props, Props) {
+        let rules = self.rules.clone();
+        let (hour, night) = (self.hour(), self.night() as u32 as f32);
+        let (mut a, mut b) = (tool.clone(), part.clone());
+        let dt = 0.25;
+        let mut left = secs.clamp(0.0, 10.0);
+        while left > 1e-3 {
+            let d = left.min(dt);
+            left -= d;
+            let va = rules::EntView { props: &a, water: 0.0, held: 1.0, ground: 0.0 };
+            let vb = rules::EntView { props: &b, water: 0.0, held: 0.0, ground: 1.0 };
+            let (mut na, mut nb) = (a.clone(), b.clone());
+            let mut fired = Vec::new();
+            rules::run_single(&rules, &vb, &mut nb, d, hour, night, &mut fired);
+            for r in rules.iter().filter(|r| r.near.is_some()) {
+                if rules::pair_self_ok(r, &va, d, hour, night) {
+                    rules::run_pair(r, &va, &vb, 0.1, d, hour, night, &mut na, &mut nb);
+                }
+                if rules::pair_self_ok(r, &vb, d, hour, night) {
+                    rules::run_pair(r, &vb, &va, 0.1, d, hour, night, &mut nb, &mut na);
+                }
+            }
+            sanitize(&mut na);
+            sanitize(&mut nb);
+            a = na;
+            b = nb;
+        }
+        (a, b)
     }
 
     /// One rules pass over everything within the medium range.
@@ -402,19 +504,21 @@ impl Sim {
         }
         // Apply.
         let mut overlay_changed = false;
-        let mut events: Vec<(Key, String, Vec3, String, Option<super::incident::Cause>)> = Vec::new();
+        let mut events: Vec<(Key, super::incident::Crossed, Vec3, String, Option<super::incident::Cause>)> = Vec::new();
         for e in ents.iter_mut() {
             sanitize(&mut e.next);
+            self.vocab.clamp(&mut e.next);
         }
-        let crosses = |e: &Ent| !phenomena(&e.props, &e.next, &e.name).is_empty();
+        let watch = self.watch.clone();
+        let crosses = |e: &Ent| !phenomena(&watch, &e.props, &e.next, &e.name).is_empty();
         let causes: Vec<Option<super::incident::Cause>> = (0..ents.len()).map(|ix| from[ix].filter(|_| crosses(&ents[ix])).map(|k| self.cause_named(&ents[k].key.subject(), format!("the {}", ents[k].name)))).collect();
         for (ix, e) in ents.iter_mut().enumerate() {
             let changed = e.next.iter().zip(&e.props).any(|(a, b)| (a - b).abs() > 1e-4);
             if !changed && !e.acting {
                 continue;
             }
-            for (kind, text) in phenomena(&e.props, &e.next, &e.name) {
-                events.push((e.key, kind, e.pos, text, causes[ix].clone()));
+            for (c, text) in phenomena(&watch, &e.props, &e.next, &e.name) {
+                events.push((e.key, c, e.pos, text, causes[ix].clone()));
             }
             let t = self.t;
             match e.key {
@@ -430,7 +534,8 @@ impl Sim {
                     }
                 }
                 Key::Cell(x, z) => {
-                    let at_rest = !changed && e.next[P_FIRE] <= 0.0;
+                    // Nothing changing and nothing spreading from it: it can rest.
+                    let at_rest = !changed && self.vocab.spreading().all(|i| e.next[i] <= self.vocab.meta[i].at);
                     let base_like = {
                         let snap_ty = snap.type_of(self.field.cells.get(&(x, z)).map(|c| c.type_id).unwrap_or(u32::MAX)).cloned();
                         match snap_ty {
@@ -505,45 +610,41 @@ impl Sim {
         if overlay_changed {
             self.sync_overlay();
         }
-        for (key, kind, pos, text, cause) in events {
-            self.phenomenon(key.subject(), &kind, pos, &text, cause);
+        for (key, c, pos, text, cause) in events {
+            self.phenomenon(key.subject(), &c, pos, &text, cause);
         }
     }
 
-    fn phenomenon(&mut self, subject: String, kind: &str, pos: Vec3, text: &str, cause: Option<super::incident::Cause>) {
-        // Part of something bigger (a fire): counted on its incident, told as one story.
-        if let Some(j) = self.file_incident(&subject, kind, pos, cause) {
+    /// Tell the crossings a change made (outside the rules pass: a deed, a
+    /// tool worked against something), caused by `by`.
+    pub fn tell_change(&mut self, part: &super::Target, name: &str, pos: Vec3, before: &Props, after: &Props, by: Option<super::ActorId>) {
+        let watch = self.watch.clone();
+        let subject = Self::part_key(part);
+        let cause = by.map(|a| super::incident::Cause { subject: a.key(), name: String::new(), by: Some(self.actor_name(a)) });
+        for (c, text) in phenomena(&watch, before, after, name) {
+            self.phenomenon(subject.clone(), &c, pos, &text, cause.clone());
+        }
+    }
+
+    fn phenomenon(&mut self, subject: String, c: &super::incident::Crossed, pos: Vec3, text: &str, cause: Option<super::incident::Cause>) {
+        let kind = c.kind.as_str();
+        // Part of something bigger (a fire, a spreading curse): counted on
+        // its incident, told as one story.
+        if let Some(j) = self.file_incident(&subject, c, pos, cause) {
             let (id, part) = match j {
                 super::incident::Joined::Began(id) => (id, false),
                 super::incident::Joined::Part(id) => (id, true),
             };
             self.event(kind, None, Some(subject), text, Some(pos), json!({ "incident": id, "part": part }));
-            self.incident_crossing(j, kind, pos);
+            self.incident_crossing(j, c, pos);
             return;
         }
         let first = self.log.recent.iter().rev().take(60).filter(|e| e.kind == kind && e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 12.0) && self.t - e.t < 20.0).count() == 0;
         self.event(kind, None, Some(subject), text, Some(pos), json!({}));
-        if !first {
-            return;
-        }
         // People notice the first of a kind nearby, not every tuft.
-        let note = match kind {
-            "burnt_out" => None,
-            "doused" => Some(format!("{}.", super::physics::cap(text))).map(Note::Ambient),
-            "grown" => None,
-            "broken" => None,
-            _ => None,
-        };
-        if let Some(n) = note {
-            self.note_near(pos, 60.0, n);
-        }
-        let (memory, importance) = match kind {
-            "doused" => (format!("I saw a fire put out: {text}."), 0.4),
-            "burnt_out" => (format!("{} burnt away.", super::physics::cap(text.trim_end_matches(" burnt out"))), 0.4),
-            _ => (String::new(), 0.0),
-        };
-        if !memory.is_empty() {
-            self.witness(pos, 45.0, &memory, importance, &[]);
+        if first {
+            self.note_near(pos, 40.0, Note::Ambient(format!("{}.", super::physics::cap(text))));
+            self.witness(pos, 45.0, &format!("I saw {text}."), 0.3, &[]);
         }
     }
 
@@ -586,26 +687,59 @@ fn cell_look(p: &Props) -> [i32; 2] {
     [(p[P_CHAR] * 20.0) as i32, (p[P_WET] * 10.0) as i32]
 }
 
-/// Threshold crossings worth telling about.
-fn phenomena(before: &Props, after: &Props, name: &str) -> Vec<(String, String)> {
+/// What to watch for on one property: its crossings, compiled.
+pub struct Watch {
+    i: usize,
+    at: f32,
+    rises: Vec<(Crossing, Option<rules::RExpr>)>,
+    falls: Vec<(Crossing, Option<rules::RExpr>)>,
+    quiet: Option<rules::RExpr>,
+}
+
+/// The crossings every property's metadata asks to be told about.
+pub fn watches(vocab: &Vocab) -> Vec<Watch> {
+    let cond = |src: &Option<String>| -> Result<Option<rules::RExpr>, String> {
+        match src {
+            Some(s) if !s.trim().is_empty() => rules::parse_expr(s, vocab, false).map(Some),
+            _ => Ok(None),
+        }
+    };
+    let mut out = Vec::new();
+    for (i, m) in vocab.meta.iter().enumerate() {
+        if m.rises.is_empty() && m.falls.is_empty() {
+            continue;
+        }
+        let compile = |v: &[Crossing]| v.iter().filter_map(|c| cond(&c.when).map_err(|e| crate::log::error(format!("{}: {}: {e}", vocab.names[i], c.kind))).ok().map(|w| (c.clone(), w))).collect::<Vec<_>>();
+        let quiet = cond(&m.quiet).unwrap_or_else(|e| {
+            crate::log::error(format!("{}: quiet: {e}", vocab.names[i]));
+            None
+        });
+        out.push(Watch { i, at: m.at, rises: compile(&m.rises), falls: compile(&m.falls), quiet });
+    }
+    out
+}
+
+/// Threshold crossings worth telling about, as the vocabulary describes them.
+fn phenomena(watch: &[Watch], before: &Props, after: &Props, name: &str) -> Vec<(super::incident::Crossed, String)> {
     let mut v = Vec::new();
     let n = if name.is_empty() { "something".to_string() } else { format!("the {name}") };
-    if before[P_FIRE] <= 0.0 && after[P_FIRE] > 0.0 {
-        v.push(("ignited".into(), format!("{n} caught fire")));
-    }
-    if before[P_FIRE] > 0.0 && after[P_FIRE] <= 0.0 {
-        if after[P_FUEL] <= 0.0 {
-            v.push(("burnt_out".into(), format!("{n} burnt out")));
+    let env = rules::Env { me: after, other: &[], dt: 0.0, dist: 0.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0 };
+    let holds = |e: &Option<rules::RExpr>| e.as_ref().is_none_or(|e| e.eval(&env) != 0.0);
+    for w in watch {
+        let (Some(b), Some(a)) = (before.get(w.i), after.get(w.i)) else { continue };
+        let (list, rose) = if *b <= w.at && *a > w.at {
+            (&w.rises, true)
+        } else if *b > w.at && *a <= w.at {
+            (&w.falls, false)
         } else {
-            v.push(("doused".into(), format!("{n} was put out")));
+            continue;
+        };
+        if w.quiet.as_ref().is_some_and(|q| q.eval(&env) != 0.0) {
+            continue;
         }
-    }
-    // Scorched before it burns: the burning is the news.
-    if before[P_ALIVE] > 0.0 && after[P_ALIVE] <= 0.0 && after[P_FIRE] <= 0.0 && !(after[P_BURNS] > 0.0 && after[P_TEMP] > 100.0) {
-        v.push(("died".into(), format!("{n} died")));
-    }
-    if before[P_GROWTH] < 1.0 && after[P_GROWTH] >= 1.0 {
-        v.push(("grown".into(), format!("{n} is fully grown")));
+        if let Some((c, _)) = list.iter().find(|(_, when)| holds(when)) {
+            v.push((super::incident::Crossed { kind: c.kind.clone(), prop: w.i, rose, saved: c.saved }, format!("{n} {}", c.text)));
+        }
     }
     v
 }

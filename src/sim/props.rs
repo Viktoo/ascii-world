@@ -5,6 +5,7 @@
 
 use crate::lang::ir::{CTX_FIELDS, valid_prop_name};
 use crate::world::TypeEntry;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ pub const P_GROWTH: usize = 17;
 pub const P_STRANGE: usize = 18;
 pub const P_TOY: usize = 19;
 pub const P_CORRUPT: usize = 20;
+pub const P_FORCE: usize = 21;
 
 pub const AMBIENT_TEMP: f32 = 15.0;
 /// What one person can lift (kg); two together lift twice that.
@@ -59,7 +61,124 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("strange", 0.0, "how out of place it is in this world, 0..1: 0 is everyday here, 1 unheard of (a motor car among horse carts 0.9, a glowing rune stone where there is no magic 0.8); people are surprised by strange things"),
     ("toy", 0.0, "how much people play with it, 0..1: toss, catch, kick or roll it about for fun (a ball 1, a hoop 0.8, knucklebones 0.6; whatever this people plays with)"),
     ("corruption", 0.0, "how much darkness has got into it, 0..1: corrupted things darken as if the night got into them, dim the light around them and work a little wrong"),
+    ("force", 0.0, "how hard it is being worked against what it touches right now, 0..1: a beating, a rubbing, a pressing (someone applying it; nothing has it by itself)"),
 ];
+
+/// A threshold crossing worth telling ("the grass tuft caught fire").
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Crossing {
+    /// The event kind ("ignited").
+    pub kind: String,
+    /// What it did, after its name ("caught fire").
+    pub text: String,
+    /// Only when this holds (a rule condition on `self`, after the change):
+    /// "self.fuel <= 0" tells burning out apart from being put out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    /// It stopped before running its course: what was saved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub saved: bool,
+}
+
+/// How an incident of a spreading property is told ("Wildfire from the kiln:
+/// 40 burnt, 3 saved, 6 burning").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Words {
+    /// "fire".
+    pub noun: String,
+    /// When it has grown big: "wildfire".
+    #[serde(default)]
+    pub big: String,
+    /// Parts it has now: "burning".
+    #[serde(default)]
+    pub active: String,
+    /// Parts it ran its course on: "burnt".
+    #[serde(default)]
+    pub spent: String,
+    /// Over by itself: "burnt itself out".
+    #[serde(default)]
+    pub ended: String,
+    /// Stopped by people: "put out".
+    #[serde(default)]
+    pub stopped: String,
+}
+
+impl Words {
+    fn or(&self, s: &str, d: &str) -> String {
+        if s.trim().is_empty() { d.to_string() } else { s.to_string() }
+    }
+    pub fn big(&self) -> String {
+        self.or(&self.big, &self.noun)
+    }
+    pub fn active(&self) -> String {
+        self.or(&self.active, "going")
+    }
+    pub fn spent(&self) -> String {
+        self.or(&self.spent, "done")
+    }
+    pub fn ended(&self) -> String {
+        self.or(&self.ended, "ran its course")
+    }
+    pub fn stopped(&self) -> String {
+        self.or(&self.stopped, "was stopped")
+    }
+}
+
+/// What the engine needs to know about a property beyond its number: when a
+/// change is news, whether it spreads as an incident, whether it harms.
+/// Built-in physics has it written here; a universe's own properties get it
+/// from genesis, so a curse is told, fought and fled like a fire.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PropMeta {
+    /// The level that counts as having it (0: any at all).
+    #[serde(default)]
+    pub at: f32,
+    /// Rising past `at`: first that holds is told.
+    #[serde(default)]
+    pub rises: Vec<Crossing>,
+    /// Falling back to `at`.
+    #[serde(default)]
+    pub falls: Vec<Crossing>,
+    /// Not news when this holds (the burning is the news, not the scorching).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet: Option<String>,
+    /// It spreads: crossings with one cause are one incident, told so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incident: Option<Words>,
+    /// How much harm it does to be near or wear something that has it, per
+    /// unit (0: harmless). People keep away and get it off them.
+    #[serde(default)]
+    pub hazard: f32,
+    /// Kept when a thing turns into another (a cursed log becomes a cursed boat).
+    #[serde(default)]
+    pub keep: bool,
+    /// Its range, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[f32; 2]>,
+}
+
+fn cross(kind: &str, text: &str, when: Option<&str>, saved: bool) -> Crossing {
+    Crossing { kind: kind.into(), text: text.into(), when: when.map(str::to_string), saved }
+}
+
+/// The built-in properties' metadata (fire spreads and harms; living things
+/// die and grow up; wetness, heat and char carry over when things change).
+fn builtin_meta(name: &str) -> PropMeta {
+    match name {
+        "fire" => PropMeta {
+            rises: vec![cross("ignited", "caught fire", None, false)],
+            falls: vec![cross("burnt_out", "burnt out", Some("self.fuel <= 0"), false), cross("doused", "was put out", None, true)],
+            incident: Some(Words { noun: "fire".into(), big: "wildfire".into(), active: "burning".into(), spent: "burnt".into(), ended: "burnt itself out".into(), stopped: "put out".into() }),
+            hazard: 1.0,
+            keep: true,
+            ..Default::default()
+        },
+        "alive" => PropMeta { falls: vec![cross("died", "died", None, false)], quiet: Some("self.fire > 0 || (self.burns > 0 && self.temp > 100)".into()), ..Default::default() },
+        "growth" => PropMeta { at: 0.999, rises: vec![cross("grown", "is fully grown", None, false)], ..Default::default() },
+        "temp" | "wet" | "char" | "corruption" => PropMeta { keep: true, ..Default::default() },
+        _ => PropMeta::default(),
+    }
+}
 
 /// Light enough to toss, and something people play with: a ball, a hoop,
 /// or whatever this people throws about for fun.
@@ -73,6 +192,7 @@ pub struct Vocab {
     pub names: Vec<String>,
     pub defaults: Vec<f32>,
     pub meanings: Vec<String>,
+    pub meta: Vec<PropMeta>,
     index: HashMap<String, usize>,
 }
 
@@ -84,9 +204,10 @@ impl Default for Vocab {
 
 impl Vocab {
     pub fn builtin() -> Vocab {
-        let mut v = Vocab { names: Vec::new(), defaults: Vec::new(), meanings: Vec::new(), index: HashMap::new() };
+        let mut v = Vocab { names: Vec::new(), defaults: Vec::new(), meanings: Vec::new(), meta: Vec::new(), index: HashMap::new() };
         for (n, d, m) in BUILTIN {
             v.push(n, *d, m);
+            v.meta.push(builtin_meta(n));
         }
         v
     }
@@ -113,7 +234,40 @@ impl Vocab {
             return Err(format!("{name}: default must be a number"));
         }
         self.push(name, default, meaning);
+        // A universe's own property carries over when things change, unless told otherwise.
+        self.meta.push(PropMeta { keep: true, ..Default::default() });
         Ok(self.names.len() - 1)
+    }
+
+    /// Set what the engine knows about a universe property (not the built-ins').
+    pub fn set_meta(&mut self, name: &str, meta: PropMeta) {
+        if let Some(i) = self.id(name).filter(|i| !self.is_builtin(*i)) {
+            self.meta[i] = meta;
+        }
+    }
+
+    /// Properties that spread as incidents.
+    pub fn spreading(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.len()).filter(|i| self.meta[*i].incident.is_some())
+    }
+
+    /// Properties that harm.
+    pub fn hazards(&self) -> impl Iterator<Item = (usize, f32)> + '_ {
+        (0..self.len()).filter(|i| self.meta[*i].hazard > 0.0).map(|i| (i, self.meta[i].hazard))
+    }
+
+    /// How harmful something with these properties is to be near (0 = not at all).
+    pub fn harm(&self, p: &[f32]) -> f32 {
+        self.hazards().map(|(i, h)| p.get(i).copied().unwrap_or(0.0).max(0.0) * h).sum()
+    }
+
+    /// Keep universe properties in their ranges.
+    pub fn clamp(&self, p: &mut [f32]) {
+        for (i, m) in self.meta.iter().enumerate().skip(BUILTIN.len()) {
+            if let (Some([lo, hi]), Some(v)) = (m.range, p.get_mut(i)) {
+                *v = v.clamp(lo, hi);
+            }
+        }
     }
 
     pub fn id(&self, name: &str) -> Option<usize> {
@@ -270,7 +424,7 @@ pub fn sanitize(p: &mut Props) {
         }
         *v = v.clamp(-1e5, 1e5);
     }
-    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_CORRUPT] {
+    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_CORRUPT, P_FORCE] {
         p[i] = p[i].clamp(0.0, 1.0);
     }
     p[P_LIGHT] = p[P_LIGHT].clamp(0.0, 2.0);

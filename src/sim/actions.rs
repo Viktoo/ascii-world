@@ -141,11 +141,18 @@ pub enum Action {
     Plea { to: Target },
     /// Wait until the hour of the day comes round.
     WaitUntil { hour: f32 },
-    /// Put out what burns (the target, or the nearest fire): soak it and
-    /// beat at it, and at what burns right by it.
-    Douse {
+    /// Work something against something for a while (`with`: a thing, or
+    /// by default what you hold, else your own hands), and everything right
+    /// by it: beating out flames, pressing a wet cloak on them, rubbing a
+    /// charm on a cursed door. What it does is what the world's rules say
+    /// touching does. Without `to`: the nearest part of trouble nearby.
+    Apply {
         #[serde(default)]
-        target: Option<Target>,
+        with: Option<Target>,
+        #[serde(default, alias = "target")]
+        to: Option<Target>,
+        #[serde(default)]
+        secs: Option<f32>,
     },
     /// Go back to the deed a need held up.
     Resume {
@@ -185,7 +192,7 @@ impl Action {
             Action::Ask { .. } => "ask",
             Action::Plea { .. } => "plea",
             Action::WaitUntil { .. } => "wait_until",
-            Action::Douse { .. } => "douse",
+            Action::Apply { .. } => "apply",
             Action::Resume { .. } => "resume",
         }
     }
@@ -552,7 +559,7 @@ impl Sim {
                 Ok(Outcome::ok(format!("{name} sets the {tname} down")).thing(id))
             }
             Action::Throw { at, dir, force } => self.throw(who, at, dir, force),
-            Action::Douse { target } => self.douse(who, target),
+            Action::Apply { with, to, secs } => self.apply(who, with, to, secs),
             Action::Use { target, on, at } => self.use_thing(who, target, on, at.map(Vec3::from)),
             Action::Eat { target } => {
                 let id = match target {
@@ -1250,29 +1257,97 @@ impl Sim {
         Ok(Outcome::ok(msg).thing(id))
     }
 
-    /// Take a layer off (yourself, or someone who agrees): into the hands,
-    /// or to the ground when they are full.
-    /// Beat out a fire: what was named, or the nearest one. Everything
-    /// burning within arm's swing of it is soaked; the rules put it out.
-    pub fn douse(&mut self, who: ActorId, target: Option<Target>) -> Result<Outcome, ActErr> {
-        let me = self.actor(who).ok_or(ActErr::Fail("nobody".into()))?.pos;
+    /// A body as the rules see it, when it is the tool: its mass, and the
+    /// force of someone working it.
+    pub fn body_props(&self, who: ActorId) -> Props {
+        let mut p = self.vocab.defaults.clone();
+        if let Some(a) = self.actor(who) {
+            p[P_MASS] = a.dims.mass.max(1.0);
+        }
+        p[P_TEMP] = 36.0;
+        p[P_ALIVE] = 1.0;
+        p
+    }
+
+    /// Work a tool (a thing, or one's own hands) against a part of the
+    /// world and what is right by it, for a few seconds of the world's rules.
+    pub fn apply(&mut self, who: ActorId, with: Option<Target>, to: Option<Target>, secs: Option<f32>) -> Result<Outcome, ActErr> {
+        let me = self.actor(who).cloned().ok_or(ActErr::Fail("nobody".into()))?;
         let name = self.actor_name(who);
-        let at = match target {
-            Some(t) => self.resolve(&t, who).ok_or_else(|| not_found(&t))?.pos,
-            None => self.burning_parts().into_iter().map(|(_, p)| p).filter(|p| (*p - me).length() < 40.0).min_by(|a, b| (*a - me).length().total_cmp(&(*b - me).length())).ok_or(ActErr::Fail("nothing is burning nearby".into()))?,
+        let secs = secs.unwrap_or(2.0).clamp(0.5, 6.0);
+        // What to work on: what was named, or the nearest trouble.
+        let (target, at, tname) = match to {
+            Some(t) => {
+                let r = self.resolve(&t, who).ok_or_else(|| not_found(&t))?;
+                (r.target.clone(), r.pos, r.name.clone())
+            }
+            None => {
+                let near = self.trouble_parts(me.pos, 40.0);
+                let (t, p) = near.into_iter().next().ok_or(ActErr::Fail("nothing to work on nearby".into()))?;
+                let n = self.part_props(&t).map(|x| x.2).unwrap_or_default();
+                (t, p, n)
+            }
         };
-        let flat = Vec3::new(at.x - me.x, 0.0, at.z - me.z).length();
+        let flat = Vec3::new(at.x - me.pos.x, 0.0, at.z - me.pos.z).length();
         if flat > 2.6 {
             return Err(ActErr::TooFar { at, dist: flat });
         }
-        let n = self.soak_near(at, 2.2);
-        if n == 0 {
-            return Ok(Outcome::ok("it's already out"));
+        // The tool: named, held, or the hands.
+        let tool = match with {
+            Some(t) => {
+                let r = self.resolve(&t, who).ok_or_else(|| not_found(&t))?;
+                if me.held.map(Target::Thing).as_ref() != Some(&r.target) {
+                    self.reach(who, &r)?;
+                }
+                Some(self.liven(&r.target).ok_or(ActErr::Fail(format!("can't work with {}", the(&r.name))))?)
+            }
+            None => me.held,
+        };
+        let mut tool_props = match tool {
+            Some(id) => self.things.get(id).map(|t| t.props.clone()).ok_or(ActErr::Fail("the tool is gone".into()))?,
+            None => self.body_props(who),
+        };
+        tool_props[P_FORCE] = 1.0;
+        let tool_name = tool.map(|id| format!("the {}", self.thing_name(id))).unwrap_or_else(|| "bare hands".into());
+        // The target and what is right by it (an arm's swing).
+        let mut parts: Vec<Target> = vec![target.clone()];
+        for (t, _) in self.parts_near(at, 1.5) {
+            if !parts.contains(&t) {
+                parts.push(t);
+            }
         }
-        // Counted on the fire it belongs to, as one who fought it.
-        let near: Vec<u32> = self.incidents_near(at, 3.0).into_iter().map(|i| i.id).collect();
-        for id in near {
-            if let Some(inc) = self.incidents.list.iter_mut().find(|i| i.id == id) {
+        let mut changed = 0;
+        let mut fought: Vec<u32> = Vec::new();
+        for part in parts.iter().take(12) {
+            let Some((before, ppos, pname)) = self.part_props(part) else { continue };
+            let (tool_after, after) = self.foresee(&tool_props, &before, secs);
+            if after.iter().zip(&before).any(|(a, b)| (a - b).abs() > 1e-3) {
+                changed += 1;
+                // Counted on the incident it belongs to, if this pushed it back.
+                let key = Self::part_key(part);
+                if let Some(id) = self.incidents.part_of(&key) {
+                    let prop = self.incidents.get(id).and_then(|i| self.vocab.id(&i.prop));
+                    if prop.is_some_and(|i| after[i] < before[i] - 1e-3) {
+                        fought.push(id);
+                    }
+                }
+                self.set_part_props(part, after.clone());
+                self.tell_change(part, &pname, ppos, &before, &after, Some(who));
+            }
+            tool_props = tool_after;
+            tool_props[P_FORCE] = 1.0;
+        }
+        if let Some(id) = tool {
+            tool_props[P_FORCE] = 0.0;
+            if let Some(t) = self.things.get_mut(id) {
+                t.props = tool_props;
+                t.dirty = true;
+            }
+        }
+        fought.sort_unstable();
+        fought.dedup();
+        for id in &fought {
+            if let Some(inc) = self.incidents.list.iter_mut().find(|i| i.id == *id) {
                 inc.fought_by.insert(name.clone());
             }
         }
@@ -1282,8 +1357,9 @@ impl Sim {
                 a.yaw = d.x.atan2(d.z);
             }
         }
-        self.event("fought_fire", Some(who), None, format!("{name} beats at the flames"), Some(at), json!({ "soaked": n }));
-        Ok(Outcome::ok(format!("{name} beats at the flames")))
+        let what = format!("{name} works {tool_name} against {}", the(&tname));
+        self.event("applied", Some(who), Some(Self::part_key(&target)), what.clone(), Some(at), json!({ "with": tool, "changed": changed, "incidents": fought, "secs": secs }));
+        Ok(Outcome::ok(if changed == 0 { format!("{what}; nothing comes of it") } else { what }))
     }
 
     pub fn take_off(&mut self, who: ActorId, wearer: ActorId, id: ThingId) -> Result<Outcome, ActErr> {

@@ -340,6 +340,8 @@ pub struct Sim {
     pub night: night::NightState,
     /// Happenings with one cause, told as one story (see `incident`).
     pub incidents: incident::Incidents,
+    /// Which property crossings are news (from the vocabulary).
+    pub watch: Arc<Vec<env::Watch>>,
 }
 
 impl Sim {
@@ -385,6 +387,7 @@ impl Sim {
             made: std::collections::HashMap::new(),
             night: night::NightState::default(),
             incidents: incident::Incidents::default(),
+            watch: Arc::new(Vec::new()),
         };
         sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();

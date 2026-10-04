@@ -190,10 +190,12 @@ impl Sim {
         let Some((nty, base)) = self.type_info(type_id) else { return };
         let nname = nty.name().to_string();
         if transform {
-            let keep = [P_TEMP, P_WET, P_CHAR, P_FIRE];
+            // What the vocabulary says carries over (heat, wetness, fire, a curse).
             let mut props = scaled((*base).clone(), t.scale);
-            for k in keep {
-                props[k] = t.props[k];
+            for (k, m) in self.vocab.meta.iter().enumerate() {
+                if m.keep && k < props.len() && k < t.props.len() {
+                    props[k] = t.props[k];
+                }
             }
             let g = self.snap.terrain.height(t.pos.x, t.pos.z);
             if let Some(x) = self.things.get_mut(id) {

@@ -31,6 +31,16 @@ pub fn universe_props(db: &Db) -> Vec<(String, f32, String)> {
     .unwrap_or_default()
 }
 
+/// What the engine knows about a universe's own properties (when they are
+/// news, whether they spread, whether they harm), by name.
+pub fn universe_meta(db: &Db) -> Vec<(String, crate::sim::props::PropMeta)> {
+    db.kv_get("vocab.meta").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
+}
+
+pub fn set_universe_meta(db: &Db, meta: &[(String, crate::sim::props::PropMeta)]) -> anyhow::Result<()> {
+    db.kv_set("vocab.meta", &serde_json::to_string(meta)?)
+}
+
 pub fn universe_rules(db: &Db) -> Vec<RuleSpec> {
     db.with(|c| {
         let mut st = c.prepare("SELECT json FROM rules ORDER BY id")?;

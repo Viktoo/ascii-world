@@ -212,7 +212,7 @@ impl Sim {
         let mut best: Option<(f32, ThingId, ActorId)> = None;
         for t in self.things.live() {
             let Some((by, when)) = t.thrown_by else { continue };
-            if by == me || self.t - when > 25.0 || t.held() || t.anchored || t.mass() > strength || t.props[P_FIRE] > 0.0 {
+            if by == me || self.t - when > 25.0 || t.held() || t.anchored || t.mass() > strength || self.vocab.harm(&t.props) > 0.0 {
                 continue;
             }
             if self.social.affection(me, by) < 0.2 {
@@ -399,7 +399,7 @@ impl Sim {
         let side = Vec3::new(-away.z, 0.0, away.x);
         for (i, (x, p)) in who.into_iter().enumerate() {
             let ActorId::Npc(c) = x else { continue };
-            if self.cast.get(c).is_some_and(|n| n.doing.starts_with("fleeing") && x != me) {
+            if self.cast.get(c).is_some_and(|n| n.aim == super::npc::Aim::Avoid && x != me) {
                 continue;
             }
             let dest = if group { centre + away * 20.0 + side * ((i as f32 % 3.0) - 1.0) * 2.0 + away * (i / 3) as f32 * 2.0 } else { p + away * 18.0 };
@@ -409,7 +409,7 @@ impl Sim {
                 n.a.task = None;
                 n.think_at = self.t + 2.5;
             }
-            self.set_doing(c, &format!("fleeing {what}"));
+            self.set_aim(c, super::npc::Aim::Avoid, &format!("fleeing {what}"));
         }
         let t = self.t;
         // One telling for the whole herd, its cry in the same breath.
@@ -463,7 +463,7 @@ impl Sim {
         for h in &hunters {
             let ActorId::Npc(c) = *h else { continue };
             self.plan(*h, vec![Action::Goto { target: Target::Actor(prey), run: true }], &format!("hunt {pname}"), false);
-            self.set_doing(c, &format!("chasing {pname}"));
+            self.set_aim(c, super::npc::Aim::Chase(prey), &format!("chasing {pname}"));
             if let Some(n) = self.cast.get_mut(c) {
                 n.think_at = self.t + 1.0;
             }
@@ -568,8 +568,7 @@ impl Sim {
             return;
         }
         // A predator next to what it chased.
-        let doing = self.cast.get(cid).map(|n| n.doing.clone()).unwrap_or_default();
-        if doing.starts_with("chasing") {
+        if self.cast.get(cid).is_some_and(|n| matches!(n.aim, super::npc::Aim::Chase(_))) {
             if let Some((prey, pp)) = self.prey_near(me, 60.0) {
                 if (pp - pos).length() < 1.8 + self.contact_gap(me, prey) {
                     self.caught(cid, prey);
@@ -674,7 +673,7 @@ impl Sim {
                 if let Some(n) = self.cast.get_mut(cid) {
                     n.needs.social = (n.needs.social - 0.2).max(0.0);
                 }
-                self.set_doing(cid, &format!("following {oname}"));
+                self.set_aim(cid, super::npc::Aim::Follow(o), &format!("following {oname}"));
                 next(self, 4.0);
             }
             "group" => {

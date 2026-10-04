@@ -131,9 +131,12 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 - fog: 1 = clear air, up to 3 = misty.
 
 Optionally, in the same JSON object, the universe's own nature: properties and rules beyond the built-in physics (fire, water, breaking, growing already exist; don't repeat them). Only if this universe really has its own forces (magic, curses, rot, radiation, holiness, static, spores…):
-  "properties": [ { "name": "cursed", "default": 0, "meaning": "how cursed it is, 0..1" } ],
+  "properties": [ { "name": "cursed", "default": 0, "meaning": "how cursed it is, 0..1", "range": [0, 1],
+                   "rises": "fell under the curse", "falls": "was freed of the curse", "hazard": 0.5,
+                   "spreads": { "noun": "curse", "big": "blight", "active": "cursed", "spent": "withered", "ended": "faded away", "stopped": "lifted" } } ],
   "rules": [ { "name": "curses spread by touch", "near": 1.5, "when": "self.cursed > 0.5 && other.cursed < self.cursed", "do": ["other.cursed += 0.05 * dt"] } ]
 Rule language: `when` is a condition and `do` a list of assignments (=, +=, -=, *=) on self.<property> or other.<property>; you may use numbers, + - * /, comparisons, && || !, min(a,b), max(a,b), clamp(x,lo,hi), abs(x), dt (seconds), dist (metres apart, with "near"), hour, night (0/1), water (1 when in water), held (1 when held). Without "near" a rule applies to each thing alone; with "near": r (≤ 10 m) to each pair within r. Spread slowly (rates times dt), at most 12 rules.
+For each property, optionally: "rises"/"falls" are what a thing does when it gets it or loses it (told to people as news: "the oak fell under the curse"); "spreads" if it passes from thing to thing, with the words to tell one outbreak of it as a story (the engine counts it, finds what started it, and people may fight it); "hazard" 0..1 if it harms those near it or wearing it (they keep away); "range" its bounds.
 Rules only act on things that have the property, and a property of your own shows nothing by itself: give it to some of your base types (in their meta.props) so the force is in the land from the start, and let it change what can be seen (light, fire, char, wet, growth, health: at 0 a thing breaks).
 
 Optionally, the universe's peoples and beasts beyond plain humans (people always exist; dogs, cats, horses, wolves, goats and deer are built in for earthly worlds). Add species only if this universe has them (elves and orcs, a race of giants, dragons, griffins, lizard folk…), up to 5, in the same JSON object:
@@ -314,7 +317,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
-  {"do": "douse"}   (beat out the nearest fire; or "target": what burns)
+  {"do": "apply", "with": "wet cloak", "to": "burning hut"}   (work something against something for a few seconds: beat out flames, press, rub, smear; without "with", their own hands; without "to", the nearest trouble)
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
 When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveler stands may be the traveler's doing.
 Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.

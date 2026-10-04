@@ -507,6 +507,7 @@ pub fn builtin_specs() -> Vec<RuleSpec> {
         spec("catches fire", None, "self.burns > 0 && self.fire <= 0 && self.fuel > 0 && self.wet < 0.4 && self.temp > 240 - 60 * self.burns", &["self.fire = 0.2"]),
         spec("burns", None, "self.fire > 0", &["self.fire += 0.3 * dt", "self.fuel -= 0.035 * self.fire * dt", "self.char += 0.04 * dt"]),
         spec("burns out", None, "self.fire > 0 && self.fuel <= 0", &["self.fire = 0", "self.char = 1", "self.burns = 0", "self.alive = 0"]),
+        spec("beaten out", Some(0.5), "self.fire > 0 && other.force > 0", &["self.fire -= 0.8 * other.force * dt", "self.temp = min(self.temp, 150)"]),
         spec("doused", None, "self.fire > 0 && self.wet > 0.5", &["self.fire = 0", "self.temp = min(self.temp, 60)"]),
         spec("soaked in water", None, "water > 0", &["self.wet = 1"]),
         spec("dries", None, "self.wet > 0 && water <= 0", &["self.wet -= (0.004 + max(0, self.temp - 30) * 0.0004) * dt"]),

@@ -8,6 +8,7 @@
 use super::actions::{Action, ActErr};
 use super::actor::{Actor, GestureKind, NPC_RUN, NPC_WALK, PLAYER_SPEED, Task};
 use super::props::*;
+use super::things::ThingId;
 use super::{ActorId, Request, Sim, Target};
 use crate::render::GpuInst;
 use crate::world::characters::{Decision, Needs, SavedState};
@@ -17,6 +18,24 @@ use glam::Vec3;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+
+/// What a character is about, as the engine reads it (never from the words
+/// of `doing`, which are for people).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Aim {
+    #[default]
+    Idle,
+    /// Pushing back an incident.
+    Counter(u32),
+    /// Keeping clear of something.
+    Avoid,
+    /// Going after someone (a predator its prey).
+    Chase(ActorId),
+    /// Keeping with someone.
+    Follow(ActorId),
+    /// Anything else.
+    Other,
+}
 
 /// Personality as numbers (0..1), read from the persona's words.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -85,6 +104,8 @@ pub struct Npc {
     pub traits: Traits,
     /// What they are doing right now, in a few words.
     pub doing: String,
+    /// What they are about, for the engine (`doing` is the words for it).
+    pub aim: Aim,
     pub goal: String,
     pub plan: VecDeque<Action>,
     pub plan_from_llm: bool,
@@ -262,6 +283,7 @@ impl Cast {
             needs,
             traits,
             doing: if s.away { "away" } else { "idle" }.into(),
+            aim: Aim::Idle,
             goal: s.goal.clone(),
             plan: VecDeque::new(),
             plan_from_llm: false,
@@ -391,7 +413,7 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "mount" | "ride_on" | "climb_on" => "ride",
         "get_down" | "get_off" | "dismount" => "dismount",
         "take_off" | "undress" | "doff" => "take_off",
-        "put_out" | "extinguish" | "fight_fire" | "beat_out" | "smother" => "douse",
+        "douse" | "put_out" | "extinguish" | "fight_fire" | "beat_out" | "smother" | "rub" | "press" | "work" => "apply",
         "home" | "go_home" => "go_home",
         v => v,
     }
@@ -485,8 +507,8 @@ fn template_line(kind: &str, other: &str, hour: f32, k: u32) -> String {
         "catch" => pick(&["Catch!", "Here it comes!", "Yours!", "Heads up!"]),
         "caught" => pick(&["Got it!", "Nice throw!", "Ha!", "Again!"]),
         "missed" => pick(&["Oops!", "Missed it!", "Too high!"]),
-        "fire" => pick(&["Fire! Get back!", "It's burning!", "Look at that blaze…"]),
-        "fight_fire" => pick(&["Help me beat it out!", "Water! Bring water!", "Don't let it reach the houses!", "Stamp it out, quick!"]),
+        "alarm" => pick(&["Get back from the {o}!", "Careful, the {o}!", "Look out, the {o}!"]),
+        "rally" => pick(&["Help me stop the {o}!", "Quick, before the {o} spreads!", "Don't let the {o} reach the houses!", "Stop the {o}, quick!"]),
         "thanks" => pick(&["For me? Thank you.", "Thank you, {o}.", "Oh! That's kind."]),
         "hug" => pick(&["Come here, you.", "Missed you.", "Oh, {o}."]),
         "bored" => pick(&["Nothing ever happens here.", "Hm.", "What to do…"]),
@@ -933,37 +955,32 @@ impl Sim {
 
     // ------------------------------------------------------------ choosing
 
-    /// Fight a going incident near them or their home, if they are willing:
-    /// people grown and sapient who are brave, whose home is threatened, or
-    /// who see someone they know already at it. They go for what started it
-    /// while it still burns, else the nearest flames. True if they set out.
-    fn fight_trouble(&mut self, cid: i64) -> bool {
+    /// Push back a going incident (a fire, a spreading curse) near them or
+    /// their home, if they are willing: people grown and sapient who are
+    /// brave, whose home is at stake, or who see someone they know already at
+    /// it. Nothing here knows what the trouble is: they imagine working each
+    /// tool to hand against it (their hands, what they hold, what lies about)
+    /// by the world's rules, and take the one that pushes it back most. With
+    /// no tool that helps, they don't try. True if they set out.
+    fn counter_trouble(&mut self, cid: i64) -> bool {
         let me = ActorId::Npc(cid);
         let Some(n) = self.cast.get(cid) else { return false };
         if self.mind_of(me) != crate::world::species::Mind::Sapient || n.growth < 0.8 || n.a.riding.is_some() {
             return false;
         }
-        let (pos, home, brave, was) = (n.a.pos, n.def.home, n.traits.brave, n.doing.clone());
-        let near_me = self.incidents_near(pos, 50.0).first().map(|i| (i.id, i.cause.subject.clone(), i.live.clone(), i.fought_by.clone()));
-        let near_home = self.incidents_near(home, 40.0).first().map(|i| (i.id, i.cause.subject.clone(), i.live.clone(), i.fought_by.clone()));
+        let (pos, home, brave, held, was) = (n.a.pos, n.def.home, n.traits.brave, n.a.held, n.aim.clone());
+        let pick = |s: &Sim, p: Vec3, r: f32| s.incidents_near(p, r).into_iter().find(|i| !i.live.is_empty()).map(|i| (i.id, i.cause.subject.clone(), i.live.clone(), i.prop.clone(), i.words.noun.clone()));
+        let near_home = pick(self, home, 40.0);
         let home_threatened = near_home.is_some();
-        let Some((_, cause, live, fought_by)) = near_me.or(near_home) else { return false };
-        if fought_by.is_empty() && live.is_empty() {
-            return false;
-        }
+        let Some((id, cause, live, prop, noun)) = pick(self, pos, 50.0).or(near_home) else { return false };
+        let Some(pi) = self.vocab.id(&prop) else { return false };
         // Courage is catching: someone they know is already at it.
-        let neighbour_fights = self.cast.npcs.iter().any(|o| o.def.id != cid && o.here() && o.doing == "fighting the fire" && (o.a.pos - pos).length() < 40.0 && self.social.rel(me, ActorId::Npc(o.def.id)).is_some_and(|r| r.familiarity > 0.2));
+        let neighbour_fights = self.cast.npcs.iter().any(|o| o.def.id != cid && o.here() && o.aim == Aim::Counter(id) && (o.a.pos - pos).length() < 40.0 && self.social.rel(me, ActorId::Npc(o.def.id)).is_some_and(|r| r.familiarity > 0.2));
         if !(brave > 0.45 || home_threatened || neighbour_fights) {
             return false;
         }
-        let parts = self.burning_parts();
-        let key = |t: &Target| match t {
-            Target::Thing(id) => format!("thing:{id}"),
-            Target::Cell(c) => format!("cell:{},{}", c[0], c[1]),
-            _ => String::new(),
-        };
-        // What started it, while it burns; else what burns nearest (to home,
-        // when home is what's at stake) that nobody else has gone for.
+        // Where to work: what started it while it goes on, else the part
+        // nearest what is at stake that nobody else has gone for.
         let guard = if home_threatened && (pos - home).length() > 30.0 { home } else { pos };
         let claimed: Vec<String> = self
             .cast
@@ -971,34 +988,74 @@ impl Sim {
             .iter()
             .filter(|o| o.def.id != cid)
             .filter_map(|o| match o.plan.back() {
-                Some(Action::Douse { target: Some(t) }) => Some(key(t)),
+                Some(Action::Apply { to: Some(t), .. }) => Some(Self::part_key(t)),
                 _ => None,
             })
             .collect();
-        let parts: Vec<(Target, Vec3)> = {
-            let free: Vec<(Target, Vec3)> = parts.iter().filter(|(t, _)| !claimed.contains(&key(t))).cloned().collect();
-            if free.is_empty() { parts } else { free }
-        };
-        let target = parts
-            .iter()
-            .find(|(t, p)| live.contains(&key(t)) && key(t) == cause && (*p - pos).length() < 60.0)
-            .or_else(|| parts.iter().filter(|(t, p)| live.contains(&key(t)) && (*p - pos).length() < 60.0).min_by(|a, b| (a.1 - guard).length().total_cmp(&(b.1 - guard).length())))
-            .map(|(t, _)| t.clone());
-        let Some(target) = target else { return false };
-        if was != "fighting the fire" {
+        let parts: Vec<(Target, Vec3)> = self.trouble_parts(pos, 60.0).into_iter().filter(|(t, _)| live.contains(&Self::part_key(t))).collect();
+        let free: Vec<(Target, Vec3)> = parts.iter().filter(|(t, _)| !claimed.contains(&Self::part_key(t))).cloned().collect();
+        let parts = if free.is_empty() { parts } else { free };
+        let Some((target, at)) = parts.iter().find(|(t, _)| Self::part_key(t) == cause).or_else(|| parts.iter().min_by(|a, b| (a.1 - guard).length().total_cmp(&(b.1 - guard).length()))).cloned() else { return false };
+        let Some((before, _, _)) = self.part_props(&target) else { return false };
+        // Imagine each tool to hand at work on it; take the one that pushes it back most.
+        let mut tools: Vec<(Option<ThingId>, Props, f32)> = vec![(None, self.body_props(me), 0.0)];
+        if let Some(h) = held.and_then(|h| self.things.get(h)) {
+            tools.push((Some(h.id), h.props.clone(), 0.0));
+        }
+        for id in self.things.near(pos, 12.0) {
+            let Some(t) = self.things.get(id) else { continue };
+            if t.held() || t.worn.is_some() || t.anchored || t.mass() > STRENGTH || self.vocab.harm(&t.props) > 0.0 || Some(id) == held {
+                continue;
+            }
+            tools.push((Some(id), t.props.clone(), (t.pos - pos).length()));
+        }
+        let mut best: Option<(Option<ThingId>, f32)> = None;
+        for (tool, mut props, fetch) in tools {
+            props[P_FORCE] = 1.0;
+            let (_, after) = self.foresee(&props, &before, 2.0);
+            let gain = before[pi] - after[pi];
+            let score = gain / (1.0 + fetch / 8.0);
+            if gain > 0.05 && best.is_none_or(|b| score > b.1) {
+                best = Some((tool, score));
+            }
+        }
+        let Some((tool, _)) = best else { return false };
+        if was != Aim::Counter(id) {
             let k = self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32;
-            let line = template_line("fight_fire", "", self.hour(), k);
+            let line = template_line("rally", &noun, self.hour(), k);
             self.say(me, &line, None);
         }
-        let far = parts.iter().find(|(t, _)| *t == target).is_some_and(|(_, p)| (*p - pos).length() > 2.0);
         let mut steps = Vec::new();
-        if far {
+        if let Some(t) = tool.filter(|t| Some(*t) != held) {
+            if held.is_some() {
+                steps.push(Action::Drop);
+            }
+            steps.push(Action::Hold { target: Target::Thing(t) });
+        }
+        if (at - pos).length() > 2.0 {
             steps.push(Action::Goto { target: target.clone(), run: true });
         }
-        steps.push(Action::Douse { target: Some(target) });
-        self.plan(me, steps, "put out the fire", false);
-        self.set_doing(cid, "fighting the fire");
+        steps.push(Action::Apply { with: tool.map(Target::Thing), to: Some(target), secs: None });
+        self.plan(me, steps, &format!("stop the {noun}"), false);
+        self.set_aim(cid, Aim::Counter(id), &format!("fighting the {noun}"));
         true
+    }
+
+    /// Harm close by (what burns, what is cursed…), nearest first, with
+    /// its size and name.
+    fn hazards_near(&self, pos: Vec3, r: f32) -> Vec<(Vec3, f32, String)> {
+        let vocab = self.vocab.clone();
+        let mut v: Vec<(Vec3, f32, String)> = Vec::new();
+        for t in self.things.live().filter(|t| !t.held() && t.worn.is_none() && (t.pos - pos).length() < r + 4.0 && vocab.harm(&t.props) > 0.05) {
+            let size = self.snap.type_of(t.type_id).map(|ty| ty.radius() * t.scale).unwrap_or(0.5).clamp(0.2, 4.0);
+            v.push((t.pos, size, self.thing_name(t.id)));
+        }
+        for c in self.field.cells.values().filter(|c| (c.pos - pos).length() < r + 4.0 && vocab.harm(&c.props) > 0.05) {
+            v.push((c.pos, c.size.clamp(0.2, 4.0), self.snap.type_of(c.type_id).map(|t| t.name().to_string()).unwrap_or_default()));
+        }
+        v.retain(|(p, size, _)| (*p - pos).length() < r + size);
+        v.sort_by(|a, b| (a.0 - pos).length().total_cmp(&(b.0 - pos).length()));
+        v
     }
 
     /// Pick what to do next from needs, surroundings and personality.
@@ -1021,10 +1078,12 @@ impl Sim {
         if self.pursue_want(cid) {
             return;
         }
-        // 0. What they wear is on fire: off with it.
+        // 0. What they wear harms them (it burns, it is cursed): off with it.
         if self.mind_of(me) == crate::world::species::Mind::Sapient {
-            if let Some(id) = self.worn_by(me).into_iter().find(|id| self.things.get(*id).is_some_and(|t| t.props[P_FIRE] > 0.05)) {
-                let line = template_line("fire", "", self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
+            let vocab = self.vocab.clone();
+            if let Some(id) = self.worn_by(me).into_iter().find(|id| self.things.get(*id).is_some_and(|t| vocab.harm(&t.props) > 0.05)) {
+                let what = self.thing_name(id);
+                let line = template_line("alarm", &what, self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
                 self.say(me, &line, None);
                 let mut steps = Vec::new();
                 if held.is_some() {
@@ -1032,36 +1091,35 @@ impl Sim {
                 }
                 steps.push(Action::TakeOff { target: Some(Target::Thing(id)), from: None });
                 steps.push(Action::Drop);
-                self.plan(me, steps, "get the burning thing off", false);
-                self.set_doing(cid, "tearing off something burning");
+                self.plan(me, steps, &format!("get the {what} off"), false);
+                self.set_aim(cid, Aim::Avoid, &format!("tearing off the {what}"));
                 next_think(self, 2.0);
                 return;
             }
         }
-        // 1. A fire near them or their home: the willing fight it, the
-        // rest get away (and the curious watch).
-        if self.fight_trouble(cid) {
+        // 1. Trouble near them or their home: the willing push it back, the
+        // rest keep clear of what harms (and the curious watch).
+        if self.counter_trouble(cid) {
             next_think(self, 1.2);
             return;
         }
-        // 1. Fire close by: get away (the brave stay to watch).
-        let fires: Vec<super::env::Burning> = self.burning().into_iter().filter(|f| !f.held).collect();
-        if let Some(f) = fires.iter().filter(|f| (f.pos - pos).length() < 9.0 + f.size).min_by(|a, b| (a.pos - pos).length().total_cmp(&(b.pos - pos).length())) {
-            let away = (pos - f.pos).normalize_or_zero();
-            let dest = pos + if away == Vec3::ZERO { Vec3::X } else { away } * (12.0 + f.size * 2.0);
-            let line = template_line("fire", "", self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
+        if let Some((at, size, what)) = self.hazards_near(pos, 9.0).into_iter().next() {
+            let away = (pos - at).normalize_or_zero();
+            let dest = pos + if away == Vec3::ZERO { Vec3::X } else { away } * (12.0 + size * 2.0);
+            let line = template_line("alarm", &what, self.hour(), self.cast.get_mut(cid).map(|n| n.rand() * 100.0).unwrap_or(0.0) as u32);
             self.say(me, &line, None);
-            self.plan(me, vec![Action::Goto { target: Target::Point(dest.to_array()), run: true }], "get away from the fire", false);
-            self.set_doing(cid, "fleeing the fire");
+            self.plan(me, vec![Action::Goto { target: Target::Point(dest.to_array()), run: true }], &format!("get away from the {what}"), false);
+            self.set_aim(cid, Aim::Avoid, &format!("getting away from the {what}"));
             next_think(self, 3.0);
             return;
         }
-        if let Some(f) = fires.iter().filter(|f| (f.pos - pos).length() < 45.0).min_by(|a, b| (a.pos - pos).length().total_cmp(&(b.pos - pos).length())) {
+        let watch = self.incidents_near(pos, 45.0).first().map(|i| (i.centre(), i.extent(), i.words.noun.clone()));
+        if let Some((c, extent, noun)) = watch {
             if tr.curious + tr.brave > 0.9 && needs.curiosity > 0.2 {
-                let d = (f.pos - pos).length();
-                let watch = f.pos + (pos - f.pos).normalize_or_zero() * (12.0 + f.size).min(d);
-                self.plan(me, vec![Action::Goto { target: Target::Point(watch.to_array()), run: false }, Action::Wait { secs: 8.0 }], "watch the fire", false);
-                self.set_doing(cid, "watching the fire");
+                let d = (c - pos).length();
+                let spot = c + (pos - c).normalize_or_zero() * (12.0 + extent * 0.5).min(d);
+                self.plan(me, vec![Action::Goto { target: Target::Point(spot.to_array()), run: false }, Action::Wait { secs: 8.0 }], &format!("watch the {noun}"), false);
+                self.set_doing(cid, &format!("watching the {noun}"));
                 next_think(self, 6.0);
                 return;
             }
@@ -1339,8 +1397,14 @@ impl Sim {
     }
 
     pub fn set_doing(&mut self, cid: i64, what: &str) {
+        self.set_aim(cid, Aim::Other, what);
+    }
+
+    /// What they are about, and the words for it.
+    pub fn set_aim(&mut self, cid: i64, aim: Aim, what: &str) {
         if let Some(n) = self.cast.get_mut(cid) {
             n.doing = what.to_string();
+            n.aim = aim;
         }
     }
 
@@ -1443,7 +1507,7 @@ impl Sim {
         let mut best: Option<(f32, Target, Vec3)> = None;
         for id in self.things.near(p, range) {
             let Some(t) = self.things.get(id) else { continue };
-            if t.held() || t.anchored || t.mass() > 3.0 || t.props[P_EDIBLE] > 0.0 || t.props[P_FIRE] > 0.0 || near_a_home(t.pos) {
+            if t.held() || t.anchored || t.mass() > 3.0 || t.props[P_EDIBLE] > 0.0 || self.vocab.harm(&t.props) > 0.0 || near_a_home(t.pos) {
                 continue;
             }
             let d = (t.pos - p).length();

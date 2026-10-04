@@ -395,7 +395,7 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
     for n in sim.cast.npcs.iter().filter(|n| n.here()) {
         *population.entry(n.species.name.clone()).or_insert(0) += 1;
     }
-    let following = sim.cast.npcs.iter().filter(|n| n.here() && n.doing.starts_with("following")).count();
+    let following = sim.cast.npcs.iter().filter(|n| n.here() && matches!(n.aim, super::npc::Aim::Follow(_))).count();
     Metrics {
         game_hours: hours,
         events: events.len() as u64,

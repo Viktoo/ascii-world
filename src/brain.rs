@@ -891,6 +891,8 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     if !uprops.is_empty() || !urules.is_empty() {
         let (props, rules) = check_universe_rules(&uprops, &urules);
         crate::sim::persist::set_universe_rules(&ctx.db, &props, &rules)?;
+        let meta: Vec<_> = universe_meta_from(&v).into_iter().filter(|(n, _)| props.iter().any(|p| &p.0 == n)).collect();
+        crate::sim::persist::set_universe_meta(&ctx.db, &meta)?;
         crate::log::info(format!("universe rules: {} properties, {} rules", props.len(), rules.len()));
         let _ = ctx.events.send(Event::RulesChanged);
     }
@@ -1425,6 +1427,40 @@ fn universe_rules_from(v: &Value) -> (Vec<(String, f32, String)>, Vec<crate::sim
     }
     let rules = v.get("rules").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|r| serde_json::from_value(r).ok()).take(crate::sim::rules::MAX_UNIVERSE_RULES).collect();
     (props, rules)
+}
+
+/// What genesis says about its own properties beyond their number: when a
+/// change is news ("rises", "falls"), whether it spreads as one story
+/// ("spreads": the words to tell it), how harmful it is, its range.
+pub fn universe_meta_from(v: &Value) -> Vec<(String, crate::sim::props::PropMeta)> {
+    use crate::sim::props::{Crossing, PropMeta, Words};
+    let mut out = Vec::new();
+    for p in v.get("properties").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(8) {
+        let name = s(p, "name").trim().to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        let text = |k: &str| p.get(k).and_then(|x| x.as_str()).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        let mut m = PropMeta { keep: true, ..Default::default() };
+        if let Some(t) = text("rises") {
+            m.rises.push(Crossing { kind: format!("{name}_rose"), text: t, when: None, saved: false });
+        }
+        if let Some(t) = text("falls") {
+            m.falls.push(Crossing { kind: format!("{name}_fell"), text: t, when: None, saved: true });
+        }
+        if let Some(w) = p.get("spreads").filter(|w| w.is_object()) {
+            let noun = s(w, "noun").trim().to_string();
+            if !noun.is_empty() {
+                m.incident = Some(Words { noun, big: s(w, "big"), active: s(w, "active"), spent: s(w, "spent"), ended: s(w, "ended"), stopped: s(w, "stopped") });
+            }
+        }
+        m.hazard = f(p, "hazard", 0.0).clamp(0.0, 2.0);
+        if let Some([lo, hi]) = p.get("range").and_then(|r| serde_json::from_value::<[f32; 2]>(r.clone()).ok()).filter(|[lo, hi]| lo.is_finite() && hi.is_finite() && lo < hi) {
+            m.range = Some([lo, hi]);
+        }
+        out.push((name, m));
+    }
+    out
 }
 
 /// Keep the properties with good names and the rules that parse and survive a

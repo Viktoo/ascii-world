@@ -6,7 +6,11 @@
 //! at one kiln. The log keeps one line per incident and updates it; the event
 //! log keeps the first crossing and the end; people remember what started it
 //! and treat it as a problem to deal with together.
+//!
+//! Nothing here knows fire: a property spreads as incidents when its
+//! vocabulary entry says so (`PropMeta::incident`), with the words to tell it.
 
+use super::props::Words;
 use super::{Note, Sim};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -24,26 +28,35 @@ const TELL_EVERY: f64 = 2.0;
 /// Ended incidents are kept this long (seconds of game time), for minds and the log.
 const KEEP_ENDED: f64 = 2.0 * crate::render::sky::DAY_SECONDS;
 
-/// Which crossings start an incident, which family they belong to, and
-/// whether they put a part of it out.
-fn family(kind: &str) -> Option<(&'static str, Role)> {
-    match kind {
-        "ignited" => Some(("fire", Role::Start)),
-        "burnt_out" => Some(("fire", Role::End)),
-        "doused" => Some(("fire", Role::End)),
-        "died" => Some(("fire", Role::Join)),
-        _ => None,
-    }
+/// A threshold crossing, as the rules pass saw it.
+#[derive(Clone, Debug)]
+pub struct Crossed {
+    /// The event kind ("ignited").
+    pub kind: String,
+    /// The property that crossed.
+    pub prop: usize,
+    /// Up past its level (true), or back down.
+    pub rose: bool,
+    /// Stopped before running its course.
+    pub saved: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
     /// A part catches: it joins its cause's incident, or starts one.
     Start,
-    /// A part stops (burnt out, put out).
+    /// A part stops (ran its course, or was stopped).
     End,
     /// Only counted, if the part already belongs to one.
     Join,
+}
+
+fn fire_words() -> Words {
+    Words { noun: "fire".into(), big: "wildfire".into(), active: "burning".into(), spent: "burnt".into(), ended: "burnt itself out".into(), stopped: "put out".into() }
+}
+
+fn fire() -> String {
+    "fire".into()
 }
 
 /// What started an incident: the thing it spread from, and who, if anyone.
@@ -73,8 +86,17 @@ impl Cause {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Incident {
     pub id: u32,
-    /// The family: "fire".
+    /// What it is called ("fire").
     pub kind: String,
+    /// The property that spreads ("fire", "cursed").
+    #[serde(default = "fire")]
+    pub prop: String,
+    /// How it is told.
+    #[serde(default = "fire_words")]
+    pub words: Words,
+    /// Parts it ran its course on.
+    #[serde(default)]
+    pub spent: u32,
     pub cause: Cause,
     /// The place's name where it began, if it has one.
     #[serde(default)]
@@ -105,6 +127,8 @@ pub struct Incident {
 }
 
 impl Incident {
+    /// Crossings of one kind ("ignited").
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn count(&self, kind: &str) -> u32 {
         self.counts.get(kind).copied().unwrap_or(0)
     }
@@ -122,64 +146,64 @@ impl Incident {
         (self.hi[0] - self.lo[0]).max(self.hi[1] - self.lo[1])
     }
 
+    /// Grown big ("wildfire" rather than "fire").
+    fn big(&self) -> bool {
+        self.count_rises() >= 12 || self.extent() > 25.0
+    }
+
+    fn count_rises(&self) -> u32 {
+        self.spent + self.saved.len() as u32 + self.live.len() as u32
+    }
+
     /// The incident in one line: what, from what, how big, how it stands.
     pub fn line(&self) -> String {
-        let what = match self.kind.as_str() {
-            "fire" if self.count("ignited") >= 12 || self.extent() > 25.0 => "Wildfire",
-            "fire" => "Fire",
-            k => k,
-        };
+        let w = &self.words;
+        let what = super::physics::cap(&if self.big() { w.big() } else { w.noun.clone() });
         let from = if self.cause.subject.is_empty() && self.cause.by.is_none() { String::new() } else { format!(" from {}", self.cause.told()) };
         let place = if self.place.is_empty() { String::new() } else { format!(" near {}", self.place) };
         let mut parts = Vec::new();
-        let burnt = self.count("burnt_out");
-        if burnt > 0 {
-            parts.push(format!("{burnt} burnt"));
+        if self.spent > 0 {
+            parts.push(format!("{} {}", self.spent, w.spent()));
         }
-        let doused = self.saved.len() as u32;
-        if doused > 0 {
-            parts.push(format!("{doused} saved"));
+        if !self.saved.is_empty() {
+            parts.push(format!("{} saved", self.saved.len()));
         }
         if self.extent() >= 10.0 {
             parts.push(format!("{} m across", (self.extent() / 5.0).round() as i32 * 5));
         }
         let state = match self.ended {
             Some(_) => self.end_state(),
-            None if self.kind != "fire" => "going on".into(),
-            None if self.live.is_empty() => "smouldering".into(),
-            None => format!("{} burning", self.live.len()),
+            None if self.live.is_empty() => "dying down".into(),
+            None => format!("{} {}", self.live.len(), w.active()),
         };
         parts.push(state);
         format!("{what}{from}{place}: {}.", parts.join(", "))
     }
 
-    /// How it ended: "put out", "burnt itself out", "burnt out though 3 fought it".
+    /// How it ended: "put out", "burnt itself out", "burnt itself out though 3 fought it".
     fn end_state(&self) -> String {
-        if self.kind != "fire" {
-            return "over".into();
-        }
-        let (burnt, saved, fought) = (self.count("burnt_out") as usize, self.saved.len(), self.fought_by.len());
-        match fought {
-            0 => "burnt itself out".into(),
-            _ if saved * 2 >= burnt => "put out".into(),
-            n => format!("burnt out though {n} fought it"),
+        let w = &self.words;
+        match self.fought_by.len() {
+            0 => w.ended(),
+            _ if self.saved.len() * 2 >= self.spent as usize => w.stopped(),
+            n => format!("{} though {n} fought it", w.ended()),
         }
     }
 
     /// As news, for the event log and people's talk: "a fire broke out near
-    /// Brask, started by the root kiln"; "the fire from the root kiln was put out".
+    /// Brask, started by the root kiln"; "the fire from the root kiln: put out".
     fn story(&self) -> String {
-        let what = if self.kind == "fire" { "fire" } else { self.kind.as_str() };
+        let what = &self.words.noun;
         let from = if self.cause.subject.is_empty() && self.cause.by.is_none() { String::new() } else { format!(" from {}", self.cause.told()) };
         match self.ended {
-            None => format!("a {what} broke out{}{}", self.place_suffix(), if from.is_empty() { String::new() } else { format!(", started by {}", self.cause.told()) }),
-            Some(_) => format!("the {what}{from} {}", self.end_state().replace("put out", "was put out")),
+            None => format!("{} {what} broke out{}{}", super::article(what), self.place_suffix(), if from.is_empty() { String::new() } else { format!(", started by {}", self.cause.told()) }),
+            Some(_) => format!("the {what}{from} is over: {}", self.end_state()),
         }
     }
 
     /// How a witness remembers it.
     fn memory(&self) -> String {
-        let what = if self.kind == "fire" { "a fire" } else { &self.kind };
+        let what = format!("{} {}", super::article(&self.words.noun), self.words.noun);
         match (&self.cause.subject.is_empty(), &self.cause.by) {
             (true, None) => format!("I saw {what} break out{}; nobody knows what started it.", self.place_suffix()),
             _ => format!("I saw {what} break out{}. It started from {}.", self.place_suffix(), self.cause.told()),
@@ -231,11 +255,24 @@ pub enum Joined {
 }
 
 impl Sim {
-    /// File a crossing (`kind` on `subject`, which spread from `cause`):
-    /// into its incident, a new one, or none.
-    pub fn file_incident(&mut self, subject: &str, kind: &str, pos: Vec3, cause: Option<Cause>) -> Option<Joined> {
-        let (fam, role) = family(kind)?;
+    /// File a crossing (on `subject`, which spread from `cause`): into its
+    /// incident, a new one, or none.
+    pub fn file_incident(&mut self, subject: &str, c: &Crossed, pos: Vec3, cause: Option<Cause>) -> Option<Joined> {
+        let vocab = self.vocab.clone();
+        let words = vocab.meta.get(c.prop).and_then(|m| m.incident.clone());
+        let role = match (&words, c.rose) {
+            (Some(_), true) => Role::Start,
+            (Some(_), false) => Role::End,
+            (None, _) => Role::Join,
+        };
+        let prop = vocab.names.get(c.prop).cloned().unwrap_or_default();
+        let fam = words.as_ref().map(|w| w.noun.clone()).unwrap_or_default();
+        let fam = fam.as_str();
+        let kind = c.kind.as_str();
         let t = self.t;
+        if role == Role::Join && self.incidents.part_of(subject).is_none() {
+            return None;
+        }
         let mine = self.incidents.part_of(subject);
         let from = cause.as_ref().and_then(|c| self.incidents.part_of(&c.subject));
         // Catching right by a going one is the same one (pieces of one smashed lamp).
@@ -250,6 +287,9 @@ impl Sim {
                 self.incidents.list.push(Incident {
                     id,
                     kind: fam.into(),
+                    prop: prop.clone(),
+                    words: words.clone().unwrap_or_else(fire_words),
+                    spent: 0,
                     cause,
                     place,
                     at: pos.to_array(),
@@ -291,10 +331,11 @@ impl Sim {
             }
             Role::End => {
                 inc.live.remove(subject);
-                if kind == "doused" {
+                if c.saved {
                     inc.saved.insert(subject.to_string());
                 } else {
                     inc.saved.remove(subject);
+                    inc.spent += 1;
                 }
             }
             Role::Join => {}
@@ -326,6 +367,7 @@ impl Sim {
                     *k.counts.entry(kind).or_default() += n;
                 }
                 k.live.extend(g.live);
+                k.spent += g.spent;
                 k.saved.extend(g.saved);
                 k.fought_by.extend(g.fought_by);
                 k.roused.extend(g.roused);
@@ -361,6 +403,16 @@ impl Sim {
         Cause { subject: subject.to_string(), name, by }
     }
 
+    /// A live part by its key ("thing:3", "cell:4,5"), and where it is.
+    pub fn part_at(&self, key: &str) -> Option<(super::Target, Vec3)> {
+        if let Some(id) = key.strip_prefix("thing:").and_then(|s| s.parse::<i64>().ok()) {
+            return self.things.get(id).filter(|t| !t.removed).map(|t| (super::Target::Thing(id), t.pos));
+        }
+        let (x, z) = key.strip_prefix("cell:")?.split_once(',')?;
+        let c = (x.parse().ok()?, z.parse().ok()?);
+        self.field.cells.get(&c).map(|cell| (super::Target::Cell([c.0, c.1]), cell.pos))
+    }
+
     /// "the grass tuft", "the lantern" (for causes).
     pub fn subject_name(&self, subject: &str) -> String {
         let name = if let Some(id) = subject.strip_prefix("thing:").and_then(|s| s.parse::<i64>().ok()) {
@@ -394,7 +446,7 @@ impl Sim {
 
     /// A crossing that belongs to an incident: count it, tell it as one
     /// story, remember it once.
-    pub fn incident_crossing(&mut self, joined: Joined, kind: &str, pos: Vec3) {
+    pub fn incident_crossing(&mut self, joined: Joined, c: &Crossed, pos: Vec3) {
         match joined {
             Joined::Began(id) => {
                 let Some(inc) = self.incidents.get(id).cloned() else { return };
@@ -405,7 +457,7 @@ impl Sim {
             }
             Joined::Part(id) => {
                 // Those who see it reach them learn where it came from.
-                if kind == "ignited" {
+                if c.rose {
                     let near_new = self.cast.npcs.iter().any(|n| n.here() && (n.a.pos - pos).length() < 30.0);
                     if near_new {
                         self.rouse(id, pos, 30.0);
@@ -446,7 +498,7 @@ impl Sim {
             self.incidents.of.retain(|_, v| *v != id);
             self.event("incident_end", None, Some(inc.cause.subject.clone()).filter(|s| !s.is_empty()), inc.story(), Some(inc.centre()), json!({ "incident": id, "kind": inc.kind, "counts": inc.counts, "fought_by": inc.fought_by }));
             self.tell_incident(id, true);
-            let m = format!("The {} from {} is out.", if inc.kind == "fire" { "fire" } else { &inc.kind }, inc.cause.told());
+            let m = format!("The {} from {} is over: {}.", inc.words.noun, inc.cause.told(), inc.end_state());
             self.witness(inc.centre(), 60.0 + inc.extent() * 0.5, &m, 0.5, &[]);
         }
         self.incidents.list.retain(|i| i.ended.is_none_or(|e| t - e < KEEP_ENDED));
@@ -473,6 +525,14 @@ impl Sim {
             }
         }
         (!v.is_empty()).then(|| format!("Trouble nearby: {}", v.join(" ")))
+    }
+
+    /// Live parts of going incidents within `r` of a point, nearest first.
+    pub fn trouble_parts(&self, p: Vec3, r: f32) -> Vec<(super::Target, Vec3)> {
+        let mut v: Vec<(super::Target, Vec3)> = self.incidents.going().flat_map(|i| i.live.iter()).filter_map(|k| self.part_at(k)).filter(|(_, at)| (*at - p).length() <= r).collect();
+        v.dedup_by(|a, b| a.0 == b.0);
+        v.sort_by(|a, b| (a.1 - p).length().total_cmp(&(b.1 - p).length()));
+        v
     }
 
     /// Going incidents within `r` of a point (nearest first), for minds.

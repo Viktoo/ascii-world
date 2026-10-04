@@ -1154,13 +1154,77 @@ fn villagers_fight_a_fire_near_their_homes() {
     s.sim.things.get_mut(id).unwrap().props[P_FIRE] = 0.6;
     let all = record(&mut s);
     s.run(150.0, 0.1);
-    let fought = of(&all, "fought_fire");
-    assert!(!fought.is_empty(), "someone fought it");
+    // Nobody was told how: they worked out by the rules that beating at it with their hands pushes it back.
+    let fought: Vec<SimEvent> = of(&all, "applied").into_iter().filter(|e| e.data["incidents"].as_array().is_some_and(|a| !a.is_empty())).collect();
+    assert!(!fought.is_empty(), "someone fought it: {:?}", of(&all, "applied").iter().take(3).map(|e| e.text.clone()).collect::<Vec<_>>());
     let inc = s.sim.incidents.list.first().cloned().expect("an incident");
     assert!(!inc.fought_by.is_empty(), "{}", inc.line());
     assert!(inc.ended.is_some(), "it's out: {}", inc.line());
     assert!(inc.saved.len() >= 5, "they saved some of the meadow: {}", inc.line());
     assert!(s.sim.trouble_line(home).is_some_and(|l| l.contains("Fought by")), "{:?}", s.sim.trouble_line(home));
+    eprintln!("{}", inc.line());
+    sound(&s);
+}
+
+/// The same machinery for a force the engine has never heard of: a world's
+/// own curse spreads by touch and is told as one incident; a brave villager
+/// works out, by imagining each tool against it, that the holy charm lying
+/// about lifts it (bare hands do nothing), fetches it and lifts the curse.
+#[test]
+fn a_villager_lifts_a_spreading_curse_with_a_charm_nobody_told_them_about() {
+    use super::props::{Crossing, PropMeta, Words};
+    use super::rules::RuleSpec;
+    let w = world("curse-fight", 47);
+    let props = vec![("cursed".to_string(), 0.0, "how cursed it is, 0..1".to_string()), ("holy".to_string(), 0.0, "how holy it is, 0..1".to_string())];
+    let rules = vec![
+        RuleSpec { name: "curses spread by touch".into(), near: Some(1.5), when: "self.cursed > 0.5 && other.cursed < self.cursed".into(), effects: vec!["other.cursed += 0.1 * dt".into()] },
+        RuleSpec { name: "holiness lifts curses".into(), near: Some(0.5), when: "self.cursed > 0 && other.holy > 0.5 && other.force > 0".into(), effects: vec!["self.cursed -= 1 * dt".into()] },
+    ];
+    let (props, rules) = crate::brain::check_universe_rules(&props, &rules);
+    assert_eq!(rules.len(), 2);
+    super::persist::set_universe_rules(&w.db, &props, &rules).unwrap();
+    let curse = PropMeta {
+        rises: vec![Crossing { kind: "cursed_rose".into(), text: "fell under the curse".into(), when: None, saved: false }],
+        falls: vec![Crossing { kind: "cursed_fell".into(), text: "was freed of the curse".into(), when: None, saved: true }],
+        incident: Some(Words { noun: "curse".into(), big: "blight".into(), active: "cursed".into(), spent: "withered".into(), ended: "faded away".into(), stopped: "lifted".into() }),
+        hazard: 0.4,
+        keep: true,
+        range: Some([0.0, 1.0]),
+        ..Default::default()
+    };
+    super::persist::set_universe_meta(&w.db, &[("cursed".into(), curse)]).unwrap();
+    let idol = add_type(&w, r#"
+export const meta = { name: "black idol", bounds: [0.2, 0.3, 0.2], tags: ["item"], props: { cursed: 1, mass: 30 } };
+export function sdf(x, y, z, k) { return roundBox(x, y, z, 0.15, 0.25, 0.15, 0.03); }
+export function color(x, y, z, k) { return rgb(30, 20, 40); }
+"#);
+    let charm = add_type(&w, r#"
+export const meta = { name: "sun charm", bounds: [0.06, 0.06, 0.02], tags: ["item"], props: { holy: 1, mass: 0.2 } };
+export function sdf(x, y, z, k) { return roundBox(x, y, z, 0.05, 0.05, 0.01, 0.01); }
+export function color(x, y, z, k) { return rgb(230, 200, 90); }
+"#);
+    let stick = builtin_id(&w, "stick");
+    let p = dry_spot(&w, 8.0, 0.9);
+    let hero = add_char(&w, "Oda", "brave, devout, steady", &[], p + Vec3::new(6.0, 0.0, 0.0));
+    let mut s = session(&w, 17, None);
+    s.sim.player.pos = p + Vec3::new(-25.0, 0.0, 0.0);
+    clear_scatter(&mut s, p, 30.0);
+    s.sim.spawn_thing(idol, p, 0.0, 1.0, Default::default(), true).unwrap();
+    for k in 0..6 {
+        let a = k as f32 * 1.05;
+        s.sim.spawn_thing(stick, p + Vec3::new(a.cos(), 0.0, a.sin()) * 1.0, a, 1.0, Default::default(), true).unwrap();
+    }
+    let charm_id = s.sim.spawn_thing(charm, p + Vec3::new(9.0, 0.0, 2.0), 0.0, 1.0, Default::default(), true).unwrap();
+    let all = record(&mut s);
+    s.run(90.0, 0.1);
+    let inc = s.sim.incidents.list.first().cloned().unwrap_or_else(|| panic!("an incident: {:?}", of(&all, "cursed_rose").len()));
+    assert_eq!(inc.kind, "curse");
+    assert!(inc.cause.name.contains("black idol"), "{:?}", inc.cause);
+    let used: Vec<SimEvent> = of(&all, "applied");
+    assert!(used.iter().any(|e| e.data["with"] == charm_id), "Oda worked the charm against it: {:?}", used.iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+    assert!(inc.fought_by.contains("Oda"), "{}", inc.line());
+    assert!(!inc.saved.is_empty(), "lifted from some: {}", inc.line());
+    let _ = hero;
     eprintln!("{}", inc.line());
     sound(&s);
 }
