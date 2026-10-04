@@ -244,11 +244,9 @@ impl Ctx {
         self.universe.read().map(|u| u.clone()).unwrap_or_default()
     }
 
-    /// Property names this universe knows (built-in and its own).
-    fn known_props(&self) -> Vec<String> {
-        let mut v: Vec<String> = crate::sim::props::BUILTIN.iter().map(|(n, _, _)| n.to_string()).collect();
-        v.extend(crate::sim::persist::universe_props(&self.db).into_iter().map(|(n, _, _)| n));
-        v
+    /// This universe's vocabulary (built-in, its own, and learned aliases).
+    fn vocab(&self) -> crate::sim::props::Vocab {
+        crate::sim::persist::world_vocab(&self.db)
     }
 
     fn log(&self, s: impl Into<String>) {
@@ -444,7 +442,7 @@ async fn run(ctx: Ctx, cmd: Cmd) {
 /// One species from a brief: written, its body built if new, stored, and
 /// the snapshot flipped so the body can be drawn.
 async fn new_species(ctx: &Ctx, brief: &str, fixed: &Value) -> anyhow::Result<String> {
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let task = prompts::species_task(brief, &species_list(&ctx.db));
     let mut req = Req::new(Role::Builder, system.clone(), task);
     req.max_tokens = 2000;
@@ -482,17 +480,27 @@ fn short(s: &str) -> String {
     if s.chars().count() > 90 { format!("{}…", s.chars().take(90).collect::<String>()) } else { s.to_string() }
 }
 
+/// Every property a type names must be one this universe knows and lets
+/// things have (never an act property like `force`).
+pub fn check_type_props(ct: &crate::lang::CompiledType, vocab: &crate::sim::props::Vocab) -> Result<(), String> {
+    let mut bad: Vec<String> = Vec::new();
+    for n in ct.meta.props.iter().map(|(n, _)| n).chain(ct.prop_names.iter()) {
+        match vocab.lookup(n) {
+            Some(i) if vocab.is_act(i) => bad.push(format!("{n} (what an action is doing right now; no thing has it)")),
+            Some(_) => {}
+            None => bad.push(n.clone()),
+        }
+    }
+    bad.dedup();
+    if bad.is_empty() { Ok(()) } else { Err(format!("unknown properties: {}; this universe knows: {}", bad.join(", "), vocab.writable_names().join(", "))) }
+}
+
 /// Steps 1–4 on the worker pool, plus: every property it names must be one
 /// this universe knows.
-async fn validate(code: String, known: Vec<String>) -> Result<NewType, Vec<Diag>> {
+async fn validate(code: String, vocab: crate::sim::props::Vocab) -> Result<NewType, Vec<Diag>> {
     tokio::task::spawn_blocking(move || {
         let ct = compile(&code)?;
-        let unknown: Vec<&String> = ct.meta.props.iter().map(|(n, _)| n).chain(ct.prop_names.iter()).filter(|n| !known.contains(n)).collect();
-        if !unknown.is_empty() {
-            let mut u: Vec<String> = unknown.into_iter().cloned().collect();
-            u.dedup();
-            return Err(vec![Diag::new(Stage::Allowlist, 0, format!("unknown properties: {}; this universe knows: {}", u.join(", "), known.join(", ")))]);
-        }
+        check_type_props(&ct, &vocab).map_err(|e| vec![Diag::new(Stage::Allowlist, 0, e)])?;
         let report = probe(&ct)?;
         Ok(NewType { ct: Arc::new(ct), report: Arc::new(report) })
     })
@@ -515,7 +523,7 @@ async fn build_type(ctx: &Ctx, system: &str, task: String, name: &str, extra_tag
             Some(code) => {
                 let code = add_tags(&code, extra_tags);
                 last_code = code.clone();
-                match validate(code, ctx.known_props()).await {
+                match validate(code, ctx.vocab()).await {
                     Ok(t) if extra_tags.contains(&"body") && t.ct.meta.body.is_none() => vec![Diag::new(Stage::Allowlist, 0, "a body needs meta.body (height, eye, radius, reach, grip, roles, gait…); see the body rules above".into())],
                     Ok(t) if t.ct.meta.body.as_ref().is_some_and(|b| roles.iter().any(|r| !b.roles.contains(r))) => {
                         let missing: Vec<&String> = roles.iter().filter(|r| !t.ct.meta.body.as_ref().is_some_and(|b| b.roles.contains(r))).collect();
@@ -775,7 +783,7 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
 /// with the species and committed. Returns the new body's type id.
 async fn species_body(ctx: &Ctx, species: &str, template: &str) -> anyhow::Result<u32> {
     let mut sp: crate::world::species::Species = serde_json::from_str(species)?;
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let desc = if sp.description.is_empty() { sp.name.clone() } else { format!("{}: {}", sp.name, sp.description) };
     let t = write_body(ctx, &system, &sp.name, &desc, species, template, true).await?;
     let old = serde_json::to_string(&sp)?;
@@ -802,7 +810,7 @@ async fn species_body(ctx: &Ctx, species: &str, template: &str) -> anyhow::Resul
 /// One being's body reshaped (a poofy tail): written from its body now,
 /// keeping every role. Returns the new body's type id.
 async fn reshape_body(ctx: &Ctx, name: &str, from: &str, source: &str, change: &str) -> anyhow::Result<u32> {
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let roles = crate::lang::compile(source).ok().and_then(|ct| ct.meta.body.map(|b| b.roles)).unwrap_or_default();
     let task = prompts::body_reshape_task(name, from, source, change, &roles);
     let t = build_type(ctx, &system, task, name, &["body"], &roles).await?;
@@ -878,7 +886,7 @@ fn species_world_from(db: &Db, v: &Value) {
 }
 
 async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
-    let system = prompts::builder_system(&ctx.prompt, &ctx.known_props());
+    let system = prompts::builder_system(&ctx.prompt, &ctx.vocab());
     let mut req = Req::new(Role::Builder, system.clone(), prompts::GENESIS_TASK);
     req.max_tokens = 32000;
     req.effort = Some("medium");
@@ -919,7 +927,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
         let code = add_tags(&code, &["base"]);
         let system = system_ref;
         futs.push(async move {
-            let t = match validate(code.clone(), ctx.known_props()).await {
+            let t = match validate(code.clone(), ctx.vocab()).await {
                 Ok(t) => Some(t),
                 Err(d) if d.iter().all(|x| x.stage.repairable()) => {
                     let name = code.split("name:").nth(1).and_then(|s| s.split('"').nth(1)).unwrap_or("object").to_string();
@@ -1063,7 +1071,7 @@ fn s(v: &Value, k: &str) -> String {
 
 async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let info = ctx.info(r).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let task = format!(
         "{}\n\nRegion ({}, {}) in the land of {}.\nTerrain notes:\n{}\nNeighbouring regions: {}\nExisting object types:\n{}",
@@ -1328,7 +1336,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
 
 async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: Option<&(i64, String)>) -> anyhow::Result<Vec<i64>> {
     let info = ctx.info(crate::world::region_of(target.x, target.z)).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let (who, sees) = match by {
         Some((_, name)) => (format!("Made by: {name}, a character who lives here (not the player)."), format!("What {name} sees")),
@@ -1360,7 +1368,7 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                 },
                 None => {
                     let code = all_code_blocks(&reply).into_iter().next().or_else(|| extract_code(&reply)).ok_or_else(|| vec![Diag::new(Stage::Parse, 0, "no ```js block with the new type".into())])?;
-                    new_types.push(validate(code, ctx.known_props()).await?);
+                    new_types.push(validate(code, ctx.vocab()).await?);
                     TypeRef::New(0)
                 }
             };
@@ -1455,6 +1463,7 @@ pub fn universe_meta_from(v: &Value) -> Vec<(String, crate::sim::props::PropMeta
             }
         }
         m.hazard = f(p, "hazard", 0.0).clamp(0.0, 2.0);
+        m.scale = s(p, "scale").trim().to_string();
         if let Some([lo, hi]) = p.get("range").and_then(|r| serde_json::from_value::<[f32; 2]>(r.clone()).ok()).filter(|[lo, hi]| lo.is_finite() && hi.is_finite() && lo < hi) {
             m.range = Some([lo, hi]);
         }
@@ -1486,23 +1495,127 @@ pub fn check_universe_rules(props: &[(String, f32, String)], rules: &[crate::sim
     (kept_props, kept)
 }
 
-/// The interpreter: what does this action do, in primitives.
+/// The interpreter: what does this action do, in primitives. Property
+/// names in the answer are checked like a type's: near misses are mapped by
+/// the world's aliases, and what is still unknown is sent back to be fixed.
 async fn interpret(ctx: &Ctx, actor: &str, text: &str, context: &str) -> anyhow::Result<Value> {
-    let system = format!("{}\n\nThe universe:\n{}\n\nProperties this universe knows:\n{}", prompts::INTERPRET_TASK, ctx.universe(), known_props_described(&ctx.db));
+    let system = format!("{}\n\nThe universe:\n{}\n\nProperties this universe knows:\n{}", prompts::INTERPRET_TASK, ctx.universe(), ctx.vocab().describe());
     let user = format!("{actor} does this: \"{text}\"\n\nThe situation (JSON):\n{context}");
     let mut req = Req::new(Role::Character, system, user);
     req.max_tokens = 1200;
     req.effort = Some("low");
     let reply = ctx.llm.complete(&req, "interpret").await?;
-    extract_json(&reply)
+    let mut v = extract_json(&reply)?;
+    let unknown = known_deed_props(ctx, &mut v).await;
+    if unknown.is_empty() {
+        return Ok(v);
+    }
+    let names = ctx.vocab().writable_names().join(", ");
+    req.messages.push(Msg { user: false, text: reply });
+    req.messages.push(Msg { user: true, text: prompts::repair(&format!("unknown properties: {}; this universe knows: {names}. Use only those names, or leave the change out.", unknown.join(", "))) });
+    let fixed = ctx.llm.complete(&req, "interpret").await.ok().and_then(|r| extract_json(&r).ok());
+    let mut v = fixed.unwrap_or(v);
+    let still = known_deed_props(ctx, &mut v).await;
+    if !still.is_empty() {
+        crate::log::info(format!("deed '{text}': left out unknown properties {}", still.join(", ")));
+        strip_deed_props(&mut v, &still);
+    }
+    Ok(v)
 }
 
-fn known_props_described(db: &Db) -> String {
-    let mut v = crate::sim::props::Vocab::builtin();
-    for (n, d, m) in crate::sim::persist::universe_props(db) {
-        let _ = v.add(&n, d, &m);
+/// The property maps in a deed answer (what it changes, makes, or dresses someone in).
+fn deed_prop_maps(v: &mut Value) -> Vec<&mut serde_json::Map<String, Value>> {
+    let mut out = Vec::new();
+    let Some(o) = v.as_object_mut() else { return out };
+    for (k, list) in o.iter_mut() {
+        let items: Vec<&mut Value> = match k.as_str() {
+            "changes" | "create" => list.as_array_mut().map(|a| a.iter_mut().collect()).unwrap_or_default(),
+            "being" => list.get_mut("wear").and_then(|w| w.as_array_mut()).map(|a| a.iter_mut().collect()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        out.extend(items.into_iter().filter_map(|i| i.get_mut("props")).filter_map(|p| p.as_object_mut()));
     }
-    v.describe()
+    out
+}
+
+fn strip_deed_props(v: &mut Value, names: &[String]) {
+    for m in deed_prop_maps(v) {
+        m.retain(|k, _| !names.contains(k));
+    }
+}
+
+/// Map a deed answer's property names onto this world's: exact, then known
+/// aliases, then one LLM ruling per new name (kept with the world). Act
+/// properties (`force`) are left out: no deed sets them. Returns the names
+/// that are still not properties.
+async fn known_deed_props(ctx: &Ctx, v: &mut Value) -> Vec<String> {
+    let vocab = ctx.vocab();
+    let aliases = crate::sim::persist::prop_aliases(&ctx.db);
+    let mut names: Vec<String> = deed_prop_maps(v).into_iter().flat_map(|m| m.keys().cloned().collect::<Vec<_>>()).collect();
+    names.sort();
+    names.dedup();
+    let mut rename: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut unknown = Vec::new();
+    let mut ask = Vec::new();
+    let mut acts = Vec::new();
+    for n in names {
+        match vocab.lookup(&n) {
+            Some(i) if vocab.writable(i) => {
+                if vocab.names[i] != n {
+                    rename.insert(n, vocab.names[i].clone());
+                }
+            }
+            Some(_) => {
+                crate::log::info(format!("deed answer set '{n}', which only actions have; left out"));
+                acts.push(n);
+            }
+            None if aliases.get(&crate::sim::props::norm_name(&n)).is_some_and(|a| a.is_empty()) => unknown.push(n),
+            None => ask.push(n),
+        }
+    }
+    if !ask.is_empty() {
+        let ruled = rule_aliases(ctx, &ask, &vocab).await;
+        for n in ask {
+            match ruled.as_ref().and_then(|r| r.get(&n)) {
+                Some(Some(p)) => {
+                    rename.insert(n, p.clone());
+                }
+                _ => unknown.push(n),
+            }
+        }
+        if let Some(r) = ruled {
+            let add: Vec<(String, String)> = r.into_iter().map(|(k, v)| (k, v.unwrap_or_default())).collect();
+            if let Err(e) = crate::sim::persist::set_prop_aliases(&ctx.db, &add) {
+                crate::log::error(format!("couldn't keep property aliases: {e}"));
+            }
+        }
+    }
+    strip_deed_props(v, &acts);
+    for m in deed_prop_maps(v) {
+        for (from, to) in &rename {
+            if let Some(x) = m.remove(from) {
+                m.entry(to.clone()).or_insert(x);
+            }
+        }
+    }
+    unknown
+}
+
+/// One LLM ruling on what each unknown name means (a writable property, or
+/// none). None when the ruling couldn't be had.
+async fn rule_aliases(ctx: &Ctx, names: &[String], vocab: &crate::sim::props::Vocab) -> Option<std::collections::BTreeMap<String, Option<String>>> {
+    let system = format!("{}\n\nThe world's properties:\n{}", prompts::PROP_ALIAS_TASK, vocab.describe());
+    let mut req = Req::new(Role::Character, system, format!("Unknown names: {}", names.join(", ")));
+    req.max_tokens = 300;
+    req.effort = Some("low");
+    let reply = ctx.llm.complete(&req, "alias").await.map_err(|e| crate::log::info(format!("alias ruling failed: {e}"))).ok()?;
+    let v = extract_json(&reply).ok()?;
+    let mut out = std::collections::BTreeMap::new();
+    for n in names {
+        let to = v.get(n).and_then(|x| x.as_str()).and_then(|p| vocab.id(p)).filter(|i| vocab.writable(*i)).map(|i| vocab.names[i].clone());
+        out.insert(n.clone(), to);
+    }
+    Some(out)
 }
 
 /// Two characters talk; returns (speaker id, line) pairs.
@@ -1538,7 +1651,7 @@ async fn chat(ctx: &Ctx, a: i64, b: i64, context: &str) -> anyhow::Result<Vec<(i
 
 /// Write a small new object type on demand (for interpretations and spawn()).
 async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3], props: &[(String, f32)], fits: Option<&str>) -> anyhow::Result<u32> {
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let props_s = if props.is_empty() { "choose fitting ones".to_string() } else { props.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ") };
     let task = format!(
         "Object type to write: \"{name}\"\nDescription: {description}\nApproximate size (w × h × d, metres): {:?}\nProperties (meta.props): {props_s}\nIt is a thing people can pick up and use, unless it is clearly too big.\n\n{}",
@@ -1566,7 +1679,7 @@ async fn build_item_type(ctx: &Ctx, name: &str, description: &str, size: [f32; 3
 /// Rewrite one thing's shape: the builder edits its current code (working
 /// in another thing's, if given).
 async fn edit_item_type(ctx: &Ctx, name: &str, source: &str, change: &str, spot: &str, cuts: &[[f32; 4]], with: Option<&(String, String, f32)>) -> anyhow::Result<u32> {
-    let system = prompts::builder_system(&ctx.universe(), &ctx.known_props());
+    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let task = prompts::edit_task(name, source, change, spot, cuts, with);
     let mut t = build_type(ctx, &system, task, name, &[], &[]).await?;
     // The thing is found again by name: insist on the one asked for.

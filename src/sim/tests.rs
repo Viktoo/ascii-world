@@ -3757,3 +3757,75 @@ fn listening_changes_nothing() {
     };
     assert_eq!(run(false), run(true));
 }
+
+// ------------------------------------------------------- vocabulary hygiene
+
+/// A deed answer naming a property the world calls something else ("curse"
+/// in a world of "cursed") is mapped by one ruling, kept with the world and
+/// takes effect; the next deed reuses the alias without asking. A name
+/// nothing maps to is sent back to be fixed, not dropped. No type, deed or
+/// universe rule can set `force`, which only an action has.
+#[test]
+fn near_miss_property_names_are_mapped_once_and_act_properties_stay_apart() {
+    let w = world("alias", 39);
+    let (props, rules) = crate::brain::check_universe_rules(&[("cursed".into(), 0.0, "how cursed it is, 0..1".into())], &[]);
+    super::persist::set_universe_rules(&w.db, &props, &rules).unwrap();
+    let stick = builtin_id(&w, "stick");
+    let rulings = Arc::new(Mutex::new(Vec::<String>::new()));
+    let r2 = rulings.clone();
+    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
+        if sys.contains("property names the world doesn't have") {
+            r2.lock().push(user.to_string());
+            return r#"{"curse": "cursed", "glimmer": null}"#.into();
+        }
+        if sys.contains("physics and common sense") {
+            assert!(sys.contains("for scale:"), "values are written against anchors");
+            assert!(!sys.contains("- force:"), "act properties are not offered");
+            if user.contains("That failed validation") {
+                assert!(user.contains("glimmer"), "{user}");
+                return r#"{"narration": "It glows faintly.", "changes": [{"target": "target", "props": {"light": 0.5}}]}"#.into();
+            }
+            if user.contains("glimmer") {
+                return r#"{"narration": "It glimmers.", "changes": [{"target": "target", "props": {"glimmer": 1}}]}"#.into();
+            }
+            return r#"{"narration": "A chill settles on it.", "changes": [{"target": "target", "props": {"curse": 1, "force": 1}}]}"#.into();
+        }
+        r#"{"goal": "", "steps": []}"#.into()
+    }));
+    let mut s = session(&w, 9, Some(llm));
+    let p = s.sim.player.pos;
+    let sticks: Vec<_> = (0..3).map(|k| s.sim.spawn_thing(stick, p + Vec3::new(0.5 + k as f32 * 0.3, 0.0, 0.6), 0.0, 1.0, Default::default(), true).unwrap()).collect();
+    let ci = s.sim.vocab.id("cursed").unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Do { text: "hex the stick".into(), on: Some(Target::Thing(sticks[0])), at: None }, 1.0);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(s.sim.things.get(sticks[0]).unwrap().props[ci], 1.0, "the curse took effect");
+    assert_eq!(s.sim.things.get(sticks[0]).unwrap().props[P_FORCE], 0.0, "a deed can't set force");
+    assert_eq!(rulings.lock().len(), 1);
+    assert_eq!(super::persist::prop_aliases(&w.db).get("curse").map(String::as_str), Some("cursed"), "kept with the world");
+    act_once(&mut s, ActorId::Player, Action::Do { text: "lay a curse on the stick".into(), on: Some(Target::Thing(sticks[1])), at: None }, 1.0);
+    assert_eq!(s.sim.things.get(sticks[1]).unwrap().props[ci], 1.0);
+    assert_eq!(rulings.lock().len(), 1, "the alias is reused without asking again");
+    act_once(&mut s, ActorId::Player, Action::Do { text: "make the stick glimmer".into(), on: Some(Target::Thing(sticks[2])), at: None }, 1.0);
+    assert_eq!(rulings.lock().len(), 2);
+    assert!(rulings.lock()[1].contains("glimmer") && !rulings.lock()[1].contains("curse"), "only new names are ruled on: {:?}", rulings.lock());
+    assert_eq!(s.sim.things.get(sticks[2]).unwrap().props[P_LIGHT], 0.5, "sent back and fixed");
+    assert_eq!(super::persist::prop_aliases(&w.db).get("glimmer").map(String::as_str), Some(""), "a name with no match is remembered too");
+    // A reloaded world knows the alias.
+    s.sim.load_universe_rules();
+    assert_eq!(s.sim.vocab.lookup("Curse"), Some(ci));
+    // Types can't give themselves force; nor can a universe's rules.
+    let forced = compile(
+        r#"
+export const meta = { name: "ram", bounds: [0.2, 0.2, 0.6], tags: ["item"], props: { force: 1 } };
+export function sdf(x, y, z, k) { return roundBox(x, y, z, 0.15, 0.15, 0.5, 0.03); }
+export function color(x, y, z, k) { return rgb(90, 60, 30); }
+"#,
+    )
+    .unwrap();
+    let e = crate::brain::check_type_props(&forced, &s.sim.vocab).unwrap_err();
+    assert!(e.contains("force"), "{e}");
+    let push = super::rules::RuleSpec { name: "curses push".into(), near: None, when: "self.cursed > 0".into(), effects: vec!["self.force = 1".into()] };
+    assert!(crate::brain::check_universe_rules(&props, &[push]).1.is_empty());
+    sound(&s);
+}

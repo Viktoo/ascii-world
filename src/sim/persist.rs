@@ -41,6 +41,38 @@ pub fn set_universe_meta(db: &Db, meta: &[(String, crate::sim::props::PropMeta)]
     db.kv_set("vocab.meta", &serde_json::to_string(meta)?)
 }
 
+/// Near-miss property names this world has ruled on, by tidied name: the
+/// property each means, or "" for none (so nobody asks again).
+pub fn prop_aliases(db: &Db) -> std::collections::BTreeMap<String, String> {
+    db.kv_get("vocab.aliases").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
+}
+
+pub fn set_prop_aliases(db: &Db, add: &[(String, String)]) -> anyhow::Result<()> {
+    let mut all = prop_aliases(db);
+    for (from, to) in add {
+        all.insert(norm_name(from), to.clone());
+    }
+    db.kv_set("vocab.aliases", &serde_json::to_string(&all)?)
+}
+
+/// This world's whole vocabulary: built-ins, its own properties with what
+/// the engine knows about them, and the aliases it has learned.
+pub fn world_vocab(db: &Db) -> Vocab {
+    let mut vocab = Vocab::builtin();
+    for (name, default, meaning) in universe_props(db) {
+        if let Err(e) = vocab.add(&name, default, &meaning) {
+            crate::log::error(format!("universe property {name}: {e}"));
+        }
+    }
+    for (name, meta) in universe_meta(db) {
+        vocab.set_meta(&name, meta);
+    }
+    for (from, to) in prop_aliases(db) {
+        vocab.add_alias(&from, &to);
+    }
+    vocab
+}
+
 pub fn universe_rules(db: &Db) -> Vec<RuleSpec> {
     db.with(|c| {
         let mut st = c.prepare("SELECT json FROM rules ORDER BY id")?;

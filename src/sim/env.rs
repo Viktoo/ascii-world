@@ -106,12 +106,7 @@ struct Ent {
 impl Sim {
     /// Built-in rules plus the universe's own (from the `rules` table).
     pub fn load_universe_rules(&mut self) {
-        let mut vocab = Vocab::builtin();
-        for (name, default, meaning) in super::persist::universe_props(&self.db) {
-            if let Err(e) = vocab.add(&name, default, &meaning) {
-                crate::log::error(format!("universe property {name}: {e}"));
-            }
-        }
+        let vocab = super::persist::world_vocab(&self.db);
         let mut all = rules::builtin_rules(&vocab);
         let specs = super::persist::universe_rules(&self.db);
         let mut kept = Vec::new();
@@ -123,9 +118,6 @@ impl Sim {
                 }
                 Err(e) => crate::log::error(format!("universe rule skipped: {e}")),
             }
-        }
-        for (name, meta) in super::persist::universe_meta(&self.db) {
-            vocab.set_meta(&name, meta);
         }
         self.watch = Arc::new(watches(&vocab));
         self.vocab = Arc::new(vocab);

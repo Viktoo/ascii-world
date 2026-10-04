@@ -492,7 +492,7 @@ impl Sim {
             v["beings_can_be_made"] = json!(true);
             v["species_looks"] = self.species_looks();
         }
-        v["properties"] = json!(self.vocab.names);
+        v["properties"] = json!(self.vocab.writable_names());
         if let Some(l) = self.twist_line(who) {
             v["darkness"] = json!(l);
         }
@@ -614,7 +614,7 @@ impl Sim {
             if let Some(t) = self.things.get_mut(id) {
                 let (props0, state0) = (t.props.clone(), t.state);
                 for (k, v) in &c.props {
-                    if let Some(i) = vocab.id(k) {
+                    if let Some(i) = vocab.lookup(k).filter(|i| vocab.writable(*i)) {
                         if v.is_finite() {
                             t.props[i] = *v;
                         }
@@ -631,8 +631,8 @@ impl Sim {
                 t.dirty = true;
                 t.asleep = false;
                 for k in c.props.keys() {
-                    if let Some(i) = vocab.id(k) {
-                        shifts.extend(shift(k, t.props[i] - props0[i]));
+                    if let Some(i) = vocab.lookup(k).filter(|i| vocab.writable(*i)) {
+                        shifts.extend(shift(&vocab.names[i], t.props[i] - props0[i]));
                     }
                 }
                 for k in c.state.keys() {
@@ -826,7 +826,7 @@ impl Sim {
         let vocab = self.vocab.clone();
         if let Some(t) = self.things.get_mut(id) {
             for (k, v) in &m.props {
-                if let (Some(i), true) = (vocab.id(k), v.is_finite()) {
+                if let (Some(i), true) = (vocab.lookup(k).filter(|i| vocab.writable(*i)), v.is_finite()) {
                     t.props[i] = *v;
                 }
             }

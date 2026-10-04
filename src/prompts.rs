@@ -92,22 +92,13 @@ export function touch(s, w, k) { if (w.impact > 6) { w.health = w.health - 0.5; 
 Recognisable silhouettes beat fine detail: the world is seen at low resolution. Use colour boldly and consistently with the universe's palette. A building is typically 4–10 m wide and 4–12 m tall; a person is 1.75 m tall.
 "#;
 
-pub fn builder_system(bible: &str, props: &[String]) -> String {
-    let lang = LANGUAGE.replace("__PROPS__", &props_doc(props));
+pub fn builder_system(bible: &str, vocab: &crate::sim::props::Vocab) -> String {
+    let lang = LANGUAGE.replace("__PROPS__", &vocab.describe());
     format!("{lang}\n## The universe\nEvery object belongs to this universe; match its tone, era, materials and palette:\n{bible}\n")
 }
 
-fn props_doc(props: &[String]) -> String {
-    let vocab = crate::sim::props::BUILTIN;
-    props
-        .iter()
-        .map(|p| match vocab.iter().find(|(n, _, _)| n == p) {
-            Some((n, d, m)) => format!("- {n}: {m} (default {d})"),
-            None => format!("- {p} (this universe's own property)"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+/// What a near-miss property name means in this world (asked once per name).
+pub const PROP_ALIAS_TASK: &str = "Something written for a small simulated world gave values to property names the world doesn't have. The world's properties are listed below. For each unknown name, give the listed property it means, if one clearly does (the same quality, worded differently: \"curse\" for \"cursed\", \"wetness\" for \"wet\", \"weight\" for \"mass\"), or null if none does. Reply with one JSON object only, e.g. {\"curse\": \"cursed\", \"sparkle\": null}.";
 
 pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply with:
 
@@ -132,12 +123,12 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 - fog: 1 = clear air, up to 3 = misty.
 
 Optionally, in the same JSON object, the universe's own nature: properties and rules beyond the built-in physics (fire, water, breaking, growing already exist; don't repeat them). Only if this universe really has its own forces (magic, curses, rot, radiation, holiness, static, spores…):
-  "properties": [ { "name": "cursed", "default": 0, "meaning": "how cursed it is, 0..1", "range": [0, 1],
+  "properties": [ { "name": "cursed", "default": 0, "meaning": "how cursed it is, 0..1", "range": [0, 1], "scale": "0.2 a hexed trinket, 0.6 a cursed blade, 1 a lich's crown",
                    "rises": "fell under the curse", "falls": "was freed of the curse", "hazard": 0.5,
                    "spreads": { "noun": "curse", "big": "blight", "active": "cursed", "spent": "withered", "ended": "faded away", "stopped": "lifted" } } ],
   "rules": [ { "name": "curses spread by touch", "near": 1.5, "when": "self.cursed > 0.5 && other.cursed < self.cursed", "do": ["other.cursed += 0.05 * dt"] } ]
 Rule language: `when` is a condition and `do` a list of assignments (=, +=, -=, *=) on self.<property> or other.<property>; you may use numbers, + - * /, comparisons, && || !, min(a,b), max(a,b), clamp(x,lo,hi), abs(x), dt (seconds), dist (metres apart, with "near"), hour, night (0/1), water (1 when in water), held (1 when held). Without "near" a rule applies to each thing alone; with "near": r (≤ 10 m) to each pair within r. Spread slowly (rates times dt), at most 12 rules.
-For each property, optionally: "rises"/"falls" are what a thing does when it gets it or loses it (told to people as news: "the oak fell under the curse"); "spreads" if it passes from thing to thing, with the words to tell one outbreak of it as a story (the engine counts it, finds what started it, and people may fight it); "hazard" 0..1 if it harms those near it or wearing it (they keep away); "range" its bounds.
+For each property, "scale": a few things of this world at known values, so everything made later uses one scale. Optionally: "rises"/"falls" are what a thing does when it gets it or loses it (told to people as news: "the oak fell under the curse"); "spreads" if it passes from thing to thing, with the words to tell one outbreak of it as a story (the engine counts it, finds what started it, and people may fight it); "hazard" 0..1 if it harms those near it or wearing it (they keep away); "range" its bounds.
 Rules only act on things that have the property, and a property of your own shows nothing by itself: give it to some of your base types (in their meta.props) so the force is in the land from the start, and let it change what can be seen (light, fire, char, wet, growth, health: at 0 a thing breaks).
 
 Optionally, the universe's peoples and beasts beyond plain humans (people always exist; dogs, cats, horses, wolves, goats and deer are built in for earthly worlds). Add species only if this universe has them (elves and orcs, a race of giants, dragons, griffins, lizard folk…), up to 5, in the same JSON object:

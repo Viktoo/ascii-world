@@ -328,15 +328,40 @@ pub struct Metrics {
     pub births: u64,
     /// Beings alive, by species.
     pub population: BTreeMap<String, usize>,
+    /// More stories, not just more activity (see `Emergence`).
+    pub emergence: Emergence,
+}
+
+/// The numbers each emergence phase must move: how many kinds of thing
+/// happen, how many happenings lead on to others, and whether people still
+/// get what they need.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Emergence {
+    /// Kinds of event seen, on average per game day (a short run counts as a day).
+    pub kinds_per_day: f32,
+    /// Runs of cause and effect three or more steps long (see `longest_chain`).
+    pub chains_3plus: usize,
+    /// Events that name what caused them (an incident, a goal, a belief).
+    pub with_cause: u64,
+    /// Events where one character's goal needed another (a promise, an ask).
+    pub goals_crossing: u64,
+    /// Share of needs not pressing (under 0.8) at the end, over those awake.
+    pub needs_met: f32,
+    /// Awake beings that went nowhere and did nothing in the last game hour.
+    pub stuck: usize,
 }
 
 /// The longest run of events where each follows the last within 15 s and
 /// 15 m, by a different subject: cause and effect, roughly.
 pub fn longest_chain(events: &[SimEvent]) -> usize {
+    chains(events).into_iter().max().unwrap_or(0)
+}
+
+/// The length of the chain each chain-worthy event ends.
+fn chains(events: &[SimEvent]) -> Vec<usize> {
     let interesting = |e: &SimEvent| !matches!(e.kind.as_str(), "said" | "chatted" | "plan_failed" | "decided" | "caught_up" | "proposed" | "accepted" | "declined");
     let ev: Vec<&SimEvent> = events.iter().filter(|e| interesting(e) && e.pos.is_some()).collect();
     let mut best = vec![1usize; ev.len()];
-    let mut out = if ev.is_empty() { 0 } else { 1 };
     for i in 0..ev.len() {
         let pi = Vec3::from(ev[i].pos.unwrap_or_default());
         let mut j = i;
@@ -350,12 +375,60 @@ pub fn longest_chain(events: &[SimEvent]) -> usize {
                 best[i] = best[i].max(best[j] + 1);
             }
         }
-        out = out.max(best[i]);
     }
-    out
+    best
 }
 
-pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i64, Vec3>, start_rels: &BTreeMap<(i64, i64), f32>) -> Metrics {
+/// Chains of three or more that nothing later carries on: one per story.
+fn stories(events: &[SimEvent]) -> usize {
+    let best = chains(events);
+    // A chain is carried on when a longer one ends later; count each run's peak.
+    let mut n = 0;
+    let mut i = 0;
+    while i < best.len() {
+        if best[i] >= 3 {
+            n += 1;
+            while i + 1 < best.len() && best[i + 1] > 1 {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    n
+}
+
+pub fn emergence(sim: &Sim, events: &[SimEvent], hours: f32, hour_ago: &HashMap<i64, Vec3>) -> Emergence {
+    // Distinct kinds per game day.
+    let day = crate::render::sky::DAY_SECONDS;
+    let t0 = events.first().map(|e| e.t).unwrap_or(0.0);
+    let mut days: BTreeMap<i64, std::collections::BTreeSet<&str>> = BTreeMap::new();
+    for e in events {
+        days.entry(((e.t - t0) / day).floor() as i64).or_default().insert(e.kind.as_str());
+    }
+    let kinds_per_day = if days.is_empty() { 0.0 } else { days.values().map(|k| k.len() as f32).sum::<f32>() / days.len() as f32 };
+    let has = |e: &SimEvent, k: &str| e.data.get(k).is_some_and(|v| !v.is_null());
+    let with_cause = events.iter().filter(|e| ["cause", "incident", "goal", "belief"].iter().any(|k| has(e, k))).count() as u64;
+    let goals_crossing = events.iter().filter(|e| e.data.get("crosses").and_then(|v| v.as_bool()) == Some(true)).count() as u64;
+    let awake: Vec<&super::npc::Npc> = sim.cast.npcs.iter().filter(|n| n.here() && !n.a.asleep).collect();
+    let mut met = 0;
+    let mut all = 0;
+    for n in &awake {
+        let x = &n.needs;
+        for v in [x.hunger, x.fatigue, x.social, x.fun, x.curiosity] {
+            all += 1;
+            met += (v < 0.8) as usize;
+        }
+    }
+    let acted: std::collections::HashSet<ActorId> = events.iter().filter(|e| e.t > sim.t - hour_s()).filter_map(|e| e.actor).collect();
+    let stuck = if hours < 1.5 {
+        0
+    } else {
+        awake.iter().filter(|n| hour_ago.get(&n.def.id).is_some_and(|p| (*p - n.a.pos).length() < 0.5) && !acted.contains(&ActorId::Npc(n.def.id))).count()
+    };
+    Emergence { kinds_per_day, chains_3plus: stories(events), with_cause, goals_crossing, needs_met: if all == 0 { 1.0 } else { met as f32 / all as f32 }, stuck }
+}
+
+pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i64, Vec3>, start_rels: &BTreeMap<(i64, i64), f32>, hour_ago: &HashMap<i64, Vec3>) -> Metrics {
     let made = events.iter().filter(|e| matches!(e.kind.as_str(), "made" | "spawned" | "transformed")).count() as f32;
     // How far things moved from where they started (or from where they lay
     // before someone picked them up).
@@ -413,6 +486,7 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
         pets_following: following,
         births: events.iter().filter(|e| e.kind == "born").count() as u64,
         population,
+        emergence: emergence(sim, events, hours, hour_ago),
     }
 }
 
@@ -496,7 +570,13 @@ fn run_once(path: &Path, hours: f32, seed: Option<u64>, dt: f32, args: &[String]
     let t0 = Instant::now();
     let quiet = has(args, "--quiet");
     let steps = (secs / dt as f64).ceil() as u64;
+    // Where everyone was an hour before the end (to find who got stuck).
+    let mark = steps.saturating_sub((hour_s() / dt as f64).ceil() as u64);
+    let mut hour_ago: HashMap<i64, Vec3> = HashMap::new();
     for i in 0..steps {
+        if i == mark {
+            hour_ago = s.sim.cast.npcs.iter().map(|n| (n.def.id, n.a.pos)).collect();
+        }
         s.step(dt);
         if !quiet && i % 2000 == 0 && i > 0 {
             eprintln!("  {:.1} game h, {} events", (i as f64 * dt as f64) / hour_s(), s.sim.log.total);
@@ -515,7 +595,7 @@ fn run_once(path: &Path, hours: f32, seed: Option<u64>, dt: f32, args: &[String]
         eprintln!("invariants broken:\n  {}", broken.join("\n  "));
     }
     if !quiet {
-        let m = metrics(&s.sim, &events, hours, &start_pos, &start_rels);
+        let m = metrics(&s.sim, &events, hours, &start_pos, &start_rels, &hour_ago);
         println!("simulated {hours:.1} game hours ({secs:.0} s) in {real:.1} s real: {:.0}× speed", secs / real.max(1e-3));
         println!("{}", serde_json::to_string_pretty(&m)?);
         if let Some(p) = &sink {

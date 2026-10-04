@@ -477,7 +477,11 @@ pub fn compile(spec: &RuleSpec, vocab: &Vocab, builtin: bool) -> Result<Rule, St
     }
     let mut effects = Vec::new();
     for e in &spec.effects {
-        effects.push(parse_effect(e, vocab, pair).map_err(|x| format!("{name}: do \"{e}\": {x}"))?);
+        let fx = parse_effect(e, vocab, pair).map_err(|x| format!("{name}: do \"{e}\": {x}"))?;
+        if !builtin && vocab.is_act(fx.prop) {
+            return Err(format!("{name}: do \"{e}\": '{}' is what an action is doing right now; rules may read it but not set it", vocab.names[fx.prop]));
+        }
+        effects.push(fx);
     }
     let mut parts = Vec::new();
     when.conjuncts(&mut parts);
@@ -616,6 +620,7 @@ mod tests {
             (spec("x", None, "self.fire >", &["self.fire = 1"]), "unexpected end"),
             (spec("x", None, "self.fire > 0", &[]), "1 to 6 effects"),
             (spec("x", None, "launch(1)", &["self.fire = 1"]), "unknown name 'launch'"),
+            (spec("x", None, "self.fire > 0", &["self.force = 1"]), "may read it but not set it"),
         ];
         for (s, expect) in bad {
             let e = compile(&s, &vo, false).expect_err(&format!("{s:?}"));

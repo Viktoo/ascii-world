@@ -33,6 +33,12 @@ pub const P_CORRUPT: usize = 20;
 pub const P_FORCE: usize = 21;
 pub const P_MARK: usize = 22;
 
+/// Act properties: what an action is doing right now, not what a thing is
+/// (`force` while someone works a tool). The engine sets them for a moment;
+/// rules may read them, but nothing generated (types, deeds, universe rules)
+/// can write them, and they are never saved.
+pub const ACT: &[usize] = &[P_FORCE];
+
 pub const AMBIENT_TEMP: f32 = 15.0;
 /// What one person can lift (kg); two together lift twice that.
 pub const STRENGTH: f32 = 25.0;
@@ -157,15 +163,43 @@ pub struct PropMeta {
     /// Its range, if it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<[f32; 2]>,
+    /// Units and anchors ("0.2 a blessed candle, 1 a saint's relic"), shown
+    /// wherever values are written, so every type and deed uses one scale.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scale: String,
 }
 
 fn cross(kind: &str, text: &str, when: Option<&str>, saved: bool) -> Crossing {
     Crossing { kind: kind.into(), text: text.into(), when: when.map(str::to_string), saved }
 }
 
+/// Anchors for the built-ins' scales: a few known things at known values.
+fn builtin_scale(name: &str) -> &'static str {
+    match name {
+        "mass" => "an apple 0.2, a ball 0.6, a bucket of water 8, a person 70, a cart 300, a hut 20000",
+        "bounce" => "a sandbag 0, a wooden block 0.3, a leather ball 0.8",
+        "friction" => "ice 0.05, polished wood 0.3, a rope 0.8",
+        "burns" => "stone 0, a wooden hut 0.4, a dry log 0.8, dry grass 0.9",
+        "temp" => "snow -5, a summer day 25, a body 36, boiling water 100, a kiln 900",
+        "wet" => "dry 0, damp cloth 0.3, a soaked cloak 1",
+        "light" => "a candle 0.3, a lantern 1, a bonfire 1.5",
+        "edible" => "a turnip 0.2, an apple 0.4, a loaf 0.6, a stew 0.9",
+        "fragile" => "stone 0, a clay pot 0.6, glass 0.9",
+        "conducts" => "wood 0.05, stone 0.2, iron 0.8",
+        "heat" => "0 for most things, a lantern 120, a stove 300, a forge 900",
+        _ => "",
+    }
+}
+
 /// The built-in properties' metadata (fire spreads and harms; living things
 /// die and grow up; wetness, heat and char carry over when things change).
 fn builtin_meta(name: &str) -> PropMeta {
+    let scale = builtin_scale(name).to_string();
+    let m = builtin_meta_of(name);
+    PropMeta { scale, ..m }
+}
+
+fn builtin_meta_of(name: &str) -> PropMeta {
     match name {
         "fire" => PropMeta {
             rises: vec![cross("ignited", "caught fire", None, false)],
@@ -196,6 +230,14 @@ pub struct Vocab {
     pub meanings: Vec<String>,
     pub meta: Vec<PropMeta>,
     index: HashMap<String, usize>,
+    /// Near-miss names this world has mapped to one of its properties
+    /// ("curse" → `cursed`), learned once and kept with the world.
+    aliases: HashMap<String, usize>,
+}
+
+/// A property name as written, made comparable: "Is Cursed" → "is_cursed".
+pub fn norm_name(s: &str) -> String {
+    s.trim().to_lowercase().replace([' ', '-'], "_")
 }
 
 impl Default for Vocab {
@@ -206,7 +248,7 @@ impl Default for Vocab {
 
 impl Vocab {
     pub fn builtin() -> Vocab {
-        let mut v = Vocab { names: Vec::new(), defaults: Vec::new(), meanings: Vec::new(), meta: Vec::new(), index: HashMap::new() };
+        let mut v = Vocab { names: Vec::new(), defaults: Vec::new(), meanings: Vec::new(), meta: Vec::new(), index: HashMap::new(), aliases: HashMap::new() };
         for (n, d, m) in BUILTIN {
             v.push(n, *d, m);
             v.meta.push(builtin_meta(n));
@@ -276,6 +318,37 @@ impl Vocab {
         self.index.get(name).copied()
     }
 
+    /// A name as something generated wrote it: exact, then tidied, then a
+    /// known alias of this world.
+    pub fn lookup(&self, name: &str) -> Option<usize> {
+        self.id(name).or_else(|| {
+            let n = norm_name(name);
+            self.id(&n).or_else(|| self.aliases.get(&n).copied())
+        })
+    }
+
+    /// Remember that `from` means property `to` in this world.
+    pub fn add_alias(&mut self, from: &str, to: &str) {
+        if let Some(i) = self.id(to) {
+            self.aliases.insert(norm_name(from), i);
+        }
+    }
+
+    /// An act property (see `ACT`): read by rules, set only by the engine.
+    pub fn is_act(&self, i: usize) -> bool {
+        ACT.contains(&i)
+    }
+
+    /// A property generated things may give values to.
+    pub fn writable(&self, i: usize) -> bool {
+        i < self.len() && !self.is_act(i)
+    }
+
+    /// The names generated things may give values to.
+    pub fn writable_names(&self) -> Vec<String> {
+        (0..self.len()).filter(|i| self.writable(*i)).map(|i| self.names[i].clone()).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.names.len()
     }
@@ -284,9 +357,18 @@ impl Vocab {
         i < BUILTIN.len()
     }
 
-    /// One line per property, for prompts.
+    /// One line per property generated things may set, with its scale's
+    /// anchors, for every prompt that writes values.
     pub fn describe(&self) -> String {
-        self.names.iter().zip(&self.meanings).zip(&self.defaults).map(|((n, m), d)| format!("- {n}: {m} (default {d})")).collect::<Vec<_>>().join("\n")
+        (0..self.len())
+            .filter(|i| self.writable(*i))
+            .map(|i| {
+                let scale = &self.meta[i].scale;
+                let anchors = if scale.trim().is_empty() { String::new() } else { format!("; for scale: {}", scale.trim()) };
+                format!("- {}: {} (default {}{anchors})", self.names[i], self.meanings[i], self.defaults[i])
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -347,7 +429,7 @@ pub fn type_props(vocab: &Vocab, ty: &TypeEntry) -> Props {
         p[P_FRAGILE] = 0.6;
     }
     for (name, v) in &ty.ct.meta.props {
-        if let Some(i) = vocab.id(name) {
+        if let Some(i) = vocab.lookup(name).filter(|i| vocab.writable(*i)) {
             p[i] = *v;
         }
     }
@@ -387,7 +469,7 @@ pub fn diff(vocab: &Vocab, p: &Props, base: &Props) -> serde_json::Map<String, s
     let mut m = serde_json::Map::new();
     for (i, v) in p.iter().enumerate() {
         let b = base.get(i).copied().unwrap_or(0.0);
-        if (v - b).abs() > 1e-4 {
+        if (v - b).abs() > 1e-4 && !vocab.is_act(i) {
             if let Some(n) = vocab.names.get(i) {
                 m.insert(n.clone(), serde_json::json!((*v as f64 * 1000.0).round() / 1000.0));
             }

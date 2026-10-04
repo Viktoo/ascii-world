@@ -27,7 +27,7 @@ fn ctx_set(ctx: &mut [f32; CTX_LEN], name: &str, v: f32) {
 impl Sim {
     /// Map a type's behaviour property names to vocabulary ids.
     fn prop_ids(&self, ty: &TypeEntry) -> Vec<Option<usize>> {
-        ty.ct.prop_names.iter().map(|n| self.vocab.id(n)).collect()
+        ty.ct.prop_names.iter().map(|n| self.vocab.lookup(n).filter(|i| self.vocab.writable(*i))).collect()
     }
 
     fn ctx_for(&self, id: ThingId, dt: f32) -> [f32; CTX_LEN] {

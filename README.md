@@ -283,6 +283,13 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   genesis can add its own properties and rules (a curse that spreads by touch); they
   are tested in a small scene first and rejected if they blow up or spread to
   everything at once. Burnt and eaten plants grow back after a day or so.
+- *Vocabulary hygiene.* Every property's entry carries its units and anchors ("an apple
+  0.2, a person 70"; a universe's own from genesis), shown in every prompt that writes
+  values, so types and deeds use one scale. Deed answers are checked like types: a
+  near-miss name ("curse" in a world of `cursed`) is mapped once (exact, tidied, a known
+  alias, else one LLM ruling), kept with the world and reused; a name nothing maps to is
+  sent back to be fixed. Act properties (`force`) say what an action is doing right now:
+  the engine sets them for a moment, rules read them, and nothing generated can set them.
 - *Incidents* (`src/sim/incident.rs`). What a property spreads to remembers where it
   came from, so many crossings with one cause are one incident: a fire that eats 300
   tufts started at one lantern, thrown by someone. The log has one line per incident,
