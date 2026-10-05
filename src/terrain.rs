@@ -215,7 +215,11 @@ pub struct Carve {
     pub roads: Vec<Road>,
     /// Changes whenever any list does.
     pub version: u32,
+    /// Hollows by 16 m cell (indices into `fixed` then `dug`); see `reindex`.
+    index: std::collections::HashMap<(i32, i32), Vec<u32>>,
 }
+
+const CARVE_CELL: f32 = 16.0;
 
 /// A stretch of road: from a to b (x, z), half as wide as `half` × 2, in a colour.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -248,12 +252,36 @@ impl Carve {
         self.fixed.iter().chain(self.dug.iter())
     }
 
+    /// Rebuild the cell index after the lists change.
+    pub fn reindex(&mut self) {
+        self.index.clear();
+        let n = self.fixed.len();
+        for (i, h) in self.fixed.iter().chain(self.dug.iter()).enumerate() {
+            let r = h.reach();
+            let lo = (((h.c[0] - r) / CARVE_CELL).floor() as i32, ((h.c[1] - r) / CARVE_CELL).floor() as i32);
+            let hi = (((h.c[0] + r) / CARVE_CELL).floor() as i32, ((h.c[1] + r) / CARVE_CELL).floor() as i32);
+            for cz in lo.1..=hi.1 {
+                for cx in lo.0..=hi.0 {
+                    self.index.entry((cx, cz)).or_default().push(i as u32);
+                }
+            }
+        }
+        let _ = n;
+        self.version = self.version.wrapping_add(1);
+    }
+
+    fn get(&self, i: u32) -> Option<&Hollow> {
+        let i = i as usize;
+        if i < self.fixed.len() { self.fixed.get(i) } else { self.dug.get(i - self.fixed.len()) }
+    }
+
     /// The ground height at (x, z) with the hollows taken out of `h`, and how
     /// much of a hollow the point is in (0 … 1, for the earth's colour).
     pub fn apply(&self, x: f32, z: f32, h: f32) -> (f32, f32) {
         let mut out = h;
         let mut w_max = 0.0f32;
-        for hl in self.all() {
+        let Some(ids) = self.index.get(&((x / CARVE_CELL).floor() as i32, (z / CARVE_CELL).floor() as i32)) else { return (h, 0.0) };
+        for hl in ids.iter().filter_map(|i| self.get(*i)) {
             let r = hl.reach();
             let (dx, dz) = (x - hl.c[0], z - hl.c[1]);
             if dx * dx + dz * dz > r * r {
@@ -337,7 +365,7 @@ impl Terrain {
     pub fn height(&self, x: f32, z: f32) -> f32 {
         let h = self.sample(x, z).height;
         let c = self.carve.read();
-        if c.fixed.is_empty() && c.dug.is_empty() {
+        if c.index.is_empty() {
             return h;
         }
         c.apply(x, z, h).0

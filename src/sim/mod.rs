@@ -674,15 +674,15 @@ impl Sim {
     pub fn walk(&mut self, id: ActorId, delta: Vec3) {
         let Some(from) = self.actor(id).map(|a| a.pos) else { return };
         let own = self.actor(id).map(|a| a.dims.radius).unwrap_or(0.35);
-        let solids = self.solids_near(from, 4.0 + own + self.actor(id).map(|a| a.dims.height).unwrap_or(1.75));
+        let solids = self.solids_near(from, 4.0 + own);
         let mine = self.actor(id).and_then(|a| a.riding);
-        let bodies: Vec<(Vec3, f32)> = self
-            .actor_ids()
-            .into_iter()
-            .filter(|o| *o != id && Some(*o) != mine)
-            .filter(|o| self.actor(*o).is_some_and(|a| a.riding != Some(id) && a.alt < 1.0 && (a.pos - from).length() < 4.0 + a.dims.radius))
-            .map(|o| (self.actor(o).map(|a| a.pos).unwrap_or_default(), self.capsule(o).radius))
-            .collect();
+        let mut bodies: Vec<(Vec3, f32)> = Vec::new();
+        let others = std::iter::once((ActorId::Player, &self.player)).chain(self.cast.npcs.iter().filter(|n| n.here()).map(|n| (ActorId::Npc(n.def.id), &n.a)));
+        for (o, a) in others {
+            if o != id && Some(o) != mine && a.riding != Some(id) && a.alt < 1.0 && (a.pos - from).length() < 4.0 + a.dims.radius {
+                bodies.push((a.pos, footing::walk_radius(o, a)));
+            }
+        }
         let obs = Obstacles { solids: &solids, bodies: &bodies };
         let cap = self.capsule(id);
         let r = cap.radius;

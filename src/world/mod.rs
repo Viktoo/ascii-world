@@ -370,6 +370,15 @@ impl Solid {
         if ds > 0.5 {
             return ds;
         }
+        // Its bounds box is much tighter than the sphere for tall or flat
+        // shapes (a tree, a wall), and still never more than the true distance.
+        let l = Vec3::from(self.inst.to_local(p));
+        let b = Vec3::from_array(self.ty.ct.meta.bounds);
+        let q = l.abs() - b;
+        let db = (q.max(Vec3::ZERO).length() + q.max_element().min(0.0)) * self.inst.pos_scale[3];
+        if db > 0.5 {
+            return db;
+        }
         self.inst.sdf(&self.ty.ct, p)
     }
 }

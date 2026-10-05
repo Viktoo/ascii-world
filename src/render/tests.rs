@@ -117,6 +117,7 @@ fn tilt_and_hollows_agree_on_gpu_and_cpu() {
         let h = terrain.natural_height(3.0, 2.0);
         cv.fixed.push(crate::terrain::Hollow { c: [3.0, 2.0], rot: [0.8f32.cos(), 0.8f32.sin()], half: [2.0, 1.2], floor: h - 2.0, round: false });
         cv.dug.push(crate::terrain::Hollow { c: [-4.0, 1.0], rot: [1.0, 0.0], half: [0.6, 0.6], floor: terrain.natural_height(-4.0, 1.0) - 0.7, round: true });
+        cv.reindex();
     }
     let mut pts = Vec::new();
     for i in 0..400 {

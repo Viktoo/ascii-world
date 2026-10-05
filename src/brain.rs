@@ -1189,33 +1189,11 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // What the new buildings hold (a sword on its rack, a pot on the shelf),
     // written too when the world has nothing of that name.
     let known = |n: &str| new_names.iter().any(|(k, _)| k == n) || info.types.iter().any(|(_, tn, _, _)| tn.to_lowercase() == n);
-    let mut wanted: Vec<(String, String)> = Vec::new();
-    for t in &new_types {
-        for a in &t.ct.meta.anchors {
-            if let Some(h) = &a.holds {
-                let n = h.trim().to_lowercase();
-                if n != "door" && !known(&n) && !wanted.iter().any(|w| w.0 == n) && wanted.len() < 6 {
-                    wanted.push((n, t.ct.meta.name.clone()));
-                }
-            }
-        }
-    }
-    let futs = wanted.iter().map(|(n, b)| {
-        let task = format!(
-            "Object type to write: \"{n}\"\nDescription: a {n}, as it is found in the {b} in the region \"{rname}\" ({}). If it is worked by hand (a blade, an axe, a spade, a hammer, a bucket), give it meta.tool.\nApproximate size (w × h × d, metres): small, under 1 m\nTags: [\"item\"]\nProperties (meta.props): choose fitting ones\n\n{}",
-            s(&plan, "mood"),
-            prompts::TYPE_TASK
-        );
-        let system = system.clone();
-        async move { (n.clone(), build_type(ctx, &system, task, n, &[], &[]).await) }
-    });
-    for (name, res) in futures_util::future::join_all(futs).await {
-        if let Ok(t) = res {
-            let i = new_types.len();
-            new_names.push((name.to_lowercase(), i));
-            new_names.push((t.ct.meta.name.to_lowercase(), i));
-            new_types.push(t);
-        }
+    for (name, t) in write_contents(ctx, &system, &new_types, &known, &format!("the region \"{rname}\" ({})", s(&plan, "mood"))).await {
+        let i = new_types.len();
+        new_names.push((name, i));
+        new_names.push((t.ct.meta.name.to_lowercase(), i));
+        new_types.push(t);
     }
     // Varieties of species (a warrior village's people, hill folk).
     varieties_from(&ctx.db, plan.get("varieties").and_then(|x| x.as_array()).map(|a| a.as_slice()).unwrap_or(&[]));
@@ -1418,6 +1396,38 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The things new shapes' slots and parts name (a sword on its rack, a
+/// ladder up to a tree-house) that the world has no type for yet, written
+/// in parallel (at most six). Returns (the name asked for, its type).
+async fn write_contents(ctx: &Ctx, system: &str, types: &[NewType], known: &(dyn Fn(&str) -> bool + Sync), place: &str) -> Vec<(String, NewType)> {
+    let mut wanted: Vec<(String, String, bool)> = Vec::new();
+    for t in types {
+        for a in &t.ct.meta.anchors {
+            if let Some(h) = &a.holds {
+                let n = h.trim().to_lowercase();
+                if n != "door" && !known(&n) && !wanted.iter().any(|w| w.0 == n) && wanted.len() < 6 {
+                    wanted.push((n, t.ct.meta.name.clone(), a.kind == "part"));
+                }
+            }
+        }
+    }
+    let futs = wanted.iter().map(|(n, b, part)| {
+        let what = if *part {
+            format!("a {n}, a part fixed to the {b} in {place} (a sign, a bell, a ladder, a lantern on its hook); size it to fit the {b}")
+        } else {
+            format!("a {n}, as it is found in the {b} in {place}. If it is worked by hand (a blade, an axe, a spade, a hammer, a bucket), give it meta.tool")
+        };
+        let task = format!(
+            "Object type to write: \"{n}\"\nDescription: {what}.\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): choose fitting ones\n\n{}",
+            if *part { "to fit" } else { "small, under 1 m" },
+            if *part { "[\"part\"]" } else { "[\"item\"]" },
+            prompts::TYPE_TASK
+        );
+        async move { (n.clone(), build_type(ctx, system, task, n, &[], &[]).await) }
+    });
+    futures_util::future::join_all(futs).await.into_iter().filter_map(|(n, r)| r.ok().map(|t| (n, t))).collect()
+}
+
 async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: Option<&(i64, String)>) -> anyhow::Result<Vec<i64>> {
     let info = ctx.info(crate::world::region_of(target.x, target.z)).await.ok_or_else(|| anyhow::anyhow!("committer gone"))?;
     let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
@@ -1453,6 +1463,11 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                 None => {
                     let code = all_code_blocks(&reply).into_iter().next().or_else(|| extract_code(&reply)).ok_or_else(|| vec![Diag::new(Stage::Parse, 0, "no ```js block with the new type".into())])?;
                     new_types.push(validate(code, ctx.vocab()).await?);
+                    // What it holds (a sword on its rack), written too.
+                    let known = |n: &str| info.types.iter().any(|(_, tn, _, _)| tn.to_lowercase() == n);
+                    for (_, t) in write_contents(ctx, &system, &new_types, &known, "the world").await {
+                        new_types.push(t);
+                    }
                     TypeRef::New(0)
                 }
             };
@@ -1483,8 +1498,9 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
         .await;
         match outcome {
             Ok(ok) => {
-                let name = ok.snapshot.instances.last().and_then(|p| ok.snapshot.type_of(p.type_id)).map(|t| t.name().to_string()).unwrap_or_else(|| "it".into());
                 let v = ok.snapshot.version;
+                // What was asked for comes first; its door and contents after.
+                let name = ok.snapshot.instances.iter().find(|p| p.version == v).and_then(|p| ok.snapshot.type_of(p.type_id)).map(|t| t.name().to_string()).unwrap_or_else(|| "it".into());
                 let ids: Vec<i64> = ok.snapshot.instances.iter().filter(|p| p.version == v).map(|p| p.id).collect();
                 let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
                 if by.is_none() {

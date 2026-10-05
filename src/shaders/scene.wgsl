@@ -329,16 +329,35 @@ fn corrupt_glow(fx: vec4f) -> vec3f {
   return vec3f(0.3, 0.02, 0.01) * clamp(-fx.w, 0.0, 1.0) * 0.12;
 }
 
+// How open the sky is straight above a point: 1 in the open, low under a
+// roof, a canopy, an overhang (the candidates the view ray gathered).
+fn sky_open(p: vec3f) -> f32 {
+  var res = 1.0;
+  var t = 0.15;
+  for (var i = 0; i < 10; i = i + 1) {
+    let d = map_scene(p + vec3f(0.0, t, 0.0)).z;
+    res = min(res, 8.0 * d / t);
+    if (res < 0.05) { break; }
+    t = t + clamp(d, 0.1, 1.5);
+    if (t > 8.0) { break; }
+  }
+  return clamp(res, 0.0, 1.0);
+}
+
 fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
   let sun = G.sun_dir.xyz;
+  // Indoors the sky's blue doesn't reach; daylight spills in warm instead.
+  let open = sky_open(p + n * 0.25);
   let ndl = dot(n, sun);
   var shadow = 1.0;
   if (ndl > 0.0 && (G.dims.w & 2u) != 0u && sun.y > 0.0) {
     shadow = soft_shadow(p + n * 0.05, sun);
   }
   let a = to_lin(albedo);
-  let sky_amb = to_lin(mix(G.sky_hor.xyz, G.sky_zen.xyz, 0.5 + 0.5 * n.y)) * G.sky_hor.w;
-  let bounce = to_lin(G.sky_hor.xyz) * 0.15 * clamp(-n.y * 0.5 + 0.5, 0.0, 1.0) * G.sky_hor.w;
+  let shut = 1.0 - open;
+  let sky_amb = to_lin(mix(G.sky_hor.xyz, G.sky_zen.xyz, 0.5 + 0.5 * n.y)) * G.sky_hor.w * (0.25 + 0.75 * open)
+    + vec3f(0.11, 0.09, 0.07) * shut * G.sky_hor.w * (0.3 + 0.7 * G.sun_dir.w);
+  let bounce = to_lin(G.sky_hor.xyz) * 0.15 * clamp(-n.y * 0.5 + 0.5, 0.0, 1.0) * G.sky_hor.w * (0.4 + 0.6 * open);
   // Moonlight stays useful at night: the land must remain walkable.
   let strength = max(0.15 + 0.85 * G.sun_dir.w, 0.75 * G.sun_col.w);
   let direct = to_lin(G.sun_col.xyz) * max(ndl, 0.0) * shadow * strength * 1.6;

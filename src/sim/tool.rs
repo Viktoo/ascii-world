@@ -441,7 +441,7 @@ impl Sim {
                     depth = bite;
                 }
             }
-            c.version = c.version.wrapping_add(1);
+            c.reindex();
         }
         self.dug_dirty = true;
         // What lay there drops in.

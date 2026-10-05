@@ -80,6 +80,9 @@ pub struct CompiledType {
     pub touch: Option<vm::Program>,
     /// Property names behaviour code reads or writes, in register order.
     pub prop_names: Vec<String>,
+    /// Carved by subtraction somewhere: its distance can read short near a
+    /// cut (a doorway), so collision checks such shapes more carefully.
+    pub carved: bool,
 }
 
 /// Fuel budget used when evaluating on the CPU outside of probing.
@@ -154,7 +157,8 @@ pub fn compile(source: &str) -> Result<CompiledType, Vec<Diag>> {
         progs[i] = Some(vm::compile_behavior(f, n).map_err(tr)?);
     }
     let [tick, use_fn, touch] = progs;
-    Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color, tick, use_fn, touch, prop_names: module.prop_names })
+    let carved = wgsl.contains("api_subtract") || wgsl.contains("api_smooth_subtract") || source.contains("subtract(");
+    Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color, tick, use_fn, touch, prop_names: module.prop_names, carved })
 }
 
 #[cfg(test)]

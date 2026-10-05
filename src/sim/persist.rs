@@ -287,7 +287,7 @@ pub fn load(sim: &mut Sim) {
     if let Some(dug) = db.kv_get("sim.dug").and_then(|j| serde_json::from_str::<Vec<crate::terrain::Hollow>>(&j).ok()) {
         let mut c = sim.snap.terrain.carve.write();
         c.dug = dug;
-        c.version = c.version.wrapping_add(1);
+        c.reindex();
     }
     let goals: Vec<String> = db
         .with(|c| {

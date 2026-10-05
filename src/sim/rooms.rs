@@ -12,7 +12,6 @@ use glam::Vec3;
 /// One enterable shape.
 #[derive(Clone, Debug)]
 pub struct Room {
-    pub inst: i64,
     pub g: GpuInst,
     /// Local half-extents (its bounds).
     pub half: Vec3,
@@ -44,7 +43,7 @@ pub fn rooms_of(snap: &WorldSnapshot) -> Vec<Room> {
         let g = p.gpu(ty, 1.0);
         let s = p.scale.max(0.1);
         let pt = |v: [f32; 3]| g.from_local(Vec3::from_array(v));
-        let mut r = Room { inst: p.id, g, half: Vec3::from_array(ty.ct.meta.bounds), doors: vec![], stairs: vec![], beds: vec![], seats: vec![] };
+        let mut r = Room { g, half: Vec3::from_array(ty.ct.meta.bounds), doors: vec![], stairs: vec![], beds: vec![], seats: vec![] };
         for a in anchors {
             match a.kind.as_str() {
                 "door" => {

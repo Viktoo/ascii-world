@@ -486,7 +486,7 @@ impl WorldModel {
         let scene = Arc::new(SceneTypes { types: types.iter().map(|t| (t.entry.id, t.entry.clone())).collect(), pipeline });
         let instances = self.active_instances();
         // The ground taken away under placed shapes, and the roads.
-        let hollows: Vec<crate::terrain::Hollow> = instances.iter().filter_map(|p| Some(hollow_of(p, &scene.types.get(&p.type_id)?.ct.meta.hollow.clone()?))).collect();
+        let hollows: Vec<crate::terrain::Hollow> = instances.iter().filter_map(|p| Some(hollow_of(p, &ground_taken(&scene.types.get(&p.type_id)?.ct.meta)?))).collect();
         let mut roads: Vec<crate::terrain::Road> = self.regions.values().flat_map(|r| r.roads.iter().copied()).collect();
         roads.sort_by(|a, b| a.a[0].total_cmp(&b.a[0]).then(a.a[1].total_cmp(&b.a[1])));
         {
@@ -494,7 +494,7 @@ impl WorldModel {
             if c.fixed != hollows || c.roads != roads {
                 c.fixed = hollows;
                 c.roads = roads;
-                c.version = c.version.wrapping_add(1);
+                c.reindex();
             }
         }
         let by_chunk = WorldSnapshot::index(&instances);
@@ -1072,6 +1072,16 @@ fn footprint(t: &Terrain, pl: &Placement, entry: &TypeEntry) -> (f32, f32) {
 /// A commit that reshaped one thing (see `brain::edit_item_type`).
 fn is_reshape(kind: &str, summary: &str) -> bool {
     kind == "interp" && summary.starts_with("reshaped: ")
+}
+
+/// The ground a shape takes away: its `meta.hollow`, or, for a shape with
+/// a doorway, the ground under its floor (so no slope pokes through it).
+pub fn ground_taken(m: &crate::lang::ir::Meta) -> Option<crate::lang::ir::Hollow> {
+    if let Some(h) = &m.hollow {
+        return Some(h.clone());
+    }
+    let door = m.anchors.iter().find(|a| a.kind == "door")?;
+    Some(crate::lang::ir::Hollow { half: [m.bounds[0] * 0.92, m.bounds[2] * 0.92], floor: door.at[1] - 0.04 })
 }
 
 /// The ground a placed shape takes away (its `meta.hollow`), in the world.

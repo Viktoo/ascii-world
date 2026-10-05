@@ -191,14 +191,6 @@ impl GpuInst {
         }
         self.pos() + self.yaw_out(l)
     }
-    /// A local direction in the world (no scale).
-    pub fn dir_out(&self, l: Vec3) -> Vec3 {
-        let l = match self.tilt_q() {
-            Some(q) => q * l,
-            None => l,
-        };
-        self.yaw_out(l)
-    }
 }
 
 #[derive(Clone, Copy, Debug)]

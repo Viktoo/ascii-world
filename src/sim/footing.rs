@@ -14,24 +14,21 @@ const JUMP: f32 = 0.5;
 /// How fast a crouch goes down or comes up (per second, of the whole way).
 const CROUCH_RATE: f32 = 5.0;
 
+/// How wide a body walks: people keep the walking radius they always had;
+/// other bodies their own.
+pub fn walk_radius(id: ActorId, a: &super::actor::Actor) -> f32 {
+    match id {
+        ActorId::Player => crate::world::collide::PLAYER_RADIUS,
+        ActorId::Npc(_) if a.dims.arms => crate::world::collide::NPC_RADIUS,
+        ActorId::Npc(_) => a.dims.radius.clamp(0.12, 4.0),
+    }
+}
+
 impl Sim {
     /// The capsule a body walks in now (crouching makes it shorter).
     pub fn capsule(&self, id: ActorId) -> Capsule {
         let Some(a) = self.actor(id) else { return Capsule::of(1.75, crate::world::collide::NPC_RADIUS) };
-        let radius = match id {
-            ActorId::Player => crate::world::collide::PLAYER_RADIUS,
-            // People keep the walking radius they always had; other bodies their own.
-            ActorId::Npc(_) if a.dims.arms => crate::world::collide::NPC_RADIUS,
-            ActorId::Npc(_) => a.dims.radius.clamp(0.12, 4.0),
-        };
-        Capsule { radius, height: a.stand_height(), step: step_for(a.dims.height) }
-    }
-
-    /// Where a body's feet find support right under it, looking no higher
-    /// than `top`.
-    pub fn support_at(&mut self, p: Vec3, radius: f32, top: f32) -> f32 {
-        let solids = self.solids_near(p, radius + 2.0);
-        support_under(&self.snap.terrain, &solids, p, radius, top)
+        Capsule { radius: walk_radius(id, a), height: a.stand_height(), step: step_for(a.dims.height) }
     }
 
     /// Settle a body on its footing for `dt`: stand on what is under it,

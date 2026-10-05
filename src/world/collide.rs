@@ -48,11 +48,12 @@ impl Obstacles<'_> {
     }
 
     /// Distance from a body's column at (x, z), feet at `feet`, to the nearest
-    /// obstacle: solids from just above its step to the top of its head, and
-    /// other bodies at about its height.
+    /// obstacle: solids from just above its step to the top of its head (the
+    /// top sample a radius below it: a capsule's cap), and other bodies at
+    /// about its height.
     pub fn dist_body(&self, x: f32, z: f32, feet: f32, b: Capsule) -> f32 {
         let lo0 = feet + b.step + 0.05;
-        let hi = (feet + b.height - 0.05).max(lo0);
+        let hi = (feet + b.height - b.radius).max(lo0);
         let mut d = f32::MAX;
         for s in self.solids {
             let lo = if s.ty.is_growth() { lo0.max(feet + GROWTH_GIVES) } else { lo0 };
@@ -88,7 +89,7 @@ impl Obstacles<'_> {
             }
         }
         let lo0 = feet + b.step + 0.05;
-        let hi = (feet + b.height - 0.05).max(lo0);
+        let hi = (feet + b.height - b.radius).max(lo0);
         for s in self.solids {
             let c = s.inst.center();
             if Vec2::new(c.x - x, c.z - z).length() > s.inst.radius() + b.radius + 0.1 {
@@ -107,6 +108,10 @@ impl Obstacles<'_> {
                 }
                 if d0 >= b.radius {
                     continue;
+                }
+                // An uncarved shape's distance is true enough: it touches.
+                if !s.ty.ct.carved {
+                    return false;
                 }
                 // March out along each of eight directions to the rim: the
                 // distance is a safe step, so even a thin door is met.
@@ -128,6 +133,9 @@ impl Obstacles<'_> {
             }
             // And up each line of its height, centre and rim: a beam lower
             // than its head is met however thin.
+            if !s.ty.ct.carved {
+                continue;
+            }
             for k in 0..9 {
                 let (ox, oz) = if k == 8 {
                     (0.0, 0.0)
