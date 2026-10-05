@@ -1300,6 +1300,7 @@ impl App {
             frame: self.next_frame_id as u32,
             shadows: !self.render.cpu_fallback && self.settings.shadows,
             lights: &drawn.lights,
+            weather: render::WeatherView::of(&self.sim.wx, self.sim.weather.flash(self.sim.t, self.sim.wx.storm), !self.sim.open_sky(cam.pos)),
         };
         let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
         let req = FrameRequest {
@@ -1423,7 +1424,7 @@ impl App {
             let mut c = n.chars();
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
         });
-        let mut parts = vec![place, sky::time_label(self.sim.t).to_string()];
+        let mut parts = vec![place, sky::time_label(self.sim.t).to_string(), self.sim.wx.name.clone()];
         parts.extend(self.sim.night_status());
         if let Some(h) = self.sim.player.held {
             parts.push(format!("holding {}", self.sim.thing_name(h)));

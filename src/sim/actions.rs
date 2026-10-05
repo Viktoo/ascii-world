@@ -1204,8 +1204,8 @@ impl Sim {
         let night = self.night() as u32 as f32;
         let mut na = ta.props.clone();
         let mut nb = tb.props.clone();
-        let va = super::rules::EntView { props: &ta.props, water: 0.0, held: 1.0, ground: 0.0 };
-        let vb = super::rules::EntView { props: &tb.props, water: 0.0, held: 0.0, ground: 1.0 };
+        let va = super::rules::EntView { props: &ta.props, water: 0.0, held: 1.0, ground: 0.0, falling: 0.0, wind: 0.0 };
+        let vb = super::rules::EntView { props: &tb.props, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
         let mut fired = Vec::new();
         for r in rules.iter().filter(|r| r.near.is_some()) {
             if super::rules::pair_self_ok(r, &va, 1.0, hour, night) && super::rules::run_pair(r, &va, &vb, 0.1, 1.0, hour, night, &mut na, &mut nb) {

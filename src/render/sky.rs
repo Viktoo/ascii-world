@@ -68,5 +68,7 @@ pub fn lighting(t_game: f64, pal: &Palette) -> Lighting {
         sun_col = Vec3::new(0.32, 0.38, 0.55);
     }
     let ambient = 0.55 + 0.45 * daylight;
-    Lighting { sun_dir, daylight, night, sun_col, zenith, horizon, ambient }
+    // Sunrise and sunset: strongest with the sun at the horizon, lingering a little after it sets.
+    let glow = smoothstep(-0.2, 0.0, elev) * (1.0 - smoothstep(0.05, 0.35, elev));
+    Lighting { sun_dir, daylight, night, sun_col, zenith, horizon, ambient, dusk: glow, sun }
 }

@@ -283,6 +283,16 @@ pub struct Species {
     /// beast { blessed: 1 }. The world's rules then act on it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub props: BTreeMap<String, f32>,
+    /// How it feels about weather, by word (a weather kind's name, what
+    /// falls, "rain", "snow", "storm", "wind", "fog", "clear"): -1 hates it
+    /// .. 1 loves it. Weather it doesn't name: it minds what falls on it,
+    /// storms and gales.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub weather: BTreeMap<String, f32>,
+    /// It only comes out in this weather ("rain", "fog", a kind's name);
+    /// empty: whatever the weather.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comes_with: Vec<String>,
 }
 
 fn is_always(a: &Active) -> bool {
@@ -343,6 +353,8 @@ impl Species {
         }
         self.signs = self.signs.iter().map(|s| s.trim().chars().take(120).collect::<String>()).filter(|s| !s.is_empty()).take(8).collect();
         self.shuns = self.shuns.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).take(4).collect();
+        self.weather = std::mem::take(&mut self.weather).into_iter().filter(|(k, v)| v.is_finite() && !k.trim().is_empty()).map(|(k, v)| (k.trim().to_lowercase(), v.clamp(-1.0, 1.0))).take(8).collect();
+        self.comes_with = self.comes_with.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).take(4).collect();
     }
 
     /// About at this time of day?

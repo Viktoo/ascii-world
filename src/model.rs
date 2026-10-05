@@ -1023,6 +1023,7 @@ pub fn probe_globals(terrain: &Terrain) -> crate::render::Globals {
         frame: 0,
         shadows: false,
         lights: &[],
+        weather: Default::default(),
     };
     crate::render::build_globals(&sp, 1, None)
 }

@@ -146,8 +146,8 @@ impl Sim {
         let rules = self.rules.clone();
         let (hour, night) = (self.hour(), self.night() as u32 as f32);
         let (mut na, mut nb) = (pa.clone(), pb.clone());
-        let va = super::rules::EntView { props: &pa, water: 0.0, held: 0.0, ground: 1.0 };
-        let vb = super::rules::EntView { props: &pb, water: 0.0, held: 0.0, ground: 1.0 };
+        let va = super::rules::EntView { props: &pa, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
+        let vb = super::rules::EntView { props: &pb, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
         for r in rules.iter().filter(|r| r.near.is_some()) {
             if super::rules::pair_self_ok(r, &va, secs, hour, night) {
                 super::rules::run_pair(r, &va, &vb, dist, secs, hour, night, &mut na, &mut nb);

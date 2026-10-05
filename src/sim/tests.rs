@@ -15,6 +15,8 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod weather;
+
 fn fixture(p: &str) -> String {
     std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(p)).unwrap()
 }
@@ -1324,7 +1326,7 @@ fn render_live_scene_png() {
     let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
     let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
-    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights, weather: Default::default() };
     let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match &gpu {
@@ -1391,7 +1393,7 @@ fn render_day_scene_png() {
     let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
     let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
-    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights, weather: Default::default() };
     let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match &gpu {
@@ -1729,7 +1731,7 @@ fn render_edited_hut_png() {
     let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
     let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
-    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights, weather: Default::default() };
     let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match &gpu {
@@ -1954,7 +1956,7 @@ fn render_png(s: &mut Session, w: &W, cam: crate::render::Camera, out: &str) {
     let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
     let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
-    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights, weather: Default::default() };
     let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match &gpu {
@@ -4632,7 +4634,7 @@ fn png_of(s: &mut Session, snap: &Arc<crate::world::WorldSnapshot>, gpu: &Option
     let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
     let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
-    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights, weather: Default::default() };
     let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match gpu {

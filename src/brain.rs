@@ -938,6 +938,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     let mut look: Look = serde_json::from_value(v.clone()).unwrap_or_default();
     look.land = look.land.trim().to_string();
     look.start = look.start.trim().to_string();
+    look.climate.sanitize();
     let land = look.land.clone();
     if look.biomes.is_empty() {
         look.biomes = crate::terrain::default_biomes();

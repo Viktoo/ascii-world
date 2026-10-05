@@ -44,6 +44,7 @@ pub mod surprise;
 pub mod things;
 pub mod tool;
 pub mod vehicle;
+pub mod weather;
 
 use crate::db::Db;
 use crate::render::sky;
@@ -373,6 +374,10 @@ pub struct Sim {
     pub rooms: Vec<rooms::Room>,
     /// How fast each vehicle in use is going (m/s, forward; see `vehicle`).
     pub drives: std::collections::BTreeMap<things::ThingId, f32>,
+    /// The world's weather over time, and what it is now (see `weather`).
+    pub weather: crate::world::weather::Weather,
+    pub wx: crate::world::weather::Now,
+    pub weather_st: weather::WeatherState,
 }
 
 impl Sim {
@@ -428,12 +433,16 @@ impl Sim {
             drives: Default::default(),
             dug_dirty: false,
             rooms: rooms::rooms_of(&snap),
+            weather: crate::world::weather::Weather::new(&snap.look.climate, snap.terrain.seed),
+            wx: Default::default(),
+            weather_st: Default::default(),
         };
         sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();
         persist::load_gestures(&sim.db);
         sim.cast.sync(&snap, seed);
         persist::load(&mut sim);
+        sim.step_weather();
         sim.fit_bodies();
         sim.seed_goals();
         sim.social.seed_from_personas(&sim.cast, &snap.species);
@@ -766,6 +775,7 @@ impl Sim {
         }
         self.snap = snap.clone();
         self.rooms = rooms::rooms_of(&snap);
+        self.weather.refresh(&snap.look.climate, snap.terrain.seed);
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
         self.fit_bodies();
@@ -825,6 +835,7 @@ impl Sim {
             self.frame_dt = dt;
         }
         self.t += dt as f64;
+        self.step_weather();
         let dark = sky::lighting(self.t, &self.snap.look.palette).night;
         self.cache.overlay.lamps = dark;
         self.step_actors(dt);
@@ -863,6 +874,7 @@ impl Sim {
             self.step_incidents();
             self.ask_species_bodies();
             self.step_night();
+            self.tell_weather();
             self.feel_bodies(1.0);
             self.step_goals(1.0);
         }

@@ -624,10 +624,10 @@ impl Sim {
             .cast
             .npcs
             .iter()
-            .filter(|n| !n.dead && (n.species.active != crate::world::species::Active::Always || n.species.touch.harms()))
+            .filter(|n| !n.dead && (n.species.active != crate::world::species::Active::Always || n.species.touch.harms() || !n.species.comes_with.is_empty()))
             .map(|n| {
                 let harms = n.species.touch.harms();
-                let due = n.species.about(night) && (!harms || hunting);
+                let due = n.species.about(night) && crate::world::weather::suits(&n.species.comes_with, &self.wx) && (!harms || hunting);
                 (n.def.id, n.away, due, n.a.pos, harms && n.species.want == "traveler")
             })
             .collect();

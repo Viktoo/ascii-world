@@ -114,6 +114,9 @@ struct Ent {
     water: f32,
     held: f32,
     ground: f32,
+    /// What falls on it from the sky, and the wind on it (0 under a roof).
+    falling: f32,
+    wind: f32,
     /// Runs its own rules this pass (otherwise only a neighbour).
     acting: bool,
     name: String,
@@ -277,8 +280,8 @@ impl Sim {
         while left > 1e-3 {
             let d = left.min(dt);
             left -= d;
-            let va = rules::EntView { props: &a, water: 0.0, held: 1.0, ground: 0.0 };
-            let vb = rules::EntView { props: &b, water: 0.0, held: 0.0, ground: 1.0 };
+            let va = rules::EntView { props: &a, water: 0.0, held: 1.0, ground: 0.0, falling: 0.0, wind: 0.0 };
+            let vb = rules::EntView { props: &b, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
             let (mut na, mut nb) = (a.clone(), b.clone());
             let mut fired = Vec::new();
             rules::run_single(&rules, &vb, &mut nb, d, hour, night, &mut fired);
@@ -323,6 +326,12 @@ impl Sim {
         let snap = self.snap.clone();
         let mut ents: Vec<Ent> = Vec::new();
         let mut index: HashMap<Key, usize> = HashMap::new();
+        // The weather on whatever is out in it.
+        let sky_amount = self.wx.falls.as_ref().map(|f| f.amount).unwrap_or(0.0);
+        let sky_wind = self.wx.wind;
+        let falls = self.falls_props();
+        let soak = self.wx.soak;
+        let open_at = |s: &Sim, p: Vec3| if s.open_sky(p) { (sky_amount, sky_wind) } else { (0.0, 0.0) };
         // Acting entities: live things and active cells.
         for t in self.things.live() {
             if !in_range(t.pos) {
@@ -330,6 +339,7 @@ impl Sim {
             }
             let Some(ty) = snap.type_of(t.type_id) else { continue };
             let (c, _) = t.proxy(ty);
+            let (falling, wind) = open_at(self, c);
             let key = Key::Thing(t.id);
             index.insert(key, ents.len());
             ents.push(Ent {
@@ -340,6 +350,8 @@ impl Sim {
                 water: (c.y < WATER_LEVEL) as u32 as f32,
                 held: t.held() as u32 as f32,
                 ground: (t.asleep && !t.held()) as u32 as f32,
+                falling,
+                wind,
                 acting: true,
                 name: ty.name().to_string(),
                 size: (ty.radius() * t.scale).max(0.1),
@@ -360,6 +372,8 @@ impl Sim {
                 water: c.water as u32 as f32,
                 held: 0.0,
                 ground: 1.0,
+                falling: sky_amount,
+                wind: sky_wind,
                 acting: true,
                 name: snap.type_of(c.type_id).map(|t| t.name().to_string()).unwrap_or_default(),
                 size: c.size,
@@ -375,6 +389,7 @@ impl Sim {
             let Some(n) = self.cast.get(c) else { continue };
             let d = &n.a.dims;
             let pos = n.a.pos + Vec3::Y * d.height * 0.5;
+            let (falling, wind) = open_at(self, pos);
             let key = Key::Actor(c);
             index.insert(key, ents.len());
             ents.push(Ent {
@@ -385,6 +400,8 @@ impl Sim {
                 water: (snap.terrain.height(n.a.pos.x, n.a.pos.z) < WATER_LEVEL - 0.1 && !n.a.carried()) as u32 as f32,
                 held: 0.0,
                 ground: 1.0,
+                falling,
+                wind,
                 acting: true,
                 name: n.name().to_string(),
                 size: (d.radius * 2.0).max(0.2),
@@ -415,7 +432,7 @@ impl Sim {
             for i in 0..acting {
                 let e = &ents[i];
                 // Only look around if some pair rule could fire for it.
-                let v = EntView { props: &e.props, water: e.water, held: e.held, ground: e.ground };
+                let v = EntView { props: &e.props, water: e.water, held: e.held, ground: e.ground, falling: e.falling, wind: e.wind };
                 let r = rules.iter().filter(|r| r.near.is_some() && rules::pair_self_ok(r, &v, dt, hour, night)).filter_map(|r| r.near).fold(0.0f32, f32::max);
                 if r <= 0.0 {
                     continue;
@@ -432,6 +449,8 @@ impl Sim {
                         None => scaled((*self.type_props.get(&self.vocab, ty)).clone(), it.inst.pos_scale[3]),
                     };
                     let pos = it.inst.pos();
+                    let mut props = props;
+                    Sim::soaked(&mut props, &falls, soak);
                     extra_keys.insert(key);
                     extra.push(Ent {
                         key,
@@ -441,6 +460,8 @@ impl Sim {
                         water: (snap.terrain.height(pos.x, pos.z) < WATER_LEVEL) as u32 as f32,
                         held: 0.0,
                         ground: 1.0,
+                        falling: sky_amount,
+                        wind: sky_wind,
                         acting: false,
                         name: ty.name().to_string(),
                         size: (ty.radius() * it.inst.pos_scale[3]).max(0.1),
@@ -456,7 +477,11 @@ impl Sim {
                         continue;
                     }
                     let Some(ty) = snap.type_of(pl.type_id) else { continue };
-                    let props = scaled((*self.type_props.get(&self.vocab, ty)).clone(), pl.scale);
+                    let mut props = scaled((*self.type_props.get(&self.vocab, ty)).clone(), pl.scale);
+                    let falling = open_at(self, pl.pos + Vec3::Y).0;
+                    if falling > 0.0 || soak > 0.0 && self.open_sky(pl.pos + Vec3::Y) {
+                        Sim::soaked(&mut props, &falls, soak);
+                    }
                     extra_keys.insert(key);
                     extra.push(Ent {
                         key,
@@ -466,6 +491,8 @@ impl Sim {
                         water: (pl.pos.y < WATER_LEVEL) as u32 as f32,
                         held: 0.0,
                         ground: 1.0,
+                        falling,
+                        wind: sky_wind,
                         acting: false,
                         name: ty.name().to_string(),
                         size: ty.radius() * pl.scale,
@@ -487,9 +514,12 @@ impl Sim {
         }
         // Single rules.
         for e in ents.iter_mut().take(acting) {
-            let v = EntView { props: &e.props, water: e.water, held: e.held, ground: e.ground };
+            let v = EntView { props: &e.props, water: e.water, held: e.held, ground: e.ground, falling: e.falling, wind: e.wind };
             let mut fired = Vec::new();
             rules::run_single(&rules, &v, &mut e.next, dt, hour, night, &mut fired);
+            if e.falling > 0.0 {
+                Sim::soak(&mut e.next, &falls, e.falling, dt);
+            }
             e.fired.extend(fired.into_iter().map(str::to_string));
         }
         // Pair rules. Big things reach further (their surface, not their centre).
@@ -501,7 +531,7 @@ impl Sim {
                 let near = r.near.unwrap_or(0.0);
                 let (ok, p, size_i) = {
                     let e = &ents[i];
-                    let v = EntView { props: &e.props, water: e.water, held: e.held, ground: e.ground };
+                    let v = EntView { props: &e.props, water: e.water, held: e.held, ground: e.ground, falling: e.falling, wind: e.wind };
                     (rules::pair_self_ok(r, &v, dt, hour, night), e.pos, e.size)
                 };
                 if !ok {
@@ -532,8 +562,8 @@ impl Sim {
                     let mut other_next = std::mem::take(&mut ents[j].next);
                     let fired = {
                         let (ei, ej) = (&ents[i], &ents[j]);
-                        let vi = EntView { props: &ei.props, water: ei.water, held: ei.held, ground: ei.ground };
-                        let vj = EntView { props: &ej.props, water: ej.water, held: ej.held, ground: ej.ground };
+                        let vi = EntView { props: &ei.props, water: ei.water, held: ei.held, ground: ei.ground, falling: ei.falling, wind: ei.wind };
+                        let vj = EntView { props: &ej.props, water: ej.water, held: ej.held, ground: ej.ground, falling: ej.falling, wind: ej.wind };
                         let mut my_next = ents[i].next.clone();
                         let f = rules::run_pair(r, &vi, &vj, gap, dt, hour, night, &mut my_next, &mut other_next);
                         if f {
@@ -794,7 +824,7 @@ pub fn watches(vocab: &Vocab) -> Vec<Watch> {
 /// them; `n` is what the part is called ("the oak", "Oda").
 fn phenomena(watch: &[Watch], before: &Props, after: &Props, n: &str) -> Vec<(super::incident::Crossed, String)> {
     let mut v = Vec::new();
-    let env = rules::Env { me: after, other: &[], dt: 0.0, dist: 0.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0 };
+    let env = rules::Env { me: after, other: &[], dt: 0.0, dist: 0.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
     let holds = |e: &Option<rules::RExpr>| e.as_ref().is_none_or(|e| e.eval(&env) != 0.0);
     for w in watch {
         let (Some(b), Some(a)) = (before.get(w.i), after.get(w.i)) else { continue };
@@ -847,7 +877,7 @@ pub fn probe_rules(specs: &[RuleSpec], vocab: &Vocab) -> Result<Vec<Rule>, Strin
     for step in 0..80 {
         let mut next = props.clone();
         for i in 0..props.len() {
-            let v = EntView { props: &props[i], water: 0.0, held: 0.0, ground: 1.0 };
+            let v = EntView { props: &props[i], water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
             let mut fired = Vec::new();
             rules::run_single(&all, &v, &mut next[i], dt, 12.0, 0.0, &mut fired);
             for r in all.iter().filter(|r| r.near.is_some()) {
@@ -859,7 +889,7 @@ pub fn probe_rules(specs: &[RuleSpec], vocab: &Vocab) -> Result<Vec<Rule>, Strin
                     if i == j || d > r.near.unwrap_or(0.0) {
                         continue;
                     }
-                    let vj = EntView { props: &props[j], water: 0.0, held: 0.0, ground: 1.0 };
+                    let vj = EntView { props: &props[j], water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
                     let mut mine = next[i].clone();
                     let mut theirs = next[j].clone();
                     if rules::run_pair(r, &v, &vj, d, dt, 12.0, 0.0, &mut mine, &mut theirs) {

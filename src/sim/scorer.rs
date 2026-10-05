@@ -151,6 +151,12 @@ pub enum Verb {
     Dash(Vec3),
     /// The next step toward a goal.
     Goal { id: u64, steps: Vec<Action>, what: String },
+    /// Get out of the weather (`from`) to somewhere (`place`: home, indoors, under a tree).
+    Shelter { to: Target, place: String, from: String },
+    /// Under a roof: stay there until it passes.
+    StayIn(String),
+    /// Go out into weather they love.
+    GoOut(Vec3, String),
     Wander,
 }
 
@@ -246,6 +252,24 @@ impl Sim {
         }
         if let Some((at, size, what)) = self.hazards_near(pos, 9.0).into_iter().next() {
             add(Verb::Avoid { at, size, what: what.clone() }, SAFETY - 0.3, format!("get away from the {what}"));
+        }
+        // Weather: out of what they mind, or out into what they love.
+        let feel = self.weather_feeling(cid);
+        if feel.abs() > 0.25 {
+            let outside = self.open_sky(pos);
+            let what = self.wx.falls.as_ref().filter(|f| f.amount > 0.05).map(|f| f.what.clone()).unwrap_or_else(|| self.wx.name.clone());
+            if outside && feel < 0.0 {
+                if let Some((to, place)) = self.shelter_for(cid) {
+                    add(Verb::Shelter { to, place: place.clone(), from: what.clone() }, 0.5 + 1.8 * -feel, format!("get out of the {what} ({place})"));
+                }
+            } else if !outside && feel < 0.0 {
+                add(Verb::StayIn(what.clone()), 0.3 + 1.2 * -feel, format!("stay in until the {what} passes"));
+            } else if !outside && feel > 0.0 && !self.night() {
+                if let Some(door) = self.room_at(pos).and_then(|r| self.rooms[r].doors.first().map(|d| d.0)) {
+                    let a = (cid as f32 * 2.4).sin();
+                    add(Verb::GoOut(door + Vec3::new(a * 3.0, 0.0, a.cos() * 3.0), what.clone()), 0.3 + 0.8 * feel, format!("go out into the {what}"));
+                }
+            }
         }
         let tr = self.cast.get(cid).map(|n| n.traits).unwrap_or(super::npc::Traits::from_persona(&Default::default(), 0));
         if sapient && tr.curious + tr.brave > 0.9 && needs.curiosity > 0.2 {
@@ -750,6 +774,22 @@ impl Sim {
                 self.social.seen_novelty(cid, &what);
                 self.set_doing(cid, &format!("looking at the {what}"));
                 self.think_again(cid, 6.0);
+            }
+            Verb::Shelter { to, place, from } => {
+                let hurry = self.weather_feeling(cid) < -0.6;
+                self.plan(me, vec![Action::Goto { target: to, run: hurry }, Action::Wait { secs: 20.0 }], &format!("get out of the {from}"), false);
+                self.set_doing(cid, &format!("sheltering from the {from} ({place})"));
+                self.think_again(cid, 25.0);
+            }
+            Verb::StayIn(from) => {
+                self.plan(me, vec![Action::Wait { secs: 20.0 }], &format!("wait out the {from}"), false);
+                self.set_doing(cid, &format!("waiting out the {from}"));
+                self.think_again(cid, 20.0);
+            }
+            Verb::GoOut(at, what) => {
+                self.plan(me, vec![Action::Goto { target: Target::Point(at.to_array()), run: false }, Action::Wait { secs: 12.0 }], &format!("go out into the {what}"), false);
+                self.set_doing(cid, &format!("out in the {what}"));
+                self.think_again(cid, 15.0);
             }
             Verb::Explore(spot) => {
                 self.plan(me, vec![Action::Goto { target: Target::Point(spot.to_array()), run: false }, Action::Wait { secs: 4.0 }], "see what is there", false);

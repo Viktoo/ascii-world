@@ -270,14 +270,72 @@ fn soft_shadow(ro: vec3f, rd: vec3f) -> f32 {
   return clamp(res, 0.0, 1.0);
 }
 
-fn sky(rd: vec3f) -> vec3f {
+// ---- sky and weather ----
+
+// How a direction lies toward the sun, round the horizon: 1 facing it, 0 away.
+fn toward_sun(rd: vec3f) -> f32 {
+  let sun = G.wx[5].xyz;
+  let a = normalize(vec2f(rd.x, rd.z) + vec2f(1e-4, 0.0));
+  let b = normalize(vec2f(sun.x, sun.z) + vec2f(1e-4, 0.0));
+  return dot(a, b) * 0.5 + 0.5;
+}
+
+// Cloud over a point of the cloud layer (world xz), 0..1. Twin of
+// `cloud_density` in render/cpu.rs.
+fn cloud_density(xz: vec2f) -> f32 {
+  let cover = G.wx[0].x;
+  if (cover < 0.01) { return 0.0; }
+  let q = (xz - G.wx[0].yz) * 0.0021;
+  let n = fbm2(q.x, q.y, G.seed.x + 911u, 4u) * 0.5 + 0.5;
+  let thr = 0.62 - 0.27 * cover;
+  return max(sstep(thr, thr + 0.13, n), sstep(0.8, 1.0, cover) * 0.9);
+}
+
+// The clouds' own colour seen along rd, `d` thick.
+fn cloud_shade(rd: vec3f, d: f32) -> vec3f {
+  let sun = G.wx[5].xyz;
+  let day = G.wx[6].w;
+  let dusk = G.wx[4].y;
+  let night = G.sun_col.w;
+  // Thick cloud is darker underneath.
+  let body = 1.0 - 0.45 * d * G.wx[0].x - 0.35 * G.wx[4].w;
+  let amb = mix(G.sky_hor.xyz, G.sky_zen.xyz, 0.4) * 0.55 + vec3f(0.33) * day;
+  let fwd = pow(max(dot(rd, sun), 0.0), 6.0);
+  var lit = G.sun_col.xyz * day * (0.5 * body + 0.7 * fwd * (1.0 - d * 0.5));
+  // Sunrise and sunset light them from below: a blaze toward the sun, rose
+  // and violet away from it, lingering a while after the sun has gone.
+  let glowc = G.wx[6].xyz;
+  let pink = mix(glowc, G.wx[7].xyz * 1.6 + vec3f(0.3, 0.06, 0.22), 0.5);
+  let under = mix(pink, glowc * 1.3, pow(toward_sun(rd), 2.0));
+  lit = lit + under * dusk * (0.65 + 0.6 * fwd) * (1.0 - 0.3 * d);
+  // At night: dark shapes, faintly moonlit.
+  lit = lit + vec3f(0.045, 0.055, 0.085) * night * (0.4 + 0.6 * pow(max(dot(rd, G.sun_dir.xyz), 0.0), 4.0));
+  return G.wx[1].xyz * (amb * body * (1.0 - night * 0.88) + lit);
+}
+
+fn sky_base(rd: vec3f) -> vec3f {
   let up = max(rd.y, 0.0);
   var col = mix(G.sky_hor.xyz, G.sky_zen.xyz, sqrt(up));
   if (rd.y < 0.0) { col = G.sky_hor.xyz * (1.0 + rd.y * 0.3); }
+  // Sunrise and sunset: a blaze low toward the sun, a rose band higher up
+  // and a violet one away from it (a heavy overcast hides most of it).
+  let cover = G.wx[0].x;
+  let dusk = G.wx[4].y * (1.0 - 0.75 * cover * cover);
+  if (dusk > 0.001) {
+    let toward = toward_sun(rd);
+    let low = exp(-up * 4.5);
+    let glowc = G.wx[6].xyz;
+    col = col + glowc * dusk * low * (0.12 + 0.88 * pow(toward, 4.0)) * 0.9;
+    let band = exp(-abs(rd.y - 0.2) * 6.0);
+    col = mix(col, G.wx[7].xyz * 1.3 + vec3f(0.2, 0.05, 0.14), dusk * band * (1.0 - toward) * 0.4);
+    col = col + glowc * pow(max(dot(rd, G.wx[5].xyz), 0.0), 3.0) * dusk * 0.4;
+  }
   let s = max(dot(rd, G.sun_dir.xyz), 0.0);
   let day = G.sun_dir.w;
   let night = G.sun_col.w;
-  col = col + G.sun_col.xyz * (pow(s, 900.0) * 6.0 * day + pow(s, 10.0) * 0.22 * day);
+  // The sun is wider low down.
+  let lowsun = 1.0 - smoothstep(0.0, 0.3, G.wx[5].w);
+  col = col + G.sun_col.xyz * (pow(s, mix(900.0, 350.0, lowsun)) * 6.0 * day + pow(s, 10.0) * 0.22 * day);
   // moon disc (sun_dir points at the moon at night)
   col = col + vec3f(0.85, 0.9, 1.0) * smoothstep(0.9993, 0.9996, s) * night;
   if (night > 0.0 && rd.y > 0.02) {
@@ -285,15 +343,83 @@ fn sky(rd: vec3f) -> vec3f {
     let hsh = hash3f(floor(q.x), floor(q.y), floor(q.z));
     if (hsh > 0.9965) {
       let tw = 0.6 + 0.4 * sin(G.cam_pos.w * 1.7 + hsh * 900.0);
-      col = col + vec3f(0.9, 0.92, 1.0) * night * tw * smoothstep(0.02, 0.2, rd.y);
+      col = col + vec3f(0.9, 0.92, 1.0) * night * tw * smoothstep(0.02, 0.2, rd.y) * (1.0 - G.wx[4].y);
     }
   }
   return col;
 }
 
+fn sky(rd: vec3f) -> vec3f {
+  var col = sky_base(rd);
+  let cover = G.wx[0].x;
+  if (cover > 0.01 && rd.y > 0.0) {
+    let t = max(G.wx[0].w - G.cam_pos.y, 50.0) / max(rd.y, 0.015);
+    let d = cloud_density(G.cam_pos.xz + rd.xz * t);
+    if (d > 0.002) {
+      // Far clouds melt into the haze at the horizon.
+      let far = sstep(0.01, 0.18, rd.y);
+      let c = mix(fog_color(rd), cloud_shade(rd, d), 0.3 + 0.7 * far);
+      col = mix(col, c, d * (0.3 + 0.7 * far));
+    }
+  }
+  // Lightning lights the sky from inside the clouds.
+  return col + vec3f(0.6, 0.65, 0.85) * G.wx[1].w * (0.25 + 0.6 * cover);
+}
+
 fn fog_color(rd: vec3f) -> vec3f {
   let s = max(dot(rd, G.sun_dir.xyz), 0.0);
-  return G.sky_hor.xyz + G.sun_col.xyz * pow(s, 6.0) * 0.25 * G.sun_dir.w;
+  let glow = G.wx[6].xyz * G.wx[4].y * pow(toward_sun(rd), 4.0) * 0.45 * (1.0 - 0.6 * G.wx[0].x);
+  return G.sky_hor.xyz + G.sun_col.xyz * pow(s, 6.0) * 0.25 * G.sun_dir.w + glow;
+}
+
+// What falls (rain, snow, ash, motes), drawn over the view in three layers
+// at set depths, each hidden behind anything nearer than it. Drops are
+// placed by direction, so they stay put in the world as the view turns.
+fn precip(col: vec3f, rd: vec3f, hit: f32) -> vec3f {
+  let amount = G.wx[2].w;
+  if (amount < 0.01) { return col; }
+  let look = u32(G.wx[3].w + 0.5);
+  let ppr_v = f32(G.dims.y) / (2.0 * atan(length(G.cam_up.xyz)));
+  let ppr_h = f32(G.dims.x) / (2.0 * atan(length(G.cam_right.xyz)));
+  let az = atan2(rd.x, rd.z);
+  let el = asin(clamp(rd.y, -1.0, 1.0));
+  let tm = G.cam_pos.w;
+  // How the wind leans what falls, across the view.
+  let right = normalize(vec2f(G.cam_right.x, G.cam_right.z) + vec2f(1e-4, 0.0));
+  let lean = dot(G.wx[3].xy, right) * G.wx[3].z;
+  let light = clamp(dot(G.sky_hor.xyz, vec3f(0.33)) * 1.1 + 0.1 + G.wx[1].w, 0.12, 1.4);
+  var out = col;
+  for (var i = 0u; i < 3u; i = i + 1u) {
+    let depth = 2.5 * pow(2.2, f32(i));
+    if (hit < depth) { continue; }
+    if (G.wx[4].z > 0.5 && depth < 9.0) { continue; }
+    var speed = 9.0;
+    var tall = 4.0;
+    var alpha = 0.42;
+    if (look == 1u) { speed = 1.2; tall = 1.0; alpha = 0.75; }
+    if (look == 2u) { speed = 0.2; tall = 1.0; alpha = 0.85; }
+    let spacing = 2.0 + f32(i) * 1.5;
+    let cw = spacing / ppr_h;
+    let ch = spacing * tall / ppr_v;
+    let x = az + el * lean * select(0.9, 0.3, look != 0u);
+    let cx = floor(x / cw);
+    let hc = u2f(h2(i32(cx), i32(i), 4421u));
+    let y = el + tm * speed / depth * (0.8 + 0.4 * hc) + hc * 37.0;
+    let cy = floor(y / ch);
+    let h = h2(i32(cx), i32(cy), 977u + i * 13u);
+    if (u2f(h) > amount * (0.2 + 0.14 * f32(i))) { continue; }
+    var dx = 0.25 + 0.5 * u2f(pcg(h));
+    if (look != 0u) { dx = dx + 0.25 * sin(tm * (0.7 + u2f(pcg(h ^ 3u))) + f32(h & 63u)); }
+    let dy = 0.2 + 0.6 * u2f(pcg(h ^ 7u));
+    let hx = 0.5 / spacing;
+    let hy = select(1.2 / (spacing * tall), 0.5 / spacing, look != 0u);
+    let ax = 1.0 - sstep(hx, hx * 2.2, abs(fract(x / cw) - dx));
+    let ay = 1.0 - sstep(hy, hy * 2.0, abs(fract(y / ch) - dy));
+    var a = ax * ay * alpha * (1.0 - 0.22 * f32(i));
+    if (look == 2u) { a = a * (0.55 + 0.45 * sin(tm * 3.0 + f32(h & 255u))); }
+    if (a > 0.0) { out = mix(out, G.wx[2].xyz * light, a); }
+  }
+  return out;
 }
 
 fn to_lin(c: vec3f) -> vec3f { return c * c; }
@@ -353,7 +479,13 @@ fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
   if (ndl > 0.0 && (G.dims.w & 2u) != 0u && sun.y > 0.0) {
     shadow = soft_shadow(p + n * 0.05, sun);
   }
-  let a = to_lin(albedo);
+  // Clouds' shadows slide over the land.
+  if (ndl > 0.0 && G.wx[0].x > 0.01 && sun.y > 0.05) {
+    shadow = shadow * (1.0 - 0.7 * cloud_density(p.xz + sun.xz * ((G.wx[0].w - p.y) / sun.y)));
+  }
+  // Out in the open, what fell darkens things and makes them shine.
+  let wet = G.wx[4].x * open;
+  let a = to_lin(albedo) * (1.0 - 0.4 * wet);
   let shut = 1.0 - open;
   let sky_amb = to_lin(mix(G.sky_hor.xyz, G.sky_zen.xyz, 0.5 + 0.5 * n.y)) * G.sky_hor.w * (0.25 + 0.75 * open)
     + vec3f(0.11, 0.09, 0.07) * shut * G.sky_hor.w * (0.3 + 0.7 * G.sun_dir.w);
@@ -364,7 +496,8 @@ fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
   let night_floor = vec3f(0.018, 0.022, 0.035) * G.sun_col.w;
   var lin = a * (direct + (sky_amb + bounce + night_floor) * ao + point_light(p, n));
   let h = normalize(sun - rd);
-  lin = lin + to_lin(G.sun_col.xyz) * pow(max(dot(n, h), 0.0), 40.0) * 0.08 * shadow * G.sun_dir.w;
+  lin = lin + to_lin(G.sun_col.xyz) * pow(max(dot(n, h), 0.0), 40.0) * (0.08 + 0.4 * wet) * shadow * G.sun_dir.w;
+  lin = lin + to_lin(G.sky_hor.xyz) * pow(max(dot(reflect(rd, n), vec3f(0.0, 1.0, 0.0)), 0.0), 4.0) * 0.12 * wet;
   return sqrt(max(lin, vec3f(0.0)));
 }
 
@@ -433,7 +566,8 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       let tm = G.cam_pos.w;
       let rx = vnoise2(pw.x * 0.7 + tm * 0.35, pw.z * 0.7, 9u) - 0.5;
       let rz = vnoise2(pw.x * 0.7, pw.z * 0.7 - tm * 0.3, 10u) - 0.5;
-      let n = normalize(vec3f(rx * 0.22, 1.0, rz * 0.22));
+      let rough = 0.22 * (1.0 + 1.6 * G.wx[3].z + 1.2 * G.wx[2].w);
+      let n = normalize(vec3f(rx * rough, 1.0, rz * rough));
       let fres = 0.03 + 0.97 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);
       let refl = sky(reflect(rd, n));
       let body = shade(pw, vec3f(0.0, 1.0, 0.0), G.water.xyz, rd, 1.0);
@@ -441,12 +575,17 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       var wc = mix(under, body, clamp(1.0 - exp(-depth * 0.7), 0.15, 1.0));
       wc = mix(wc, refl, fres * 0.85);
       let hv = normalize(G.sun_dir.xyz - rd);
-      wc = wc + G.sun_col.xyz * pow(max(dot(n, hv), 0.0), 120.0) * 0.6 * G.sun_dir.w;
+      wc = wc + G.sun_col.xyz * pow(max(dot(n, hv), 0.0), mix(120.0, 45.0, G.wx[4].y)) * (0.6 + 0.5 * G.wx[4].y) * G.sun_dir.w * (1.0 - 0.8 * G.wx[4].w);
       col = wc;
       t_hit = tw;
     }
   }
-  if (t_hit < 1e8) { col = apply_fog(col, t_hit, rd); }
+  if (t_hit < 1e8) {
+    col = apply_fog(col, t_hit, rd);
+    // Lightning lights the land too.
+    col = col + vec3f(0.5, 0.55, 0.7) * G.wx[1].w * 0.3;
+  }
+  col = precip(col, rd, t_hit);
   return clamp(col, vec3f(0.0), vec3f(1.0));
 }
 
