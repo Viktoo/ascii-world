@@ -47,6 +47,8 @@ pub struct Globals {
     pub hollows: [[f32; 4]; MAX_HOLLOWS * 2],
     /// Roads, two per stretch: (a.x, a.z, b.x, b.z), (half width, r, g, b).
     pub roads: [[f32; 4]; MAX_ROADS * 2],
+    /// Weather and the sun's own place (see `WeatherView`; layout in common.wgsl).
+    pub wx: [[f32; 4]; 8],
 }
 
 pub const MAX_LIGHTS: usize = 8;
@@ -270,6 +272,76 @@ pub struct Lighting {
     pub zenith: Vec3,
     pub horizon: Vec3,
     pub ambient: f32,
+    /// How much of a sunrise or sunset there is (0..1).
+    pub dusk: f32,
+    /// The sun itself (even below the horizon; `sun_dir` is the moon at night).
+    pub sun: Vec3,
+}
+
+/// The weather as the renderer needs it (see `world::weather::Now`).
+#[derive(Clone, Copy, Debug)]
+pub struct WeatherView {
+    pub clouds: f32,
+    pub cloud_color: Vec3,
+    pub drift: glam::Vec2,
+    pub wind: f32,
+    pub wind_dir: glam::Vec2,
+    /// Haze multiplier (1 clear).
+    pub fog: f32,
+    pub tint: Vec3,
+    pub gloom: f32,
+    /// What falls: colour, how much, how it looks (0 streak, 1 flake, 2 mote).
+    pub falls_color: Vec3,
+    pub falls: f32,
+    pub falls_look: u32,
+    pub soak: f32,
+    /// Lightning now (0 none).
+    pub flash: f32,
+    /// The viewer is under a roof (nothing falls right before their eyes).
+    pub sheltered: bool,
+}
+
+impl Default for WeatherView {
+    fn default() -> Self {
+        WeatherView { clouds: 0.0, cloud_color: Vec3::ONE, drift: glam::Vec2::ZERO, wind: 0.1, wind_dir: glam::Vec2::X, fog: 1.0, tint: Vec3::ONE, gloom: 0.0, falls_color: Vec3::ONE, falls: 0.0, falls_look: 0, soak: 0.0, flash: 0.0, sheltered: false }
+    }
+}
+
+impl WeatherView {
+    pub fn of(n: &crate::world::weather::Now, flash: f32, sheltered: bool) -> WeatherView {
+        use crate::world::weather::FallLook;
+        let (falls_color, falls, falls_look) = match &n.falls {
+            Some(f) => (f.color, f.amount, match f.look {
+                FallLook::Streak => 0,
+                FallLook::Flake => 1,
+                FallLook::Mote => 2,
+            }),
+            None => (Vec3::ONE, 0.0, 0),
+        };
+        WeatherView { clouds: n.clouds, cloud_color: n.cloud_color, drift: n.drift, wind: n.wind, wind_dir: n.wind_dir, fog: n.fog, tint: n.tint, gloom: n.gloom(), falls_color, falls, falls_look, soak: n.soak, flash, sheltered }
+    }
+}
+
+/// The colour a sunset blazes with: the palette's own dusk horizon, made
+/// richer (a muted palette still gets a sunset worth stopping for).
+pub fn sunset_glow(pal: &Palette) -> Vec3 {
+    let g = rgbv(pal.horizon_dusk).lerp(rgbv(pal.sun), 0.2);
+    let lum = g.dot(Vec3::new(0.3, 0.5, 0.2));
+    (Vec3::splat(lum) + (g - Vec3::splat(lum)) * 1.7).clamp(Vec3::ZERO, Vec3::splat(1.2)) * 1.1
+}
+
+/// The light under the weather: cloud greys the sky and dims the sun, a
+/// tinted weather tints the light.
+pub fn weathered(l: &Lighting, w: &WeatherView) -> Lighting {
+    let mut l = *l;
+    let grey = |c: Vec3| Vec3::splat(c.dot(Vec3::new(0.3, 0.5, 0.2)));
+    let k = (w.clouds * 0.8 + w.gloom * 0.2).min(0.95);
+    let cc = w.cloud_color * 0.9;
+    l.zenith = l.zenith.lerp(grey(l.zenith).lerp(grey(l.horizon) * cc, 0.6) * (1.0 - 0.45 * w.gloom), k) * w.tint;
+    l.horizon = l.horizon.lerp(grey(l.horizon) * cc * (1.0 - 0.35 * w.gloom), k * 0.85) * w.tint;
+    l.sun_col *= w.tint * (1.0 - 0.75 * w.gloom);
+    l.ambient *= 1.0 + 0.25 * w.clouds - 0.25 * w.gloom;
+    l
 }
 
 pub struct SceneParams<'a> {
@@ -286,6 +358,7 @@ pub struct SceneParams<'a> {
     pub shadows: bool,
     /// Nearest first; at most MAX_LIGHTS are used.
     pub lights: &'a [PointLight],
+    pub weather: WeatherView,
 }
 
 /// Identifies the terrain function (the renderer rebuilds its heightmap when it changes).
@@ -305,7 +378,8 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
     let aspect = sp.width as f32 / sp.height.max(1) as f32 * sp.pixel_aspect;
     let t = sp.terrain;
     let pal = sp.palette;
-    let l = &sp.light;
+    let w = &sp.weather;
+    let l = &weathered(&sp.light, w);
     let mut biomes = [[0.0f32; 4]; 18];
     for (i, b) in t.biomes.iter().enumerate().take(MAX_BIOMES) {
         let c = Terrain::center(i);
@@ -354,7 +428,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         cam_up: v4(u * tan, 0.0),
         sun_dir: v4(l.sun_dir, l.daylight),
         sun_col: v4(l.sun_col, l.night),
-        sky_zen: v4(l.zenith, pal.fog),
+        sky_zen: v4(l.zenith, pal.fog * w.fog * (1.0 + 0.8 * w.falls)),
         sky_hor: v4(l.horizon, l.ambient),
         water: v4(rgbv(pal.water), crate::terrain::WATER_LEVEL),
         rock: v4(rgbv(pal.rock), 0.0),
@@ -374,6 +448,16 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         extra: [hollows.len() as u32, roads.len() as u32, 0, 0],
         hollows: hollow_buf,
         roads: road_buf,
+        wx: [
+            [w.clouds, w.drift.x, w.drift.y, crate::world::weather::CLOUD_HEIGHT],
+            v4(w.cloud_color, w.flash),
+            v4(w.falls_color, w.falls),
+            [w.wind_dir.x, w.wind_dir.y, w.wind, w.falls_look as f32],
+            [w.soak, l.dusk, if w.sheltered { 1.0 } else { 0.0 }, w.gloom],
+            v4(l.sun, l.sun.y),
+            v4(sunset_glow(pal) * w.tint, l.daylight),
+            v4(rgbv(pal.sky_dusk), 0.0),
+        ],
     }
 }
 

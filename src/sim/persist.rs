@@ -281,6 +281,9 @@ pub fn load(sim: &mut Sim) {
     if let Some(st) = db.kv_get("sim.night").and_then(|j| serde_json::from_str(&j).ok()) {
         sim.night = st;
     }
+    if let Some(st) = db.kv_get("sim.weather").and_then(|j| serde_json::from_str(&j).ok()) {
+        sim.weather_st = st;
+    }
     if let Some(st) = db.kv_get("sim.incidents").and_then(|j| serde_json::from_str(&j).ok()) {
         sim.incidents = st;
     }
@@ -407,6 +410,7 @@ pub fn save(sim: &mut Sim) {
         .collect();
     let seen: Vec<((i32, i32), f64)> = sim.region_seen.iter().map(|(k, v)| (*k, *v)).collect();
     let night = serde_json::to_string(&sim.night).unwrap_or_default();
+    let weather = serde_json::to_string(&sim.weather_st).unwrap_or_default();
     let spent: Vec<((i32, i32), f64)> = sim.things.spent_cells.iter().map(|(k, v)| (*k, *v)).collect();
     let r = db.tx(|tx| {
         for r in &thing_rows {
@@ -447,6 +451,7 @@ pub fn save(sim: &mut Sim) {
         }
         crate::db::kv_set(tx, "sim.region_seen", &serde_json::to_string(&seen)?)?;
         crate::db::kv_set(tx, "sim.night", &night)?;
+        crate::db::kv_set(tx, "sim.weather", &weather)?;
         crate::db::kv_set(tx, "sim.incidents", &incidents)?;
         if let Some(d) = &dug {
             crate::db::kv_set(tx, "sim.dug", d)?;

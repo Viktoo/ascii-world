@@ -160,9 +160,25 @@ pub struct InterpEffect {
     /// (a place, a thing, someone, a time), for them to go and meet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<super::needs::Need>,
+    /// The weather made to change (the traveler's word, this world's magic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<WeatherFx>,
     /// false for one-off results that should not be reused.
     #[serde(default = "yes")]
     pub cache: bool,
+}
+
+/// Weather made on purpose: a kind of weather and how many game hours it holds.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WeatherFx {
+    #[serde(flatten)]
+    pub kind: crate::world::weather::Kind,
+    #[serde(default = "six")]
+    pub hours: f32,
+}
+
+fn six() -> f32 {
+    6.0
 }
 
 impl InterpEffect {
@@ -173,7 +189,7 @@ impl InterpEffect {
 
     /// Nothing in the world changes: a refusal or a "nothing happens".
     fn changes_nothing(&self) -> bool {
-        self.changes.is_empty() && self.create.is_empty() && self.remove.is_empty() && self.make.is_empty() && self.cut.is_empty() && self.reshape.is_empty() && self.being.is_none() && self.beings.is_empty()
+        self.changes.is_empty() && self.create.is_empty() && self.remove.is_empty() && self.make.is_empty() && self.cut.is_empty() && self.reshape.is_empty() && self.being.is_none() && self.beings.is_empty() && self.weather.is_none()
     }
 }
 
@@ -302,7 +318,8 @@ fn shift(name: &str, d: f32) -> Option<String> {
 /// trust ↓, affection ↓". None when there is nothing like that. Every part of
 /// an answer is named here, so a new kind of effect decides whether it shows.
 fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<String> {
-    let InterpEffect { narration: _, changes: _, cut: _, create: _, remove: _, make: _, reshape: _, beings: _, say: _, needs: _, cache: _, being } = fx;
+    // The weather shows by itself.
+    let InterpEffect { narration: _, changes: _, cut: _, create: _, remove: _, make: _, reshape: _, beings: _, say: _, needs: _, cache: _, weather: _, being } = fx;
     // `changes`, `cut` and the being's needs and feelings are in `moved`.
     // New, removed and reshaped things, new beings and words show by themselves.
     if let Some(b) = being {
@@ -447,6 +464,7 @@ impl Sim {
             "actor": self.actor_name(who),
             "actor_is": if who == ActorId::Player { "the traveler" } else { "a character" },
             "time": crate::render::sky::time_label(self.t),
+            "weather": self.wx.words(),
             "held": held.map(|h| self.describe_thing(h)),
         });
         if let Some(r) = target {
@@ -591,6 +609,14 @@ impl Sim {
                 }
                 return (why, None);
             }
+        }
+        if let Some(w) = &fx.weather {
+            let mut kind = w.kind.clone();
+            if kind.name.trim().is_empty() {
+                kind.name = "strange weather".into();
+            }
+            let by = self.actor_name(p.actor);
+            self.make_weather(kind, w.hours, &by);
         }
         // Builds this deed waits on: its story is told when the first is done.
         let mut waits: Vec<u64> = Vec::new();

@@ -255,7 +255,7 @@ fn night() -> Vec<f32> {
         let a = -2.7 + 0.9 * (t / 17.0).min(1.0);
         let at = Vec3::new(a.sin() * d, 1.6, a.cos() * d);
         if (t * 100.0) as i32 % 50 == 0 {
-            m.apply(Cmd::Ambience(Box::new(Ambience { wind: 0.3, water: None, dread: (1.0 - d / 30.0).powf(1.5), songs: crickets.clone(), singers: 18, hush: vec![(at, 16.0)] })));
+            m.apply(Cmd::Ambience(Box::new(Ambience { wind: 0.3, water: None, dread: (1.0 - d / 30.0).powf(1.5), songs: crickets.clone(), singers: 18, hush: vec![(at, 16.0)], ..Default::default() })));
         }
         if t >= next {
             k += 1;

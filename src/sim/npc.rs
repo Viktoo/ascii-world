@@ -1543,8 +1543,9 @@ impl Sim {
         let twist = format!("{twist}{}", self.goals_done_line(cid).map(|l| format!("\nLately: {l}.")).unwrap_or_default());
         let twist = format!("{twist}{}", self.menu_line(cid).map(|l| format!("\nThings you could do now (best first): {l}.")).unwrap_or_default());
         format!(
-            "{what}{twist}\nIt is {}. You hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
+            "{what}{twist}\nIt is {}. {}\nYou hold: {}. Your current goal: {}.\nYou feel: hunger {:.1}, tiredness {:.1}, loneliness {:.1}, boredom {:.1}, curiosity {:.1} (0 = fine, 1 = urgent).\nThings around you: {}.\nPeople around you: {}.\nRecently near you: {}.",
             crate::render::sky::time_label(self.t),
+            self.weather_line(cid),
             held.unwrap_or_else(|| "nothing".into()),
             if goal.is_empty() { "none".into() } else { goal },
             needs.hunger,

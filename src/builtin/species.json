@@ -52,7 +52,14 @@
   "sounds": [],
   "mass": 70,
   "description": "people",
-  "plural": "people"
+  "plural": "people",
+  "weather": {
+   "rain": -0.5,
+   "storm": -0.8,
+   "snow": 0.1,
+   "wind": -0.2,
+   "clear": 0.2
+  }
  },
  {
   "name": "dog",
@@ -185,6 +192,12 @@
    "social": 1.4,
    "fun": 1.3,
    "curiosity": 1.2
+  },
+  "weather": {
+   "rain": -0.3,
+   "storm": -0.9,
+   "snow": 0.5,
+   "clear": 0.2
   }
  },
  {
@@ -293,6 +306,12 @@
   "needs": {
    "social": 0.5,
    "fatigue": 1.5
+  },
+  "weather": {
+   "rain": -0.95,
+   "storm": -0.9,
+   "snow": -0.5,
+   "clear": 0.4
   }
  },
  {
@@ -381,7 +400,12 @@
    ]
   ],
   "mass": 500,
-  "description": "a strong, gentle horse"
+  "description": "a strong, gentle horse",
+  "weather": {
+   "rain": -0.2,
+   "storm": -0.7,
+   "clear": 0.1
+  }
  },
  {
   "name": "wolf",
@@ -474,7 +498,13 @@
   ],
   "mass": 40,
   "description": "a lean grey wolf",
-  "plural": "wolves"
+  "plural": "wolves",
+  "weather": {
+   "rain": -0.15,
+   "storm": -0.5,
+   "snow": 0.3,
+   "fog": 0.2
+  }
  },
  {
   "name": "goat",
@@ -566,7 +596,12 @@
    ]
   ],
   "mass": 50,
-  "description": "a stubborn goat"
+  "description": "a stubborn goat",
+  "weather": {
+   "rain": -0.7,
+   "storm": -0.8,
+   "clear": 0.2
+  }
  },
  {
   "name": "deer",
@@ -637,6 +672,11 @@
   ],
   "mass": 90,
   "description": "a shy deer",
-  "plural": "deer"
+  "plural": "deer",
+  "weather": {
+   "rain": -0.2,
+   "storm": -0.6,
+   "fog": 0.2
+  }
  }
 ]

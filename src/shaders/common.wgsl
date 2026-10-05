@@ -27,6 +27,11 @@ struct Globals {
   extra: vec4u,       // hollows, roads, -, -
   hollows: array<vec4f, 16>,   // per hollow: (cx, cz, cos, sin), (hx, hz, floor, round)
   roads: array<vec4f, 32>,     // per road: (ax, az, bx, bz), (half width, r, g, b)
+  // weather: 0 (cover, drift x, drift z, cloud height), 1 (cloud rgb, flash),
+  // 2 (falls rgb, amount), 3 (wind dir x, z, wind, falls look), 4 (soak, dusk,
+  // sheltered, gloom), 5 (the sun itself xyz, its height), 6 (sunset glow rgb,
+  // daylight), 7 (dusk sky rgb, -)
+  wx: array<vec4f, 8>,
 }
 
 struct Inst {

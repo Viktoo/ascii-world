@@ -8,6 +8,7 @@ pub mod cull;
 pub mod describe;
 pub mod scatter;
 pub mod species;
+pub mod weather;
 
 use crate::lang::CompiledType;
 use crate::render::GpuInst;
@@ -52,11 +53,14 @@ pub struct Look {
     /// starting region is planned around it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub start: String,
+    /// The world's weather kinds, written at genesis (empty: mild, nothing falls).
+    #[serde(default, skip_serializing_if = "weather::Climate::is_default")]
+    pub climate: weather::Climate,
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new() }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default() }
     }
 }
 

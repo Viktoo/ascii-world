@@ -48,7 +48,22 @@ impl Scene<'_> {
         let mut col = v3(g.sky_hor).lerp(v3(g.sky_zen), up.sqrt());
         let s = rd.dot(v3(g.sun_dir)).max(0.0);
         col += v3(g.sun_col) * (s.powf(900.0) * 6.0 + s.powf(10.0) * 0.22) * g.sun_dir[3];
-        col
+        // Sunset glow low toward the sun, and the clouds (simpler than the GPU's).
+        let sun = v3(g.wx[5]);
+        let toward = (glam::Vec2::new(rd.x, rd.z).normalize_or_zero().dot(glam::Vec2::new(sun.x, sun.z).normalize_or_zero())) * 0.5 + 0.5;
+        col += v3(g.wx[6]) * g.wx[4][1] * (-up * 4.5).exp() * (0.12 + 0.88 * toward.powi(4)) * 0.9;
+        if g.wx[0][0] > 0.01 && rd.y > 0.0 {
+            let t = (g.wx[0][3] - g.cam_pos[1]).max(50.0) / rd.y.max(0.015);
+            let d = cloud_density(g, g.cam_pos[0] + rd.x * t, g.cam_pos[2] + rd.z * t);
+            if d > 0.002 {
+                let day = g.wx[6][3];
+                let lit = v3(g.sun_col) * day * 0.6 + v3(g.wx[6]) * g.wx[4][1] * 0.7 + v3(g.sky_hor) * 0.5;
+                let c = v3(g.wx[1]) * lit * (1.0 - 0.45 * d * g.wx[0][0] - 0.35 * g.wx[4][3]);
+                let far = smoothstep(0.01, 0.18, rd.y);
+                col = col.lerp(c, d * (0.3 + 0.7 * far));
+            }
+        }
+        col + Vec3::new(0.6, 0.65, 0.85) * g.wx[1][3] * 0.5
     }
 
     fn point_light(&self, p: Vec3, n: Vec3) -> Vec3 {
@@ -169,6 +184,18 @@ impl Scene<'_> {
         }
         col.clamp(Vec3::ZERO, Vec3::ONE)
     }
+}
+
+/// Cloud over a point of the cloud layer; twin of `cloud_density` in scene.wgsl.
+pub fn cloud_density(g: &Globals, x: f32, z: f32) -> f32 {
+    let cover = g.wx[0][0];
+    if cover < 0.01 {
+        return 0.0;
+    }
+    let (qx, qz) = ((x - g.wx[0][1]) * 0.0021, (z - g.wx[0][2]) * 0.0021);
+    let n = crate::noise::fbm2(qx, qz, g.seed[0].wrapping_add(911), 4) * 0.5 + 0.5;
+    let thr = 0.62 - 0.27 * cover;
+    smoothstep(thr, thr + 0.13, n).max(smoothstep(0.8, 1.0, cover) * 0.9)
 }
 
 fn pack(c: Vec3) -> u32 {

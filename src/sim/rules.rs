@@ -11,7 +11,7 @@ use super::props::*;
 use serde::{Deserialize, Serialize};
 
 /// Names rules use for themselves; universe properties may not take them.
-pub const RESERVED: &[&str] = &["self", "other", "dt", "dist", "hour", "night", "water", "held", "ground", "and", "or", "not", "min", "max", "clamp", "abs", "true", "false"];
+pub const RESERVED: &[&str] = &["self", "other", "dt", "dist", "hour", "night", "water", "held", "ground", "falling", "wind", "and", "or", "not", "min", "max", "clamp", "abs", "true", "false"];
 pub const MAX_NEAR: f32 = 10.0;
 pub const MAX_UNIVERSE_RULES: usize = 12;
 
@@ -34,6 +34,8 @@ pub enum Var {
     Water,
     Held,
     Ground,
+    Falling,
+    Wind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +112,9 @@ pub struct Env<'a> {
     pub water: f32,
     pub held: f32,
     pub ground: f32,
+    /// How much falls on it from the sky (0 under a roof), and the wind.
+    pub falling: f32,
+    pub wind: f32,
 }
 
 impl RExpr {
@@ -128,6 +133,8 @@ impl RExpr {
                 Var::Water => e.water,
                 Var::Held => e.held,
                 Var::Ground => e.ground,
+                Var::Falling => e.falling,
+                Var::Wind => e.wind,
             },
             RExpr::Neg(a) => -a.eval(e),
             RExpr::Not(a) => (a.eval(e) == 0.0) as u32 as f32,
@@ -394,6 +401,8 @@ impl Parser<'_> {
                     "water" => Ok(RExpr::Var(Var::Water)),
                     "held" => Ok(RExpr::Var(Var::Held)),
                     "ground" => Ok(RExpr::Var(Var::Ground)),
+                    "falling" => Ok(RExpr::Var(Var::Falling)),
+                    "wind" => Ok(RExpr::Var(Var::Wind)),
                     "min" | "max" | "clamp" | "abs" => {
                         let f = match w.as_str() {
                             "min" => Func::Min,
@@ -417,7 +426,7 @@ impl Parser<'_> {
                         }
                         Ok(RExpr::Call(f, args))
                     }
-                    _ => Err(format!("unknown name '{w}' (use self.<property>, other.<property>, dt, dist, hour, night, water, held, ground)")),
+                    _ => Err(format!("unknown name '{w}' (use self.<property>, other.<property>, dt, dist, hour, night, water, held, ground, falling, wind)")),
                 }
             }
             Some(t) => Err(format!("unexpected {t:?}")),
@@ -539,6 +548,8 @@ pub struct EntView<'a> {
     pub water: f32,
     pub held: f32,
     pub ground: f32,
+    pub falling: f32,
+    pub wind: f32,
 }
 
 /// Apply one effect to a working copy.
@@ -559,7 +570,7 @@ pub fn apply(target: &mut [f32], prop: usize, op: Assign, v: f32) {
 /// `me.props`). Returns the names of rules that fired.
 pub fn run_single<'r>(rules: &'r [Rule], me: &EntView, out: &mut [f32], dt: f32, hour: f32, night: f32, fired: &mut Vec<&'r str>) {
     for r in rules.iter().filter(|r| r.near.is_none()) {
-        let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground };
+        let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind };
         if r.when_self.iter().all(|c| c.eval(&env) != 0.0) {
             for e in &r.effects {
                 apply(out, e.prop, e.op, e.value.eval(&env));
@@ -571,7 +582,7 @@ pub fn run_single<'r>(rules: &'r [Rule], me: &EntView, out: &mut [f32], dt: f32,
 
 /// Whether a pair rule's self-only conditions hold (so neighbours are worth checking).
 pub fn pair_self_ok(r: &Rule, me: &EntView, dt: f32, hour: f32, night: f32) -> bool {
-    let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground };
+    let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind };
     r.when_self.iter().all(|c| c.eval(&env) != 0.0)
 }
 
@@ -579,7 +590,7 @@ pub fn pair_self_ok(r: &Rule, me: &EntView, dt: f32, hour: f32, night: f32) -> b
 /// as deltas (Set effects are applied directly). Returns true if it fired.
 #[allow(clippy::too_many_arguments)]
 pub fn run_pair(r: &Rule, me: &EntView, other: &EntView, dist: f32, dt: f32, hour: f32, night: f32, out_me: &mut [f32], out_other: &mut [f32]) -> bool {
-    let env = Env { me: me.props, other: other.props, dt, dist, hour, night, water: me.water, held: me.held, ground: me.ground };
+    let env = Env { me: me.props, other: other.props, dt, dist, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind };
     if !r.when_pair.iter().all(|c| c.eval(&env) != 0.0) {
         return false;
     }
@@ -605,14 +616,14 @@ mod tests {
         let mut me = vo.defaults.clone();
         let mut ot = vo.defaults.clone();
         me[P_TEMP] = 250.0;
-        let env = |me: &[f32], ot: &[f32]| e.eval(&Env { me, other: ot, dt: 0.1, dist: 1.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0 });
+        let env = |me: &[f32], ot: &[f32]| e.eval(&Env { me, other: ot, dt: 0.1, dist: 1.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 });
         assert_eq!(env(&me, &ot), 1.0);
         me[P_WET] = 0.7;
         assert_eq!(env(&me, &ot), 0.0);
         ot[P_FIRE] = 0.5;
         assert_eq!(env(&me, &ot), 1.0);
         let e2 = parse_expr("clamp(-self.temp / 0, 1, 3) + min(2, abs(-5))", &vo, false).unwrap();
-        assert_eq!(e2.eval(&Env { me: &me, other: &[], dt: 0.0, dist: 0.0, hour: 0.0, night: 0.0, water: 0.0, held: 0.0, ground: 0.0 }), 3.0);
+        assert_eq!(e2.eval(&Env { me: &me, other: &[], dt: 0.0, dist: 0.0, hour: 0.0, night: 0.0, water: 0.0, held: 0.0, ground: 0.0, falling: 0.0, wind: 0.0 }), 3.0);
     }
 
     #[test]
@@ -658,8 +669,8 @@ mod tests {
         let b = vo.defaults.clone();
         let mut oa = a.clone();
         let mut ob = b.clone();
-        let va = EntView { props: &a, water: 0.0, held: 0.0, ground: 1.0 };
-        let vb = EntView { props: &b, water: 0.0, held: 0.0, ground: 1.0 };
+        let va = EntView { props: &a, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
+        let vb = EntView { props: &b, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0 };
         assert!(pair_self_ok(&r, &va, 1.0, 12.0, 0.0));
         assert!(run_pair(&r, &va, &vb, 1.0, 1.0, 12.0, 0.0, &mut oa, &mut ob));
         assert!((ob[c] - 0.1).abs() < 1e-6);

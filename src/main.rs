@@ -41,7 +41,7 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
   pocket prompts [--sample N]            print N random prompts (default 20)
   pocket [FILE]                          reopen FILE, or your last universe
   pocket list                            pick one of your worlds (or start a new one)
-  pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR]
+  pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME]
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
   pocket sim FILE [--hours H] [--seed S] [--events out.jsonl] [--save] [--no-llm] [--verify]
@@ -263,14 +263,19 @@ fn parse_size(args: &[String]) -> Result<(u16, u16)> {
 }
 
 /// One frame, rendered synchronously (shared by snapshot and tests).
-fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64) -> Result<render::Frame> {
+fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>) -> Result<render::Frame> {
     let snap = &l.snap;
     let mut live = sim::Sim::new(l.db.clone(), snap.clone(), cam.pos, cam.yaw, t_game, 1);
+    if let Some(name) = weather {
+        let kind = snap.look.climate.kinds.iter().find(|k| k.name == name).cloned().or_else(|| world::weather::sample(name)).with_context(|| format!("no weather called {name} (the world's own, or clear, fair, cloudy, overcast, fog, rain, storm, snow, ash, motes)"))?;
+        live.weather_st.spell = Some(world::weather::Spell { kind, from: t_game - 3.0 * world::weather::HOUR, until: t_game + 3.0 * world::weather::HOUR, by: String::new() });
+        live.step_weather();
+    }
     let aspect = w as f32 / h as f32 * pixel_aspect;
     let drawn = live.draw(cam.pos, render::VIEW_DIST);
     let culled = world::cull::cull(snap, &mut live.cache, &cam, aspect, &drawn.insts, &Default::default());
     let light = render::sky::lighting(t_game, &snap.look.palette);
-    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: w, height: h, pixel_aspect, light, time: 0.0, frame: 0, shadows: l.gpu.is_some() && std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &drawn.lights };
+    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: w, height: h, pixel_aspect, light, time: 0.0, frame: 0, shadows: l.gpu.is_some() && std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &drawn.lights, weather: render::WeatherView::of(&live.wx, 0.0, !live.open_sky(cam.pos)) };
     let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let req = render::FrameRequest { id: 1, width: w, height: h, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
     let mut handle = match &l.gpu {
@@ -310,7 +315,7 @@ fn snapshot(args: &[String]) -> Result<()> {
         (false, true) => (w as u32 * 2, h as u32 * 4, 1.0),
         (false, false) => (w as u32 * 2, h as u32 * 2, 0.5),
     };
-    let f = render_once(&l, cam, pw, ph, pa, t_game)?;
+    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref())?;
     if let Some(png) = png_out {
         let s = if ascii { 4u32 } else { 2 };
         let mut rgb = Vec::with_capacity((f.width * s * f.height * s * 3) as usize);
@@ -417,7 +422,7 @@ fn gpubench(args: &[String]) -> Result<()> {
     let mut cache = world::scatter::ScatterCache::default();
     let culled = world::cull::cull(snap, &mut cache, &cam, pw as f32 / ph as f32, &[], &Default::default());
     let light = render::sky::lighting(400.0, &snap.look.palette);
-    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 0.0, frame: 0, shadows: std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &[] };
+    let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 0.0, frame: 0, shadows: std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &[], weather: Default::default() };
     let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let mut handle = render::gpu::spawn(gpu);
     let mut times = Vec::new();

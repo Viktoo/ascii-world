@@ -76,6 +76,10 @@ pub struct Ambience {
     pub singers: usize,
     /// Places the singers fall quiet around (point, radius).
     pub hush: Vec<(Vec3, f32)>,
+    /// 0..1: rain (anything that patters) falling round the listener, and
+    /// whether they hear it from under a roof (a dull drumming).
+    pub rain: f32,
+    pub rain_roof: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -278,6 +282,11 @@ pub struct Mixer {
 }
 
 const WATER_KEY: u64 = u64::MAX - 1;
+const RAIN_KEY: u64 = u64::MAX - 2;
+/// Rain in the open: fine soft patter, its top rolled off (no hiss).
+const RAIN: Material = Material { hard: 0.28, dry: 0.0, ring: 0.0, leafy: 0.0 };
+/// Rain on a roof overhead: low and muffled.
+const RAIN_ROOF: Material = Material { hard: 0.06, dry: 0.0, ring: 0.0, leafy: 0.0 };
 
 impl Mixer {
     pub fn new(sr: f32) -> Mixer {
@@ -321,6 +330,8 @@ impl Mixer {
                     Some((p, amount)) => self.texture(self.water_key, At::Point(p), Material::WATER, 0.6, amount.clamp(0.0, 1.0) * 0.55, 0.0, 1.0),
                     None => self.texture(self.water_key, At::Point(self.lis), Material::WATER, 0.6, 0.0, 0.0, 1.0),
                 }
+                let (mat, size, k) = if a.rain_roof { (RAIN_ROOF, 0.9, 0.4) } else { (RAIN, 0.2, 0.5) };
+                self.texture(RAIN_KEY, At::Listener, mat, size, a.rain.clamp(0.0, 1.0).sqrt() * k, 0.0, 0.8);
                 self.amb = *a;
             }
             Cmd::Volume(v) => self.volume = v.clamp(0.0, 1.5),
@@ -692,7 +703,7 @@ mod tests {
         let mut m = Mixer::new(SR);
         m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
         let cricket = Part { kind: Kind::Whistle, hz: [4600.0; 3], len: 0.016, times: 4, gap: 0.016, ..Part::default() };
-        m.apply(Cmd::Ambience(Box::new(Ambience { wind: 0.6, dread: 0.5, water: Some((Vec3::new(20.0, 0.0, 0.0), 1.0)), songs: vec![Song { part: cricket, body: Body::default(), gain: 0.3, every: 0.6 }], singers: 24, hush: vec![] })));
+        m.apply(Cmd::Ambience(Box::new(Ambience { wind: 0.6, dread: 0.5, water: Some((Vec3::new(20.0, 0.0, 0.0), 1.0)), songs: vec![Song { part: cricket, body: Body::default(), gain: 0.3, every: 0.6 }], singers: 24, hush: vec![], ..Default::default() })));
         // A herd calling and running through tall grass, with the night all round.
         for i in 0..20u64 {
             let call = guess(if i % 2 == 0 { "a low growl" } else { "two sharp chirps" }, 30.0, false).unwrap();
@@ -723,5 +734,40 @@ mod tests {
         let all = songs(vec![]);
         let hushed = songs(vec![(Vec3::ZERO, 60.0)]);
         assert!(all > 0.0 && hushed < all * 0.05, "{hushed} vs {all}");
+    }
+
+    /// Where a sound's energy sits (Hz), from its slope against its level:
+    /// high means hiss.
+    fn brightness(v: &[f32]) -> (f32, f32) {
+        let l: Vec<f32> = v.iter().step_by(2).copied().collect();
+        let e: f32 = l.iter().map(|x| x * x).sum::<f32>() / l.len() as f32;
+        let d: f32 = l.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>() / l.len() as f32;
+        (SR / std::f32::consts::TAU * (d / e.max(1e-12)).sqrt(), e.sqrt())
+    }
+
+    #[test]
+    fn rain_patters_softly_and_drums_dully_on_a_roof() {
+        let hear = |rain: f32, roof: bool| {
+            let mut m = Mixer::new(SR);
+            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+            m.apply(Cmd::Ambience(Box::new(Ambience { rain, rain_roof: roof, ..Ambience::default() })));
+            let v = m.render(4.0);
+            brightness(&v[v.len() / 2..])
+        };
+        let (open, loud) = hear(0.8, false);
+        let (roof, _) = hear(0.8, true);
+        let (_, soft) = hear(0.15, false);
+        let (_, none) = hear(0.0, false);
+        let shore = {
+            let mut m = Mixer::new(SR);
+            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+            m.apply(Cmd::Ambience(Box::new(Ambience { water: Some((Vec3::new(8.0, 0.0, 0.0), 1.0)), ..Ambience::default() })));
+            let v = m.render(4.0);
+            brightness(&v[v.len() / 2..]).0
+        };
+        eprintln!("rain open {open:.0} Hz, on a roof {roof:.0} Hz, shore {shore:.0} Hz; loudness {loud:.4} vs light {soft:.4}");
+        assert!(loud > soft * 1.3 && soft > none, "more rain is louder");
+        assert!(open < 2200.0, "no hiss: {open:.0} Hz");
+        assert!(roof < open * 0.7, "a roof dulls it: {roof:.0} vs {open:.0}");
     }
 }

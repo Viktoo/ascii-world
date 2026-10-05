@@ -38,6 +38,8 @@ pub struct Foley {
     /// Fires crackling last time (texture keys).
     fires: HashSet<u64>,
     n: u64,
+    /// The world time thunder was last listened for.
+    thunder_t: f64,
 }
 
 fn mix_seed(a: u64, b: u64) -> u64 {
@@ -94,6 +96,7 @@ impl Foley {
             self.since_fire = 0.0;
             self.fires(sim, out);
         }
+        self.thunder(sim, seed, out);
         self.since_amb += dt;
         if self.since_amb >= 0.5 {
             self.since_amb = 0.0;
@@ -240,6 +243,25 @@ impl Foley {
         self.fires = now;
     }
 
+    /// Lightning heard: a crack when it is near, then the long roll, late
+    /// by how far off it struck.
+    fn thunder(&mut self, sim: &Sim, seed: u64, out: &mut Vec<Cmd>) {
+        let t = sim.t;
+        let from = if self.thunder_t <= 0.0 || t < self.thunder_t || t - self.thunder_t > 5.0 { t } else { self.thunder_t };
+        self.thunder_t = t;
+        for (k, (_, dir, dist)) in sim.weather.strikes(from, t, sim.wx.storm).into_iter().enumerate() {
+            let near = (1.0 - dist / 3000.0).clamp(0.0, 1.0);
+            let at = sim.player.pos + Vec3::new(dir.x, 0.0, dir.y) * 70.0 + Vec3::Y * 25.0;
+            let mut parts = Vec::new();
+            if dist < 900.0 {
+                parts.push(Part { kind: Kind::Noise, hz: [1300.0, 900.0, 600.0], len: 0.3, hard: 0.9, dry: 0.6, swell: 0.0, loud: 0.7 * near, ..Part::default() });
+            }
+            parts.push(Part { kind: Kind::Noise, hz: [110.0, 80.0, 60.0], len: 2.0 + 2.5 * (1.0 - near), hard: 0.0, dry: 0.0, swell: 0.45, loud: 0.45 + 0.45 * near, ..Part::default() });
+            parts.push(Part { kind: Kind::Noise, hz: [60.0, 50.0, 40.0], len: 3.0, hard: 0.0, dry: 0.0, swell: 0.7, loud: 0.4 + 0.3 * near, ..Part::default() });
+            out.push(Cmd::Play(Box::new(Play { at: super::mix::At::Point(at), call: Call(parts), body: Body { mass: 1000.0, pitch: 1.0 }, seed: mix_seed(seed, 0x7A0 + k as u64), gain: 0.6 + 0.6 * near, delay: (dist / 343.0).min(9.0) })));
+        }
+    }
+
     /// Wind, water, dread and who sings, for where the traveler is now.
     fn ambience(&mut self, sim: &mut Sim) -> Ambience {
         let me = sim.player.pos;
@@ -268,7 +290,11 @@ impl Foley {
         let growth = sim.cache.items_near(&snap, me, 22.0);
         let solids = growth.iter().filter(|i| i.solid).count();
         let open = 1.0 / (1.0 + solids as f32 * 0.08);
-        let wind = (0.2 + 0.45 * (height / 40.0).clamp(0.0, 1.0) + 0.35 * open).min(1.0);
+        // The weather's wind, more on heights and in the open, little indoors.
+        let roof = !sim.open_sky(me + Vec3::Y);
+        let wind = ((0.2 + 0.45 * (height / 40.0).clamp(0.0, 1.0) + 0.35 * open) * (0.45 + 0.9 * sim.wx.wind)).min(1.0) * if roof { 0.3 } else { 1.0 };
+        // Rain patters (snow, ash and motes fall without a sound).
+        let rain = sim.wx.falls.as_ref().filter(|f| f.look == crate::world::weather::FallLook::Streak).map(|f| f.amount).unwrap_or(0.0);
         // Dread: the nearest thing that harms, while it's dark.
         let dark = crate::sim::night::is_dark(sim.t);
         let mut dread: f32 = 0.0;
@@ -301,7 +327,9 @@ impl Foley {
             songs = day_songs(sim, wooded);
             singers = if songs.is_empty() { 0 } else { (2 + wooded / 3).min(8) };
         }
-        Ambience { wind, water, dread, songs, singers, hush }
+        // Singers keep quiet in the rain.
+        let singers = if rain > 0.3 { singers / 3 } else { singers };
+        Ambience { wind, water, dread, songs, singers, hush, rain, rain_roof: roof }
     }
 }
 

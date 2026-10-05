@@ -106,6 +106,17 @@ Species can keep hours (`"active": "night"`: owls, moths), go after something
 (`"shuns": ["light"]`) and move only unseen (`"moves_unseen"`). Peaceful worlds use the
 same fields, minus the harm.
 
+### Weather
+
+Each world has its own weather, written when the world is made: a few kinds (fair days,
+drizzle, sea fog, a thunderstorm; or ash fall, golden haze, glimmer rain in stranger
+worlds) that come and go over the days. Clouds drift and throw shadows, sunsets light
+them from below, and rain, snow, ash or motes fall past you. What falls acts on the
+world (rain wets things and puts fires out), people and animals feel it their own way
+(most get out of the rain, a frog folk goes out in it), and some beings only come out in
+certain weather. `/make it rain` (or anything else in the sky) changes it for a while.
+See docs/weather-plan.md.
+
 ### Sound
 
 Everything you hear is made live from small recipes, with no audio files. Each sound comes
@@ -464,7 +475,7 @@ Opening an older world adds the new tables and built-in types.
 ## Tools
 
 ```bash
-pocket snapshot FILE --at 0,0,90 --size 120x40 [--ascii] [--mono] [--time 21]   # one frame as text
+pocket snapshot FILE --at 0,0,90 --size 120x40 [--ascii] [--mono] [--time 21] [--weather storm]   # one frame as text
 pocket describe FILE --at 0,0,90                                                # visible things as JSON
 pocket bench FILE --distance 2000 --size 250x70                                 # scripted walk, frame stats
 pocket gpubench FILE --at 0,0,90 --size 250x61                                  # GPU time for one view
