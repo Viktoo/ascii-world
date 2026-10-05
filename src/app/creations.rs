@@ -267,7 +267,7 @@ impl App {
             detail.push(("Nothing has been made in this world yet. Try / to make something, or wait: its people make things too.".into(), DIM, false));
         }
         detail.push((String::new(), TEXT, false));
-        detail.push(("↑↓ choose · Tab group · 1 settings · 2 achievements · Esc close".into(), DIM, false));
+        detail.push(("↑↓ choose · Tab group · 1 settings · 2 achievements · q quit · Esc close".into(), DIM, false));
         // Heading: how much, by how many, how much is still here.
         let makers = b.rows.iter().map(maker).filter(|m| *m != "not recorded").collect::<std::collections::HashSet<_>>().len();
         let still = b.rows.iter().filter(|r| here.contains_key(&r.key)).count();

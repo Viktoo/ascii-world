@@ -164,7 +164,7 @@ impl Scanner {
                     ("species", Some("creatures")) => Some("herding"),
                     ("type", Some("landmarks")) => Some("placing"),
                     ("type", Some("buildings")) => Some("building"),
-                    ("type", Some("things")) => Some("leaving out"),
+                    ("type", Some("things")) => Some("setting out"),
                     _ => None,
                 };
                 if let Some(verb) = verb {

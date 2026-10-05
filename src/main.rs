@@ -303,10 +303,16 @@ fn snapshot(args: &[String]) -> Result<()> {
         t_game = (h / 24.0).rem_euclid(1.0) * render::sky::DAY_SECONDS;
     }
     let cam = camera_at(&l.snap, x, z, yaw);
-    let (pw, ph, pa) = if ascii { (w as u32, h as u32, 0.5) } else { (w as u32, h as u32 * 2, 1.0) };
+    let png_out = flag(args, "--png");
+    // Quadrant cells: 2×2 pixels each. A PNG gets square pixels at the same detail.
+    let (pw, ph, pa) = match (ascii, png_out.is_some()) {
+        (true, _) => (w as u32, h as u32, 0.5),
+        (false, true) => (w as u32 * 2, h as u32 * 4, 1.0),
+        (false, false) => (w as u32 * 2, h as u32 * 2, 0.5),
+    };
     let f = render_once(&l, cam, pw, ph, pa, t_game)?;
-    if let Some(png) = flag(args, "--png") {
-        let s = 4u32;
+    if let Some(png) = png_out {
+        let s = if ascii { 4u32 } else { 2 };
         let mut rgb = Vec::with_capacity((f.width * s * f.height * s * 3) as usize);
         for y in 0..f.height * s {
             for x in 0..f.width * s {

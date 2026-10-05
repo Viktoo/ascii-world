@@ -35,9 +35,10 @@ enum Row {
     LifeSpeed,
     Hunting,
     Beings,
+    Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -133,6 +134,11 @@ impl App {
     pub(super) fn menu_key(&mut self, k: KeyEvent) {
         let Some(m) = self.menu.as_mut() else { return };
         self.dirty = true;
+        // Quit lives here, not in walk mode, so it is never hit by accident.
+        if matches!(k.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+            self.quit = true;
+            return;
+        }
         if m.details.is_some() {
             if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Left | KeyCode::Backspace) {
                 m.details = None;
@@ -188,6 +194,7 @@ impl App {
                         }
                     }
                     Row::Shadows | Row::Sound | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
+                    Row::Quit => self.quit = true,
                     _ => {}
                 }
             }
@@ -240,7 +247,7 @@ impl App {
             Row::LifeSpeed => self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, dir)),
             Row::Hunting => self.set_world("hunting", if self.sim.cfg.hunting { 0.0 } else { 1.0 }),
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
-            Row::Details => {}
+            Row::Details | Row::Quit => {}
         }
         if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
             self.settings.save();
@@ -281,6 +288,7 @@ impl App {
             Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
             Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),
             Row::Beings => ("Actions can bring new beings", on(self.sim.cfg.create_beings)),
+            Row::Quit => ("Quit game", "Enter or q (the world is saved)".into()),
         };
         let value = if Self::locked(row) { format!("{value}   (set by env)") } else { value };
         (label.to_string(), value)
@@ -322,20 +330,22 @@ impl App {
                     Row::Budget => lines.push(("Spending".into(), HEAD, false)),
                     Row::Fps => lines.push(("Display".into(), HEAD, false)),
                     Row::Creatures => lines.push(("This world".into(), HEAD, false)),
+                    Row::Quit => lines.push(blank.clone()),
                     _ => {}
                 }
                 let (label, value) = self.row_text(*row);
                 let sel = i == m.sel;
-                lines.push((format!("{} {label:<30} {value}", if sel { "›" } else { " " }), if Self::locked(*row) { DIM } else { TEXT }, sel));
+                let fg = if Self::locked(*row) { DIM } else if *row == Row::Quit { ACCENT } else { TEXT };
+                lines.push((format!("{} {label:<30} {value}", if sel { "›" } else { " " }), fg, sel));
             }
             lines.push(blank.clone());
-            lines.push(("↑↓ choose · ←→ change · Enter select · 2 achievements · 3 creations · Esc close".into(), DIM, false));
+            lines.push(("↑↓ choose · ←→ change · Enter select · 2 achievements · 3 creations · q quit · Esc close".into(), DIM, false));
             lines.push(blank.clone());
             lines.push(("Keys".into(), HEAD, false));
             for l in [
                 "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · Tab blocks/ASCII",
                 "      Enter talk · / do or make anything · e use · g grab/drop",
-                "      f throw · y/n answer · F1 stats · F2 inspect · F3 achievements · q quit",
+                "      f throw · y/n answer · F1 stats · F2 inspect · F3 achievements",
                 "Log   1 journal (half → full → closed) · Tab filter · PgUp/PgDn scroll back",
                 "Talk  type and Enter · Esc back to walking",
                 "/help lists every / shortcut (/wave, /give, /ride, /undo…)",
@@ -391,7 +401,7 @@ impl App {
             detail.push((l, DIM, false, None));
         }
         detail.push((String::new(), TEXT, false, None));
-        detail.push(("↑↓ choose · PgUp/PgDn page · 1 settings · 3 creations · Esc close".into(), DIM, false, None));
+        detail.push(("↑↓ choose · PgUp/PgDn page · 1 settings · 3 creations · q quit · Esc close".into(), DIM, false, None));
         // As much of the list as fits, scrolled to keep the chosen one in view.
         let fit = (vh as usize).saturating_sub(detail.len() + 6).max(3);
         let top = sel_line.saturating_sub(fit / 2).min(list.len().saturating_sub(fit));

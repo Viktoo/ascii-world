@@ -280,7 +280,7 @@ impl App {
         app.sync_sound();
         app.unstick();
         let name = app.snap.look.name.clone();
-        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use, g grab, f throw, Esc settings, q quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
+        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use, g grab, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
             None => {
@@ -369,7 +369,7 @@ impl App {
 
     fn pixel_size(&self) -> (u32, u32, f32) {
         let (w, vh, _) = self.layout();
-        let (mut pw, mut ph, aspect) = if self.ascii { (w as u32, vh as u32, 0.5) } else { (w as u32, vh as u32 * 2, 1.0) };
+        let (mut pw, mut ph, aspect) = if self.ascii { (w as u32, vh as u32, 0.5) } else { (w as u32 * 2, vh as u32 * 2, 0.5) };
         if self.render.cpu_fallback {
             pw = pw.div_ceil(2);
             ph = ph.div_ceil(2);
@@ -460,7 +460,6 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.quit = true,
             KeyCode::Esc if self.log_view > 0 => self.set_log_view(0),
             KeyCode::Esc => self.toggle_menu(),
             KeyCode::Tab if self.log_view > 0 => {
@@ -723,7 +722,7 @@ impl App {
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/ride NAME · /dismount · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
-                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings, q quit",
+                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings (q there quits)",
                     "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
                 ] {
@@ -1283,7 +1282,7 @@ impl App {
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
-                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings  q quit".into(),
+                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings/quit".into(),
                 };
                 self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
             }
@@ -1782,7 +1781,8 @@ fn frame_to_mono(f: &Frame, ascii: bool, w: u16, vh: u16) -> String {
                 let l = norm(at(x, y));
                 out.push(RAMP[((l * (RAMP.len() - 1) as f32).round() as usize).min(RAMP.len() - 1)] as char);
             } else {
-                let l = (norm(at(x, y * 2)) + norm(at(x, y * 2 + 1))) * 0.5;
+                let (x, y) = (x * 2, y * 2);
+                let l = (norm(at(x, y)) + norm(at(x + 1, y)) + norm(at(x, y + 1)) + norm(at(x + 1, y + 1))) * 0.25;
                 out.push(shades[((l * 4.0).round() as usize).min(4)]);
             }
         }
@@ -1795,12 +1795,62 @@ fn lum(c: [u8; 3]) -> f32 {
     (0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32) / 255.0
 }
 
-/// Convert a rendered frame to cells (half-blocks or coloured ASCII), scaling
+/// Quadrant glyphs by mask: bit 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
+const QUADS: [char; 16] = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
+
+/// Splits to try, each with the top-left in the foreground so every split appears
+/// once. Whole and half-block first so they win ties (steadier, cheaper to send).
+const SPLITS: [usize; 8] = [15, 3, 5, 9, 1, 7, 11, 13];
+
+/// A split whose two colours are this close (per channel) is drawn flat.
+const FLAT: i32 = 6;
+
+/// The quadrant cell that best fits a 2×2 block (tl, tr, bl, br): the split into
+/// two colours with the least squared error, each colour its group's mean.
+fn quad_cell(p: [[u8; 3]; 4]) -> Cell {
+    let mut best = (u32::MAX, 15, [0u8; 3], [0u8; 3]);
+    for mask in SPLITS {
+        let mut sum = [[0u32; 3]; 2];
+        let mut n = [0u32; 2];
+        for (i, c) in p.iter().enumerate() {
+            let g = (mask >> i & 1) as usize;
+            n[g] += 1;
+            for k in 0..3 {
+                sum[g][k] += c[k] as u32;
+            }
+        }
+        let mean = |g: usize| -> [u8; 3] { std::array::from_fn(|k| if n[g] == 0 { 0 } else { ((sum[g][k] + n[g] / 2) / n[g]) as u8 }) };
+        let (fg, bg) = (mean(1), mean(0));
+        let err: u32 = p
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let m = if mask >> i & 1 == 1 { fg } else { bg };
+                (0..3).map(|k| (c[k] as i32 - m[k] as i32).pow(2) as u32).sum::<u32>()
+            })
+            .sum();
+        if err < best.0 {
+            best = (err, mask, fg, bg);
+        }
+    }
+    let (_, mask, fg, bg) = best;
+    if mask == 15 {
+        return Cell { ch: ' ', fg, bg: fg, bold: false };
+    }
+    if (0..3).all(|k| (fg[k] as i32 - bg[k] as i32).abs() <= FLAT) {
+        let ones = mask.count_ones();
+        let flat = std::array::from_fn(|k| ((fg[k] as u32 * ones + bg[k] as u32 * (4 - ones) + 2) / 4) as u8);
+        return Cell { ch: ' ', fg: flat, bg: flat, bold: false };
+    }
+    Cell { ch: QUADS[mask], fg, bg, bold: false }
+}
+
+/// Convert a rendered frame to cells (quadrants or coloured ASCII), scaling
 /// with nearest-neighbour if the frame size differs (CPU fallback).
 pub fn frame_to_cells(f: &Frame, screen: &mut Screen, w: u16, vh: u16, ascii: bool) {
-    let rows_px = if ascii { vh as u32 } else { vh as u32 * 2 };
+    let (cols_px, rows_px) = if ascii { (w as u32, vh as u32) } else { (w as u32 * 2, vh as u32 * 2) };
     let px = |x: u32, y: u32| -> [u8; 3] {
-        let sx = (x * f.width / w as u32).min(f.width - 1);
+        let sx = (x * f.width / cols_px).min(f.width - 1);
         let sy = (y * f.height / rows_px).min(f.height - 1);
         render::unpack(f.pixels[(sy * f.width + sx) as usize])
     };
@@ -1815,9 +1865,8 @@ pub fn frame_to_cells(f: &Frame, screen: &mut Screen, w: u16, vh: u16, ascii: bo
                 let fg = [(c[0] as f32 * k).min(255.0) as u8, (c[1] as f32 * k).min(255.0) as u8, (c[2] as f32 * k).min(255.0) as u8];
                 Cell { ch, fg, bg: [0, 0, 0], bold: false }
             } else {
-                let top = px(x as u32, y as u32 * 2);
-                let bot = px(x as u32, y as u32 * 2 + 1);
-                if top == bot { Cell { ch: ' ', fg: top, bg: bot, bold: false } } else { Cell { ch: '▀', fg: top, bg: bot, bold: false } }
+                let (x, y) = (x as u32 * 2, y as u32 * 2);
+                quad_cell([px(x, y), px(x + 1, y), px(x, y + 1), px(x + 1, y + 1)])
             };
             screen.set(x, y, cell);
         }
@@ -1826,8 +1875,7 @@ pub fn frame_to_cells(f: &Frame, screen: &mut Screen, w: u16, vh: u16, ascii: bo
 
 /// Plain-text rendering for `pocket snapshot`.
 pub fn frame_to_text(f: &Frame, ascii: bool, mono: bool, truecolor: bool) -> String {
-    let w = f.width as u16;
-    let vh = if ascii { f.height as u16 } else { (f.height / 2) as u16 };
+    let (w, vh) = if ascii { (f.width as u16, f.height as u16) } else { ((f.width / 2) as u16, (f.height / 2) as u16) };
     if mono {
         return frame_to_mono(f, ascii, w, vh);
     }
@@ -1877,6 +1925,26 @@ mod tests {
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind, state: KeyEventState::NONE }
+    }
+
+    #[test]
+    fn quad_cells_fit_the_block() {
+        let (k, s, r) = ([0, 0, 0], [120, 180, 255], [200, 40, 40]);
+        // Top / bottom: the half-block, colours exact.
+        let c = quad_cell([s, s, k, k]);
+        assert_eq!((c.ch, c.fg, c.bg), ('▀', s, k));
+        // A vertical edge, a corner and a diagonal.
+        assert_eq!(quad_cell([s, k, s, k]).ch, '▌');
+        let c = quad_cell([k, k, k, r]);
+        assert_eq!((c.ch, c.fg, c.bg), ('▛', k, r));
+        assert_eq!(quad_cell([s, k, k, s]).ch, '▚');
+        // Flat and nearly flat blocks are plain cells.
+        assert_eq!(quad_cell([s; 4]).ch, ' ');
+        let c = quad_cell([[100, 100, 100], [103, 100, 100], [100, 100, 100], [100, 100, 100]]);
+        assert_eq!((c.ch, c.bg), (' ', [101, 100, 100]));
+        // Three colours: the odd pair is averaged, the rest stays exact.
+        let c = quad_cell([s, s, k, r]);
+        assert_eq!((c.ch, c.fg), ('▀', s));
     }
 
     fn reply(sys: &str, msgs: &[Msg]) -> String {
@@ -2363,6 +2431,18 @@ mod tests {
         drive(&mut app, 0.1, |_, _| true);
         assert!(app.achievements.earned("thrown").is_some());
         assert_eq!(app.toasts.len(), 4, "one popup each, queued");
+    }
+
+    #[test]
+    fn quit_is_in_the_esc_menu_not_walk() {
+        let (mut app, _db) = make_app(false);
+        app.on_key(key(KeyCode::Char('q'), KeyEventKind::Press));
+        assert!(!app.quit, "q while walking does nothing");
+        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        app.compose();
+        assert!(screen_text(&app).contains("Quit game"));
+        app.on_key(key(KeyCode::Char('q'), KeyEventKind::Press));
+        assert!(app.quit, "q in the menu quits");
     }
 
     #[test]

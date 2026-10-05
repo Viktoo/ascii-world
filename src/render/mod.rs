@@ -278,7 +278,7 @@ pub struct SceneParams<'a> {
     pub camera: Camera,
     pub width: u32,
     pub height: u32,
-    /// Width / height of one pixel as displayed (1.0 for half-blocks, ~0.5 for ASCII cells).
+    /// Width / height of one pixel as displayed (0.5 for quadrant cells and ASCII, 1.0 for square pixels).
     pub pixel_aspect: f32,
     pub light: Lighting,
     pub time: f32,

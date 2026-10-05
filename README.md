@@ -50,10 +50,10 @@ cargo build --release      # → target/release/pocket
 
 | Mode | Enter with | Keys |
 |---|---|---|
-| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
+| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, `Tab` blocks/ASCII, `F1` stats, `F2` inspect; quit from the `Esc` menu (`q` there, or the Quit row) |
 | Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`; a fire or other incident is one line, updated as it goes); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
 | Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
-| Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
+| Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `q` quit the game, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings, and a Quit game row. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
 | Creations | `3` in settings (`Esc`, or `F3` then `3`) | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
 | Hands | (in walk) | `e` use (what you hold, on what you point at; a door opens or shuts; a held tool swings, chops, thrusts, digs or pours, by what it is and what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
@@ -192,11 +192,12 @@ used near the camera. Shading: sun/moon with soft shadows, sky ambient, AO, dist
 sky gradient with stars, and water with Fresnel reflections. One in-game day lasts 20
 real minutes.
 
-**Terminal** (`src/term.rs`). Half-block cells (`▀`, foreground = top pixel, background =
-bottom) or coloured ASCII. Each frame is diffed against what is already on screen; only
+**Terminal** (`src/term.rs`). Quadrant cells (`▘▀▚▌`…, 2×2 pixels each: the split into
+two colours that best fits the four pixels, with half-blocks winning ties and near-flat
+cells drawn plain) or coloured ASCII. Each frame is diffed against what is already on screen; only
 changed cells are sent, colour codes only when they change, inside a synchronized-update
 block, in one write. Never clears. Raw mode, alternate screen and keyboard flags are
-restored on `q`, Ctrl-C, SIGTERM/SIGHUP or a panic.
+restored on quit, Ctrl-C, SIGTERM/SIGHUP or a panic.
 
 **The world** (`src/world/`). 64 m chunks, 4×4-chunk regions. Terrain, biomes and scatter
 (trees, rocks, bushes, grass) are pure functions of the seed and are never stored. The
@@ -515,7 +516,7 @@ How the acceptance criteria are covered:
 | `/a lighthouse on that hill` while walking | `app::tests::talk_create_undo_via_keys`, `e2e_tests` |
 | Character remembers after a restart | `e2e_tests` (reopens the file, checks the prompt and the reply) |
 | Can't walk through solids; sliding | `world::collide::tests` |
-| Terminal restored after q / Ctrl-C / panic | verified in a pty: raw mode off, echo on, alternate screen left, cursor shown |
+| Terminal restored after quit / Ctrl-C / panic | verified in a pty: raw mode off, echo on, alternate screen left, cursor shown |
 | Copy a `.pocket` file → identical world that diverges independently | `e2e_tests` |
 | Constant-speed held keys with keyboard enhancement | `app::tests::held_key_moves_at_constant_speed_and_stops_on_release` |
 | Same seed, same history | `sim::tests::same_seed_same_history`, `pocket sim --verify` |
