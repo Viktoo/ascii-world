@@ -308,7 +308,9 @@ impl App {
         let solids = self.sim.solids_near(p, 6.0);
         if !solids.is_empty() {
             let obs = Obstacles { solids: &solids, bodies: &[] };
-            if obs.dist(&snap.terrain, p.x, p.z) < PLAYER_RADIUS {
+            // Stuck where its feet are (a floor, a roof), not at the ground below.
+            let cap = self.sim.capsule(ActorId::Player);
+            if obs.dist_body(p.x, p.z, p.y, cap) < PLAYER_RADIUS * 0.5 && !obs.clear(p.x, p.z, p.y, cap) {
                 self.sim.player.pos = free_spot(&snap.terrain, &obs, p, PLAYER_RADIUS, 40.0);
                 self.cam_y = self.sim.player.pos.y + self.sim.player.dims.eye;
             }
@@ -320,7 +322,8 @@ impl App {
                 continue;
             }
             let obs = Obstacles { solids: &solids, bodies: &[] };
-            if obs.dist(&snap.terrain, p.x, p.z) < NPC_RADIUS {
+            let cap = self.sim.capsule(ActorId::Npc(self.sim.cast.npcs[i].def.id));
+            if obs.dist_body(p.x, p.z, p.y, cap) < NPC_RADIUS * 0.5 && !obs.clear(p.x, p.z, p.y, cap) {
                 self.sim.cast.npcs[i].a.pos = free_spot(&snap.terrain, &obs, p, NPC_RADIUS, 40.0);
             }
         }
