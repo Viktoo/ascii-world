@@ -102,6 +102,7 @@ Bodies walk on what you draw: floors, stairs, ramps, roofs and ledges are real. 
 - meta.hollow: [hx, hz, floor]: the ground under the shape is taken away in the box |x| < hx, |z| < hz down to local y = floor (negative). A cellar, a burrow, a house set into a hillside. The shape then sits with its y = 0 at the ground (its walls may go down to floor), and should have a floor, walls and a way down.
 - meta.joint: { axis: "y", at: [x, y, z], open: 100 }: it swings on a hinge (a gate, a lid, a trapdoor, a cupboard door) about that axis through `at`, `open` degrees when open. People open and shut it.
 - meta.tool: { grip: [x, y, z], tip: [x, y, z], motions: ["swing", "thrust"] }: how a tool is held (grip: where the hand goes) and where it strikes (tip), and the motions it knows: swing (a blade, a club), chop (an axe, a pick), thrust (a spear, a knife), dig (a spade, a hoe), pour (a bucket, a jug). A sword: motions ["swing", "thrust"]; an axe ["chop", "swing"]; a shovel ["dig", "swing"].
+- meta.drive: { speed: 14, on: "land" }: it carries a rider who steers it: a cart, a car, a sled (on: "land"), a boat or raft (on: "water"), a flying carpet or airship (on: "air"). speed is its top speed in m/s (a cart 4, a horse carriage 7, a car 15–30, a rowing boat 3, a sailing ship 8). Give it a { kind: "seat", at: [x, y, z], face: 0 } anchor where the driver sits, facing its front (+z); keep the space above the seat open (an open top, a cockpit, a windscreen gap) so the driver can see out. Make its front face +z. Its mass is real (a car 1200 kg).
 
 ## Style
 Recognisable silhouettes beat fine detail: the world is seen at low resolution. Use colour boldly and consistently with the universe's palette. A building is typically 4–10 m wide and 4–12 m tall; a person is 1.75 m tall.
@@ -314,6 +315,7 @@ and, if "reuse" is null, one ```js block with the new type module.
 - Objects are set on the ground automatically. Only add "lift": metres if the object must deliberately hover.
 - Keep the player's position free: the target may be close.
 - Give a new type fitting meta.props (a ball bounces, bread is edible, a lamp gives light, a wooden thing burns), and "strange" when it doesn't belong in this universe (judge by the universe, not by our world). Small things (under ~1 m) can be picked up and used.
+- Something people ride in or on and steer (a cart, a car, a boat, a sled, a flying carpet) needs meta.drive and a seat anchor; the traveler gets in with e and drives it.
 "#;
 
 pub fn repair(errors: &str) -> String {
@@ -333,6 +335,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
   {"do": "open", "target": "door"}   {"do": "close", "target": "gate"}   (doors, gates, lids, trapdoors)
+  {"do": "pet", "target": "Rex"}   (stroke or scratch an animal; one that trusts them likes it)   {"do": "hold", "target": "Mog"} picks up a small animal that lets them
   {"do": "swing", "at": "wolf"}   {"do": "chop", "at": "pine"}   {"do": "dig", "at": "garden"}   (work the tool they hold: a blade swings, an axe chops, a spade digs; it can hurt)
   {"do": "apply", "with": "wet cloak", "to": "burning hut"}   (work something against something for a few seconds: beat out flames, press, rub, smear; without "with", their own hands; without "to", the nearest trouble)
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)

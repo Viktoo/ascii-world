@@ -44,6 +44,8 @@ pub enum GestureKind {
     Kiss,
     /// Tail up and swinging (bodies with `spread`); others nod.
     Wag,
+    /// Stroking an animal: a hand down and along, leaning in.
+    Pet,
     Custom(u16),
 }
 
@@ -167,6 +169,7 @@ impl GestureKind {
             "hug" | "embrace" => GestureKind::Hug,
             "kiss" => GestureKind::Kiss,
             "wag" | "wag_tail" | "tail" => GestureKind::Wag,
+            "pet" | "stroke" | "pat" | "scratch" => GestureKind::Pet,
             _ => return None,
         })
     }
@@ -189,6 +192,7 @@ impl GestureKind {
             GestureKind::Hug => "hug",
             GestureKind::Kiss => "kiss",
             GestureKind::Wag => "wag",
+            GestureKind::Pet => "pet",
             GestureKind::Custom(_) => "gesture",
         }
         .to_string()
@@ -249,6 +253,7 @@ impl GestureKind {
             GestureKind::Hug => 3.5,
             GestureKind::Kiss => 2.2,
             GestureKind::Wag => 2.0,
+            GestureKind::Pet => 2.4,
             GestureKind::Custom(_) => 2.0,
         }
     }
@@ -353,6 +358,12 @@ impl GestureKind {
                 p[SPREAD] = (t * 14.0).sin() * 0.9 * ease;
                 p[NOD] = -0.2 * ease;
             }
+            GestureKind::Pet => {
+                p[R_FWD] = (0.7 + (t * 5.0).sin() * 0.12) * ease;
+                p[LEAN] = 0.3 * ease;
+                p[CROUCH] = 0.3 * ease;
+                p[NOD] = 0.25 * ease;
+            }
         }
         p
     }
@@ -404,6 +415,11 @@ pub struct Actor {
     pub alt: f32,
     /// Sitting on another body that carries it.
     pub riding: Option<ActorId>,
+    /// In or on a thing it steers (a cart, a car, a boat).
+    pub aboard: Option<ThingId>,
+    /// Held in someone's arms (a cat, a lamb), until it wants down.
+    pub carried_by: Option<ActorId>,
+    pub carried_until: f64,
     /// Up-and-down speed (m/s): jumping, falling.
     pub vy: f32,
     /// Standing on something (the ground, a floor, a stair).
@@ -435,7 +451,17 @@ pub const HUMAN_ROLES: u8 = 0b0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None }
+        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None }
+    }
+
+    /// Sitting on something that carries it (a mount, a cart).
+    pub fn seated(&self) -> bool {
+        self.riding.is_some() || self.aboard.is_some()
+    }
+
+    /// Off its own feet: seated, or carried.
+    pub fn carried(&self) -> bool {
+        self.seated() || self.carried_by.is_some()
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -572,7 +598,7 @@ impl Actor {
             goal[CROUCH] = 1.0;
             goal[NOD] = 0.8;
         }
-        if self.riding.is_some() {
+        if self.seated() {
             goal[CROUCH] = 0.55;
             goal[L_FWD] = goal[L_FWD].max(0.35);
             goal[R_FWD] = goal[R_FWD].max(0.35);

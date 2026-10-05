@@ -382,7 +382,7 @@ impl Sim {
                 pos,
                 props: n.props.clone(),
                 next: n.props.clone(),
-                water: (snap.terrain.height(n.a.pos.x, n.a.pos.z) < WATER_LEVEL - 0.1 && n.a.riding.is_none()) as u32 as f32,
+                water: (snap.terrain.height(n.a.pos.x, n.a.pos.z) < WATER_LEVEL - 0.1 && !n.a.carried()) as u32 as f32,
                 held: 0.0,
                 ground: 1.0,
                 acting: true,

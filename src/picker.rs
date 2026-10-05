@@ -470,7 +470,7 @@ mod tests {
     fn draft_opens_random_and_enter_takes_it() {
         let mut d = Draft::rolled();
         let rolled = text(&d);
-        assert!(d.fresh && rolled.contains("You arrive where"));
+        assert!(d.fresh && rolled.ends_with('.') && !rolled.is_empty());
         assert!(matches!(d.key(key(KeyCode::Enter)), Edit::Done(p) if p == rolled));
     }
 
@@ -530,7 +530,7 @@ mod tests {
         let mut scr = Screen::new(100, 30, true);
         draw_new(&mut scr, &Draft::rolled(), "quit");
         let shown = screen_text(&scr);
-        assert!(shown.contains("a new world") && shown.contains("arrive") && shown.contains("Esc quit"), "{shown}");
+        assert!(shown.contains("a new world") && shown.contains("Esc quit"), "{shown}");
     }
 
     #[test]

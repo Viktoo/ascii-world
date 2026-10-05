@@ -283,7 +283,7 @@ impl App {
             Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
             Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
-            Row::Difficulty => ("Difficulty (this world)", self.sim.level().name.to_string()),
+            Row::Difficulty => ("Difficulty", self.sim.level().name.to_string()),
             Row::Creatures => ("Most of one kind of creature", format!("{} per region", self.sim.cfg.max_creatures)),
             Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
             Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),
@@ -339,7 +339,9 @@ impl App {
                 lines.push((format!("{} {label:<30} {value}", if sel { "›" } else { " " }), fg, sel));
             }
             lines.push(blank.clone());
-            lines.push(("↑↓ choose · ←→ change · Enter select · 2 achievements · 3 creations · q quit · Esc close".into(), DIM, false));
+            for l in hang("↑↓ choose · ←→ change · Enter select · 2 achievements · 3 creations · q quit · Esc close", pw - 3, 0) {
+                lines.push((l, DIM, false));
+            }
             lines.push(blank.clone());
             lines.push(("Keys".into(), HEAD, false));
             for l in [
@@ -350,7 +352,9 @@ impl App {
                 "Talk  type and Enter · Esc back to walking",
                 "/help lists every / shortcut (/wave, /give, /ride, /undo…)",
             ] {
-                lines.push((l.into(), DIM, false));
+                for l in hang(l, pw - 3, 6) {
+                    lines.push((l, DIM, false));
+                }
             }
         }
         let y0 = (vh as usize).saturating_sub(lines.len() + 2) as u16 / 2;
@@ -401,7 +405,9 @@ impl App {
             detail.push((l, DIM, false, None));
         }
         detail.push((String::new(), TEXT, false, None));
-        detail.push(("↑↓ choose · PgUp/PgDn page · 1 settings · 3 creations · q quit · Esc close".into(), DIM, false, None));
+        for l in hang("↑↓ choose · PgUp/PgDn page · 1 settings · 3 creations · q quit · Esc close", pw - 3, 0) {
+            detail.push((l, DIM, false, None));
+        }
         // As much of the list as fits, scrolled to keep the chosen one in view.
         let fit = (vh as usize).saturating_sub(detail.len() + 6).max(3);
         let top = sel_line.saturating_sub(fit / 2).min(list.len().saturating_sub(fit));
@@ -426,4 +432,18 @@ impl App {
             }
         }
     }
+}
+
+/// Wrap a menu line to `width`, later lines indented by `indent` (so a key
+/// list's continuation lines up under its first entry instead of being cut).
+pub(super) fn hang(text: &str, width: usize, indent: usize) -> Vec<String> {
+    let first = crate::term::wrap(text, width);
+    if first.len() <= 1 || indent == 0 {
+        return first;
+    }
+    let head = first[0].clone();
+    let rest: String = text.chars().skip(head.chars().count()).collect();
+    let mut out = vec![head];
+    out.extend(crate::term::wrap(rest.trim_start(), width - indent).into_iter().map(|l| format!("{:indent$}{l}", "")));
+    out
 }

@@ -217,6 +217,12 @@ impl App {
 
     fn finish_loading(&mut self) {
         self.loading = None;
+        // The session's spend starts once you are in: making the world is not counted
+        // (it stays in the world's all-time total).
+        if let Some(l) = &self.llm {
+            *l.spent.lock() = 0.0;
+        }
+        self.budget_paused = false;
         self.dirty = true;
     }
 
@@ -610,6 +616,7 @@ mod tests {
             // Ready, it waits for you; a key steps in.
             if a.loading.as_ref().and_then(|l| l.done_at).is_some_and(|d| d.elapsed() > std::time::Duration::from_secs(2)) {
                 waited = true;
+                *a.llm.as_ref().unwrap().spent.lock() = 1.5;
                 a.loading_key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE));
             }
             t < 90.0 && a.loading.is_some()
@@ -617,6 +624,7 @@ mod tests {
         app.run(false, &mut sink, &stop, Some(&mut f)).unwrap();
         assert!(app.loading.is_none(), "the world opened (after {t:.1} s)");
         assert!(waited, "a ready world waits for a key");
+        assert_eq!(app.spent(), 0.0, "making the world is not counted in the session's spend");
         assert!(saw_bar && saw_names, "bar {saw_bar}, names {saw_names}");
         assert_eq!(app.snap.look.name, "Greywater Coast");
         for r in needed {

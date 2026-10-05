@@ -638,6 +638,9 @@ impl Sim {
     }
 
     fn held_size(&self, who: ActorId) -> Option<bool> {
+        if self.carried_of(who).is_some() {
+            return Some(true);
+        }
         let id = self.actor(who)?.held?;
         let t = self.things.get(id)?;
         let ty = self.snap.type_of(t.type_id)?;
@@ -971,6 +974,10 @@ impl Sim {
         n.needs.social = (n.needs.social + dt / 420.0 * (0.4 + tr.sociable) * rate.social).min(1.0);
         n.needs.fun = (n.needs.fun + dt / 520.0 * (0.4 + tr.playful) * rate.fun).min(1.0);
         n.needs.curiosity = (n.needs.curiosity - dt / 400.0 / rate.curiosity.max(0.1)).max(0.0);
+        // Held in someone's arms: still until it wants down.
+        if self.carried_tick(cid, dt) {
+            return;
+        }
         // Talking with the player: stand and face them.
         if self.talking_to == Some(cid) {
             if let Some(n) = self.cast.get_mut(cid) {

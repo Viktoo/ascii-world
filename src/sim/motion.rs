@@ -191,6 +191,7 @@ impl Sim {
 
     /// Riders sit in their mounts' seats.
     pub fn update_riders(&mut self) {
+        self.update_aboard();
         let riders: Vec<(ActorId, ActorId)> = self.actor_ids().into_iter().filter_map(|a| self.actor(a).and_then(|x| x.riding).map(|m| (a, m))).collect();
         for (r, m) in riders {
             let Some((seat, yaw, alt)) = self.actor(m).and_then(|x| Some((x.seat()?, x.yaw, x.alt))) else {
@@ -213,6 +214,7 @@ impl Sim {
                 }
             }
         }
+        self.update_carried();
     }
 
     /// The traveler steers what they ride: walk keys move it at its pace,

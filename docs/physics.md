@@ -75,3 +75,52 @@ lies on it.
   of several shapes, or a path that leaves and enters by different doors, is
   not planned as a whole.
 - The traveler takes no harm from blows.
+- Sitting in a vehicle or carrying an animal isn't saved: after a restart
+  the traveler stands where they were.
+- Carts can't be hitched to a horse yet; characters don't drive.
+
+## Creatures in hand (`sim/carry.rs`)
+
+- **e on a being** does what fits, told in the key hint: pet an animal
+  close by, ride a mount that lets you, call an animal further off, nod
+  to a stranger or shake hands with someone you know close by, wave at
+  someone further off. With something in hand: give it (food to an
+  animal is feeding), or work the held tool on them. The being meant is
+  the one pointed at, else the one in front within 4 m (small animals
+  are hard to point at).
+- **Petting** (`{"do": "pet"}`): an animal easy with you (liking less
+  wariness) makes a happy noise, wags and likes you more (more the less
+  it does yet); a wary one shies off. Petting a horse until it trusts
+  you is how a stranger's horse comes to be ridden.
+- **Picking up** (`g`, `hold` on a being): small animals only (under 80%
+  of what you can lift). One that trusts you settles in your arms for a
+  minute or two; one that doesn't is caught only if it is slower than
+  you walk or asleep, and squirms free in a few seconds and runs; a
+  quick one darts off; a meat eater or a bold one may nip and get away.
+  A carried animal sits at the holder's hands, can be petted, handed to
+  someone with free arms, or set down (`g`); it can't be thrown.
+
+## Vehicles (`sim/vehicle.rs`, `meta.drive`)
+
+- A shape with `meta.drive: { speed, on: "land" | "water" | "air" }` and a
+  `seat` anchor is a vehicle: a cart, a car, a boat, a flying carpet. It is
+  never anchored, however heavy. `e` on it (or `/drive`, `/ride the car`)
+  gets in; `e` again, or `/dismount`, gets out beside the seat (not into
+  deep water).
+- Driving: W/S throttle and brake (then reverse), A/D or ←→ steer. Land
+  and water vehicles turn only while moving; flyers turn in place and
+  go up with Space and down with c (in place too), or follow the look
+  pitch while moving; let be, they hover. Land vehicles
+  keep to the ground and tilt with it; boats float at the water line and
+  can't leave it (they crawl in the shallows); everything is stopped by
+  solids and bodies at its height. The view rises out of a closed cab.
+- Boats set on water by a creation float there.
+- Only the traveler drives for now; characters can't board.
+
+## Exposure (`sim/exposure.rs`)
+
+`Sim::exposure(p)` says how open a spot is to the sky, 0..1: how far it rises
+above the land within 25–60 m and above the water, broken up by standing growth
+within 22 m, and 0 inside a room. It knows nothing about wind; the wind's sound
+reads it now (`exposure^1.5`, so it is faint on flat meadows, gone in woods and
+indoors, and strong on bare hilltops), and weather, drying or fire can read it later.

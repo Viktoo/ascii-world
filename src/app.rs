@@ -442,7 +442,9 @@ impl App {
 
     fn walk_key(&mut self, k: KeyEvent) {
         if let Some(c) = key_char(k.code) {
-            if matches!(c, '^' | 'v' | '<' | '>' | 'a' | 'd' | 'w' | 's') {
+            // Aboard, Space and c are held too: up and down for a flyer.
+            let flying_key = matches!(c, ' ' | 'c') && self.sim.player.aboard.is_some();
+            if matches!(c, '^' | 'v' | '<' | '>' | 'a' | 'd' | 'w' | 's') || flying_key {
                 // Shift with a walking key runs (`r` keeps running on).
                 if matches!(c, 'a' | 'd' | 'w' | 's') && k.kind == KeyEventKind::Press {
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT) || matches!(k.code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
@@ -478,7 +480,7 @@ impl App {
                 self.input = "/".into();
             }
             KeyCode::Char(' ') => {
-                if self.sim.player.riding.is_none() {
+                if !self.sim.player.seated() {
                     self.sim.jump(ActorId::Player);
                 }
             }
@@ -523,11 +525,13 @@ impl App {
         self.sim.look_pitch = self.pitch;
         match self.sim.act(ActorId::Player, a) {
             Ok(o) => {
-                if !o.ok || matches!(verb, "use" | "do" | "eat" | "answer" | "give" | "gesture" | "propose") {
-                    self.say(None, &o.msg, if o.ok { TEXT } else { DIM });
+                // Things picked up show in the hand; a being in the arms is told.
+                let told = matches!(verb, "use" | "do" | "eat" | "answer" | "give" | "gesture" | "propose" | "pet" | "ride" | "dismount") || (matches!(verb, "hold" | "drop") && o.thing.is_none());
+                if !o.ok || told {
+                    self.say(None, &you(&o.msg), if o.ok { TEXT } else { DIM });
                 }
             }
-            Err(e) => self.say(None, &format!("Can't: {e}."), DIM),
+            Err(e) => self.say(None, &format!("Can't: {}.", you(&e.to_string())), DIM),
         }
         self.dirty = true;
     }
@@ -550,7 +554,58 @@ impl App {
         self.pointed.as_ref().filter(|p| !matches!(p.target, Target::Point(_))).map(|p| p.pos.to_array())
     }
 
+    /// The being the use key is meant for: the one pointed at, else the
+    /// one in front close by (small animals are hard to point at), unless
+    /// a thing within reach is pointed at.
+    fn being_in_front(&self) -> Option<ActorId> {
+        if let Some(Target::Actor(a)) = self.pointed_thing() {
+            return Some(a);
+        }
+        let near_thing = self.pointed.as_ref().is_some_and(|p| p.dist < 3.2 && !matches!(p.target, Target::Point(_)));
+        if near_thing {
+            return None;
+        }
+        let (id, _) = self.talk_hint.as_ref()?;
+        let me = self.pos();
+        let a = self.sim.cast.get(*id)?;
+        (Vec3::new(a.a.pos.x - me.x, 0.0, a.a.pos.z - me.z).length() < 4.0).then_some(ActorId::Npc(*id))
+    }
+
     fn use_pointed(&mut self) {
+        // Riding or driving: e with nothing else in view (or at the mount
+        // or vehicle itself) gets down.
+        let mount = self.sim.player.riding.map(Target::Actor).or(self.sim.player.aboard.map(Target::Thing));
+        if let Some(m) = mount {
+            let pointed = self.pointed_thing().filter(|_| self.pointed.as_ref().is_some_and(|p| p.dist < 3.2));
+            if pointed.is_none() || pointed == Some(m) {
+                self.player_act(Action::Dismount);
+                return;
+            }
+        }
+        // A being in front: pet, ride, greet, feed or give, by what it is.
+        if let Some(other) = self.being_in_front() {
+            if let Some(carried) = self.sim.carried_of(ActorId::Player).filter(|c| *c != other) {
+                // Arms full: the one in them is the one you mean.
+                self.player_act(Action::Pet { target: Target::Actor(carried) });
+                return;
+            }
+            let at = self.pointed_at();
+            match self.sim.approach_action(ActorId::Player, other, at) {
+                Some(a) => self.player_act(a),
+                None => {
+                    if let ActorId::Npc(id) = other {
+                        let name = self.sim.actor_name(other);
+                        self.say(Some("you"), &format!("(you call {name})"), DIM);
+                        self.sim.animal_answers(id);
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(c) = self.sim.carried_of(ActorId::Player) {
+            self.player_act(Action::Pet { target: Target::Actor(c) });
+            return;
+        }
         let target = self.pointed_thing();
         let held = self.sim.player.held;
         let at = self.pointed_at();
@@ -564,11 +619,6 @@ impl App {
                     _ => Action::Use { target: None, on: None, at: None },
                 }
             }
-            (None, Some(Target::Actor(ActorId::Npc(c)))) => {
-                // Using a person is greeting them.
-                let _ = c;
-                Action::Gesture { kind: "wave".into(), to: self.pointed_thing() }
-            }
             (None, Some(t)) => Action::Use { target: Some(t), on: None, at },
             (None, None) => {
                 self.say(None, "Nothing to use there. (Point at something; g picks things up.)", DIM);
@@ -579,22 +629,25 @@ impl App {
     }
 
     fn grab_or_drop(&mut self) {
-        if self.sim.player.held.is_some() {
+        if self.sim.player.held.is_some() || self.sim.carried_of(ActorId::Player).is_some() {
             self.player_act(Action::Drop);
             return;
         }
         let pointed = self.pointed_thing().filter(|_| self.pointed.as_ref().is_some_and(|p| p.dist < crate::sim::actor::REACH + 1.0));
+        let animal = |a: &ActorId| self.sim.mind_of(*a) != crate::world::species::Mind::Sapient && self.sim.within_touch(ActorId::Player, *a);
+        let pointed = pointed.or_else(|| self.being_in_front().filter(animal).map(Target::Actor));
         match pointed.or_else(|| self.sim.nearest_in_front(ActorId::Player)) {
-            Some(Target::Actor(id)) => {
-                let who = self.sim.actor_name(id);
-                self.say(None, &format!("You can't pick up {who}. (/hug, /wave, /give …)"), DIM)
-            }
             Some(t) => self.player_act(Action::Hold { target: t }),
             None => self.say(None, "Nothing to pick up within reach.", DIM),
         }
     }
 
     fn throw_held(&mut self, force: f32) {
+        if let Some(c) = self.sim.carried_of(ActorId::Player) {
+            let name = self.sim.actor_name(c);
+            self.say(None, &format!("You won't throw {name}. (g sets them down)"), DIM);
+            return;
+        }
         if self.sim.player.held.is_none() {
             self.say(None, "You aren't holding anything to throw.", DIM);
             return;
@@ -681,6 +734,20 @@ impl App {
     }
 
     /// The nearest character whose name starts with `who`, or the one pointed at.
+    /// Something to ride or drive: a being, or a vehicle (pointed at, or by name).
+    fn ride_target(&mut self, what: &str) -> Option<Target> {
+        if let Some(t) = self.person(what) {
+            return Some(t);
+        }
+        let t = if what.trim().is_empty() {
+            self.pointed_thing()
+        } else {
+            let p = self.sim.player.pos;
+            self.sim.find_named(what, p, ActorId::Player)
+        }?;
+        self.sim.target_drive(&t).is_some().then_some(t)
+    }
+
     fn person(&mut self, who: &str) -> Option<Target> {
         if who.trim().is_empty() {
             // The crosshair wins: on a thing, nobody nearby is meant.
@@ -717,10 +784,10 @@ impl App {
                     "/ <anything> — do or make anything, at what the middle of the view points at:",
                     "  /a lighthouse on that hill · /punch a hole here · /add the stick to this wall (stick in hand) · /rub the stone on the lantern",
                     "/undo — undo the last thing you created   /history — list world versions",
-                    "e use (opens doors; swings, chops or digs with a held tool) · g pick up / put down · f throw · y/n answer",
+                    "e use (opens doors; swings, chops or digs with a held tool; pets, rides, greets or feeds who is in front; gets into a cart or car) · g pick up / put down (small animals too, if they let you) · f throw · y/n answer",
                     "/wave /bow /nod /cheer /dance /sit /hug NAME /kiss NAME /handshake NAME /highfive NAME · /gesture ANY [NAME]",
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
-                    "/ride NAME · /dismount · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
+                    "/ride NAME · /drive (the vehicle in view) · /dismount · /pet NAME · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
                     "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings (q there quits)",
                     "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
@@ -751,12 +818,17 @@ impl App {
                 self.player_act(Action::Gesture { kind: kind.to_string(), to });
             }
             "drop" if rest.is_empty() => self.player_act(Action::Drop),
-            "ride" | "mount" if self.person(rest).is_some() => {
-                if let Some(t) = self.person(rest) {
+            "ride" | "mount" | "drive" | "board" if self.ride_target(rest).is_some() => {
+                if let Some(t) = self.ride_target(rest) {
                     self.player_act(Action::Ride { target: t });
                 }
             }
-            "dismount" | "getdown" if rest.is_empty() => self.player_act(Action::Dismount),
+            "pet" | "stroke" | "pat" if self.person(rest).is_some() => {
+                if let Some(t) = self.person(rest) {
+                    self.player_act(Action::Pet { target: t });
+                }
+            }
+            "dismount" | "getdown" | "getout" | "exit" if rest.is_empty() => self.player_act(Action::Dismount),
             "wear" | "puton" if rest.is_empty() && self.sim.player.held.is_some() => self.player_act(Action::Wear { target: None, on: None }),
             "takeoff" if rest.is_empty() => self.player_act(Action::TakeOff { target: None, from: None }),
             "inspect" if rest.is_empty() => {
@@ -961,7 +1033,10 @@ impl App {
             let turn = self.held('>') as i32 - self.held('<') as i32;
             let strafe = self.held('d') as i32 - self.held('a') as i32;
             let look = self.held('^') as i32 - self.held('v') as i32;
-            self.sim.player.yaw += turn as f32 * TURN_SPEED * dt;
+            let aboard = self.sim.player.aboard.is_some() && !self.noclip;
+            if !aboard {
+                self.sim.player.yaw += turn as f32 * TURN_SPEED * dt;
+            }
             if look != 0 {
                 self.pitch = (self.pitch + look as f32 * LOOK_SPEED * dt).clamp(PITCH_MIN, PITCH_MAX);
                 self.dirty = true;
@@ -973,7 +1048,15 @@ impl App {
             if dir.length() > 1.0 {
                 dir = dir.normalize();
             }
-            if self.sim.player.riding.is_some() && !self.noclip {
+            if aboard {
+                // Driving: W/S throttle and brake, A/D and ←→ steer.
+                let steer = (strafe + turn).clamp(-1, 1) as f32;
+                // Flyers: Space up, c down; or, moving, the way you look.
+                let keys = self.held(' ') as i32 - self.held('c') as i32;
+                let climb = if keys != 0 { keys as f32 } else if fwd != 0 { (self.pitch * 2.0).clamp(-1.0, 1.0) } else { 0.0 };
+                self.sim.steer(ActorId::Player, fwd as f32, steer, climb, dt);
+                self.dirty = true;
+            } else if self.sim.player.riding.is_some() && !self.noclip {
                 // Riding: the walk keys steer the mount.
                 self.sim.drive(dir, self.pitch, dt);
                 if dir != Vec3::ZERO {
@@ -993,7 +1076,7 @@ impl App {
                 self.sim.player.task = None;
             }
         }
-        if self.noclip && self.sim.player.riding.is_none() {
+        if self.noclip && !self.sim.player.seated() {
             let p = self.pos();
             self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
         }
@@ -1001,6 +1084,8 @@ impl App {
             self.shift_run = false;
         }
         let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + self.sim.player.eye_height();
+        // In a closed cab, the view is from just over it.
+        let eye = eye + self.sim.eye_lift(Vec3::new(self.sim.player.pos.x, eye, self.sim.player.pos.z));
         // Smooth over stairs; follow a jump or a fall at once.
         let k = if self.sim.player.grounded { (dt * 10.0).min(1.0) } else { 1.0 };
         self.cam_y += (eye - self.cam_y) * k;
@@ -1277,8 +1362,30 @@ impl App {
         match self.mode {
             Mode::Walk => {
                 let near = self.pointed.as_ref().filter(|p| p.dist < 3.2 && !matches!(p.target, Target::Point(_)));
+                let me = ActorId::Player;
                 let hint = match (&self.talk_hint, near, self.sim.player.held) {
-                    (Some((id, n)), _, _) => format!("Enter: {} {n}   e wave   / do anything   F2 inspect", self.talk_verb(*id)),
+                    _ if self.sim.player.aboard.is_some() => {
+                        let name = self.sim.player.aboard.map(|v| self.sim.thing_name(v)).unwrap_or_default();
+                        let kmh = self.sim.vehicle_speed(me).unwrap_or(0.0).abs() * 3.6;
+                        format!("driving the {name}: W/S speed and brake   A/D steer   e get out   {kmh:.0} km/h")
+                    }
+                    _ if self.sim.player.riding.is_some() => {
+                        let name = self.sim.player.riding.map(|m| self.sim.actor_name(m)).unwrap_or_default();
+                        format!("riding {name}: W/A/S/D go   e get down   / do anything")
+                    }
+                    _ if self.sim.carried_of(me).is_some() => {
+                        let name = self.sim.carried_of(me).map(|c| self.sim.actor_name(c)).unwrap_or_default();
+                        format!("carrying {name}: e pet   g put down   / do anything")
+                    }
+                    (Some((id, n)), _, _) => {
+                        let e = match self.being_in_front() {
+                            Some(o) => self.sim.approach_words(me, o),
+                            None => self.sim.approach_words(me, ActorId::Npc(*id)),
+                        };
+                        let g = if self.sim.mind_of(ActorId::Npc(*id)) != crate::world::species::Mind::Sapient { "   g pick up" } else { "" };
+                        format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
+                    }
+                    (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
@@ -1764,6 +1871,36 @@ fn speaker_color(name: &str) -> [u8; 3] {
 
 const RAMP: &[u8] = b" .:-=+*#%@";
 
+/// A message about the traveler, said to them: "the traveler pets Mog" →
+/// "You pet Mog", "Mog nips the traveler's hand" → "Mog nips your hand".
+fn you(msg: &str) -> String {
+    let s = msg.replace("the traveler's", "your");
+    let s = match s.strip_prefix("the traveler ") {
+        Some(rest) => {
+            let (verb, tail) = rest.split_once(' ').unwrap_or((rest, ""));
+            let verb = match verb {
+                "is" => "are".to_string(),
+                "has" => "have".to_string(),
+                "won't" | "can't" | "doesn't" => verb.to_string(),
+                // tries → try, carries → carry; but dies, lies, ties just lose the s.
+                v if v.ends_with("ies") && v.len() > 4 => format!("{}y", &v[..v.len() - 3]),
+                v if ["shes", "ches", "xes", "sses"].iter().any(|e| v.ends_with(e)) => v[..v.len() - 2].to_string(),
+                v if v.ends_with('s') && !v.ends_with("ss") => v[..v.len() - 1].to_string(),
+                v => v.to_string(),
+            };
+            let verb = if verb == "doesn't" { "don't".to_string() } else { verb };
+            if tail.is_empty() { format!("You {verb}") } else { format!("You {verb} {tail}") }
+        }
+        None => s,
+    };
+    let s = s.replace(" the traveler", " you");
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => s,
+    }
+}
+
 /// Monochrome text with per-frame auto-contrast (no colour to carry the image).
 fn frame_to_mono(f: &Frame, ascii: bool, w: u16, vh: u16) -> String {
     let lums: Vec<f32> = f.pixels.iter().map(|p| lum(render::unpack(*p))).collect();
@@ -2047,6 +2184,45 @@ mod tests {
 
     fn log_has(app: &App, s: &str) -> bool {
         app.log.iter().any(|l| l.text.contains(s) || l.speaker.as_deref().is_some_and(|sp| format!("{sp}: {}", l.text).contains(s)))
+    }
+
+    #[test]
+    fn messages_about_the_traveler_are_said_to_them() {
+        assert_eq!(you("the traveler pets Mog"), "You pet Mog");
+        assert_eq!(you("the traveler climbs into the hand cart (W/S speed)"), "You climb into the hand cart (W/S speed)");
+        assert_eq!(you("Mog nips the traveler's hand and wriggles away"), "Mog nips your hand and wriggles away");
+        assert_eq!(you("the traveler is already riding"), "You are already riding");
+        assert_eq!(you("the traveler tries to use the juniper"), "You try to use the juniper");
+        assert_eq!(you("the traveler carries Mog"), "You carry Mog");
+        assert_eq!(you("the traveler ties the rope"), "You tie the rope");
+        assert_eq!(you("the traveler won't throw Mog"), "You won't throw Mog");
+        assert_eq!(you("Mog darts out of the traveler's reach"), "Mog darts out of your reach");
+        assert_eq!(you("too far away (3.0 m)"), "Too far away (3.0 m)");
+    }
+
+    #[test]
+    fn e_greets_the_person_in_front() {
+        let (mut app, _db) = make_app(false);
+        app.sim.player.yaw = 0.0;
+        let mut done = false;
+        drive(&mut app, 10.0, |a, _t| {
+            if let Some(n) = a.sim.cast.npcs.first_mut() {
+                n.a.task = Some(crate::sim::actor::Task::Face { target: Target::Actor(ActorId::Player), until: f64::MAX });
+                n.think_at = f64::MAX;
+                n.plan.clear();
+            }
+            if a.talk_hint.is_some() {
+                a.compose();
+                assert!(screen_text(a).contains("e nod"), "the hint says what e does:\n{}", screen_text(a));
+                a.on_key(key(KeyCode::Char('e'), KeyEventKind::Press));
+                done = true;
+                return false;
+            }
+            true
+        });
+        assert!(done, "Mara was in front");
+        assert!(log_has(&app, "You nod at Mara"), "log: {:?}", app.log.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        app.shutdown();
     }
 
     #[test]

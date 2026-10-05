@@ -191,6 +191,21 @@ pub struct Meta {
     /// into a hill. The terrain inside the box is lowered to `floor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hollow: Option<Hollow>,
+    /// It carries a rider who steers it (a cart, a car, a boat, a flying
+    /// carpet): its top speed and what it goes on. The rider sits at its
+    /// first `seat` anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive: Option<Drive>,
+}
+
+/// What a vehicle goes on.
+pub const DRIVE_ON: [&str; 3] = ["land", "water", "air"];
+
+/// How a vehicle moves: top speed (m/s) and land, water or air.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Drive {
+    pub speed: f32,
+    pub on: String,
 }
 
 /// What an anchor is for.

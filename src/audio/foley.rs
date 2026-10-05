@@ -107,9 +107,9 @@ impl Foley {
         let me = sim.player.pos;
         let mut walkers: Vec<(ActorId, Vec3, crate::world::species::Dims, bool)> = Vec::new();
         let p = &sim.player;
-        walkers.push((ActorId::Player, p.pos, p.dims, p.riding.is_none() && p.alt < 0.3));
+        walkers.push((ActorId::Player, p.pos, p.dims, !p.carried() && p.alt < 0.3));
         for n in sim.cast.npcs.iter().filter(|n| n.here() && (n.a.pos - me).length() < STEP_RANGE) {
-            let grounded = n.a.alt < 0.3 && !(n.a.dims.flies && n.a.alt > 0.0) && n.a.riding.is_none();
+            let grounded = n.a.alt < 0.3 && !(n.a.dims.flies && n.a.alt > 0.0) && !n.a.carried();
             walkers.push((ActorId::Npc(n.def.id), n.a.pos, n.a.dims, grounded));
         }
         let mut brushing = HashSet::new();
@@ -264,11 +264,9 @@ impl Foley {
             let d = (p - me).length();
             water = Some((p, ((1.0 - d / 50.0).max(0.0) * (0.4 + wet as f32 / 40.0)).min(1.0)));
         }
-        let height = me.y - WATER_LEVEL;
+        // Wind: mostly on high, open ground; faint in hollows and woods.
+        let wind = sim.exposure(me).powf(1.5);
         let growth = sim.cache.items_near(&snap, me, 22.0);
-        let solids = growth.iter().filter(|i| i.solid).count();
-        let open = 1.0 / (1.0 + solids as f32 * 0.08);
-        let wind = (0.2 + 0.45 * (height / 40.0).clamp(0.0, 1.0) + 0.35 * open).min(1.0);
         // Dread: the nearest thing that harms, while it's dark.
         let dark = crate::sim::night::is_dark(sim.t);
         let mut dread: f32 = 0.0;

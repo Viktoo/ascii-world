@@ -113,7 +113,8 @@ pub struct Thing {
 
 impl Thing {
     pub fn new(id: ThingId, ty: &TypeEntry, pos: Vec3, yaw: f32, scale: f32, params: [f32; 8], props: Props, born: f64) -> Thing {
-        let anchored = props[P_MASS] >= ANCHOR_MASS || ty.has_tag("building") || ty.has_tag("landmark") || ty.ct.meta.joint.is_some();
+        // A vehicle, however heavy, rolls.
+        let anchored = ty.ct.meta.drive.is_none() && (props[P_MASS] >= ANCHOR_MASS || ty.has_tag("building") || ty.has_tag("landmark") || ty.ct.meta.joint.is_some());
         Thing {
             id,
             type_id: ty.id,

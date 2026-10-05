@@ -107,8 +107,11 @@ pub enum Action {
         #[serde(default)]
         on: Option<Target>,
     },
-    /// Climb onto someone who can carry you (a horse, a griffin), if they agree.
+    /// Climb onto someone who can carry you (a horse, a griffin), if they
+    /// agree, or get into something you steer (a cart, a car, a boat).
     Ride { target: Target },
+    /// Stroke, scratch or pat an animal.
+    Pet { target: Target },
     /// Get down from what you ride.
     Dismount,
     /// Take a layer off yourself or someone (`from`), into your hands.
@@ -195,6 +198,7 @@ impl Action {
             Action::Give { .. } => "give",
             Action::Wear { .. } => "wear",
             Action::Ride { .. } => "ride",
+            Action::Pet { .. } => "pet",
             Action::Dismount => "dismount",
             Action::TakeOff { .. } => "take_off",
             Action::Follow { .. } => "follow",
@@ -290,7 +294,7 @@ impl Sim {
     // ------------------------------------------------------------ targets
 
     /// Ok if `who` can reach some part of it; else how far its nearest part is.
-    fn reach(&self, who: ActorId, r: &Resolved) -> Result<(), ActErr> {
+    pub(super) fn reach(&self, who: ActorId, r: &Resolved) -> Result<(), ActErr> {
         let me = self.actor(who).map(|a| a.pos).unwrap_or(r.pos);
         let p = r.nearest(me);
         if self.in_reach(who, p) {
@@ -545,6 +549,7 @@ impl Sim {
                 Ok(Outcome::ok(format!("{name} heads for {}", the(&r.name))))
             }
             Action::Hold { target } => self.hold(who, &target),
+            Action::Drop if self.carried_of(who).is_some() => self.set_down(who),
             Action::Drop => {
                 let id = me.held.ok_or(ActErr::Fail("not holding anything".into()))?;
                 let tname = self.thing_name(id);
@@ -714,9 +719,15 @@ impl Sim {
             }
             Action::Ride { target } => {
                 let r = self.resolve(&target, who).ok_or_else(|| not_found(&target))?;
-                let Target::Actor(m) = r.target else { return fail("you can only ride a living body") };
+                let Target::Actor(m) = r.target else { return self.board(who, &r) };
                 self.ride(who, m)
             }
+            Action::Pet { target } => {
+                let r = self.resolve(&target, who).ok_or_else(|| not_found(&target))?;
+                let Target::Actor(o) = r.target else { return fail(format!("{} isn't an animal", the(&r.name))) };
+                self.pet(who, o)
+            }
+            Action::Dismount if me.aboard.is_some() => self.leave_vehicle(who),
             Action::Dismount => self.dismount(who),
             Action::Wear { target, on } => {
                 let wearer = match &on {
@@ -757,6 +768,11 @@ impl Sim {
                     None => self.worn_by(wearer).last().copied().ok_or(ActErr::Fail(format!("{} isn't wearing anything to take off", self.actor_name(wearer))))?,
                 };
                 self.take_off(who, wearer, id)
+            }
+            Action::Give { to } if self.carried_of(who).is_some() => {
+                let r = self.resolve(&to, who).ok_or_else(|| not_found(&to))?;
+                let Target::Actor(other) = r.target else { return fail("give them to whom?") };
+                self.hand_over(who, other)
             }
             Action::Give { to } => {
                 let id = me.held.ok_or(ActErr::Fail("not holding anything to give".into()))?;
@@ -841,7 +857,10 @@ impl Sim {
         let name = self.actor_name(who);
         let r = self.resolve(target, who).ok_or_else(|| not_found(target))?;
         if let Target::Actor(id) = r.target {
-            return fail(format!("you can't pick up {}; try a hug", self.actor_name(id)));
+            return self.pick_up(who, id);
+        }
+        if let Some(c) = self.carried_of(who) {
+            return fail(format!("arms are full: put {} down first", self.actor_name(c)));
         }
         if let Some(h) = me.held {
             if Some(h) == self.liven_peek(&r.target) {
@@ -907,7 +926,7 @@ impl Sim {
     }
 
     /// Origin, type and scale of a placed object or live thing.
-    fn target_shape(&self, t: &Target) -> Option<(Vec3, std::sync::Arc<crate::world::TypeEntry>, f32)> {
+    pub(super) fn target_shape(&self, t: &Target) -> Option<(Vec3, std::sync::Arc<crate::world::TypeEntry>, f32)> {
         match t {
             Target::Thing(id) => {
                 let th = self.things.get(*id)?;
@@ -937,6 +956,9 @@ impl Sim {
     fn throw(&mut self, who: ActorId, at: Option<Target>, dir: Option<[f32; 3]>, force: Option<f32>) -> Result<Outcome, ActErr> {
         let me = self.actor(who).cloned().ok_or(ActErr::Fail("no such actor".into()))?;
         let name = self.actor_name(who);
+        if let Some(c) = self.carried_of(who) {
+            return fail(format!("{name} won't throw {}; put them down instead", self.actor_name(c)));
+        }
         let id = me.held.ok_or(ActErr::Fail("not holding anything to throw".into()))?;
         let t = self.things.get(id).cloned().ok_or(ActErr::Fail("it's gone".into()))?;
         if t.co_holder.is_some() || t.mass() > self.strength(who) {
@@ -1027,6 +1049,11 @@ impl Sim {
             (Some(x), None) | (None, Some(x)) if self.target_hinged(&x.target) && !(chops && rt.is_none()) => {
                 let t = x.target.clone();
                 return self.open(who, &t, None);
+            }
+            // A cart, a car, a boat: using it is getting in.
+            (Some(x), None) | (None, Some(x)) if !tool_meta && self.target_drive(&x.target).is_some() => {
+                let x = x.clone();
+                return self.board(who, &x);
             }
             _ => {}
         }

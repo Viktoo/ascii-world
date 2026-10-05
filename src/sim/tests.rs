@@ -4803,6 +4803,52 @@ fn petting_and_carrying_animals() {
 /// when it rolls), stopped by a hut it is driven at, and got out of beside
 /// it; a boat floats and keeps to the water.
 #[test]
+fn flyers_climb_and_land() {
+    let w = world("flyer", 64);
+    let carpet = add_type(&w, &fixture("vehicles/carpet.js"));
+    let a = dry_spot(&w, 14.0, 1.1);
+    let cid = place(&w, carpet, a, 0.0);
+    let mut s = session(&w, 64, None);
+    calm(&mut s);
+    let me = ActorId::Player;
+    s.sim.player.pos = ground(&w, a.x + 1.6, a.z);
+    s.sim.act(me, Action::Ride { target: Target::Instance(cid) }).unwrap();
+    let id = s.sim.player.aboard.expect("aboard");
+    let alt = |s: &Session| {
+        let th = s.sim.things.get(id).unwrap();
+        let ty = s.sim.snap.type_of(th.type_id).unwrap();
+        th.pos.y + ty.bottom * th.scale - s.sim.snap.terrain.height(th.pos.x, th.pos.z).max(WATER_LEVEL)
+    };
+    // Straight up from standing (Space).
+    for _ in 0..20 {
+        s.sim.steer(me, 0.0, 0.0, 1.0, 0.1);
+        s.step(0.1);
+    }
+    let up = alt(&s);
+    assert!(up > 3.0, "rose in place ({up:.1} m)");
+    // Let be, it hovers.
+    s.run(2.0, 0.1);
+    for _ in 0..20 {
+        s.sim.steer(me, 0.0, 0.0, 0.0, 0.1);
+        s.step(0.1);
+    }
+    assert!((alt(&s) - up).abs() < 1.0, "hovers ({:.1} vs {up:.1} m)", alt(&s));
+    assert!(s.sim.player.pos.y > s.sim.snap.terrain.height(s.sim.player.pos.x, s.sim.player.pos.z) + 2.0, "the traveler is up there with it");
+    // Flying on, climbing more.
+    for _ in 0..30 {
+        s.sim.steer(me, 1.0, 0.0, 0.5, 0.1);
+        s.step(0.1);
+    }
+    assert!(alt(&s) > up + 1.0, "climbs while flying ({:.1} m)", alt(&s));
+    // Down to land.
+    for _ in 0..200 {
+        s.sim.steer(me, 0.0, 0.0, -1.0, 0.1);
+        s.step(0.1);
+    }
+    assert!(alt(&s) < 0.3, "landed ({:.1} m)", alt(&s));
+}
+
+#[test]
 fn carts_drive_and_boats_float() {
     let w = world("vehicles", 62);
     let cart = add_type(&w, &fixture("vehicles/cart.js"));

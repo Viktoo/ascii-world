@@ -35,7 +35,7 @@ impl Sim {
     /// step down stairs, fall from ledges, land; crouch or stand up.
     pub fn step_footing(&mut self, id: ActorId, dt: f32) {
         let Some(a) = self.actor(id) else { return };
-        if a.riding.is_some() || a.alt > 0.0 {
+        if a.carried() || a.alt > 0.0 {
             return;
         }
         let (pos, mut vy, mut grounded) = (a.pos, a.vy, a.grounded);
@@ -118,7 +118,7 @@ impl Sim {
     /// Jump, if standing on something. True if it left the ground.
     pub fn jump(&mut self, id: ActorId) -> bool {
         let Some(a) = self.actor(id) else { return false };
-        if !a.grounded || a.riding.is_some() || a.alt > 0.0 || a.asleep {
+        if !a.grounded || a.carried() || a.alt > 0.0 || a.asleep {
             return false;
         }
         let h = a.dims.height * JUMP * (1.0 - 0.5 * a.crouch);

@@ -581,7 +581,7 @@ impl Mixer {
                 b.wind[1].set(sr, f * 1.07, 0.9);
             }
             if b.wind_lvl > 0.001 {
-                let w = b.wind_lvl * b.gust * 0.07;
+                let w = b.wind_lvl * b.gust * 0.05;
                 self.buf_l[k] += b.wind[0].bp(self.rng.bi()) * w;
                 self.buf_r[k] += b.wind[1].bp(self.rng.bi()) * w;
             }

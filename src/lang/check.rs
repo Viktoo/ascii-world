@@ -203,6 +203,7 @@ impl<'s> Cx<'s> {
         let mut joint = None;
         let mut tool = None;
         let mut hollow = None;
+        let mut drive = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -270,6 +271,10 @@ impl<'s> Cx<'s> {
                 "tool" => match &p.value {
                     Expression::ObjectExpression(to) => tool = self.meta_tool(to),
                     _ => self.err(p.span, "meta.tool must be an object { grip, tip, motions }"),
+                },
+                "drive" => match &p.value {
+                    Expression::ObjectExpression(d) => drive = self.meta_drive(d),
+                    _ => self.err(p.span, "meta.drive must be an object { speed, on }"),
                 },
                 "hollow" => match literal_nums(&p.value) {
                     Some(v) if v.len() == 3 && v.iter().all(|x| x.is_finite()) && v[0] > 0.0 && v[1] > 0.0 && v[0] <= 20.0 && v[1] <= 20.0 && v[2] <= 0.0 && v[2] >= -12.0 => {
@@ -347,7 +352,7 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.tool.grip and tip must lie inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow })
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, drive })
     }
 
     /// A key of a small meta object.
@@ -513,6 +518,34 @@ impl<'s> Cx<'s> {
             (Some(grip), Some(tip)) if !motions.is_empty() => Some(Tool { grip, tip, motions }),
             _ => {
                 self.err(o.span, format!("meta.tool needs grip, tip and at least one motion ({})", MOTIONS.join(", ")));
+                None
+            }
+        }
+    }
+
+    /// `meta.drive`: { speed, on }
+    fn meta_drive(&mut self, o: &js::ObjectExpression) -> Option<Drive> {
+        let mut speed = None;
+        let mut on = "land".to_string();
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let Some(key) = self.obj_key(p, "meta.drive") else { continue };
+            match key.as_str() {
+                "speed" => match literal_num(&p.value) {
+                    Some(v) if v.is_finite() && v > 0.0 && v <= 80.0 => speed = Some(v),
+                    _ => self.err(p.span, "meta.drive.speed is its top speed in m/s, in (0, 80]"),
+                },
+                "on" => match &p.value {
+                    Expression::StringLiteral(s) if DRIVE_ON.contains(&s.value.as_str()) => on = s.value.to_string(),
+                    _ => self.err(p.span, format!("meta.drive.on is one of {}", DRIVE_ON.join(", "))),
+                },
+                _ => self.err(p.span, format!("unknown meta.drive key '{key}' (speed, on)")),
+            }
+        }
+        match speed {
+            Some(speed) => Some(Drive { speed, on }),
+            None => {
+                self.err(o.span, "meta.drive needs a speed (m/s)");
                 None
             }
         }

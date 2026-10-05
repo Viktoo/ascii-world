@@ -13,9 +13,11 @@ pub mod behavior;
 pub mod beliefs;
 pub mod body;
 pub mod beings;
+pub mod carry;
 pub mod catchup;
 pub mod config;
 pub mod env;
+pub mod exposure;
 pub mod footing;
 pub mod goals;
 pub mod headless;
@@ -41,6 +43,7 @@ pub mod social;
 pub mod surprise;
 pub mod things;
 pub mod tool;
+pub mod vehicle;
 
 use crate::db::Db;
 use crate::render::sky;
@@ -368,6 +371,8 @@ pub struct Sim {
     pub dug_dirty: bool,
     /// The enterable shapes (see `rooms`).
     pub rooms: Vec<rooms::Room>,
+    /// How fast each vehicle in use is going (m/s, forward; see `vehicle`).
+    pub drives: std::collections::BTreeMap<things::ThingId, f32>,
 }
 
 impl Sim {
@@ -420,6 +425,7 @@ impl Sim {
             sounds: Vec::new(),
             bumped: HashMap::new(),
             frame_dt: 1.0 / 60.0,
+            drives: Default::default(),
             dug_dirty: false,
             rooms: rooms::rooms_of(&snap),
         };
@@ -679,7 +685,7 @@ impl Sim {
         let mut bodies: Vec<(Vec3, f32)> = Vec::new();
         let others = std::iter::once((ActorId::Player, &self.player)).chain(self.cast.npcs.iter().filter(|n| n.here()).map(|n| (ActorId::Npc(n.def.id), &n.a)));
         for (o, a) in others {
-            if o != id && Some(o) != mine && a.riding != Some(id) && a.alt < 1.0 && (a.pos - from).length() < 4.0 + a.dims.radius {
+            if o != id && Some(o) != mine && a.riding != Some(id) && a.carried_by.is_none() && a.aboard.is_none() && a.alt < 1.0 && (a.pos - from).length() < 4.0 + a.dims.radius {
                 bodies.push((a.pos, footing::walk_radius(o, a)));
             }
         }

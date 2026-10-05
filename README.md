@@ -68,7 +68,7 @@ Shortcuts, taken only in exactly this form: `/wave`, `/bow`, `/nod`, `/cheer`, `
 `/sit`, `/hug NAME`, `/kiss NAME`, `/handshake NAME`, `/highfive NAME`, `/give NAME`,
 `/say TEXT`, `/propose NAME catch|carry|dance|walk|…`, `/drop`, `/gesture ANY [NAME]`,
 `/ride NAME`, `/dismount`, `/wear` (what you hold), `/takeoff`. Riding, the walk keys
-steer the mount; on a flyer, look up or down to climb or dive.
+steer the mount; on a flyer, Space goes up and c down (or look up or down while moving).
 Contact gestures need the other person's consent: characters decide by how they feel
 about you. A gesture nobody knows yet (`/gesture salute`) is written once by the LLM as
 key poses, kept with the world, and anyone can do it after.
@@ -210,9 +210,8 @@ universe's look (palette, biomes, base types) from the first call at `pocket new
 That call also splits the prompt into the whole **land** and where the traveler
 **starts**: every region is planned from the land, and only the first one from the start,
 so a one-village prompt doesn't repeat in every region. Random prompts
-(`src/random_world.rs`) put together one reviewed part from each list in
-`src/builtin/prompts.json` (a land, sometimes its peoples and a force, a mood, a start);
-`pocket prompts --sample 50` prints some to review.
+(`src/random_world.rs`) are one plain, real place or era from `src/builtin/places.txt`
+(no fantasy: anything strange comes from play); `pocket prompts --sample 50` prints some.
 
 **Object types** (`src/lang/`). The model writes a small module in a strict JS subset:
 
