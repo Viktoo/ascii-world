@@ -86,6 +86,56 @@ fn cuts_agree_on_gpu_and_cpu() {
     assert!(worst <= crate::model::PARITY_TOL, "GPU/CPU cut mismatch {worst:e}");
 }
 
+/// A tilted, turned, scaled shape is the same shape on the GPU and the CPU,
+/// and so is ground taken away by a hollow.
+#[test]
+fn tilt_and_hollows_agree_on_gpu_and_cpu() {
+    let Ok(gpu) = Gpu::new() else { return };
+    let types = all_types();
+    let refs: Vec<(u32, &CompiledType)> = types.iter().map(|(i, t)| (*i, t)).collect();
+    let pipe = gpu.build_pipeline(&shader::assemble(&refs), 3).unwrap();
+    let terrain = crate::terrain::Terrain::new(11, default_biomes());
+    let (tid, ct) = (100, &types.iter().find(|(i, _)| *i == 100).unwrap().1);
+    let mut inst = GpuInst { pos_scale: [4.0, 2.0, -3.0, 1.3], rot: [0.7f32.cos(), 0.7f32.sin(), 10.0, 1.0], k0: [0.37, 1.3, 0.5, 0.5], k1: [0.5; 4], info: [tid, 1.5f32.to_bits(), 0, 0], ..Default::default() };
+    inst.set_tilt(glam::Quat::from_rotation_x(0.9) * glam::Quat::from_rotation_z(-0.5));
+    let pts: Vec<[f32; 4]> = crate::lang::probe::sample_points(ct.meta.bounds).iter().map(|p| {
+        let w = inst.from_local(glam::Vec3::from_array(*p));
+        [w.x, w.y, w.z, 0.0]
+    }).collect();
+    let out = gpu.probe(&pipe, &probe_globals(&terrain), 3, tid, &inst, &pts).unwrap();
+    let mut worst = 0.0f32;
+    for (p, g) in pts.iter().zip(&out) {
+        let c = inst.sdf(ct, glam::Vec3::new(p[0], p[1], p[2]));
+        worst = worst.max((g[0] - c).abs() / c.abs().max(1.0));
+    }
+    assert!(worst <= crate::model::PARITY_TOL, "GPU/CPU tilted sdf mismatch {worst:e}");
+    let c = inst.center();
+    assert!((glam::Vec3::new(out[0][1], out[0][2], out[0][3]) - c).length() < 1e-3, "the middle agrees");
+    // A box hollow and a round pit near the origin.
+    {
+        let mut cv = terrain.carve.write();
+        let h = terrain.natural_height(3.0, 2.0);
+        cv.fixed.push(crate::terrain::Hollow { c: [3.0, 2.0], rot: [0.8f32.cos(), 0.8f32.sin()], half: [2.0, 1.2], floor: h - 2.0, round: false });
+        cv.dug.push(crate::terrain::Hollow { c: [-4.0, 1.0], rot: [1.0, 0.0], half: [0.6, 0.6], floor: terrain.natural_height(-4.0, 1.0) - 0.7, round: true });
+    }
+    let mut pts = Vec::new();
+    for i in 0..400 {
+        pts.push([-7.0 + (i % 20) as f32 * 0.7, 0.0, -5.0 + (i / 20) as f32 * 0.6, 0.0]);
+    }
+    let out = gpu.probe(&pipe, &probe_globals(&terrain), 1, 0, &GpuInst::default(), &pts).unwrap();
+    let mut worst = 0.0f32;
+    let mut dug = 0;
+    for (p, g) in pts.iter().zip(&out) {
+        let c = terrain.height(p[0], p[2]);
+        if c < terrain.natural_height(p[0], p[2]) - 0.1 {
+            dug += 1;
+        }
+        worst = worst.max((g[0] - c).abs());
+    }
+    assert!(dug > 10, "the hollows take ground away ({dug} points)");
+    assert!(worst <= 1e-3, "terrain with hollows: worst abs error {worst}");
+}
+
 #[test]
 fn renders_a_frame_quickly() {
     let Ok(gpu) = Gpu::new() else { return };

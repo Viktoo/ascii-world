@@ -74,8 +74,7 @@ impl Sim {
         let lp = to_local(&s, at);
         let ln = {
             let n = normal(&s, at);
-            let (c, sn) = (s.inst.rot[0], s.inst.rot[1]);
-            Vec3::new(c * n.x - sn * n.z, n.y, sn * n.x + c * n.z)
+            (Vec3::from(s.inst.to_local(s.inst.pos() + n)) - Vec3::from(s.inst.to_local(s.inst.pos()))).normalize_or_zero()
         };
         let ty = &s.ty;
         let h = (ty.top - ty.bottom).max(1e-3);

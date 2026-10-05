@@ -24,11 +24,15 @@ struct Globals {
   biomes: array<vec4f, 18>, // per biome: (cx, cy, base, amp), (rough, g1), (g2, -)
   lights: array<vec4f, 8>,     // point lights: position, intensity
   light_cols: array<vec4f, 8>, // colour, reach (m)
+  extra: vec4u,       // hollows, roads, -, -
+  hollows: array<vec4f, 16>,   // per hollow: (cx, cz, cos, sin), (hx, hz, floor, round)
+  roads: array<vec4f, 32>,     // per road: (ax, az, bx, bz), (half width, r, g, b)
 }
 
 struct Inst {
   pos_scale: vec4f,   // world position, scale
   rot: vec4f,         // cos, sin, bounding radius, fade 0..1
+  tilt: vec4f,        // xyz of a unit quaternion (w >= 0 implied) applied after the yaw; 0 = upright
   k0: vec4f,          // seed, scale, a, b
   k1: vec4f,          // c, d, e, f
   s0: vec4f,          // live state s0..s3
@@ -161,8 +165,39 @@ fn terrain_height_w(x: f32, z: f32, wt: Weights) -> f32 {
   return base + amp * nlerp(n, r * 2.0 - 0.6, rough);
 }
 
+const HOLLOW_EDGE: f32 = 0.35;
+
+// Ground taken away (cellars, houses set into hills, dug pits): the height
+// with the hollows taken out (x) and how far into one the point is (y).
+// Twin of Carve::apply in terrain.rs.
+fn carve(x: f32, z: f32, h: f32) -> vec2f {
+  var out = h;
+  var wmax = 0.0;
+  let n = min(G.extra.x, 8u);
+  for (var i = 0u; i < n; i = i + 1u) {
+    let a = G.hollows[i * 2u];
+    let b = G.hollows[i * 2u + 1u];
+    let dx = x - a.x; let dz = z - a.y;
+    var e: f32;
+    if (b.w > 0.5) {
+      e = sqrt(dx * dx + dz * dz) - b.x;
+    } else {
+      let lx = a.z * dx - a.w * dz;
+      let lz = a.w * dx + a.z * dz;
+      e = max(abs(lx) - b.x, abs(lz) - b.y);
+    }
+    if (e >= HOLLOW_EDGE) { continue; }
+    let w = sstep(HOLLOW_EDGE, 0.0, e);
+    if (h > b.z) { out = min(out, h - w * (h - b.z)); }
+    wmax = max(wmax, w);
+  }
+  return vec2f(out, wmax);
+}
+
 fn terrain_height(x: f32, z: f32) -> f32 {
-  return terrain_height_w(x, z, terrain_weights(x, z));
+  let h = terrain_height_w(x, z, terrain_weights(x, z));
+  if (G.extra.x == 0u) { return h; }
+  return carve(x, z, h).x;
 }
 
 // Rendering-only level of detail: beyond ~60 m the two finest octaves fade
@@ -185,6 +220,12 @@ fn hmap_height(x: f32, z: f32, ok: ptr<function, bool>) -> f32 {
 }
 
 fn terrain_height_lod(x: f32, z: f32, t: f32) -> f32 {
+  let h = terrain_height_lod_raw(x, z, t);
+  if (G.extra.x == 0u) { return h; }
+  return carve(x, z, h).x;
+}
+
+fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   if (t > 12.0) {
     var ok = false;
     let h = hmap_height(x, z, &ok);
@@ -247,5 +288,21 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
   let beach = sstep(G.water.w + 1.4, G.water.w + 0.3, h);
   c = mix(c, G.sand.xyz, beach);
   let snowy = sstep(46.0, 56.0, h + v * 6.0) * sstep(0.6, 0.8, ny);
-  return mix(c, G.snow.xyz, snowy);
+  c = mix(c, G.snow.xyz, snowy);
+  let nr = min(G.extra.y, 16u);
+  for (var i = 0u; i < nr; i = i + 1u) {
+    let a = G.roads[i * 2u];
+    let b = G.roads[i * 2u + 1u];
+    let ab = a.zw - a.xy;
+    let ap = vec2f(x, z) - a.xy;
+    let tt = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    let d = length(ap - ab * tt);
+    let k = sstep(b.x + 0.4, b.x - 0.2, d);
+    if (k > 0.0) { c = mix(c, b.yzw * (0.9 + 0.2 * v), k); }
+  }
+  if (G.extra.x > 0u) {
+    let dug = carve(x, z, h).y;
+    c = mix(c, vec3f(0.29, 0.22, 0.16) * (0.8 + 0.3 * v), dug * 0.85);
+  }
+  return c;
 }

@@ -230,6 +230,38 @@ pub fn probe_with(t: &CompiledType, k: &[f32; 16]) -> Result<ProbeReport, Vec<Di
         }
     }
 
+    // Doorways must be open, with room behind them: a body walks through.
+    for a in t.meta.anchors.iter().filter(|a| a.kind == "door") {
+        let [w, h] = a.size.unwrap_or([1.0, 2.0]);
+        let out = a.out();
+        let right = [out[2], 0.0, -out[0]];
+        let mut blocked = None;
+        'scan: for i in 0..5 {
+            for j in 1..6 {
+                for dd in [-0.6f32, -0.3, 0.0, 0.3] {
+                    let u = (i as f32 / 4.0 - 0.5) * w * 0.6;
+                    let y = a.at[1] + 0.15 + (j as f32 / 6.0) * (h * 0.85 - 0.15);
+                    let p = [a.at[0] + right[0] * u + out[0] * dd, y, a.at[2] + right[2] * u + out[2] * dd];
+                    if t.sdf(p, k) < 0.02 {
+                        blocked = Some(p);
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        if let Some(p) = blocked {
+            return Err(vec![Diag::new(
+                Stage::Probe,
+                0,
+                format!("the doorway (door anchor at {}, {w:.2} × {h:.2} m, facing {:.0}°) is blocked at {}: cut the opening right through the wall (subtract a box of about that size, deeper than the wall), or move the anchor to where the opening is", fmt_p(a.at), a.face, fmt_p(p)),
+            )]);
+        }
+        let inn = [a.at[0] - out[0], a.at[1] + h * 0.5, a.at[2] - out[2]];
+        if t.sdf(inn, k) < 0.05 {
+            return Err(vec![Diag::new(Stage::Probe, 0, format!("behind the doorway at {} there is no room (solid at {}): hollow out the inside, or make face point out of the building (0 = +z)", fmt_p(a.at), fmt_p(inn)))]);
+        }
+    }
+
     // Lowest solid point: refine downward from the lowest interior sample.
     let mut bottom = interior.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
     if let Some(lp) = interior.iter().find(|p| p[1] == bottom).copied() {

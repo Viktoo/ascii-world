@@ -646,7 +646,9 @@ impl Sim {
                             return;
                         }
                         // In the air, or lying somewhere: whoever is nearest fetches it.
-                        if b.asleep && t > j.next - 3.5 {
+                        // At rest, or drifting still on water.
+                        let settled = b.asleep || b.vel.length() < 0.3;
+                        if settled && t > j.next - 3.5 {
                             let da = (pa - b.pos).length();
                             let db = (pb - b.pos).length();
                             let fetch = if j.b == ActorId::Player || (da <= db && j.a != ActorId::Player) { j.a } else { j.b };

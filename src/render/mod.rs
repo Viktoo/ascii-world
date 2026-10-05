@@ -8,7 +8,7 @@ pub mod sky;
 
 use crate::terrain::{MAX_BIOMES, Palette, Terrain, rgbv};
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use std::sync::Arc;
 
 pub const VIEW_DIST: f32 = 170.0;
@@ -41,9 +41,17 @@ pub struct Globals {
     pub lights: [[f32; 4]; MAX_LIGHTS],
     /// Point lights: colour, reach in metres.
     pub light_cols: [[f32; 4]; MAX_LIGHTS],
+    /// Hollows in use, roads in use, -, -.
+    pub extra: [u32; 4],
+    /// Ground taken away, two per hollow: (centre x, z, cos, sin), (half x, z, floor, round).
+    pub hollows: [[f32; 4]; MAX_HOLLOWS * 2],
+    /// Roads, two per stretch: (a.x, a.z, b.x, b.z), (half width, r, g, b).
+    pub roads: [[f32; 4]; MAX_ROADS * 2],
 }
 
 pub const MAX_LIGHTS: usize = 8;
+pub const MAX_HOLLOWS: usize = 8;
+pub const MAX_ROADS: usize = 16;
 
 /// A light-emitting thing (lantern, fire) near the camera.
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +71,10 @@ pub const FLAG_SHADOWS: u32 = 2;
 pub struct GpuInst {
     pub pos_scale: [f32; 4],
     pub rot: [f32; 4],
+    /// Tilt after the yaw: the x, y, z of a unit quaternion whose w is taken
+    /// to be ≥ 0 (all zero: upright). Doors swing on it, tools swing with it,
+    /// a log lies on its side.
+    pub tilt: [f32; 4],
     /// Static parameters k.seed, k.scale, k.a … k.f.
     pub k0: [f32; 4],
     pub k1: [f32; 4],
@@ -135,20 +147,57 @@ impl GpuInst {
     }
     /// Bounding sphere centre (the type's sphere is offset vertically from its origin).
     pub fn center(&self) -> Vec3 {
-        self.pos() + Vec3::Y * (f32::from_bits(self.info[1]) * self.pos_scale[3])
+        let off = Vec3::Y * (f32::from_bits(self.info[1]) * self.pos_scale[3]);
+        match self.tilt_q() {
+            Some(q) => self.pos() + self.yaw_out(q * off),
+            None => self.pos() + off,
+        }
+    }
+    /// The tilt as a rotation, if there is one.
+    pub fn tilt_q(&self) -> Option<Quat> {
+        let v = Vec3::new(self.tilt[0], self.tilt[1], self.tilt[2]);
+        if v == Vec3::ZERO {
+            return None;
+        }
+        let w = (1.0 - v.length_squared()).max(0.0).sqrt();
+        Some(Quat::from_xyzw(v.x, v.y, v.z, w))
+    }
+    pub fn set_tilt(&mut self, q: Quat) {
+        let q = q.normalize();
+        let q = if q.w < 0.0 { -q } else { q };
+        self.tilt = if q.xyz().length_squared() < 1e-10 { [0.0; 4] } else { [q.x, q.y, q.z, 0.0] };
+    }
+    /// The yaw turn of a local offset (no tilt, no scale).
+    fn yaw_out(&self, l: Vec3) -> Vec3 {
+        let (c, s) = (self.rot[0], self.rot[1]);
+        Vec3::new(c * l.x + s * l.z, l.y, -s * l.x + c * l.z)
     }
     /// World → local transform; twin of `to_local` in scene.wgsl.
     pub fn to_local(&self, p: Vec3) -> [f32; 3] {
         let d = p - self.pos();
         let (c, s) = (self.rot[0], self.rot[1]);
         let sc = self.pos_scale[3];
-        [(c * d.x - s * d.z) / sc, d.y / sc, (s * d.x + c * d.z) / sc]
+        let mut l = Vec3::new(c * d.x - s * d.z, d.y, s * d.x + c * d.z);
+        if let Some(q) = self.tilt_q() {
+            l = q.inverse() * l;
+        }
+        (l / sc).to_array()
     }
     /// Local → world; inverse of `to_local`.
     pub fn from_local(&self, l: Vec3) -> Vec3 {
-        let (c, s) = (self.rot[0], self.rot[1]);
-        let l = l * self.pos_scale[3];
-        self.pos() + Vec3::new(c * l.x + s * l.z, l.y, -s * l.x + c * l.z)
+        let mut l = l * self.pos_scale[3];
+        if let Some(q) = self.tilt_q() {
+            l = q * l;
+        }
+        self.pos() + self.yaw_out(l)
+    }
+    /// A local direction in the world (no scale).
+    pub fn dir_out(&self, l: Vec3) -> Vec3 {
+        let l = match self.tilt_q() {
+            Some(q) => q * l,
+            None => l,
+        };
+        self.yaw_out(l)
     }
 }
 
@@ -286,6 +335,19 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         flags |= v.parse::<u32>().unwrap_or(0);
     }
     let g = grid.cloned().unwrap_or_default();
+    let cp = sp.camera.pos;
+    let (hollows, carve_version) = t.hollows_near(cp.x, cp.z, MAX_HOLLOWS);
+    let mut hollow_buf = [[0.0f32; 4]; MAX_HOLLOWS * 2];
+    for (i, h) in hollows.iter().enumerate() {
+        hollow_buf[i * 2] = [h.c[0], h.c[1], h.rot[0], h.rot[1]];
+        hollow_buf[i * 2 + 1] = [h.half[0], h.half[1], h.floor, if h.round { 1.0 } else { 0.0 }];
+    }
+    let roads = t.roads_near(cp.x, cp.z, VIEW_DIST * 0.6, MAX_ROADS);
+    let mut road_buf = [[0.0f32; 4]; MAX_ROADS * 2];
+    for (i, r) in roads.iter().enumerate() {
+        road_buf[i * 2] = [r.a[0], r.a[1], r.b[0], r.b[1]];
+        road_buf[i * 2 + 1] = [r.half, r.color[0], r.color[1], r.color[2]];
+    }
     let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
     let mut light_cols = [[0.0f32; 4]; MAX_LIGHTS];
     let nl = sp.lights.len().min(MAX_LIGHTS);
@@ -309,7 +371,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         toff0: [t.off[0], t.off[1], t.off[2], t.off[3]],
         toff1: [t.off[4], t.off[5], 0.0, 0.0],
         dims: [sp.width, sp.height, n_inst as u32, flags],
-        seed: [t.seed, t.biomes.len().min(MAX_BIOMES) as u32, sp.frame, terrain_epoch(t)],
+        seed: [t.seed, t.biomes.len().min(MAX_BIOMES) as u32, sp.frame, terrain_epoch(t) ^ carve_version.wrapping_mul(0x9E37_79B9)],
         grid0: [g.origin[0], g.origin[1], g.cell.max(1.0), 0.0],
         grid1: [g.w, g.h, nl as u32, 0],
         probe: [0; 4],
@@ -317,6 +379,9 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         biomes,
         lights,
         light_cols,
+        extra: [hollows.len() as u32, roads.len() as u32, 0, 0],
+        hollows: hollow_buf,
+        roads: road_buf,
     }
 }
 

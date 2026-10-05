@@ -16,11 +16,13 @@ pub mod beings;
 pub mod catchup;
 pub mod config;
 pub mod env;
+pub mod footing;
 pub mod goals;
 pub mod headless;
 pub mod incident;
 pub mod inspect;
 pub mod interp;
+pub mod joint;
 pub mod life;
 pub mod motion;
 pub mod needs;
@@ -31,12 +33,14 @@ pub mod physics;
 pub mod pick;
 pub mod props;
 pub mod render;
+pub mod rooms;
 pub mod rules;
 pub mod scorer;
 pub mod shape;
 pub mod social;
 pub mod surprise;
 pub mod things;
+pub mod tool;
 
 use crate::db::Db;
 use crate::render::sky;
@@ -360,6 +364,10 @@ pub struct Sim {
     bumped: HashMap<ActorId, f64>,
     /// The last step's length (s): how fast a walk's delta was.
     frame_dt: f32,
+    /// Pits were dug since the last save.
+    pub dug_dirty: bool,
+    /// The enterable shapes (see `rooms`).
+    pub rooms: Vec<rooms::Room>,
 }
 
 impl Sim {
@@ -412,6 +420,8 @@ impl Sim {
             sounds: Vec::new(),
             bumped: HashMap::new(),
             frame_dt: 1.0 / 60.0,
+            dug_dirty: false,
+            rooms: rooms::rooms_of(&snap),
         };
         sim.player.dims = traveler_dims(&snap);
         sim.load_universe_rules();
@@ -664,26 +674,26 @@ impl Sim {
     pub fn walk(&mut self, id: ActorId, delta: Vec3) {
         let Some(from) = self.actor(id).map(|a| a.pos) else { return };
         let own = self.actor(id).map(|a| a.dims.radius).unwrap_or(0.35);
-        let solids = self.solids_near(from, 4.0 + own);
+        let solids = self.solids_near(from, 4.0 + own + self.actor(id).map(|a| a.dims.height).unwrap_or(1.75));
         let mine = self.actor(id).and_then(|a| a.riding);
-        let bodies: Vec<Vec3> = self
+        let bodies: Vec<(Vec3, f32)> = self
             .actor_ids()
             .into_iter()
             .filter(|o| *o != id && Some(*o) != mine)
-            .filter_map(|o| self.actor(o).filter(|a| a.riding != Some(id) && a.alt < 1.0).map(|a| a.pos))
-            .filter(|p| (*p - from).length() < 4.0)
+            .filter(|o| self.actor(*o).is_some_and(|a| a.riding != Some(id) && a.alt < 1.0 && (a.pos - from).length() < 4.0 + a.dims.radius))
+            .map(|o| (self.actor(o).map(|a| a.pos).unwrap_or_default(), self.capsule(o).radius))
             .collect();
         let obs = Obstacles { solids: &solids, bodies: &bodies };
-        let r = match id {
-            ActorId::Player => crate::world::collide::PLAYER_RADIUS,
-            // People keep the walking radius they always had; other bodies their own.
-            ActorId::Npc(_) if self.actor(id).is_some_and(|a| a.dims.arms) => crate::world::collide::NPC_RADIUS,
-            ActorId::Npc(_) => own.clamp(0.12, 4.0),
-        };
-        let to = move_body(&self.snap.terrain, &obs, from, delta, r);
+        let cap = self.capsule(id);
+        let r = cap.radius;
+        let to = move_body(&self.snap.terrain, &obs, from, delta, cap);
+        // What it stands on there, from the same look around (see `footing`).
+        let grounded = self.actor(id).is_some_and(|a| a.grounded && a.vy == 0.0);
+        let support = grounded.then(|| crate::world::collide::support_under(&self.snap.terrain, &solids, to, r, to.y + cap.step));
         if let Some(a) = self.actor_mut(id) {
             a.moved = (to - from).length();
             a.pos = to;
+            a.support = support.map(|g| (to, g));
         }
         self.bump_sound(id, from, delta, to, r, &solids);
     }
@@ -749,6 +759,7 @@ impl Sim {
             self.things.forget(id);
         }
         self.snap = snap.clone();
+        self.rooms = rooms::rooms_of(&snap);
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);
         self.fit_bodies();
@@ -772,6 +783,7 @@ impl Sim {
         if let Some(t) = self.things.get_mut(id) {
             t.holder = None;
             t.co_holder = None;
+            t.hold_tilt = None;
         }
     }
 
@@ -807,10 +819,14 @@ impl Sim {
             self.frame_dt = dt;
         }
         self.t += dt as f64;
+        let dark = sky::lighting(self.t, &self.snap.look.palette).night;
+        self.cache.overlay.lamps = dark;
         self.step_actors(dt);
         self.update_riders();
         self.step_social(dt);
         self.step_physics(dt);
+        self.step_motions(dt);
+        self.step_joints(dt);
         self.acc_behavior += dt;
         let bstep = 1.0 / self.cfg.behavior_hz;
         if self.acc_behavior >= bstep {

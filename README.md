@@ -18,6 +18,15 @@ body plus a few numbers on shared axes (size, mind, speech, diet, social, temper
 an LLM can write new ones and they behave without new code. Families have young, and a
 line that people keep feeding gets tamer until it has a name of its own.
 
+Bodies stand on what is under them: floors, stairs, roofs, rocks. Everyone walks up
+what is lower than their step, jumps, crouches under what is low, and is stopped by what
+is too small for them, so the same house is a home to a person and closed to a giant.
+Shapes say what fits where with anchors (a doorway, a shelf holding a sword, a bed,
+stairs), so buildings come with doors that open, things inside that you just pick up,
+roads between their doors and lamps along them; a cellar or a house dug into a hill
+takes the ground away under it. Tools say how they are held and worked: a sword swings,
+an axe chops (and fells a tree), a spade digs a pit. See [docs/physics.md](docs/physics.md).
+
 ```bash
 export ANTHROPIC_API_KEY=...        # or POCKET_LLM_BASE_URL for any OpenAI-compatible endpoint
 pocket new "a rainy coastal valley where the lighthouse keeper vanished"   # check or edit it, Enter to begin
@@ -41,12 +50,12 @@ cargo build --release      # → target/release/pocket
 
 | Mode | Enter with | Keys |
 |---|---|---|
-| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
+| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, `Tab` blocks/ASCII, `F1` stats, `F2` inspect, `q` quit |
 | Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`; a fire or other incident is one line, updated as it goes); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
 | Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
 | Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
 | Creations | `3` in settings (`Esc`, or `F3` then `3`) | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
-| Hands | (in walk) | `e` use (what you hold, on what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
+| Hands | (in walk) | `e` use (what you hold, on what you point at; a door opens or shuts; a held tool swings, chops, thrusts, digs or pours, by what it is and what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
 | Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |
 

@@ -6,27 +6,146 @@ use glam::{Vec2, Vec3};
 
 pub const PLAYER_RADIUS: f32 = 0.35;
 pub const NPC_RADIUS: f32 = 0.3;
+/// Growth (bushes, flowers) gives way below this height above the feet.
+pub const GROWTH_GIVES: f32 = 0.5;
 /// Water deeper than this is impassable.
 pub const MAX_WADE: f32 = 1.1;
 
 pub struct Obstacles<'a> {
     pub solids: &'a [Solid],
-    /// Other bodies (feet position) treated as vertical capsules.
-    pub bodies: &'a [Vec3],
+    /// Other bodies (feet position, radius) treated as vertical capsules.
+    pub bodies: &'a [(Vec3, f32)],
+}
+
+/// A walking body: an upright capsule.
+#[derive(Clone, Copy, Debug)]
+pub struct Capsule {
+    pub radius: f32,
+    /// How tall it stands now (less when crouching).
+    pub height: f32,
+    /// The highest step it walks up without jumping.
+    pub step: f32,
+}
+
+impl Capsule {
+    /// A body of this height and radius, standing.
+    pub fn of(height: f32, radius: f32) -> Capsule {
+        Capsule { radius, height, step: step_for(height) }
+    }
+}
+
+/// The step a body of `height` takes in its stride (stairs, kerbs, a root).
+pub fn step_for(height: f32) -> f32 {
+    (height * 0.25).clamp(0.08, 1.2)
 }
 
 impl Obstacles<'_> {
-    /// Distance from a body column at (x, z) to the nearest obstacle.
+    /// Distance from a person-sized column standing on the ground at (x, z)
+    /// to the nearest obstacle.
     pub fn dist(&self, terrain: &Terrain, x: f32, z: f32) -> f32 {
         let g = terrain.height(x, z);
+        self.dist_body(x, z, g, Capsule::of(1.75, NPC_RADIUS))
+    }
+
+    /// Distance from a body's column at (x, z), feet at `feet`, to the nearest
+    /// obstacle: solids from just above its step to the top of its head, and
+    /// other bodies at about its height.
+    pub fn dist_body(&self, x: f32, z: f32, feet: f32, b: Capsule) -> f32 {
+        let lo0 = feet + b.step + 0.05;
+        let hi = (feet + b.height - 0.05).max(lo0);
         let mut d = f32::MAX;
         for s in self.solids {
-            d = d.min(s.sdf(Vec3::new(x, g + 0.5, z))).min(s.sdf(Vec3::new(x, g + 1.4, z)));
+            let lo = if s.ty.is_growth() { lo0.max(feet + GROWTH_GIVES) } else { lo0 };
+            if lo > hi {
+                continue;
+            }
+            let n = (((hi - lo) / 0.7).ceil() as usize).clamp(1, 8);
+            for i in 0..=n {
+                let y = lo + (hi - lo) * i as f32 / n as f32;
+                d = d.min(s.sdf(Vec3::new(x, y, z)));
+            }
         }
-        for b in self.bodies {
-            d = d.min(Vec2::new(b.x - x, b.z - z).length() - NPC_RADIUS);
+        for (o, r) in self.bodies {
+            if o.y > feet + b.height || o.y + 2.2 < feet {
+                continue;
+            }
+            d = d.min(Vec2::new(o.x - x, o.z - z).length() - r);
         }
         d
+    }
+
+    /// Whether a body really stands clear at (x, z): its rim, at each height,
+    /// is outside every solid. Shapes carved by subtraction (a doorway cut
+    /// out of a wall) report distances that are too small near the cut; the
+    /// sign is still right, so the rim tells the truth `dist_body` can't.
+    pub fn clear(&self, x: f32, z: f32, feet: f32, b: Capsule) -> bool {
+        for (o, r) in self.bodies {
+            if o.y > feet + b.height || o.y + 2.2 < feet {
+                continue;
+            }
+            if Vec2::new(o.x - x, o.z - z).length() - r < b.radius {
+                return false;
+            }
+        }
+        let lo0 = feet + b.step + 0.05;
+        let hi = (feet + b.height - 0.05).max(lo0);
+        for s in self.solids {
+            let c = s.inst.center();
+            if Vec2::new(c.x - x, c.z - z).length() > s.inst.radius() + b.radius + 0.1 {
+                continue;
+            }
+            let lo = if s.ty.is_growth() { lo0.max(feet + GROWTH_GIVES) } else { lo0 };
+            if lo > hi {
+                continue;
+            }
+            let n = (((hi - lo) / 0.7).ceil() as usize).clamp(1, 8);
+            for i in 0..=n {
+                let y = lo + (hi - lo) * i as f32 / n as f32;
+                let d0 = s.sdf(Vec3::new(x, y, z));
+                if d0 < 0.0 {
+                    return false;
+                }
+                if d0 >= b.radius {
+                    continue;
+                }
+                // March out along each of eight directions to the rim: the
+                // distance is a safe step, so even a thin door is met.
+                for k in 0..8 {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                    let dir = Vec3::new(a.cos(), 0.0, a.sin());
+                    let mut t = d0;
+                    while t < b.radius {
+                        let d = s.sdf(Vec3::new(x, y, z) + dir * t);
+                        if d < 0.0 {
+                            return false;
+                        }
+                        t += d.max(0.03);
+                    }
+                    if s.sdf(Vec3::new(x, y, z) + dir * b.radius) < 0.0 {
+                        return false;
+                    }
+                }
+            }
+            // And up each line of its height, centre and rim: a beam lower
+            // than its head is met however thin.
+            for k in 0..9 {
+                let (ox, oz) = if k == 8 {
+                    (0.0, 0.0)
+                } else {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                    (a.cos() * b.radius, a.sin() * b.radius)
+                };
+                let mut y = lo;
+                while y <= hi {
+                    let d = s.sdf(Vec3::new(x + ox, y, z + oz));
+                    if d < 0.0 {
+                        return false;
+                    }
+                    y += d.max(0.03);
+                }
+            }
+        }
+        true
     }
 }
 
@@ -34,8 +153,14 @@ fn wadeable(terrain: &Terrain, x: f32, z: f32) -> bool {
     terrain.height(x, z) > WATER_LEVEL - MAX_WADE
 }
 
-/// Move a body by `delta` (XZ), sliding along surfaces. Returns the new feet position.
-pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, radius: f32) -> Vec3 {
+/// Move a body by `delta` (XZ), sliding along surfaces. Returns the new feet
+/// position (its height unchanged: footing settles it, see `sim::footing`).
+pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b: Capsule) -> Vec3 {
+    let radius = b.radius;
+    let feet = from.y;
+    let dist = |x: f32, z: f32| obs.dist_body(x, z, feet, b);
+    // Clear by the fast distance, or (near a carved opening) by the rim.
+    let ok = |x: f32, z: f32, d: f32| d >= radius || obs.clear(x, z, feet, b);
     let mut p = Vec2::new(from.x + delta.x, from.z + delta.z);
     if !wadeable(terrain, p.x, p.y) {
         // Slide along the shoreline: try each axis on its own.
@@ -50,20 +175,20 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, ra
         };
     }
     if !obs.solids.is_empty() || !obs.bodies.is_empty() {
-        let d_start = obs.dist(terrain, from.x, from.z);
-        if d_start < radius * 0.5 {
+        let d_start = dist(from.x, from.z);
+        if d_start < radius * 0.5 && !obs.clear(from.x, from.z, feet, b) {
             // Already overlapping something (an old save, or a building that
             // appeared on top of us): move freely until clear, so we can walk out.
-            return Vec3::new(p.x, terrain.height(p.x, p.y), p.y);
+            return Vec3::new(p.x, feet, p.y);
         }
         for _ in 0..5 {
-            let d = obs.dist(terrain, p.x, p.y);
-            if d >= radius {
+            let d = dist(p.x, p.y);
+            if ok(p.x, p.y, d) {
                 break;
             }
             let e = 0.04;
-            let gx = obs.dist(terrain, p.x + e, p.y) - obs.dist(terrain, p.x - e, p.y);
-            let gz = obs.dist(terrain, p.x, p.y + e) - obs.dist(terrain, p.x, p.y - e);
+            let gx = dist(p.x + e, p.y) - dist(p.x - e, p.y);
+            let gz = dist(p.x, p.y + e) - dist(p.x, p.y - e);
             let mut n = Vec2::new(gx, gz);
             if n.length_squared() < 1e-10 {
                 n = -Vec2::new(delta.x, delta.z);
@@ -75,12 +200,78 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, ra
             p += n * (radius - d + 0.005);
         }
         // Never end up deeper inside than we started (e.g. squeezed between two solids).
-        let d_end = obs.dist(terrain, p.x, p.y);
-        if d_end < radius * 0.5 && d_end < d_start {
+        // Never end up deeper inside than we started (e.g. squeezed between
+        // two solids, or against a bush and a friend at once): no jostling.
+        let d_end = dist(p.x, p.y);
+        if d_end < radius && d_end < d_start - 1e-4 && !ok(p.x, p.y, d_end) {
             p = Vec2::new(from.x, from.z);
         }
     }
-    Vec3::new(p.x, terrain.height(p.x, p.y), p.y)
+    Vec3::new(p.x, feet, p.y)
+}
+
+/// The top of the support under a column at (x, z): the ground, or the
+/// highest surface of a solid between the ground and `top` (a floor, a stair,
+/// a roof, a rock). A solid that fills the column at `top` is a wall there,
+/// not a floor.
+pub fn support(terrain: &Terrain, solids: &[Solid], x: f32, z: f32, top: f32) -> f32 {
+    let g = terrain.height(x, z);
+    let mut best = g;
+    for s in solids {
+        let c = s.inst.center();
+        let r = s.inst.radius();
+        if (c.x - x) * (c.x - x) + (c.z - z) * (c.z - z) > r * r || c.y - r > top || c.y + r < best {
+            continue;
+        }
+        if let Some(y) = column_top(s, x, z, top, best) {
+            best = best.max(y);
+        }
+    }
+    best
+}
+
+/// Marching down a solid's column from `top`, its first surface above `floor`.
+fn column_top(s: &Solid, x: f32, z: f32, top: f32, floor: f32) -> Option<f32> {
+    let mut y = top;
+    if s.sdf(Vec3::new(x, y, z)) <= 0.0 {
+        return None;
+    }
+    for _ in 0..40 {
+        let d = s.sdf(Vec3::new(x, y, z));
+        if d < 0.01 {
+            return Some(y - d.max(0.0));
+        }
+        y -= d.max(0.01);
+        if y < floor {
+            return None;
+        }
+    }
+    None
+}
+
+/// The support under a body's footprint: the ground under its centre, and
+/// solids under its centre or four points round it (it can stand on the edge
+/// of a stair).
+pub fn support_under(terrain: &Terrain, solids: &[Solid], p: Vec3, radius: f32, top: f32) -> f32 {
+    let mut best = support(terrain, solids, p.x, p.z, top);
+    if solids.is_empty() {
+        return best;
+    }
+    let r = radius * 0.6;
+    for (dx, dz) in [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)] {
+        let (x, z) = (p.x + dx, p.z + dz);
+        for s in solids {
+            let c = s.inst.center();
+            let rr = s.inst.radius();
+            if (c.x - x) * (c.x - x) + (c.z - z) * (c.z - z) > rr * rr || c.y - rr > top || c.y + rr < best {
+                continue;
+            }
+            if let Some(y) = column_top(s, x, z, top, best) {
+                best = best.max(y);
+            }
+        }
+    }
+    best
 }
 
 /// The nearest spot to `p` (spiralling out up to `max` metres) where a body of
@@ -130,13 +321,15 @@ mod tests {
         // Standing inside: walking forward must work until we are out.
         let mut p = Vec3::new(c.x + 0.5, terrain.height(c.x, c.z), c.z);
         for _ in 0..80 {
-            p = move_body(&terrain, &obs, p, Vec3::new(0.0, 0.0, 0.1), PLAYER_RADIUS);
+            p = move_body(&terrain, &obs, p, Vec3::new(0.0, 0.0, 0.1), Capsule::of(1.75, PLAYER_RADIUS));
+            p.y = terrain.height(p.x, p.z);
         }
         assert!(p.z - c.z > 3.0 + PLAYER_RADIUS, "walked out of the hut: dz = {}", p.z - c.z);
         // And back towards it is blocked again.
         let before = p;
         for _ in 0..40 {
-            p = move_body(&terrain, &obs, p, Vec3::new(0.0, 0.0, -0.1), PLAYER_RADIUS);
+            p = move_body(&terrain, &obs, p, Vec3::new(0.0, 0.0, -0.1), Capsule::of(1.75, PLAYER_RADIUS));
+            p.y = terrain.height(p.x, p.z);
         }
         assert!(p.z - c.z > 3.0, "blocked at the wall: {}", p.z - c.z);
         assert!(before.z > p.z, "walked back until the wall");
@@ -166,7 +359,8 @@ mod tests {
         let mut p = Vec3::new(base.x, terrain.height(base.x, base.z), base.z);
         // Walk straight at the wall (+z), slightly diagonally.
         for _ in 0..120 {
-            p = move_body(&terrain, &obs, p, Vec3::new(0.02, 0.0, 0.1), PLAYER_RADIUS);
+            p = move_body(&terrain, &obs, p, Vec3::new(0.02, 0.0, 0.1), Capsule::of(1.75, PLAYER_RADIUS));
+            p.y = terrain.height(p.x, p.z);
         }
         assert!(p.z - base.z < 4.5 - 0.3, "walked into the wall: z = {}", p.z - base.z);
         assert!(p.x - base.x > 2.0, "should have slid sideways along the wall: x = {}", p.x - base.x);

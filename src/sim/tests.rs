@@ -4318,3 +4318,381 @@ fn beliefs_differ_by_what_was_seen_pass_on_and_only_corruption_lies() {
     let _ = (dov, eli);
     sound(&s);
 }
+
+// ------------------------------------------------------------------ physics: bodies, insides, tools
+
+/// Walk the traveler along `dir` for `secs` (as the walk keys do), stepping the world.
+fn walk_player(s: &mut Session, dir: Vec3, secs: f32) {
+    let dt = 1.0 / 30.0;
+    let mut t = 0.0;
+    while t < secs {
+        s.sim.player.yaw = dir.x.atan2(dir.z);
+        s.sim.walk(ActorId::Player, dir * 3.0 * s.sim.gait_factor(ActorId::Player) * dt);
+        s.step(dt);
+        t += dt;
+    }
+}
+
+/// Open, gently rolling grassland: nothing in the way but what a test puts there.
+fn bare() -> crate::world::Look {
+    let mut b = crate::terrain::default_biomes()[0].clone();
+    b.name = "lawn".into();
+    b.base = 4.0;
+    b.amp = 2.0;
+    b.rough = 0.05;
+    b.scatter = [("grass".to_string(), 1.0)].into_iter().collect();
+    crate::world::Look { name: "Lawn".into(), biomes: vec![b], ..Default::default() }
+}
+
+/// A flat dry spot well away from the spawn.
+fn flat_spot(w: &W, d: f32) -> Vec3 {
+    for k in 0..200 {
+        let a = k as f32 * 0.7;
+        let p = w.spawn + Vec3::new(a.cos(), 0.0, a.sin()) * (d + k as f32 * 0.5);
+        let h = w.terrain.height(p.x, p.z);
+        if h > WATER_LEVEL + 1.0 && w.terrain.normal(p.x, p.z).y > 0.985 && w.terrain.normal(p.x + 4.0, p.z + 4.0).y > 0.98 && w.terrain.normal(p.x - 4.0, p.z - 4.0).y > 0.98 {
+            return Vec3::new(p.x, h, p.z);
+        }
+    }
+    panic!("no flat spot");
+}
+
+/// Commit placements through the world model (anchors make their children).
+fn commit_places(w: &W, places: Vec<crate::model::Placement>, region: Option<crate::model::RegionCommit>) -> crate::model::CommitOk {
+    let live = Arc::new(Mutex::new(crate::model::Live { player: w.spawn + Vec3::new(500.0, 0.0, 500.0), ..Default::default() }));
+    let mut m = crate::model::WorldModel::load(w.db.clone(), None, live).unwrap();
+    m.commit(crate::model::CommitRequest { kind: "create", summary: "test".into(), new_types: vec![], placements: places, nudge: false, region, look: None }).unwrap_or_else(|d| panic!("{}", crate::lang::format_diags(&d)))
+}
+
+fn pl(tid: u32, at: Vec3, rot: f32) -> crate::model::Placement {
+    crate::model::Placement { ty: crate::model::TypeRef::Existing(tid), x: at.x, z: at.z, y: None, rot_y: rot, scale: 1.0, params: [1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] }
+}
+
+/// A tilted instance maps local to world and back, and its middle turns with it.
+#[test]
+fn tilt_turns_shapes_and_their_middle() {
+    let mut g = crate::render::GpuInst { pos_scale: [3.0, 1.0, -2.0, 1.5], rot: [0.6f32.cos(), 0.6f32.sin(), 2.0, 1.0], info: [0, 1.0f32.to_bits(), 0, 0], ..Default::default() };
+    g.set_tilt(glam::Quat::from_rotation_x(1.2) * glam::Quat::from_rotation_z(0.4));
+    for p in [Vec3::new(0.3, 0.7, -0.2), Vec3::new(-1.0, 0.0, 2.0)] {
+        let back = Vec3::from(g.to_local(g.from_local(p)));
+        assert!((back - p).length() < 1e-4, "{p} → {back}");
+    }
+    let c = g.center();
+    assert!((c - g.from_local(Vec3::Y)).length() < 1e-4, "the middle turns with the shape");
+}
+
+/// A body walks up stairs onto a platform, can't walk onto a crate but
+/// jumps onto it, and crouches under a low lintel it can't walk under.
+#[test]
+fn bodies_climb_stairs_jump_and_crouch() {
+    let w = world_with("feet", 61, bare());
+    let stairs = add_type(&w, &fixture("physics/stairs.js"));
+    let crate_t = add_type(&w, &fixture("physics/crate.js"));
+    let arch = add_type(&w, &fixture("physics/arch.js"));
+    let a = flat_spot(&w, 30.0);
+    let b = flat_spot(&w, 70.0);
+    let c = flat_spot(&w, 110.0);
+    place(&w, stairs, a, 0.0);
+    place(&w, crate_t, b, 0.0);
+    place(&w, arch, c, 0.0);
+    let mut s = session(&w, 61, None);
+    // Stairs: from in front of the first step, walk +z up onto the platform.
+    s.sim.player.pos = a + Vec3::new(0.0, 0.0, -2.6);
+    s.step(0.1);
+    walk_player(&mut s, Vec3::Z, 1.15);
+    let up = s.sim.player.pos.y - w.terrain.height(s.sim.player.pos.x, s.sim.player.pos.z);
+    assert!(up > 0.8, "walked up the stairs onto the platform: {up:.2} m above the ground at z {:.2}", s.sim.player.pos.z - a.z);
+    // The crate is higher than a step: it stops a walk, but not a jump.
+    s.sim.player.pos = b + Vec3::new(0.0, 0.0, -1.6);
+    s.sim.player.vy = 0.0;
+    s.sim.player.grounded = true;
+    s.step(0.1);
+    walk_player(&mut s, Vec3::Z, 1.5);
+    assert!(s.sim.player.pos.z < b.z - 0.6, "the crate stops a walk: z {:.2}", s.sim.player.pos.z - b.z);
+    assert!(s.sim.jump(ActorId::Player), "a jump from the ground");
+    walk_player(&mut s, Vec3::Z, 0.4);
+    s.run(0.6, 0.05);
+    let on = s.sim.player.pos.y - b.y;
+    assert!(on > 0.55 && s.sim.player.grounded, "jumped up onto the crate: {on:.2} m up, z {:.2}", s.sim.player.pos.z - b.z);
+    // The lintel: standing, no way through; crouching, under it.
+    s.sim.player.pos = c + Vec3::new(0.0, 0.0, -2.0);
+    s.step(0.1);
+    walk_player(&mut s, Vec3::Z, 1.5);
+    assert!(s.sim.player.pos.z < c.z - 0.3, "too tall to walk under the lintel: z {:.2}", s.sim.player.pos.z - c.z);
+    s.sim.crouch(ActorId::Player, Some(true));
+    walk_player(&mut s, Vec3::Z, 3.0);
+    assert!(s.sim.player.pos.z > c.z + 0.6, "crouched under it: z {:.2}", s.sim.player.pos.z - c.z);
+    s.sim.crouch(ActorId::Player, Some(false));
+    s.run(1.0, 0.05);
+    assert!(s.sim.player.crouch < 0.05, "stood up again in the open");
+    sound(&s);
+}
+
+/// A house with a doorway gets a door; the door stops a walk until opened;
+/// what sits on its shelf is a real thing; a character goes in through the
+/// doorway (opening the door) to its bed.
+#[test]
+fn doors_open_and_people_go_inside() {
+    let w = world_with("door", 62, bare());
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    add_type(&w, &fixture("physics/sword.js"));
+    let h = flat_spot(&w, 40.0);
+    let ok = commit_places(&w, vec![pl(hut, h, 0.0)], None);
+    let names: Vec<String> = ok.snapshot.instances.iter().filter_map(|p| ok.snapshot.type_of(p.type_id)).map(|t| t.name().to_string()).collect();
+    assert!(names.contains(&"door".to_string()) && names.contains(&"test sword".to_string()), "the hut came with its door and its sword: {names:?}");
+    let sword = ok.snapshot.instances.iter().find(|p| ok.snapshot.type_of(p.type_id).is_some_and(|t| t.name() == "test sword")).unwrap().clone();
+    let floor = ok.snapshot.instances.iter().find(|p| p.type_id == hut).unwrap().pos.y;
+    assert!(sword.pos.y > floor + 0.7, "the sword lies on the shelf, not the ground: {:.2} m up", sword.pos.y - floor);
+    let cid = add_char(&w, "Ola", "calm", &[], h + Vec3::new(4.0, 0.0, 6.0));
+    let mut s = session(&w, 62, None);
+    let door = s.sim.snap.instances.iter().find(|p| s.sim.snap.type_of(p.type_id).is_some_and(|t| t.name() == "door")).unwrap().id;
+    // The shut door stops the traveler at the doorway.
+    s.sim.player.pos = Vec3::new(h.x, w.terrain.height(h.x, h.z + 6.0), h.z + 6.0);
+    s.step(0.1);
+    walk_player(&mut s, -Vec3::Z, 3.0);
+    assert!(s.sim.player.pos.z > h.z + 3.0, "the shut door stops a walk: z {:.2}", s.sim.player.pos.z - h.z);
+    let r = act_once(&mut s, ActorId::Player, Action::Open { target: Target::Instance(door), close: false }, 1.5);
+    assert!(r["ok"].as_bool() == Some(true), "opened: {r}");
+    walk_player(&mut s, -Vec3::Z, 3.0);
+    assert!(s.sim.player.pos.z < h.z + 1.5, "walked in through the open door: z {:.2}", s.sim.player.pos.z - h.z);
+    assert!(s.sim.room_at(s.sim.player.pos).is_some(), "the traveler is inside");
+    // Picking the sword off the shelf is just picking it up.
+    s.sim.player.pos = Vec3::new(sword.pos.x, s.sim.player.pos.y, sword.pos.z + 1.0);
+    let r = act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(sword.id) }, 1.0);
+    assert!(r["ok"].as_bool() == Some(true) && s.sim.player.held.is_some(), "took the sword off the shelf: {r}");
+    // Out again, the door shut behind; a character goes in to the bed.
+    s.sim.player.pos = h + Vec3::new(8.0, 0.0, 8.0);
+    let live_door = s.sim.things.by_instance.get(&door).copied().unwrap();
+    act_once(&mut s, ActorId::Npc(cid), Action::Open { target: Target::Thing(live_door), close: true }, 1.0);
+    for _ in 0..400 {
+        if s.sim.things.get(live_door).is_some_and(|t| t.shape.open < 0.01) {
+            break;
+        }
+        s.step(0.05);
+    }
+    assert!(s.sim.things.get(live_door).is_some_and(|t| t.shape.open < 0.01), "the door is shut again");
+    let bed = s.sim.rooms[0].beds[0];
+    let r = act_once(&mut s, ActorId::Npc(cid), Action::Goto { target: Target::Point(bed.to_array()), run: false }, 25.0);
+    let at = s.sim.actor(ActorId::Npc(cid)).unwrap().pos;
+    assert!(s.sim.room_at(at).is_some(), "Ola went inside, through the door: {r}, at {:?} from the hut", at - h);
+    assert!(s.sim.log.recent.iter().any(|e| e.kind == "opened" && e.actor == Some(ActorId::Npc(cid))), "Ola opened the door to go in");
+    sound(&s);
+}
+
+/// A sword swung at someone hurts them and they react; a spade dug into
+/// the ground leaves a pit a ball rolls into; an axe fells a sapling.
+#[test]
+fn tools_swing_dig_and_chop() {
+    let w = world_with("tool", 63, bare());
+    let sword = add_type(&w, &fixture("physics/sword.js"));
+    let spade = add_type(&w, &fixture("physics/spade.js"));
+    let axe = add_type(&w, &fixture("physics/axe.js"));
+    let sap = add_type(&w, &fixture("physics/sapling.js"));
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let p = flat_spot(&w, 30.0);
+    let si = place(&w, sword, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let cid = add_char(&w, "Bo", "timid", &[], p + Vec3::new(0.0, 0.0, 1.6));
+    let q = flat_spot(&w, 80.0);
+    let sp = place(&w, spade, q + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let bi = place(&w, ball, q + Vec3::new(0.0, 0.0, 2.6), 0.0);
+    let rr = flat_spot(&w, 130.0);
+    let ai = place(&w, axe, rr + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let ti = place(&w, sap, rr + Vec3::new(0.0, 0.0, 1.3), 0.0);
+    let mut s = session(&w, 63, None);
+    // The sword.
+    s.sim.player.pos = p;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(si) }, 0.5);
+    s.sim.cast.get_mut(cid).unwrap().a.pos = ground(&w, p.x, p.z + 1.6);
+    let health = |s: &Session| s.sim.cast.get(cid).unwrap().props[P_HEALTH];
+    let before = health(&s);
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Actor(ActorId::Npc(cid))), at: None }, 1.5);
+    assert!(r["ok"].as_bool() == Some(true), "swung: {r}");
+    assert!(!events(&s.sim, "struck").is_empty(), "the blow landed");
+    assert!(health(&s) < before - 0.02, "it hurt: {before:.2} → {:.2}", health(&s));
+    assert!(s.sim.social.rel(ActorId::Npc(cid), ActorId::Player).is_some_and(|r| r.trust < 0.0), "Bo trusts the traveler less");
+    // The spade, at the ground ahead, four times.
+    act_once(&mut s, ActorId::Player, Action::Drop, 0.5);
+    s.sim.player.pos = q;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(sp) }, 0.5);
+    let spot = ground(&w, q.x, q.z + 1.5);
+    for _ in 0..4 {
+        let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(spot.to_array())), at: Some(spot.to_array()) }, 1.4);
+        assert!(r["ok"].as_bool() == Some(true), "dug: {r}");
+    }
+    let dug = s.sim.snap.terrain.natural_height(spot.x, spot.z) - s.sim.snap.terrain.height(spot.x, spot.z);
+    assert!(dug > 0.5, "a pit {dug:.2} m deep");
+    let ball_id = s.sim.liven(&Target::Instance(bi)).unwrap();
+    if let Some(t) = s.sim.things.get_mut(ball_id) {
+        t.vel = Vec3::new(0.0, 0.0, -1.5);
+        t.asleep = false;
+    }
+    s.run(4.0, 0.05);
+    let bp = s.sim.things.get(ball_id).unwrap().pos;
+    assert!(bp.y < s.sim.snap.terrain.natural_height(bp.x, bp.z) - 0.1, "the ball rolled into the pit: {:?}", bp - spot);
+    // The axe, at the sapling, until it falls.
+    act_once(&mut s, ActorId::Player, Action::Drop, 0.5);
+    s.sim.player.pos = rr;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(ai) }, 0.5);
+    for _ in 0..30 {
+        if !events(&s.sim, "felled").is_empty() {
+            break;
+        }
+        act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Instance(ti)), at: None }, 1.0);
+    }
+    assert!(!events(&s.sim, "felled").is_empty(), "the sapling was chopped down");
+    let tid = s.sim.things.by_instance.get(&ti).copied().unwrap();
+    assert!(s.sim.things.get(tid).unwrap().tilt().angle_between(glam::Quat::IDENTITY) > 1.0, "it lies on its side");
+    sound(&s);
+}
+
+/// A settlement's buildings are joined by roads (scatter keeps off them) and
+/// lamps stand along them; a cellar house takes the ground away under it.
+#[test]
+fn roads_lamps_and_hollows() {
+    let w = world_with("roads", 64, bare());
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    let cellar = add_type(&w, &fixture("physics/cellar.js"));
+    let lamp = builtin_id(&w, "lamppost");
+    let h = flat_spot(&w, 60.0);
+    let places = vec![pl(hut, h, 0.0), pl(hut, h + Vec3::new(22.0, 0.0, 4.0), 0.5), pl(hut, h + Vec3::new(-6.0, 0.0, 26.0), 3.0)];
+    let r = crate::world::region_of(h.x, h.z);
+    let region = crate::model::RegionCommit {
+        r,
+        plan_json: "{}".into(),
+        info: Default::default(),
+        characters: vec![],
+        settlement: Some(crate::model::Settlement { x: h.x + 5.0, z: h.z + 8.0, road: Some((None, 1.2)), lamps: Some(crate::model::TypeRef::Existing(lamp)) }),
+    };
+    let ok = commit_places(&w, places, Some(region));
+    let roads = ok.snapshot.regions.get(&r).map(|i| i.roads.clone()).unwrap_or_default();
+    assert_eq!(roads.len(), 2, "three doors, two roads: {roads:?}");
+    let lamps = ok.snapshot.instances.iter().filter(|p| p.type_id == lamp).count();
+    assert!(lamps >= 2, "lamps along the roads: {lamps}");
+    let mid = (Vec3::new(roads[0].a[0], 0.0, roads[0].a[1]) + Vec3::new(roads[0].b[0], 0.0, roads[0].b[1])) * 0.5;
+    assert!(ok.snapshot.terrain.on_road(mid.x, mid.z, 0.0), "the road is there");
+    // The cellar.
+    let c = flat_spot(&w, 160.0);
+    let ok = commit_places(&w, vec![pl(cellar, c, 0.0)], None);
+    let t = &ok.snapshot.terrain;
+    let deep = t.natural_height(c.x, c.z) - t.height(c.x, c.z);
+    assert!(deep > 1.8, "the ground under the cellar house is taken away: {deep:.2} m");
+    assert!((t.natural_height(c.x + 8.0, c.z) - t.height(c.x + 8.0, c.z)).abs() < 1e-4, "but not beyond it");
+}
+
+/// A doorway the shape doesn't really open is sent back with why.
+#[test]
+fn a_blocked_doorway_is_refused() {
+    let src = "export const meta = { name: \"shut box\", bounds: [2, 2, 2], tags: [\"building\"], anchors: [{ kind: \"door\", at: [0, -1.5, 2], face: 0, size: [1, 2] }] };\n\
+               export function sdf(x, y, z, k) { return box(x, y, z, 2, 2, 2); }\n\
+               export function color(x, y, z, k) { return rgb(100, 100, 100); }";
+    let ct = compile(src).unwrap();
+    let err = probe(&ct).map(|_| ()).unwrap_err();
+    assert!(crate::lang::format_diags(&err).contains("doorway"), "{}", crate::lang::format_diags(&err));
+}
+
+/// Plans say it in words: shut the gate, swing at the wolf, dig here.
+#[test]
+fn plans_name_the_new_verbs() {
+    let a = super::npc::parse_step(&serde_json::json!({ "do": "close", "target": "gate" })).unwrap();
+    assert!(matches!(a, Action::Open { close: true, .. }), "{a:?}");
+    let a = super::npc::parse_step(&serde_json::json!({ "do": "swing", "at": "wolf" })).unwrap();
+    assert!(matches!(a, Action::Use { on: Some(Target::Name(ref n)), .. } if n == "wolf"), "{a:?}");
+    let a = super::npc::parse_step(&serde_json::json!({ "do": "jump" })).unwrap();
+    assert!(matches!(a, Action::Jump), "{a:?}");
+}
+
+/// Render a frame of the session's world to a PNG (3× scaled).
+fn png_of(s: &mut Session, snap: &Arc<crate::world::WorldSnapshot>, gpu: &Option<Arc<crate::render::gpu::Gpu>>, cam: crate::render::Camera, out: &str) {
+    let (pw, ph) = (320u32, 180u32);
+    let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
+    let culled = crate::world::cull::cull(snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
+    let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights };
+    let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+    let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+    let mut handle = match gpu {
+        Some(g) => crate::render::gpu::spawn(g.clone()),
+        None => crate::render::cpu::spawn(),
+    };
+    handle.tx.send(crate::render::RenderMsg::Frame(Box::new(req))).unwrap();
+    let f = handle.rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    handle.shutdown();
+    let sc = 3u32;
+    let mut rgb = Vec::new();
+    for y in 0..f.height * sc {
+        for x in 0..f.width * sc {
+            rgb.extend_from_slice(&crate::render::unpack(f.pixels[((y / sc) * f.width + x / sc) as usize]));
+        }
+    }
+    std::fs::write(out, crate::png::encode(f.width * sc, f.height * sc, &rgb)).unwrap();
+}
+
+/// A hamlet: houses with doors (one open), a road with lamps, someone
+/// swinging a sword, a pit dug; by day, at dusk, and from inside (look at it).
+#[test]
+#[ignore]
+fn render_village_png() {
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = world_with("pngvillage", 65, bare());
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    add_type(&w, &fixture("physics/sword.js"));
+    let spade = add_type(&w, &fixture("physics/spade.js"));
+    let lamp = builtin_id(&w, "lamppost");
+    let h = flat_spot(&w, 40.0);
+    let places = vec![pl(hut, h, 0.0), pl(hut, h + Vec3::new(14.0, 0.0, 3.0), -0.4), pl(hut, h + Vec3::new(-5.0, 0.0, 16.0), 3.4)];
+    let region = crate::model::RegionCommit {
+        r: crate::world::region_of(h.x, h.z),
+        plan_json: "{}".into(),
+        info: Default::default(),
+        characters: vec![],
+        settlement: Some(crate::model::Settlement { x: h.x + 4.0, z: h.z + 8.0, road: Some((None, 1.2)), lamps: Some(crate::model::TypeRef::Existing(lamp)) }),
+    };
+    commit_places(&w, places, Some(region));
+    let swordsman = add_char(&w, "Bo", "bold", &[], h + Vec3::new(3.0, 0.0, 7.0));
+    let si = place(&w, spade, h + Vec3::new(-2.0, 0.0, 9.0), 0.0);
+    let mut s = session(&w, 65, None);
+    for n in s.sim.cast.npcs.iter_mut() {
+        n.think_at = f64::MAX;
+    }
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.42;
+    let door = s.sim.snap.instances.iter().find(|p| s.sim.snap.type_of(p.type_id).is_some_and(|t| t.name() == "door") && (p.pos - h).length() < 4.0).unwrap().id;
+    s.sim.player.pos = h + Vec3::new(0.0, 0.0, 4.0);
+    act_once(&mut s, ActorId::Player, Action::Open { target: Target::Instance(door), close: false }, 1.0);
+    // Dig a pit with the spade.
+    s.sim.player.pos = ground(&w, h.x - 2.0, h.z + 8.0);
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(si) }, 0.5);
+    let spot = ground(&w, h.x - 2.0, h.z + 10.0);
+    for _ in 0..4 {
+        act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(spot.to_array())), at: Some(spot.to_array()) }, 1.3);
+    }
+    act_once(&mut s, ActorId::Player, Action::Drop, 0.3);
+    // Bo with a sword, mid-swing.
+    let sw = s.sim.snap.instances.iter().find(|p| s.sim.snap.type_of(p.type_id).is_some_and(|t| t.name() == "test sword")).unwrap().id;
+    let swid = s.sim.liven(&Target::Instance(sw)).unwrap();
+    s.sim.hand_to(ActorId::Npc(swordsman), swid);
+    s.sim.cast.get_mut(swordsman).unwrap().a.yaw = std::f32::consts::PI * 0.5;
+    let _ = s.sim.strike(ActorId::Npc(swordsman), None, None);
+    for _ in 0..4 {
+        s.sim.step(0.05);
+        s.sim.cast.get_mut(swordsman).unwrap().a.update_pose(s.sim.t, 0.05, Some(false));
+    }
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    s.sim.flip(snap.clone());
+    let eye = Vec3::new(h.x + 7.0, w.terrain.height(h.x + 7.0, h.z + 15.0) + 1.7, h.z + 15.0);
+    let look = |from: Vec3, to: Vec3| {
+        let d = to - from;
+        crate::render::Camera { pos: from, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 1.05 }
+    };
+    let day = look(eye, h + Vec3::new(-1.0, 1.2, 4.0));
+    png_of(&mut s, &snap, &gpu, day, &format!("{dir}/pocket-village-day.png"));
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.82;
+    s.sim.step(0.05);
+    png_of(&mut s, &snap, &gpu, day, &format!("{dir}/pocket-village-dusk.png"));
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.42;
+    s.sim.step(0.05);
+    let inside = look(h + Vec3::new(1.5, 1.6, 1.5), h + Vec3::new(-1.0, 1.0, -2.5));
+    png_of(&mut s, &snap, &gpu, inside, &format!("{dir}/pocket-village-inside.png"));
+}

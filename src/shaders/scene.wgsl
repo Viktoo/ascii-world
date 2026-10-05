@@ -17,14 +17,29 @@ fn inst_params(i: Inst) -> Params {
                 i.s0.x, i.s0.y, i.s0.z, i.s0.w, i.s1.x, i.s1.y, i.s1.z, i.s1.w);
 }
 
+// Rotate v by the unit quaternion (q, w) with w = sqrt(1 - |q|^2).
+fn tilt_rot(q: vec3f, v: vec3f) -> vec3f {
+  let w = sqrt(max(1.0 - dot(q, q), 0.0));
+  let t = 2.0 * cross(q, v);
+  return v + w * t + cross(q, t);
+}
+
 fn to_local(i: Inst, p: vec3f) -> vec3f {
   let d = p - i.pos_scale.xyz;
   let c = i.rot.x; let s = i.rot.y;
-  return vec3f(c * d.x - s * d.z, d.y, s * d.x + c * d.z) / i.pos_scale.w;
+  var l = vec3f(c * d.x - s * d.z, d.y, s * d.x + c * d.z);
+  if (any(i.tilt.xyz != vec3f(0.0))) { l = tilt_rot(-i.tilt.xyz, l); }
+  return l / i.pos_scale.w;
 }
 
 fn inst_center(i: Inst) -> vec3f {
-  return i.pos_scale.xyz + vec3f(0.0, bitcast<f32>(i.info.y) * i.pos_scale.w, 0.0);
+  var off = vec3f(0.0, bitcast<f32>(i.info.y) * i.pos_scale.w, 0.0);
+  if (any(i.tilt.xyz != vec3f(0.0))) {
+    off = tilt_rot(i.tilt.xyz, off);
+    let c = i.rot.x; let s = i.rot.y;
+    off = vec3f(c * off.x + s * off.z, off.y, -s * off.x + c * off.z);
+  }
+  return i.pos_scale.xyz + off;
 }
 
 fn cut_sdf(c: vec4f, p: vec3f) -> f32 {
@@ -45,7 +60,10 @@ fn shape_sdf(i: Inst, lp: vec3f) -> f32 {
 }
 
 fn inst_sdf(idx: u32, p: vec3f) -> f32 {
-  let i = insts[idx];
+  return inst_sdf_of(insts[idx], p);
+}
+
+fn inst_sdf_of(i: Inst, p: vec3f) -> f32 {
   return shape_sdf(i, to_local(i, p)) * i.pos_scale.w;
 }
 
@@ -447,6 +465,11 @@ fn probe_main(@builtin(global_invocation_id) gid: vec3u) {
     let d = shape_sdf(inst, q.xyz);
     let c = type_color(G.probe.z, q.xyz, k);
     probe_io[i] = vec4f(d, c);
+  } else if (G.probe.y == 3u) {
+    // An instance in the world: its distance at a world point, and its middle.
+    var inst = insts[0];
+    inst.info.x = G.probe.z;
+    probe_io[i] = vec4f(inst_sdf_of(inst, q.xyz), inst_center(inst));
   } else if (G.probe.y == 2u) {
     let s = G.seed.x;
     let wt = terrain_weights(q.x, q.z);

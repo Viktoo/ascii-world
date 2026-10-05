@@ -476,10 +476,23 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "take_off" | "undress" | "doff" => "take_off",
         "douse" | "put_out" | "extinguish" | "fight_fire" | "beat_out" | "smother" | "rub" | "press" | "work" => "apply",
         "home" | "go_home" => "go_home",
+        "close" | "shut" | "unlatch" | "open_door" => "open",
+        "swing" | "strike" | "hit" | "attack" | "chop" | "dig" | "stab" | "thrust" | "pour" | "swing_at" => "use",
+        "duck" | "kneel_down" => "crouch",
+        "hop" | "leap" => "jump",
         v => v,
     }
     .to_string();
     obj.insert("do".into(), Value::String(verb.clone()));
+    if matches!(raw.as_str(), "close" | "shut") {
+        obj.insert("close".into(), Value::Bool(true));
+    }
+    // "swing at the wolf", "dig here": the held tool is worked on the target.
+    if verb == "use" && raw != "use" {
+        if let Some(t) = obj.remove("at").or_else(|| obj.remove("target")) {
+            obj.entry("on").or_insert(t);
+        }
+    }
     // For do and use, `at` is a spot (a point); a plan never names one.
     if matches!(verb.as_str(), "do" | "use") && obj.get("at").is_some_and(|a| !a.is_array()) {
         obj.remove("at");
@@ -584,9 +597,10 @@ impl Sim {
     // ------------------------------------------------------------ actors
 
     pub fn step_actors(&mut self, dt: f32) {
-        // The player: scripted plans and tasks (agents), pose.
+        // The player: scripted plans and tasks (agents), pose, footing.
         self.step_plan(ActorId::Player);
         self.run_task(ActorId::Player, dt);
+        self.step_footing(ActorId::Player, dt);
         let held_big = self.held_size(ActorId::Player);
         let t = self.t;
         self.player.update_pose(t, dt, held_big);
@@ -878,7 +892,7 @@ impl Sim {
         match who {
             ActorId::Player => {
                 let s = PLAYER_SPEED * (self.player.dims.height / 1.75).sqrt();
-                (s, s)
+                (s, s * 1.7)
             }
             ActorId::Npc(c) => match self.cast.get(c) {
                 Some(n) if !n.species.is_human() => (n.species.moves.walk.max(0.2), n.species.moves.run.max(n.species.moves.walk)),
@@ -890,6 +904,9 @@ impl Sim {
     /// Walk towards a point. False when stuck.
     fn step_toward(&mut self, who: ActorId, p: Vec3, speed: f32, dt: f32) -> bool {
         let Some(me) = self.actor(who).map(|a| a.pos) else { return false };
+        // Through doorways and up stairs: the next step on the way.
+        let p = self.route(who, p);
+        let speed = speed * self.gait_factor(who);
         let d = Vec3::new(p.x - me.x, 0.0, p.z - me.z);
         let len = d.length();
         if len < 1e-3 {
@@ -905,6 +922,21 @@ impl Sim {
         self.kick_things(who, step);
         let moved = self.actor(who).map(|a| a.moved).unwrap_or(0.0);
         let blocked = moved < speed * dt * 0.15 && len >= 0.3;
+        if let ActorId::Npc(_) = who {
+            let ahead = me + dir * (self.capsule(who).radius + 0.3);
+            if blocked {
+                // A shut door in the way: open it. Something low: duck under it.
+                if let Some(door) = self.shut_door_near(ahead, 1.2) {
+                    if self.can_work_hinges(who) {
+                        let _ = self.open(who, &door, Some(false));
+                    }
+                } else if self.actor(who).is_some_and(|a| !a.crouching) && self.crouch_fits(who, ahead) {
+                    self.crouch(who, Some(true));
+                }
+            } else if self.actor(who).is_some_and(|a| a.crouching) && self.room_to_stand(who, me) && self.room_to_stand(who, ahead) {
+                self.crouch(who, Some(false));
+            }
+        }
         if let Some(a) = self.actor_mut(who) {
             a.phase += moved * a.dims.stride;
             a.stuck = if blocked { a.stuck + dt } else { 0.0 };
@@ -1038,10 +1070,8 @@ impl Sim {
         }
         if let Some(n) = self.cast.get_mut(cid) {
             n.a.update_pose(t, dt, held_big);
-            if n.a.moved < 1e-4 && n.a.alt <= 0.0 && n.a.riding.is_none() {
-                n.a.pos.y = self.snap.terrain.height(n.a.pos.x, n.a.pos.z);
-            }
         }
+        self.step_footing(me, dt);
     }
 
     // ------------------------------------------------------------ choosing

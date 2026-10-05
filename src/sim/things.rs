@@ -44,11 +44,23 @@ pub struct Shape {
     pub cuts: Vec<[f32; 4]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<EditRec>,
+    /// Lying tilted (x, y, z, w of a rotation after the yaw), when not upright.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tilt: Option<[f32; 4]>,
+    /// How far open its joint is (0 shut … 1 open), and where it is going.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub open: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub open_to: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Shape {
     pub fn is_empty(&self) -> bool {
-        self.cuts.is_empty() && self.edits.is_empty()
+        self.cuts.is_empty() && self.edits.is_empty() && self.tilt.is_none() && self.open == 0.0 && self.open_to == 0.0
     }
 }
 
@@ -95,11 +107,13 @@ pub struct Thing {
     pub through: Option<u32>,
     /// Cuts and the history of changes.
     pub shape: Shape,
+    /// How the hand holds it this moment (a tool mid-swing); not saved.
+    pub hold_tilt: Option<glam::Quat>,
 }
 
 impl Thing {
     pub fn new(id: ThingId, ty: &TypeEntry, pos: Vec3, yaw: f32, scale: f32, params: [f32; 8], props: Props, born: f64) -> Thing {
-        let anchored = props[P_MASS] >= ANCHOR_MASS || ty.has_tag("building") || ty.has_tag("landmark");
+        let anchored = props[P_MASS] >= ANCHOR_MASS || ty.has_tag("building") || ty.has_tag("landmark") || ty.ct.meta.joint.is_some();
         Thing {
             id,
             type_id: ty.id,
@@ -128,6 +142,7 @@ impl Thing {
             cooldown: 0.0,
             through: None,
             shape: Shape::default(),
+            hold_tilt: None,
         }
     }
 
@@ -163,6 +178,16 @@ impl Thing {
     /// Holdable by one person / by two together.
     pub fn liftable(&self, holders: usize) -> bool {
         !self.anchored && self.mass() <= STRENGTH * holders as f32
+    }
+
+    /// Its tilt after the yaw (upright: identity).
+    pub fn tilt(&self) -> glam::Quat {
+        self.shape.tilt.map(glam::Quat::from_array).filter(|q| q.is_finite() && q.length_squared() > 0.5).map(|q| q.normalize()).unwrap_or(glam::Quat::IDENTITY)
+    }
+
+    pub fn set_tilt(&mut self, q: glam::Quat) {
+        let q = q.normalize();
+        self.shape.tilt = if q.is_finite() && q.angle_between(glam::Quat::IDENTITY) > 1e-3 { Some(q.to_array()) } else { None };
     }
 
     /// Physics proxy: a sphere around the centre of the shape.

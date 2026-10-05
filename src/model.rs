@@ -31,6 +31,8 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/stick.js"),
     include_str!("builtin/stone.js"),
     include_str!("builtin/mushroom.js"),
+    include_str!("builtin/door.js"),
+    include_str!("builtin/lamppost.js"),
 ];
 
 /// Live positions the committer must not build on top of.
@@ -94,6 +96,17 @@ pub struct RegionCommit {
     pub plan_json: String,
     pub info: RegionInfo,
     pub characters: Vec<(Persona, Vec3)>,
+    /// The settlement's middle, and how its ways look: roads between its
+    /// buildings (colour, half width) and what lights them.
+    pub settlement: Option<Settlement>,
+}
+
+pub struct Settlement {
+    pub x: f32,
+    pub z: f32,
+    /// None: no roads. A colour of None: trodden earth in the land's colours.
+    pub road: Option<(Option<[f32; 3]>, f32)>,
+    pub lamps: Option<TypeRef>,
 }
 
 pub struct CommitRequest {
@@ -472,6 +485,18 @@ impl WorldModel {
     fn make_snapshot(&self, types: &[&TypeRec], pipeline: Option<Arc<ScenePipeline>>) -> Arc<WorldSnapshot> {
         let scene = Arc::new(SceneTypes { types: types.iter().map(|t| (t.entry.id, t.entry.clone())).collect(), pipeline });
         let instances = self.active_instances();
+        // The ground taken away under placed shapes, and the roads.
+        let hollows: Vec<crate::terrain::Hollow> = instances.iter().filter_map(|p| Some(hollow_of(p, &scene.types.get(&p.type_id)?.ct.meta.hollow.clone()?))).collect();
+        let mut roads: Vec<crate::terrain::Road> = self.regions.values().flat_map(|r| r.roads.iter().copied()).collect();
+        roads.sort_by(|a, b| a.a[0].total_cmp(&b.a[0]).then(a.a[1].total_cmp(&b.a[1])));
+        {
+            let mut c = self.terrain.carve.write();
+            if c.fixed != hollows || c.roads != roads {
+                c.fixed = hollows;
+                c.roads = roads;
+                c.version = c.version.wrapping_add(1);
+            }
+        }
         let by_chunk = WorldSnapshot::index(&instances);
         let scatter = self.scatter_map(types);
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -520,7 +545,7 @@ impl WorldModel {
         const MAX_DROP: f32 = 1.5;
         let b = entry.ct.meta.bounds;
         let r = b[0].max(b[2]) * pl.scale.clamp(0.2, 6.0);
-        if pl.y.is_some() || !entry.solid || r < 1.5 {
+        if pl.y.is_some() || !entry.solid || r < 1.5 || entry.ct.meta.hollow.is_some() {
             return None;
         }
         let t = &self.terrain;
@@ -560,6 +585,10 @@ impl WorldModel {
         let (lo, hi) = footprint(&t, pl, entry);
         let ground = t.height(pl.x, pl.z);
         let y = match pl.y {
+            // A shape that takes ground away (a cellar, a house in a hillside)
+            // stands with its floor (y = 0) on the lowest ground under it;
+            // the hollow clears the rest.
+            None if entry.ct.meta.hollow.is_some() => lo.min(ground) - 0.02,
             // Seat on the lowest point, raised a little on slopes so less of the
             // uphill side is buried (the downhill gap stays small).
             None => lo.min(ground) + ((hi - lo) * 0.3).min(0.4) - entry.bottom * scale - 0.12,
@@ -640,6 +669,56 @@ impl WorldModel {
         Ok(placed)
     }
 
+    /// What comes with a placed shape, by its anchors: a door hung in each
+    /// doorway, what sits in each slot (a sword on its rack, a pot on the
+    /// shelf), each fixed part. Types are found by name among this commit's
+    /// new ones and the world's.
+    fn children(&self, p: &Placed, entry: &Arc<TypeEntry>, new_entries: &[Arc<TypeEntry>]) -> Vec<(Placed, Arc<TypeEntry>)> {
+        let mut out = Vec::new();
+        if entry.ct.meta.anchors.is_empty() {
+            return out;
+        }
+        let by_name = |n: &str| -> Option<Arc<TypeEntry>> {
+            let n = n.trim().to_lowercase();
+            let exact = |e: &TypeEntry| e.name().to_lowercase() == n;
+            // A near name will do ("old iron sword" for "iron sword").
+            let near = |e: &TypeEntry| {
+                let m = e.name().to_lowercase();
+                n.len() >= 3 && (m.contains(&n) || n.contains(&m)) && e.ct.meta.body.is_none() && !e.has_tag("building")
+            };
+            new_entries.iter().rev().find(|e| exact(e)).cloned()
+                .or_else(|| self.types.values().filter(|t| exact(&t.entry) && t.entry.ct.meta.body.is_none()).max_by_key(|t| (t.entry.builtin, t.entry.id)).map(|t| t.entry.clone()))
+                .or_else(|| new_entries.iter().rev().find(|e| near(e)).cloned())
+                .or_else(|| self.types.values().filter(|t| near(&t.entry)).max_by_key(|t| t.entry.id).map(|t| t.entry.clone()))
+        };
+        let g = p.gpu(entry, 1.0);
+        for (i, a) in entry.ct.meta.anchors.iter().enumerate() {
+            let at = g.from_local(Vec3::from_array(a.at));
+            let yaw = p.rot_y + a.face.to_radians();
+            let seed = p.params[0] * 31.0 + i as f32 + 1.0;
+            match a.kind.as_str() {
+                "door" => {
+                    let Some(door) = by_name("door").filter(|d| d.ct.meta.joint.is_some()) else { continue };
+                    let [w, h] = a.size.unwrap_or([1.0, 2.0]).map(|v| v * p.scale);
+                    // Hinged at its left edge, seen from outside.
+                    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+                    let o = at - right * (w * 0.5);
+                    let params = [seed, 1.0, (w / 2.0).clamp(0.2, 1.1), (h / 4.0).clamp(0.15, 0.85), 0.5, 0.5, 0.5, 0.5];
+                    out.push((Placed { id: 0, type_id: door.id, pos: o, rot_y: yaw, scale: 1.0, params, version: 0 }, door));
+                }
+                "slot" | "part" => {
+                    let Some(ty) = a.holds.as_deref().and_then(by_name) else { continue };
+                    let scale = if a.kind == "part" { p.scale } else { 1.0 };
+                    let pos = Vec3::new(at.x, at.y - ty.bottom * scale + 0.01, at.z);
+                    let params = [seed, scale, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+                    out.push((Placed { id: 0, type_id: ty.id, pos, rot_y: yaw, scale, params, version: 0 }, ty));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     // ---- step 6 + commit + flip ----
 
     pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
@@ -701,13 +780,56 @@ impl WorldModel {
                 }
             }
             match result {
-                Ok(p) => placed.push((p, entry)),
+                Ok(p) => {
+                    let kids = self.children(&p, &entry, &new_entries);
+                    placed.push((p, entry));
+                    placed.extend(kids);
+                }
                 Err(e) if req.nudge => dropped.push(e),
                 Err(e) => diags.push(Diag::new(Stage::Place, 0, e)),
             }
         }
         if !diags.is_empty() {
             return Err(diags);
+        }
+        // A settlement's roads between its doors, and lamps along them.
+        let mut region_plan = req.region.as_ref().map(|r| r.plan_json.clone());
+        let mut region_roads = Vec::new();
+        if let Some(st) = req.region.as_ref().and_then(|r| r.settlement.as_ref()) {
+            let fronts: Vec<Vec3> = placed.iter().filter(|(p, e)| e.has_tag("building") || e.ct.meta.anchors.iter().any(|a| a.kind == "door") || (e.solid && e.radius() * p.scale > 3.0 && !e.builtin)).filter(|(p, _)| (p.pos.x - st.x).hypot(p.pos.z - st.z) < 90.0).map(|(p, e)| front_of(p, e)).collect();
+            let roads = match st.road {
+                Some((color, half)) => road_net(&fronts, color.unwrap_or_else(|| road_color(&self.look.palette)), half),
+                None => Vec::new(),
+            };
+            if !roads.is_empty() {
+                if let Some(lt) = &st.lamps {
+                    let lamp = match lt {
+                        TypeRef::New(k) => new_entries.get(*k).cloned().zip(req.new_types.get(*k).map(|nt| nt.report.interior.clone())),
+                        TypeRef::Existing(id) => self.types.get(id).map(|t| t.entry.clone()).map(|e| (e.clone(), self.interior_of(e.id))),
+                    };
+                    if let Some((entry, interior)) = lamp {
+                        let mut n = 0;
+                        for (i, (a, b)) in lamp_spots(&roads).into_iter().enumerate() {
+                            if n >= 12 {
+                                break;
+                            }
+                            let pl = Placement { ty: lt.clone(), x: a, z: b, y: None, rot_y: 0.0, scale: 1.0, params: [300.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                            if let Ok(p) = self.check_place(&pl, &entry, &interior, &placed, "a lamp") {
+                                placed.push((p, entry.clone()));
+                                n += 1;
+                            }
+                        }
+                    }
+                }
+                if let Some(plan) = region_plan.as_mut() {
+                    let mut v: serde_json::Value = serde_json::from_str(plan).unwrap_or_default();
+                    if let Some(o) = v.as_object_mut() {
+                        o.insert("roads".into(), serde_json::to_value(&roads).unwrap_or_default());
+                    }
+                    *plan = v.to_string();
+                }
+                region_roads = roads;
+            }
         }
 
         // Step 6: build the next full shader and check GPU/CPU parity.
@@ -757,7 +879,7 @@ impl WorldModel {
                     let id = db::add_character(tx, rc.r, &serde_json::to_string(persona)?, home.x, home.z, v)?;
                     char_ids.push(id);
                 }
-                db::set_region(tx, rc.r.0, rc.r.1, "done", &rc.plan_json, Some(v))?;
+                db::set_region(tx, rc.r.0, rc.r.1, "done", region_plan.as_deref().unwrap_or(&rc.plan_json), Some(v))?;
             }
             if let Some(l) = &req.look {
                 tx.execute("UPDATE universe SET palette = ?1 WHERE id = 1", [serde_json::to_string(l)?])?;
@@ -791,7 +913,9 @@ impl WorldModel {
                 let h = Vec3::new(home.x, terrain.height(home.x, home.z), home.z);
                 self.chars.push(Arc::new(CharacterDef { id, persona, home: h, state: SavedState::default(), version: v }));
             }
-            self.regions.insert(rc.r, Arc::new(rc.info));
+            let mut info = rc.info;
+            info.roads = region_roads;
+            self.regions.insert(rc.r, Arc::new(info));
         }
         if req.look.is_some() {
             self.look = look;
@@ -874,6 +998,7 @@ pub fn region_info_from_plan(plan_json: &str) -> RegionInfo {
         name: v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         mood: v.get("mood").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         facts: v.get("facts").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+        roads: v.get("roads").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default(),
     }
 }
 
@@ -947,4 +1072,89 @@ fn footprint(t: &Terrain, pl: &Placement, entry: &TypeEntry) -> (f32, f32) {
 /// A commit that reshaped one thing (see `brain::edit_item_type`).
 fn is_reshape(kind: &str, summary: &str) -> bool {
     kind == "interp" && summary.starts_with("reshaped: ")
+}
+
+/// The ground a placed shape takes away (its `meta.hollow`), in the world.
+pub fn hollow_of(p: &Placed, h: &crate::lang::ir::Hollow) -> crate::terrain::Hollow {
+    crate::terrain::Hollow {
+        c: [p.pos.x, p.pos.z],
+        rot: [p.rot_y.cos(), p.rot_y.sin()],
+        half: [h.half[0] * p.scale, h.half[1] * p.scale],
+        floor: p.pos.y + h.floor * p.scale,
+        round: false,
+    }
+}
+
+/// Where a building is walked up to: outside its door, or before its front.
+pub fn front_of(p: &Placed, e: &TypeEntry) -> Vec3 {
+    let g = p.gpu(e, 1.0);
+    match e.ct.meta.anchors.iter().find(|a| a.kind == "door") {
+        Some(a) => g.from_local(Vec3::from_array(a.at) + Vec3::from_array(a.out()) * (1.2 / p.scale.max(0.1))),
+        None => g.from_local(Vec3::new(0.0, 0.0, e.ct.meta.bounds[2] + 1.2 / p.scale.max(0.1))),
+    }
+}
+
+/// A road's colour from the land's: trodden earth between sand and rock.
+fn road_color(pal: &crate::terrain::Palette) -> [f32; 3] {
+    let s = crate::terrain::rgbv(pal.sand);
+    let r = crate::terrain::rgbv(pal.rock);
+    (s * 0.55 + r * 0.45).to_array()
+}
+
+/// Roads joining every front to its nearest neighbours (a spanning tree),
+/// and the longest few loops it leaves out skipped. Deterministic.
+pub fn road_net(fronts: &[Vec3], color: [f32; 3], half: f32) -> Vec<crate::terrain::Road> {
+    let n = fronts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut inside = vec![false; n];
+    let mut best = vec![(f32::MAX, 0usize); n];
+    inside[0] = true;
+    for j in 1..n {
+        best[j] = ((fronts[j] - fronts[0]).length(), 0);
+    }
+    let mut out = Vec::new();
+    for _ in 1..n {
+        let Some(j) = (0..n).filter(|j| !inside[*j]).min_by(|a, b| best[*a].0.total_cmp(&best[*b].0)) else { break };
+        inside[j] = true;
+        let (d, from) = best[j];
+        if d < 140.0 {
+            let (a, b) = (fronts[from], fronts[j]);
+            out.push(crate::terrain::Road { a: [a.x, a.z], b: [b.x, b.z], half: half.clamp(0.4, 4.0), color });
+        }
+        for k in 0..n {
+            if !inside[k] {
+                let dk = (fronts[k] - fronts[j]).length();
+                if dk < best[k].0 {
+                    best[k] = (dk, j);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Spots beside the roads for lamps: about every 16 m, alternating sides.
+pub fn lamp_spots(roads: &[crate::terrain::Road]) -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    for (i, r) in roads.iter().enumerate() {
+        let (ax, az, bx, bz) = (r.a[0], r.a[1], r.b[0], r.b[1]);
+        let len = (bx - ax).hypot(bz - az);
+        if len < 4.0 {
+            continue;
+        }
+        let (dx, dz) = ((bx - ax) / len, (bz - az) / len);
+        let k = ((len - 4.0) / 16.0).floor() as usize + 1;
+        for j in 0..k {
+            let t = (2.0 + j as f32 * 16.0).min(len - 2.0);
+            let side = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
+            let off = r.half + 0.8;
+            let p = (ax + dx * t - dz * off * side, az + dz * t + dx * off * side);
+            if out.iter().all(|q| (q.0 - p.0).hypot(q.1 - p.1) > 8.0) {
+                out.push(p);
+            }
+        }
+    }
+    out
 }

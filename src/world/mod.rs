@@ -86,6 +86,15 @@ impl TypeEntry {
     pub fn radius(&self) -> f32 {
         self.sphere_r
     }
+    /// Growth a body pushes through low down (a bush, flowers): only what
+    /// stands above half a metre gets in the way.
+    pub fn is_growth(&self) -> bool {
+        ["bush", "flower", "grass", "shrub", "fern", "reeds"].iter().any(|t| self.has_tag(t))
+    }
+    /// The light it gives (its `light` property as written), 0 for none.
+    pub fn light(&self) -> f32 {
+        self.ct.meta.props.iter().find(|(k, _)| k == "light").map(|(_, v)| *v).unwrap_or(0.0)
+    }
 
     /// Shader `info`: type id, sphere centre height, box half-extents x/z (f32 bits).
     pub fn gpu_info(&self) -> [u32; 4] {
@@ -223,6 +232,8 @@ pub struct RegionInfo {
     pub name: String,
     pub mood: String,
     pub facts: Vec<String>,
+    /// Roads laid between the settlement's buildings.
+    pub roads: Vec<crate::terrain::Road>,
 }
 
 /// One immutable world version, everything the main thread needs.

@@ -88,6 +88,21 @@ export function touch(s, w, k) { if (w.impact > 6) { w.health = w.health - 0.5; 
 - sdf may use at most ~8000 operations per call; prefer a few primitives and short loops.
 - Tags: use lower-case words. "building", "landmark", "tree", "rock", "bush", "grass", "flower", "prop" … Add "nonsolid" for things the player can walk through. Add "water" for things meant to stand in water.
 
+## Parts, insides and tools (optional meta)
+Bodies walk on what you draw: floors, stairs, ramps, roofs and ledges are real. A body steps up anything lower than about a quarter of its height (a person: 0.4 m; a stair is 0.15–0.25 m), jumps about half its height, crouches to about 60% of it, and walks through any gap wider than about 0.8 m and taller than it is. So:
+- A building people can enter needs a doorway: an opening at ground level cut right through the wall (subtract a box), and an inside: hollow rooms (walls about 0.2–0.4 m thick, a roof or ceiling, a floor at y = 0 or a slab you subtract the rooms from). Keep the doorway empty: the world hangs the door in it.
+- Upper floors need stairs (steps of 0.2 m rising 0.25 m apart) or a ramp, with an opening in the floor above where they arrive. A tree-house needs a ladder or stair to its platform; a cellar a stair down (see hollow).
+- meta.anchors: named points that tell the world what goes where (local metres; face in degrees, 0 = +z, 90 = +x):
+  { kind: "door", at: [x, 0, z], face: 0, size: [width, height] }   the bottom middle of a doorway, facing out; the world hangs a door (it opens and shuts).
+  { kind: "slot", at: [x, y, z], holds: "iron sword" }   something real set there (on a shelf, a rack, a table): a type name. It can be picked up and used.
+  { kind: "part", at: [x, y, z], face: 0, holds: "rope ladder" }   a separate part fixed there (a sign, a bell, a ladder).
+  { kind: "stairs", at: [x, y, z], to: [x, y, z] }   the foot and top of a stair or ladder (people find their way up).
+  { kind: "bed", at: [...] }, { kind: "seat", at: [...], face: 180 }   where people sleep and sit.
+  { kind: "light", at: [...] }   a lamp or a lit window: it lights the ground around it at night.
+- meta.hollow: [hx, hz, floor]: the ground under the shape is taken away in the box |x| < hx, |z| < hz down to local y = floor (negative). A cellar, a burrow, a house set into a hillside. The shape then sits with its y = 0 at the ground (its walls may go down to floor), and should have a floor, walls and a way down.
+- meta.joint: { axis: "y", at: [x, y, z], open: 100 }: it swings on a hinge (a gate, a lid, a trapdoor, a cupboard door) about that axis through `at`, `open` degrees when open. People open and shut it.
+- meta.tool: { grip: [x, y, z], tip: [x, y, z], motions: ["swing", "thrust"] }: how a tool is held (grip: where the hand goes) and where it strikes (tip), and the motions it knows: swing (a blade, a club), chop (an axe, a pick), thrust (a spear, a knife), dig (a spade, a hoe), pour (a bucket, a jug). A sword: motions ["swing", "thrust"]; an axe ["chop", "swing"]; a shovel ["dig", "swing"].
+
 ## Style
 Recognisable silhouettes beat fine detail: the world is seen at low resolution. Use colour boldly and consistently with the universe's palette. A building is typically 4–10 m wide and 4–12 m tall; a person is 1.75 m tall.
 "#;
@@ -155,7 +170,8 @@ pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 25
   "facts": ["short lore lines that people living here know", "..."],
   "new_types": [ { "name": "…", "description": "what it looks like, materials, colours", "size_m": [w, h, d], "tags": ["building"], "props": { "burns": 0.4 } } ],
   "landmarks": [ { "type": "type name", "x": 0-256, "z": 0-256, "rot": degrees, "scale": 1.0, "why": "why it is here" } ],
-  "settlement": { "name": "…", "x": 0-256, "z": 0-256, "buildings": [ { "type": "type name", "dx": metres, "dz": metres, "rot": degrees } ] },
+  "settlement": { "name": "…", "x": 0-256, "z": 0-256, "buildings": [ { "type": "type name", "dx": metres, "dz": metres, "rot": degrees } ],
+                  "road": { "color": [r,g,b], "width": 2.5 } or null, "lamps": "type name" or null },
   "things": [ { "type": "type name", "near": "a character's name, or \"\" for the middle of the settlement" } ],
   "characters": [ {
       "name": "…", "age": 30, "appearance": "…",
@@ -173,6 +189,8 @@ Rules:
 - Coordinates are local to the region: x and z from 0 to 256.
 - 0–3 landmarks, 0–1 settlement (with 1–6 buildings), 0–6 characters, 0–8 new_types. Empty regions are fine sometimes: wilderness has value.
 - Reuse existing types by exact name when they fit; only invent new_types the region really needs (a settlement needs at least one building type).
+- Buildings are places, not props: those its people live and work in can be entered, with rooms, doorways sized for them (the folk height below), stairs to upper floors, and things inside where they belong (a smith's tongs on the bench, a sword on its rack, a pot on the shelf): describe them in the building's description ("inside: a hearth, a bed, a rack holding a sword") and give those things as new_types too (under 1 m, tags ["item"], with "tool" in the description when they are worked: a sword, an axe, a spade). A building can be built into a hillside or over a cellar, a home can be a tree-house with a ladder, a burrow in a bank. Beings too small for a door (mice, sprites) live in closed houses no traveler fits into; say so when it is so.
+- road: how the ways between the settlement's doors look (cobbles, packed earth, boardwalk), or null for none (a camp, a wild hamlet); lamps: a type that lights them at night ("lamppost" exists; or a new_type: a torch post, a paper lantern pole), or null if this people has none.
 - Put things on dry land (see the terrain notes), settlements on gentle ground, landmarks where they would be seen.
 - Give each character a trade or daily work in "goals" (what they make, mend or tend, and something they want to make or improve), e.g. "mends the fishing nets; wants to build a proper boat".
 - "aims": one or two things they are after, as goals; where the world can check it, a "want": {"kind": "hold", "what": "a proper boat"} (have it in hand), {"kind": "has", "who": "Ola", "what": "a doll"} (someone else has it), {"kind": "be", "place": "the shrine"}, or {"kind": "affection", "with": "Mara", "at_least": 0.6}; otherwise words only.
@@ -314,6 +332,8 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
+  {"do": "open", "target": "door"}   {"do": "close", "target": "gate"}   (doors, gates, lids, trapdoors)
+  {"do": "swing", "at": "wolf"}   {"do": "chop", "at": "pine"}   {"do": "dig", "at": "garden"}   (work the tool they hold: a blade swings, an axe chops, a spade digs; it can hurt)
   {"do": "apply", "with": "wet cloak", "to": "burning hut"}   (work something against something for a few seconds: beat out flames, press, rub, smear; without "with", their own hands; without "to", the nearest trouble)
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
 Optional, in the same object: "promise": {"text": "make Ola a ball", "to": "Ola", "what": "a ball" or null (the thing they will hand over), "within_hours": 3} when they agree to do something for someone (they are held to it); "aim": {"text": "a few words", "within_hours": 24} for a longer aim of their own; "kept": true or false when asked whether a goal that came due was met.

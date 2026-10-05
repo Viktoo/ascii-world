@@ -154,6 +154,19 @@ pub enum Action {
         #[serde(default)]
         secs: Option<f32>,
     },
+    /// Open (or, with `close`, shut) a door, gate, lid or anything on a hinge.
+    Open {
+        target: Target,
+        #[serde(default)]
+        close: bool,
+    },
+    /// Jump (the traveler, or an agent driving them).
+    Jump,
+    /// Crouch down (to get under something low) or stand back up.
+    Crouch {
+        #[serde(default)]
+        down: Option<bool>,
+    },
     /// Go back to the deed a need held up.
     Resume {
         #[serde(default)]
@@ -194,6 +207,9 @@ impl Action {
             Action::WaitUntil { .. } => "wait_until",
             Action::Apply { .. } => "apply",
             Action::Resume { .. } => "resume",
+            Action::Open { .. } => "open",
+            Action::Jump => "jump",
+            Action::Crouch { .. } => "crouch",
         }
     }
 }
@@ -213,7 +229,7 @@ impl Outcome {
     pub fn ok(msg: impl Into<String>) -> Outcome {
         Outcome { ok: true, msg: msg.into(), pending: None, thing: None }
     }
-    fn thing(mut self, id: ThingId) -> Outcome {
+    pub(crate) fn thing(mut self, id: ThingId) -> Outcome {
         self.thing = Some(id);
         self
     }
@@ -560,6 +576,18 @@ impl Sim {
             }
             Action::Throw { at, dir, force } => self.throw(who, at, dir, force),
             Action::Apply { with, to, secs } => self.apply(who, with, to, secs),
+            Action::Open { target, close } => self.open(who, &target, Some(close)),
+            Action::Jump => {
+                if self.jump(who) {
+                    Ok(Outcome::ok(format!("{name} jumps")))
+                } else {
+                    fail(format!("{name} can't jump now"))
+                }
+            }
+            Action::Crouch { down } => {
+                let d = self.crouch(who, down);
+                Ok(Outcome::ok(format!("{name} {}", if d { "crouches" } else { "stands up" })))
+            }
             Action::Use { target, on, at } => self.use_thing(who, target, on, at.map(Vec3::from)),
             Action::Eat { target } => {
                 let id = match target {
@@ -588,6 +616,15 @@ impl Sim {
                 if !matches!(target.as_ref().map(|r| &r.target), Some(Target::Actor(_))) {
                     if let Some(r) = self.named_near(who, &text).and_then(|a| self.resolve(&Target::Actor(a), who)) {
                         target = Some(r);
+                    }
+                }
+                // "Open the door", "shut the gate": a hinge, no words needed.
+                if let Some(t) = target.as_ref().map(|r| r.target.clone()).filter(|t| self.target_hinged(t)) {
+                    let first = text.split_whitespace().next().unwrap_or("").to_lowercase();
+                    match first.as_str() {
+                        "open" | "unlatch" | "push" | "pull" => return self.open(who, &t, Some(false)),
+                        "close" | "shut" | "latch" => return self.open(who, &t, Some(true)),
+                        _ => {}
                     }
                 }
                 self.interpret(who, &text, target, at.map(Vec3::from))
@@ -775,8 +812,13 @@ impl Sim {
                 Ok(Outcome::ok(format!("{name} wakes up")))
             }
             Action::GoHome => {
+                // At night, to bed, when their house has one.
+                let bed = match who {
+                    ActorId::Npc(c) if self.night() => self.bed_for(c),
+                    _ => None,
+                };
                 let home = match who {
-                    ActorId::Npc(c) => self.cast.get(c).map(|n| n.def.home),
+                    ActorId::Npc(c) => bed.or(self.cast.get(c).map(|n| n.def.home)),
                     ActorId::Player => Some(self.snap.spawn),
                 };
                 let home = home.ok_or(ActErr::Fail("no home".into()))?;
@@ -976,6 +1018,24 @@ impl Sim {
             Some(t) => Some(self.resolve(t, who).ok_or_else(|| not_found(t))?),
             None => None,
         };
+        // A door, a gate, a lid: using it opens or shuts it (unless a held
+        // tool is being worked on it).
+        let tool_meta = me.held.and_then(|h| self.things.get(h)).and_then(|t| self.snap.type_of(t.type_id)).is_some_and(|ty| ty.ct.meta.tool.is_some());
+        // An axe chops at a door; anything else in hand, the door just opens.
+        let chops = self.held_tool(who).is_some_and(|(_, t)| t.motions.iter().any(|m| m == "chop"));
+        match (&rt, &ro) {
+            (Some(x), None) | (None, Some(x)) if self.target_hinged(&x.target) && !(chops && rt.is_none()) => {
+                let t = x.target.clone();
+                return self.open(who, &t, None);
+            }
+            _ => {}
+        }
+        // A held tool worked on something: a swing, a chop, a dig.
+        if tool_meta && rt.is_none() {
+            if let Some(out) = self.strike(who, ro.as_ref().map(|r| r.target.clone()), at)? {
+                return Ok(out);
+            }
+        }
         // Which is the tool, which the object.
         let held_t = me.held.map(Target::Thing);
         let (tool, object) = match (rt, ro) {

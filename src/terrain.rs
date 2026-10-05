@@ -164,6 +164,113 @@ pub struct Terrain {
     pub seed: u32,
     pub off: [f32; 6],
     pub biomes: Vec<Biome>,
+    /// Ground taken away: cellars, burrows, houses set into hills, pits dug.
+    /// Shared by every copy of this terrain (the world model's and each
+    /// snapshot's), so a pit dug shows everywhere at once.
+    pub carve: std::sync::Arc<parking_lot::RwLock<Carve>>,
+}
+
+/// A box (or round pit) of ground taken away, down to `floor`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Hollow {
+    /// Centre (x, z) and the box's turn (cos, sin of its yaw).
+    pub c: [f32; 2],
+    pub rot: [f32; 2],
+    /// Half-size (x, z) in its own frame; for a round pit, half[0] is the radius.
+    pub half: [f32; 2],
+    pub floor: f32,
+    pub round: bool,
+}
+
+/// How far a hollow's sides slope out (m): its rim.
+pub const HOLLOW_EDGE: f32 = 0.35;
+
+impl Hollow {
+    /// How far (x, z) lies outside the hollow (negative inside).
+    pub fn outside(&self, x: f32, z: f32) -> f32 {
+        let (dx, dz) = (x - self.c[0], z - self.c[1]);
+        if self.round {
+            return (dx * dx + dz * dz).sqrt() - self.half[0];
+        }
+        let (c, s) = (self.rot[0], self.rot[1]);
+        let lx = c * dx - s * dz;
+        let lz = s * dx + c * dz;
+        (lx.abs() - self.half[0]).max(lz.abs() - self.half[1])
+    }
+
+    /// The bounding radius, rim included.
+    pub fn reach(&self) -> f32 {
+        if self.round { self.half[0] + HOLLOW_EDGE } else { (self.half[0] * self.half[0] + self.half[1] * self.half[1]).sqrt() + HOLLOW_EDGE }
+    }
+}
+
+/// All the ground taken away.
+#[derive(Clone, Debug, Default)]
+pub struct Carve {
+    /// Under placed shapes (from their `meta.hollow`), rebuilt with each snapshot.
+    pub fixed: Vec<Hollow>,
+    /// Dug by someone (live, saved with the live world).
+    pub dug: Vec<Hollow>,
+    /// Roads and paths worn into the ground between buildings.
+    pub roads: Vec<Road>,
+    /// Changes whenever any list does.
+    pub version: u32,
+}
+
+/// A stretch of road: from a to b (x, z), half as wide as `half` × 2, in a colour.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Road {
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    pub half: f32,
+    pub color: [f32; 3],
+}
+
+impl Road {
+    /// Distance from (x, z) to the road's middle line.
+    pub fn dist(&self, x: f32, z: f32) -> f32 {
+        let (ax, az) = (self.a[0], self.a[1]);
+        let (bx, bz) = (self.b[0] - ax, self.b[1] - az);
+        let (px, pz) = (x - ax, z - az);
+        let l2 = (bx * bx + bz * bz).max(1e-6);
+        let t = ((px * bx + pz * bz) / l2).clamp(0.0, 1.0);
+        ((px - bx * t).powi(2) + (pz - bz * t).powi(2)).sqrt()
+    }
+
+    /// How much of the road shows at (x, z): 1 on it, fading at its edges.
+    pub fn cover(&self, x: f32, z: f32) -> f32 {
+        smoothstep(self.half + 0.4, self.half - 0.2, self.dist(x, z))
+    }
+}
+
+impl Carve {
+    pub fn all(&self) -> impl Iterator<Item = &Hollow> {
+        self.fixed.iter().chain(self.dug.iter())
+    }
+
+    /// The ground height at (x, z) with the hollows taken out of `h`, and how
+    /// much of a hollow the point is in (0 … 1, for the earth's colour).
+    pub fn apply(&self, x: f32, z: f32, h: f32) -> (f32, f32) {
+        let mut out = h;
+        let mut w_max = 0.0f32;
+        for hl in self.all() {
+            let r = hl.reach();
+            let (dx, dz) = (x - hl.c[0], z - hl.c[1]);
+            if dx * dx + dz * dz > r * r {
+                continue;
+            }
+            let e = hl.outside(x, z);
+            if e >= HOLLOW_EDGE {
+                continue;
+            }
+            let w = smoothstep(HOLLOW_EDGE, 0.0, e);
+            if h > hl.floor {
+                out = out.min(h - w * (h - hl.floor));
+            }
+            w_max = w_max.max(w);
+        }
+        (out, w_max)
+    }
 }
 
 pub struct Sample {
@@ -185,7 +292,7 @@ impl Terrain {
         // Offsets stay zero: per-field seeds decorrelate the noise, and any offset
         // would cost precision (and CPU/GPU parity) far from the origin.
         let o = |_i: u32| 0.0f32;
-        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes }
+        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default() }
     }
 
     pub fn center(i: usize) -> [f32; 2] {
@@ -228,7 +335,38 @@ impl Terrain {
     }
 
     pub fn height(&self, x: f32, z: f32) -> f32 {
+        let h = self.sample(x, z).height;
+        let c = self.carve.read();
+        if c.fixed.is_empty() && c.dug.is_empty() {
+            return h;
+        }
+        c.apply(x, z, h).0
+    }
+
+    /// The ground as the land made it, before anything was dug out of it.
+    pub fn natural_height(&self, x: f32, z: f32) -> f32 {
         self.sample(x, z).height
+    }
+
+    /// The roads within `r` of (x, z), nearest first (at most `n`).
+    pub fn roads_near(&self, x: f32, z: f32, r: f32, n: usize) -> Vec<Road> {
+        let c = self.carve.read();
+        let mut v: Vec<(f32, Road)> = c.roads.iter().map(|rd| (rd.dist(x, z) - rd.half, *rd)).filter(|(d, _)| *d < r).collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v.into_iter().take(n).map(|x| x.1).collect()
+    }
+
+    /// Whether (x, z) lies on a road (scatter keeps off it).
+    pub fn on_road(&self, x: f32, z: f32, margin: f32) -> bool {
+        self.carve.read().roads.iter().any(|r| r.dist(x, z) < r.half + margin)
+    }
+
+    /// The hollows nearest `p` (at most `n`), for the renderer.
+    pub fn hollows_near(&self, x: f32, z: f32, n: usize) -> (Vec<Hollow>, u32) {
+        let c = self.carve.read();
+        let mut v: Vec<(f32, Hollow)> = c.all().map(|h| (((h.c[0] - x).powi(2) + (h.c[1] - z).powi(2)).sqrt() - h.reach(), *h)).filter(|(d, _)| *d < 400.0).collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (v.into_iter().take(n).map(|x| x.1).collect(), c.version)
     }
 
     pub fn normal(&self, x: f32, z: f32) -> glam::Vec3 {
@@ -269,9 +407,21 @@ impl Terrain {
         let beach = smoothstep(WATER_LEVEL + 1.4, WATER_LEVEL + 0.3, h);
         c = c.lerp(sand, beach);
         let snowy = smoothstep(46.0, 56.0, h + v * 6.0) * smoothstep(0.6, 0.8, ny);
-        c.lerp(snow, snowy)
+        let mut c = c.lerp(snow, snowy);
+        let carve = self.carve.read();
+        for r in &carve.roads {
+            let k = r.cover(x, z);
+            if k > 0.0 {
+                c = c.lerp(glam::Vec3::from_array(r.color) * (0.9 + 0.2 * v), k);
+            }
+        }
+        let (_, dug) = carve.apply(x, z, h);
+        c.lerp(EARTH * (0.8 + 0.3 * v), dug * 0.85)
     }
 }
+
+/// Bare earth, where ground was dug away.
+pub const EARTH: glam::Vec3 = glam::Vec3::new(0.29, 0.22, 0.16);
 
 pub fn rgbv(c: [u8; 3]) -> glam::Vec3 {
     glam::Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.0

@@ -65,6 +65,11 @@ struct Keys {
 }
 
 /// Movement keys normalised to chars: arrows are ^ v < >.
+/// No walking key held.
+fn dirn_none(w: bool, s: bool, a: bool, d: bool) -> bool {
+    !(w || s || a || d)
+}
+
 fn key_char(code: KeyCode) -> Option<char> {
     match code {
         KeyCode::Up => Some('^'),
@@ -139,6 +144,9 @@ pub struct App {
     talk_hint: Option<(i64, String)>,
     quit: bool,
     pub noclip: bool,
+    /// Running: Shift with the walking keys, or `r` to keep it on.
+    shift_run: bool,
+    always_run: bool,
     llm_note: Option<String>,
     budget_paused: bool,
     /// Saved settings (budget, frame rate, shadows, how far the world loads).
@@ -244,6 +252,8 @@ impl App {
             talk_hint: None,
             quit: false,
             noclip: false,
+            shift_run: false,
+            always_run: false,
             llm_note: None,
             budget_paused: false,
             settings: crate::settings::Settings::load(),
@@ -430,6 +440,11 @@ impl App {
     fn walk_key(&mut self, k: KeyEvent) {
         if let Some(c) = key_char(k.code) {
             if matches!(c, '^' | 'v' | '<' | '>' | 'a' | 'd' | 'w' | 's') {
+                // Shift with a walking key runs (`r` keeps running on).
+                if matches!(c, 'a' | 'd' | 'w' | 's') && k.kind == KeyEventKind::Press {
+                    let shift = k.modifiers.contains(KeyModifiers::SHIFT) || matches!(k.code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
+                    self.shift_run = shift;
+                }
                 if self.enhanced {
                     self.keys.down.insert(c);
                 } else {
@@ -459,6 +474,19 @@ impl App {
             KeyCode::Char('/') => {
                 self.set_mode(Mode::Command);
                 self.input = "/".into();
+            }
+            KeyCode::Char(' ') => {
+                if self.sim.player.riding.is_none() {
+                    self.sim.jump(ActorId::Player);
+                }
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                let down = self.sim.crouch(ActorId::Player, None);
+                self.say(None, if down { "You crouch down (c to stand)." } else { "You stand up." }, DIM);
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.always_run = !self.always_run;
+                self.say(None, if self.always_run { "Running (r to walk)." } else { "Walking." }, DIM);
             }
             KeyCode::Char('e') | KeyCode::Char('E') => self.use_pointed(),
             KeyCode::Char('g') | KeyCode::Char('G') => self.grab_or_drop(),
@@ -526,7 +554,14 @@ impl App {
         let at = self.pointed_at();
         let a = match (held, target) {
             (Some(_), Some(t)) => Action::Use { target: None, on: Some(t), at },
-            (Some(_), None) => Action::Use { target: None, on: None, at: None },
+            (Some(_), None) => {
+                // A tool at the ground in front: a spade digs there.
+                let ground = self.pointed.as_ref().filter(|p| matches!(p.target, Target::Point(_)) && p.dist < 7.0).map(|p| (p.target.clone(), p.pos.to_array()));
+                match ground {
+                    Some((t, p)) if self.sim.held_tool(ActorId::Player).is_some() => Action::Use { target: None, on: Some(t), at: Some(p) },
+                    _ => Action::Use { target: None, on: None, at: None },
+                }
+            }
             (None, Some(Target::Actor(ActorId::Npc(c)))) => {
                 // Using a person is greeting them.
                 let _ = c;
@@ -680,12 +715,12 @@ impl App {
                     "/ <anything> — do or make anything, at what the middle of the view points at:",
                     "  /a lighthouse on that hill · /punch a hole here · /add the stick to this wall (stick in hand) · /rub the stone on the lantern",
                     "/undo — undo the last thing you created   /history — list world versions",
-                    "e use · g pick up / put down · f throw · y/n answer",
+                    "e use (opens doors; swings, chops or digs with a held tool) · g pick up / put down · f throw · y/n answer",
                     "/wave /bow /nod /cheer /dance /sit /hug NAME /kiss NAME /handshake NAME /highfive NAME · /gesture ANY [NAME]",
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/ride NAME · /dismount · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
-                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings, q quit",
+                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings, q quit",
                     "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
                 ] {
@@ -943,7 +978,8 @@ impl App {
                     self.sim.player.task = None;
                 }
             } else if dir != Vec3::ZERO {
-                let delta = dir * WALK_SPEED * dt;
+                self.sim.player.running = self.always_run || self.shift_run;
+                let delta = dir * WALK_SPEED * self.sim.gait_factor(ActorId::Player) * dt;
                 if self.noclip {
                     let p = self.pos() + delta;
                     self.sim.player.pos = Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z);
@@ -955,12 +991,17 @@ impl App {
                 self.sim.player.task = None;
             }
         }
-        let p = self.pos();
-        if self.sim.player.riding.is_none() {
+        if self.noclip && self.sim.player.riding.is_none() {
+            let p = self.pos();
             self.sim.player.pos.y = self.snap.terrain.height(p.x, p.z);
         }
-        let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + self.sim.player.dims.eye;
-        self.cam_y += (eye - self.cam_y) * (dt * 10.0).min(1.0);
+        if dirn_none(self.held('w'), self.held('s'), self.held('a'), self.held('d')) {
+            self.shift_run = false;
+        }
+        let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + self.sim.player.eye_height();
+        // Smooth over stairs; follow a jump or a fall at once.
+        let k = if self.sim.player.grounded { (dt * 10.0).min(1.0) } else { 1.0 };
+        self.cam_y += (eye - self.cam_y) * k;
 
         // The living world.
         let t0 = Instant::now();

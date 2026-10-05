@@ -176,6 +176,78 @@ pub struct Meta {
     /// For a layer (clothing, armour, gear): the body it is written for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fits: Option<String>,
+    /// Named points on the shape: doorways, shelves, seats, beds, stairs,
+    /// fixed parts. What fits together is told by these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<Anchor>,
+    /// A hinge it swings on (a door, a gate, a lid, a trapdoor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joint: Option<Joint>,
+    /// How it is held and worked: where the hand goes, where it strikes,
+    /// and the motions it knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<Tool>,
+    /// Ground it takes away under itself: a cellar, a burrow, a house set
+    /// into a hill. The terrain inside the box is lowered to `floor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<Hollow>,
+}
+
+/// What an anchor is for.
+pub const ANCHOR_KINDS: [&str; 7] = ["door", "slot", "seat", "bed", "stairs", "part", "light"];
+
+/// A named point on a shape (local metres; `face` in degrees, 0 = +z, the
+/// way out of a doorway or the way a seat faces).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Anchor {
+    pub kind: String,
+    pub at: [f32; 3],
+    #[serde(default)]
+    pub face: f32,
+    /// An opening's width and height (doors).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<[f32; 2]>,
+    /// The top of a stair or ladder (`at` is its foot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f32; 3]>,
+    /// What is set there (a slot's sword, a part's rope ladder): a type name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<String>,
+}
+
+impl Anchor {
+    /// The way it faces, as a local unit vector in the ground plane.
+    pub fn out(&self) -> [f32; 3] {
+        let a = self.face.to_radians();
+        [a.sin(), 0.0, a.cos()]
+    }
+}
+
+/// A hinge: a local axis through `at`, turned `open` radians when fully open.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Joint {
+    pub axis: [f32; 3],
+    pub at: [f32; 3],
+    pub open: f32,
+}
+
+/// Motions a held tool can make.
+pub const MOTIONS: [&str; 5] = ["swing", "chop", "thrust", "dig", "pour"];
+
+/// A tool: hand position, striking point (local), motions it knows.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Tool {
+    pub grip: [f32; 3],
+    pub tip: [f32; 3],
+    pub motions: Vec<String>,
+}
+
+/// Terrain cut away under a shape: |x| < half[0], |z| < half[1] (local),
+/// down to local y = floor.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Hollow {
+    pub half: [f32; 2],
+    pub floor: f32,
 }
 
 /// The pose roles a body can answer to (k.s0 … k.s7).

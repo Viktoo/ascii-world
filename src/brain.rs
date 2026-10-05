@@ -657,6 +657,37 @@ fn insert_body_from(src: &str, from: &str) -> Option<String> {
 }
 
 /// A body's standing height, from its stored code.
+/// How big the people who build here are: doorways and rooms are sized for
+/// the tallest of them (and the traveler, when they fit).
+pub fn folk_heights(db: &Db) -> (f32, f32) {
+    let book = crate::world::species::SpeciesBook::load(&db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), db.kv_get("species.world").as_deref());
+    let traveler = book.traveler_height.filter(|h| h.is_finite()).unwrap_or(1.75).clamp(0.3, 12.0);
+    let mut tallest: f32 = 0.0;
+    for sp in &book.list {
+        if sp.mind != crate::world::species::Mind::Sapient {
+            continue;
+        }
+        let world = book.sizes.get(&sp.name).copied().unwrap_or(1.0);
+        let h = match sp.look.get("height") {
+            Some(r) => r[1],
+            None => body_height(db, &sp.body).unwrap_or(1.75) * sp.size,
+        } * world;
+        tallest = tallest.max(h);
+    }
+    if tallest <= 0.0 {
+        tallest = 1.75 * book.sizes.get("human").copied().unwrap_or(1.0);
+    }
+    (tallest, traveler)
+}
+
+/// The clearance line for region and building tasks.
+fn folk_note(db: &Db) -> String {
+    let (folk, traveler) = folk_heights(db);
+    let door = (folk * 1.15).max(0.5);
+    let fits = if traveler * 0.62 > door { " (too low for the traveler: their houses are closed to them unless they are built bigger)" } else if traveler > door { " (the traveler gets through only by crouching)" } else { "" };
+    format!("Folk height: the tallest people who build here are about {folk:.2} m; the traveler is {traveler:.2} m. Doorways for them are at least {door:.2} m tall and {:.2} m wide{fits}.", (door * 0.5).max(0.8))
+}
+
 fn body_height(db: &Db, name: &str) -> Option<f32> {
     compile(&body_source(db, name)).ok()?.meta.body.map(|b| b.height)
 }
@@ -1083,7 +1114,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         if info.neighbours.is_empty() { "none yet".into() } else { info.neighbours.join("; ") },
         type_list.join("\n")
     );
-    let task = format!("{task}\nSpecies in this universe:\n{}", species_list(&ctx.db));
+    let task = format!("{task}\nSpecies in this universe:\n{}\n{}", species_list(&ctx.db), folk_note(&ctx.db));
     let task = if r == info.start && !info.look.start.is_empty() {
         format!("{task}\n\nThe traveler begins in this region: {}\nPlan the region around it.", info.look.start)
     } else if !info.look.land.is_empty() {
@@ -1118,8 +1149,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         } else {
             String::new()
         };
+        let folk = folk_note(&ctx.db);
         let task = format!(
-            "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): {}\nIt appears in the region \"{rname}\" ({}).\n\n{}",
+            "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): {}\nIt appears in the region \"{rname}\" ({}).\n{folk}\n\n{}",
             s(spec, "description"),
             spec.get("size_m").map(|v| v.to_string()).unwrap_or_else(|| "unspecified".into()),
             spec.get("tags").map(|v| v.to_string()).unwrap_or_else(|| "[]".into()),
@@ -1152,6 +1184,37 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
                     ctx.log(format!("Couldn't build the {name}."));
                 }
             }
+        }
+    }
+    // What the new buildings hold (a sword on its rack, a pot on the shelf),
+    // written too when the world has nothing of that name.
+    let known = |n: &str| new_names.iter().any(|(k, _)| k == n) || info.types.iter().any(|(_, tn, _, _)| tn.to_lowercase() == n);
+    let mut wanted: Vec<(String, String)> = Vec::new();
+    for t in &new_types {
+        for a in &t.ct.meta.anchors {
+            if let Some(h) = &a.holds {
+                let n = h.trim().to_lowercase();
+                if n != "door" && !known(&n) && !wanted.iter().any(|w| w.0 == n) && wanted.len() < 6 {
+                    wanted.push((n, t.ct.meta.name.clone()));
+                }
+            }
+        }
+    }
+    let futs = wanted.iter().map(|(n, b)| {
+        let task = format!(
+            "Object type to write: \"{n}\"\nDescription: a {n}, as it is found in the {b} in the region \"{rname}\" ({}). If it is worked by hand (a blade, an axe, a spade, a hammer, a bucket), give it meta.tool.\nApproximate size (w × h × d, metres): small, under 1 m\nTags: [\"item\"]\nProperties (meta.props): choose fitting ones\n\n{}",
+            s(&plan, "mood"),
+            prompts::TYPE_TASK
+        );
+        let system = system.clone();
+        async move { (n.clone(), build_type(ctx, &system, task, n, &[], &[]).await) }
+    });
+    for (name, res) in futures_util::future::join_all(futs).await {
+        if let Ok(t) = res {
+            let i = new_types.len();
+            new_names.push((name.to_lowercase(), i));
+            new_names.push((t.ct.meta.name.to_lowercase(), i));
+            new_types.push(t);
         }
     }
     // Varieties of species (a warrior village's people, hill folk).
@@ -1313,6 +1376,27 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             n_creatures += 1;
         }
     }
+    // How the settlement's ways look: roads between its doors, and what lights them.
+    let settlement = plan.get("settlement").filter(|v| v.is_object()).map(|st| {
+        let road = match st.get("road") {
+            Some(Value::Null) | Some(Value::Bool(false)) => None,
+            Some(v) => {
+                let c = v.get("color").and_then(|c| c.as_array()).filter(|a| a.len() == 3).map(|a| {
+                    let ch = |i: usize| (a[i].as_f64().unwrap_or(128.0) as f32 / 255.0).clamp(0.0, 1.0);
+                    [ch(0), ch(1), ch(2)]
+                });
+                let half = v.get("width").and_then(|w| w.as_f64()).map(|w| (w as f32 * 0.5).clamp(0.4, 4.0)).unwrap_or(1.1);
+                Some((c, half))
+            }
+            None => Some((None, 1.1)),
+        };
+        let lamps = match st.get("lamps") {
+            Some(Value::String(n)) if !n.trim().is_empty() => resolve(n).or_else(|| resolve("lamppost")),
+            Some(Value::Bool(true)) => resolve("lamppost"),
+            _ => None,
+        };
+        crate::model::Settlement { x: ox + clampl(f(st, "x", 128.0)), z: oz + clampl(f(st, "z", 128.0)), road, lamps }
+    });
     let n_chars = chars.len();
     let ok = ctx
         .commit(CommitRequest {
@@ -1321,7 +1405,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             new_types,
             placements,
             nudge: true,
-            region: Some(RegionCommit { r, plan_json: plan.to_string(), info: region_info_from_plan(&plan.to_string()), characters: chars }),
+            region: Some(RegionCommit { r, plan_json: plan.to_string(), info: region_info_from_plan(&plan.to_string()), characters: chars, settlement }),
             look: None,
         })
         .await

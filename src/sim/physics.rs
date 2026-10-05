@@ -151,14 +151,35 @@ impl Sim {
                     }
                 }
             }
+            // A tool is held by its grip, turned as the hand turns it (at
+            // rest, or through a motion); anything else by its middle.
+            let hold = match (&ty.ct.meta.tool, co) {
+                (Some(tool), None) => {
+                    let fr = match self.actor(h).and_then(|a| a.motion.as_ref()) {
+                        Some(m) if m.tool == id => super::tool::frame(m.name, m.progress(self.t)),
+                        _ => super::tool::REST,
+                    };
+                    Some((super::tool::tool_turn(tool, &fr), Vec3::from_array(tool.grip)))
+                }
+                _ => None,
+            };
+            let dt = self.frame_dt.max(1e-3);
             if let Some(t) = self.things.get_mut(id) {
-                let (c0, _) = t.proxy(&ty);
-                let off = c0 - t.pos;
-                let target = p - off;
-                t.vel = (target - t.pos) / (1.0 / 60.0);
+                let target = match hold {
+                    Some((q, grip)) => {
+                        let yq = glam::Quat::from_rotation_y(yaw);
+                        p - yq * (q * (grip * t.scale))
+                    }
+                    None => {
+                        let (c0, _) = t.proxy(&ty);
+                        p - (c0 - t.pos)
+                    }
+                };
+                t.vel = (target - t.pos) / dt;
                 t.vel = t.vel.clamp_length_max(30.0);
                 t.pos = target;
                 t.yaw = yaw;
+                t.hold_tilt = hold.map(|h| h.0);
                 t.asleep = false;
                 t.rest_t = 0.0;
             }
@@ -244,9 +265,16 @@ impl Sim {
                         impact = -vn;
                         hit_name = Some(s.ty.name().to_string());
                     }
-                    v -= (1.0 + bounce) * vn * n;
+                    // Slow landings don't bounce: a ball comes to rest on a
+                    // shelf, a floor, a bush, as it does on the ground.
+                    let e = if -vn < 1.0 { 0.0 } else { bounce };
+                    v -= (1.0 + e) * vn * n;
                 }
                 contact = true;
+                // Resting on top of it grips like the ground does.
+                if n.y > 0.7 {
+                    grip = grip || friction * (1.25 - bounce).max(0.1) > (1.0 - n.y * n.y).max(0.0).sqrt() / n.y.max(0.05);
+                }
             } else if v.y < -0.5 && !s.ty.builtin && d > r && thrown.is_some() {
                 // Falling through an opening of something (a hoop, a well, a basket…):
                 // the thing is surrounded by the shape on most sides.

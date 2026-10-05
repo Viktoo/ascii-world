@@ -95,7 +95,13 @@ pub fn cull(snap: &WorldSnapshot, cache: &mut ScatterCache, cam: &Camera, aspect
                     if f <= 0.0 {
                         continue;
                     }
-                    push(p.gpu(ty, f), f32::MAX, &mut list);
+                    let mut g = p.gpu(ty, f);
+                    // Lamps and lit windows shine at night.
+                    let l = ty.light();
+                    if l > 0.0 && cache.overlay.lamps > 0.0 && (ty.ct.marks_glow() || ty.radius() * p.scale <= 2.0) {
+                        g.fx[crate::render::FX_GLOW] = (l * 0.9 * cache.overlay.lamps).min(2.0);
+                    }
+                    push(g, f32::MAX, &mut list);
                 }
             }
         }

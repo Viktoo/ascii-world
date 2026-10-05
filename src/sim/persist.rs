@@ -284,6 +284,11 @@ pub fn load(sim: &mut Sim) {
     if let Some(st) = db.kv_get("sim.incidents").and_then(|j| serde_json::from_str(&j).ok()) {
         sim.incidents = st;
     }
+    if let Some(dug) = db.kv_get("sim.dug").and_then(|j| serde_json::from_str::<Vec<crate::terrain::Hollow>>(&j).ok()) {
+        let mut c = sim.snap.terrain.carve.write();
+        c.dug = dug;
+        c.version = c.version.wrapping_add(1);
+    }
     let goals: Vec<String> = db
         .with(|c| {
             let mut st = c.prepare("SELECT json FROM goals ORDER BY id")?;
@@ -329,6 +334,7 @@ pub fn load(sim: &mut Sim) {
 /// Write everything that changed since the last save.
 pub fn save(sim: &mut Sim) {
     let db = sim.db.clone();
+    let dug = if std::mem::take(&mut sim.dug_dirty) { serde_json::to_string(&sim.snap.terrain.carve.read().dug).ok() } else { None };
     let vocab = sim.vocab.clone();
     let mut thing_rows = Vec::new();
     let ids: Vec<i64> = sim.things.map.keys().copied().collect();
@@ -442,6 +448,9 @@ pub fn save(sim: &mut Sim) {
         crate::db::kv_set(tx, "sim.region_seen", &serde_json::to_string(&seen)?)?;
         crate::db::kv_set(tx, "sim.night", &night)?;
         crate::db::kv_set(tx, "sim.incidents", &incidents)?;
+        if let Some(d) = &dug {
+            crate::db::kv_set(tx, "sim.dug", d)?;
+        }
         for (h, rows) in &belief_rows {
             tx.execute("DELETE FROM beliefs WHERE holder = ?1", params![h])?;
             for (k, j) in rows {

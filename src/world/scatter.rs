@@ -114,6 +114,9 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
             if blockers.iter().any(|(c, r)| (Vec3::new(c.x, 0.0, c.z) - pos2).length() < *r) {
                 continue;
             }
+            if big && t.on_road(x, z, 0.8) {
+                continue;
+            }
             let (s0, s1) = scale_range(tag);
             let scale = s0 + (s1 - s0) * hseqf(seed, gx, gz, 6);
             let rot = hseqf(seed, gx, gz, 7) * std::f32::consts::TAU;
@@ -151,6 +154,8 @@ pub struct Overlay {
     pub cell_fx: HashMap<(i32, i32), [f32; 4]>,
     pub cell_gone: std::collections::HashSet<(i32, i32)>,
     pub version: u64,
+    /// How lit the land's lamps are (0 by day … 1 at night).
+    pub lamps: f32,
 }
 
 impl Overlay {

@@ -199,6 +199,10 @@ impl<'s> Cx<'s> {
         let mut body = None;
         let mut fits = None;
         let mut sound: Vec<(String, f32)> = Vec::new();
+        let mut anchors = Vec::new();
+        let mut joint = None;
+        let mut tool = None;
+        let mut hollow = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -255,6 +259,24 @@ impl<'s> Cx<'s> {
                     Expression::ObjectExpression(so) => sound = self.meta_sound(so),
                     _ => self.err(p.span, "meta.sound must be an object of 0–1 numbers, e.g. { hard: 0.2, dry: 0.3, ring: 0 }"),
                 },
+                "anchors" => match &p.value {
+                    Expression::ArrayExpression(a) => anchors = self.meta_anchors(a),
+                    _ => self.err(p.span, "meta.anchors must be an array of { kind, at, ... } objects"),
+                },
+                "joint" => match &p.value {
+                    Expression::ObjectExpression(jo) => joint = self.meta_joint(jo),
+                    _ => self.err(p.span, "meta.joint must be an object { axis, at, open }"),
+                },
+                "tool" => match &p.value {
+                    Expression::ObjectExpression(to) => tool = self.meta_tool(to),
+                    _ => self.err(p.span, "meta.tool must be an object { grip, tip, motions }"),
+                },
+                "hollow" => match literal_nums(&p.value) {
+                    Some(v) if v.len() == 3 && v.iter().all(|x| x.is_finite()) && v[0] > 0.0 && v[1] > 0.0 && v[0] <= 20.0 && v[1] <= 20.0 && v[2] <= 0.0 && v[2] >= -12.0 => {
+                        hollow = Some(Hollow { half: [v[0], v[1]], floor: v[2] })
+                    }
+                    _ => self.err(p.span, "meta.hollow must be [hx, hz, floor]: the half-size of the ground taken away (each 0 < h <= 20 m) and the local height it is lowered to (-12 <= floor <= 0)"),
+                },
                 "props" => match &p.value {
                     Expression::ObjectExpression(po) => props = self.meta_props(po),
                     _ => self.err(p.span, "meta.props must be an object of numbers, e.g. { mass: 2, burns: 0.5 }"),
@@ -309,7 +331,191 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.body.height and radius must fit inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits })
+        let inside = |q: [f32; 3], m: f32| (0..3).all(|i| q[i].abs() <= bounds[i] + m);
+        for a in &anchors {
+            if !inside(a.at, 0.6) || a.to.is_some_and(|t| !inside(t, 0.6)) {
+                self.err(o.span, format!("meta.anchors: the {} at {:?} lies outside meta.bounds", a.kind, a.at));
+            }
+        }
+        if let Some(j) = &joint {
+            if !inside(j.at, 0.05) {
+                self.err(o.span, "meta.joint.at must lie inside meta.bounds");
+            }
+        }
+        if let Some(t) = &tool {
+            if !inside(t.grip, 0.05) || !inside(t.tip, 0.05) {
+                self.err(o.span, "meta.tool.grip and tip must lie inside meta.bounds");
+            }
+        }
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow })
+    }
+
+    /// A key of a small meta object.
+    fn obj_key(&mut self, p: &js::ObjectProperty, what: &str) -> Option<String> {
+        match &p.key {
+            js::PropertyKey::StaticIdentifier(id) if !p.computed => Some(id.name.as_str().to_string()),
+            js::PropertyKey::StringLiteral(s) => Some(s.value.as_str().to_string()),
+            _ => {
+                self.err(p.span, format!("{what} keys must be plain names"));
+                None
+            }
+        }
+    }
+
+    fn point(&mut self, p: &js::ObjectProperty, what: &str) -> Option<[f32; 3]> {
+        match literal_nums(&p.value) {
+            Some(v) if v.len() == 3 && v.iter().all(|x| x.is_finite() && x.abs() <= 80.0) => Some([v[0], v[1], v[2]]),
+            _ => {
+                self.err(p.span, format!("{what} must be [x, y, z] in metres (local)"));
+                None
+            }
+        }
+    }
+
+    /// `meta.anchors`: [{ kind, at, face?, size?, to?, holds? }, …]
+    fn meta_anchors(&mut self, a: &js::ArrayExpression) -> Vec<Anchor> {
+        let mut out = Vec::new();
+        for el in a.elements.iter() {
+            let Some(Expression::ObjectExpression(o)) = el.as_expression() else {
+                self.err(a.span, "meta.anchors must be an array of { kind, at, ... } objects");
+                continue;
+            };
+            if out.len() >= 24 {
+                self.err(a.span, "meta.anchors may hold at most 24 anchors");
+                break;
+            }
+            let mut kind = None;
+            let mut at = None;
+            let mut face = 0.0;
+            let mut size = None;
+            let mut to = None;
+            let mut holds = None;
+            for prop in o.properties.iter() {
+                let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+                let Some(key) = self.obj_key(p, "meta.anchors") else { continue };
+                match key.as_str() {
+                    "kind" => match &p.value {
+                        Expression::StringLiteral(s) if ANCHOR_KINDS.contains(&s.value.as_str()) => kind = Some(s.value.to_string()),
+                        _ => self.err(p.span, format!("an anchor's kind is one of {}", ANCHOR_KINDS.join(", "))),
+                    },
+                    "at" => at = self.point(p, "an anchor's at"),
+                    "to" => to = self.point(p, "an anchor's to"),
+                    "face" => match literal_num(&p.value) {
+                        Some(v) if v.is_finite() => face = v.rem_euclid(360.0),
+                        _ => self.err(p.span, "an anchor's face is a number of degrees (0 = +z, 90 = +x)"),
+                    },
+                    "size" => match literal_nums(&p.value) {
+                        Some(v) if v.len() == 2 && v.iter().all(|x| x.is_finite() && *x > 0.1 && *x <= 20.0) => size = Some([v[0], v[1]]),
+                        _ => self.err(p.span, "an anchor's size is [width, height] in metres"),
+                    },
+                    "holds" => match &p.value {
+                        Expression::StringLiteral(s) if !s.value.trim().is_empty() => holds = Some(s.value.trim().to_lowercase().chars().take(48).collect()),
+                        _ => self.err(p.span, "an anchor's holds is the name of a type"),
+                    },
+                    "name" => {}
+                    _ => self.err(p.span, format!("unknown anchor key '{key}' (kind, at, face, size, to, holds)")),
+                }
+            }
+            match (kind, at) {
+                (Some(kind), Some(at)) => {
+                    if kind == "door" && size.is_none() {
+                        self.err(o.span, "a door anchor needs size: [width, height] of the opening");
+                        continue;
+                    }
+                    if kind == "stairs" && to.is_none() {
+                        self.err(o.span, "a stairs anchor needs to: [x, y, z], the top (at is the foot)");
+                        continue;
+                    }
+                    if matches!(kind.as_str(), "slot" | "part") && holds.is_none() {
+                        self.err(o.span, format!("a {kind} anchor needs holds: the name of what is there"));
+                        continue;
+                    }
+                    out.push(Anchor { kind, at, face, size, to, holds });
+                }
+                _ => self.err(o.span, "each anchor needs kind and at"),
+            }
+        }
+        out
+    }
+
+    /// `meta.joint`: { axis: "y" | [x, y, z], at: [x, y, z], open: degrees }
+    fn meta_joint(&mut self, o: &js::ObjectExpression) -> Option<Joint> {
+        let mut axis = None;
+        let mut at = None;
+        let mut open = None;
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let Some(key) = self.obj_key(p, "meta.joint") else { continue };
+            match key.as_str() {
+                "axis" => {
+                    axis = match &p.value {
+                        Expression::StringLiteral(s) => match s.value.as_str() {
+                            "x" => Some([1.0, 0.0, 0.0]),
+                            "y" => Some([0.0, 1.0, 0.0]),
+                            "z" => Some([0.0, 0.0, 1.0]),
+                            _ => None,
+                        },
+                        v => literal_nums(v).filter(|v| v.len() == 3 && v.iter().all(|x| x.is_finite())).and_then(|v| {
+                            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                            (l > 1e-3).then(|| [v[0] / l, v[1] / l, v[2] / l])
+                        }),
+                    };
+                    if axis.is_none() {
+                        self.err(p.span, "meta.joint.axis is \"x\", \"y\", \"z\" or [x, y, z]");
+                    }
+                }
+                "at" => at = self.point(p, "meta.joint.at"),
+                "open" => match literal_num(&p.value) {
+                    Some(v) if v.is_finite() && v.abs() <= 180.0 && v.abs() >= 5.0 => open = Some(v.to_radians()),
+                    _ => self.err(p.span, "meta.joint.open is how far it turns open, in degrees (5 to 180, or negative the other way)"),
+                },
+                _ => self.err(p.span, format!("unknown meta.joint key '{key}' (axis, at, open)")),
+            }
+        }
+        match (axis, at, open) {
+            (Some(axis), Some(at), Some(open)) => Some(Joint { axis, at, open }),
+            _ => {
+                self.err(o.span, "meta.joint needs axis, at and open");
+                None
+            }
+        }
+    }
+
+    /// `meta.tool`: { grip: [x, y, z], tip: [x, y, z], motions: [...] }
+    fn meta_tool(&mut self, o: &js::ObjectExpression) -> Option<Tool> {
+        let mut grip = None;
+        let mut tip = None;
+        let mut motions = Vec::new();
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let Some(key) = self.obj_key(p, "meta.tool") else { continue };
+            match key.as_str() {
+                "grip" => grip = self.point(p, "meta.tool.grip"),
+                "tip" => tip = self.point(p, "meta.tool.tip"),
+                "motions" => match literal_strings(&p.value) {
+                    Some(v) => {
+                        for m in v {
+                            if MOTIONS.contains(&m.as_str()) {
+                                if !motions.contains(&m) {
+                                    motions.push(m);
+                                }
+                            } else {
+                                self.err(p.span, format!("unknown motion '{m}' (use {})", MOTIONS.join(", ")));
+                            }
+                        }
+                    }
+                    None => self.err(p.span, "meta.tool.motions is an array of motion names"),
+                },
+                _ => self.err(p.span, format!("unknown meta.tool key '{key}' (grip, tip, motions)")),
+            }
+        }
+        match (grip, tip) {
+            (Some(grip), Some(tip)) if !motions.is_empty() => Some(Tool { grip, tip, motions }),
+            _ => {
+                self.err(o.span, format!("meta.tool needs grip, tip and at least one motion ({})", MOTIONS.join(", ")));
+                None
+            }
+        }
     }
 
     fn meta_body(&mut self, o: &js::ObjectExpression) -> Option<Body> {

@@ -28,6 +28,11 @@ pub fn thing_inst(t: &Thing, ty: &TypeEntry, fx: [f32; 4]) -> GpuInst {
     };
     g.set_state(&t.state);
     g.cuts = t.gpu_cuts();
+    let q = t.hold_tilt.unwrap_or_else(|| t.tilt());
+    if q != glam::Quat::IDENTITY {
+        g.set_tilt(q);
+    }
+    super::joint::pose(&mut g, t, ty);
     g
 }
 
@@ -165,7 +170,29 @@ impl Sim {
             if hover_thing == Some(t.id) {
                 fx[FX_HIGHLIGHT] = 0.7;
             }
+            let tool = ty.ct.meta.tool.as_ref();
             match eye.filter(|_| t.holder == Some(ActorId::Player) && t.co_holder.is_none()) {
+                Some(c) if tool.is_some() => {
+                    // A tool in the view: held by its grip low and right,
+                    // turned through its motion as the arm would.
+                    let tool = tool.expect("tool");
+                    let (f, r, u) = c.basis();
+                    let len = ((Vec3::from_array(tool.tip) - Vec3::from_array(tool.grip)).length() * t.scale).max(0.05);
+                    let k = (0.55 / len).min(1.0);
+                    let fr = match self.player.motion.as_ref() {
+                        Some(m) if m.tool == t.id => super::tool::frame(m.name, m.progress(self.t)),
+                        _ => super::tool::REST,
+                    };
+                    let mut shown = t.clone();
+                    shown.scale = t.scale * k;
+                    shown.yaw = c.yaw;
+                    // Pitch with the view, so it stays in sight looking up or down.
+                    let q = glam::Quat::from_rotation_x(-c.pitch) * super::tool::tool_turn(tool, &fr);
+                    let hand = c.pos + f * (0.32 + 0.25 * fr.reach) + r * (0.22 - 0.1 * fr.reach) - u * (0.26 - 0.18 * fr.raise);
+                    shown.pos = hand - glam::Quat::from_rotation_y(c.yaw) * (q * (Vec3::from_array(tool.grip) * shown.scale));
+                    shown.hold_tilt = Some(q);
+                    insts.push(thing_inst(&shown, ty, fx));
+                }
                 Some(c) => {
                     // The view-model: in front, low right, scaled to fit.
                     let (f, r, u) = c.basis();
@@ -207,6 +234,31 @@ impl Sim {
                 insts.push(g);
                 let flicker = 0.85 + 0.15 * ((self.t as f32 * 9.0 + b.seed).sin() * (self.t as f32 * 5.3 + b.seed * 0.3).cos());
                 lights.push((*d, PointLight { pos: p + Vec3::Y * 0.5 * s, color: Vec3::new(1.0, 0.55, 0.22), intensity: (0.5 + 0.7 * b.fire * (b.size / 1.5).min(2.0)) * flicker, reach: 6.0 + 5.0 * s.min(4.0) }));
+            }
+        }
+        // Placed lamps and lit windows at night, and their light anchors.
+        let lit = self.cache.overlay.lamps;
+        if lit > 0.05 {
+            let c = crate::world::chunk_of(cam.x, cam.z);
+            for p in self.snap.near_chunk(c) {
+                if self.cache.overlay.hidden.contains(&p.id) {
+                    continue;
+                }
+                let Some(ty) = self.snap.type_of(p.type_id) else { continue };
+                let l = ty.light();
+                let anchors: Vec<Vec3> = ty.ct.meta.anchors.iter().filter(|a| a.kind == "light").map(|a| Vec3::from_array(a.at)).collect();
+                if l <= 0.0 && anchors.is_empty() {
+                    continue;
+                }
+                let g = p.gpu(ty, 1.0);
+                let spots: Vec<Vec3> = if anchors.is_empty() { vec![g.from_local(Vec3::new(0.0, ty.top * 0.9, 0.0))] } else { anchors.iter().map(|a| g.from_local(*a)).collect() };
+                let l = if l > 0.0 { l.min(2.0) } else { 0.8 };
+                for s in spots {
+                    let d = (s - cam).length();
+                    if d < 60.0 {
+                        lights.push((d, PointLight { pos: s, color: Vec3::new(1.0, 0.8, 0.52), intensity: 0.8 * l * lit, reach: 7.0 + 5.0 * l }));
+                    }
+                }
             }
         }
         // Lights dim near the corrupted.

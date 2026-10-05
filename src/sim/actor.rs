@@ -404,6 +404,19 @@ pub struct Actor {
     pub alt: f32,
     /// Sitting on another body that carries it.
     pub riding: Option<ActorId>,
+    /// Up-and-down speed (m/s): jumping, falling.
+    pub vy: f32,
+    /// Standing on something (the ground, a floor, a stair).
+    pub grounded: bool,
+    /// How far down it is crouched (0 standing … 1 fully), and whether it wants to be.
+    pub crouch: f32,
+    pub crouching: bool,
+    /// Wants to run rather than walk.
+    pub running: bool,
+    /// Working a held tool: a swing, a chop, a dig (see `tool`).
+    pub motion: Option<super::tool::MotionRun>,
+    /// The support its last step found under it (where, and how high).
+    pub support: Option<(Vec3, f32)>,
 }
 
 /// Bit mask of the roles a body lists.
@@ -422,7 +435,7 @@ pub const HUMAN_ROLES: u8 = 0b0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None }
+        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None }
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -503,7 +516,20 @@ impl Actor {
     }
 
     pub fn eye(&self) -> Vec3 {
-        self.pos + Vec3::Y * self.dims.eye
+        self.pos + Vec3::Y * self.eye_height()
+    }
+
+    /// How far crouching lowers a body (a fraction of its height).
+    pub const CROUCH_DROP: f32 = 0.42;
+
+    /// How tall it stands right now.
+    pub fn stand_height(&self) -> f32 {
+        self.dims.height * (1.0 - Self::CROUCH_DROP * self.crouch)
+    }
+
+    /// Eye height above the feet right now.
+    pub fn eye_height(&self) -> f32 {
+        self.dims.eye * (1.0 - Self::CROUCH_DROP * self.crouch)
     }
 
     /// Turn towards a direction at most `rate` radians.
@@ -558,6 +584,10 @@ impl Actor {
             goal[R_RAISE] = 0.5 + 0.45 * beat;
             goal[SPREAD] = 0.8;
         }
+        if self.crouch > 0.01 {
+            goal[CROUCH] = goal[CROUCH].max(self.crouch * 0.8);
+            goal[LEAN] = goal[LEAN].max(self.crouch * 0.2);
+        }
         if let Some(g) = &self.gesture {
             let u = ((t - g.t0) as f32 / g.dur).clamp(0.0, 1.0);
             let gp = g.kind.for_body(&self.species).pose(u, t as f32);
@@ -592,6 +622,10 @@ impl Actor {
         let k = (dt * 8.0).min(1.0);
         for i in 0..8 {
             self.pose[i] += (goal[i] - self.pose[i]) * k;
+        }
+        // A tool's motion moves the arm at its own pace.
+        if let Some(m) = &self.motion {
+            super::tool::arm_pose(m, t, &mut self.pose);
         }
     }
 }
