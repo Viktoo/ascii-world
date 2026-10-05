@@ -1841,6 +1841,31 @@ fn unused_reshape_versions_are_left_out_of_the_scene() {
     assert!(has(plain) && has(made), "other types stay even unused");
 }
 
+/// A reshaped thing's type keeps its source's tags, but it is that one
+/// thing: the land never scatters more of it ("all the boulders changed").
+#[test]
+fn reshaped_types_never_scatter() {
+    let w = world_with("noscatter", 58, marsh());
+    let src = fixture("sims/hut.js").replace(r#"tags: ["building"]"#, r#"tags: ["base", "bush"]"#);
+    let plain = add_type(&w, &src);
+    let ct = compile(&src).unwrap();
+    let rep = probe(&ct).unwrap();
+    let meta = serde_json::json!({ "name": ct.meta.name, "bounds": ct.meta.bounds, "tags": ct.meta.tags, "bottom": rep.bottom, "top": rep.top }).to_string();
+    let reshaped = w
+        .db
+        .with(|c| {
+            let v = db::add_version(c, Some(w.version), "interp", "reshaped: wooden hut with moss", None)?;
+            db::add_type(c, Some(v), "wooden hut with moss", &src, &meta, "ok", "")
+        })
+        .unwrap() as u32;
+    // In use (the one thing it was made for), so it is in the scene.
+    place(&w, reshaped, dry_spot(&w, 9.0, 0.3), 0.0);
+    let s = session(&w, 31, None);
+    let bush = s.sim.snap.scatter.get("bush").cloned().unwrap_or_default();
+    assert!(bush.contains(&plain), "a base type scatters: {bush:?}");
+    assert!(!bush.contains(&reshaped), "a reshaped one does not: {bush:?}");
+}
+
 // ------------------------------------------------------------------ species
 
 /// A being of some species (a dog, a horse…) living near `home`.
@@ -4695,4 +4720,182 @@ fn render_village_png() {
     s.sim.step(0.05);
     let inside = look(h + Vec3::new(1.5, 1.6, 1.5), h + Vec3::new(-1.0, 1.0, -2.5));
     png_of(&mut s, &snap, &gpu, inside, &format!("{dir}/pocket-village-inside.png"));
+}
+
+/// Hands on animals: a cat that doesn't know the traveler darts off when
+/// they reach for it; a slow tortoise is caught but squirms free and goes;
+/// a cat that likes them is petted, settles in their arms, is carried
+/// along and set down. The use key means petting an animal close by,
+/// riding a mount that lets you, waving at a person far off.
+#[test]
+fn petting_and_carrying_animals() {
+    let w = world("carry", 61);
+    w.db.with(|c| db::put_species(c, "tortoise", r#"{"name":"tortoise","body":"quadruped","size":0.25,"mind":"simple","speech":"none",
+        "diet":{"meat":0.0,"plants":1.0},"temper":{"bold":0.2,"wary":0.6,"playful":0.1,"tame":0.3},"move":{"walk":0.2,"run":0.4},"mass":3}"#)).unwrap();
+    let a = dry_spot(&w, 12.0, 0.4);
+    let mog = add_being(&w, "Mog", "cat", &[], a);
+    let tib = add_being(&w, "Tib", "cat", &[], a + Vec3::new(6.0, 0.0, 0.0));
+    let shell = add_being(&w, "Shelly", "tortoise", &[], a + Vec3::new(-6.0, 0.0, 0.0));
+    let bram = add_being(&w, "Bram", "horse", &[], a + Vec3::new(0.0, 0.0, 12.0));
+    let ola = add_char(&w, "Ola", "kind", &[], a + Vec3::new(0.0, 0.0, -14.0));
+    let mut s = session(&w, 61, None);
+    calm(&mut s);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    let (m, t, sh, b, o) = (ActorId::Npc(mog), ActorId::Npc(tib), ActorId::Npc(shell), ActorId::Npc(bram), ActorId::Npc(ola));
+    let me = ActorId::Player;
+    let beside = |s: &Session, x: ActorId| {
+        let p = s.sim.actor(x).unwrap().pos;
+        Vec3::new(p.x - 0.9, s.sim.snap.terrain.height(p.x - 0.9, p.z), p.z)
+    };
+    // A strange cat won't be picked up: it is quicker than a reaching hand.
+    s.sim.player.pos = beside(&s, t);
+    let r = s.sim.act(me, Action::Hold { target: Target::Actor(t) });
+    assert!(r.is_err(), "{r:?}");
+    assert!(s.sim.actor(t).unwrap().carried_by.is_none());
+    assert!(!events(&s.sim, "dodged").is_empty() || !events(&s.sim, "bit").is_empty(), "it got away");
+    // A slow tortoise is caught, squirms free in a few seconds and goes.
+    s.sim.player.pos = beside(&s, sh);
+    s.sim.act(me, Action::Hold { target: Target::Actor(sh) }).unwrap();
+    assert_eq!(s.sim.carried_of(me), Some(sh));
+    assert!(s.sim.player.held.is_none(), "an animal in the arms is not a thing in the hand");
+    assert!(s.sim.act(me, Action::Hold { target: Target::Actor(m) }).is_err(), "arms are full");
+    s.run(8.0, 0.1);
+    assert!(s.sim.carried_of(me).is_none(), "it got free");
+    assert!(!events(&s.sim, "escaped").is_empty());
+    let tp = s.sim.actor(sh).unwrap().pos;
+    assert!((tp.y - s.sim.snap.terrain.height(tp.x, tp.z)).abs() < 0.3, "on the ground again");
+    // A cat that likes the traveler: petted, then carried along.
+    s.sim.social.bond(m, me, 0.5, s.sim.t);
+    s.sim.player.pos = beside(&s, m);
+    assert_eq!(s.sim.approach(me, m), super::carry::Approach::Pet);
+    let before = s.sim.social.affection(m, me);
+    s.sim.act(me, Action::Pet { target: Target::Actor(m) }).unwrap();
+    assert!(s.sim.social.affection(m, me) > before, "petting warms it");
+    assert!(!events(&s.sim, "petted").is_empty());
+    assert!(s.sim.act(me, Action::Pet { target: Target::Actor(o) }).is_err(), "a person isn't petted");
+    s.sim.act(me, Action::Hold { target: Target::Actor(m) }).unwrap();
+    let start = s.sim.player.pos;
+    for _ in 0..40 {
+        s.sim.walk(me, Vec3::new(0.0, 0.0, 0.1));
+        s.step(0.1);
+    }
+    assert_eq!(s.sim.carried_of(me), Some(m), "it stays in the arms");
+    let cp = s.sim.actor(m).unwrap().pos;
+    let pp = s.sim.player.pos;
+    assert!((pp - start).length() > 2.0, "they walked");
+    assert!(Vec3::new(cp.x - pp.x, 0.0, cp.z - pp.z).length() < 1.2 && cp.y > pp.y + 0.3, "carried in front, off the ground");
+    assert!(s.sim.check_invariants().is_empty(), "{:?}", s.sim.check_invariants());
+    s.sim.act(me, Action::Drop).unwrap();
+    assert!(s.sim.carried_of(me).is_none());
+    let cp = s.sim.actor(m).unwrap().pos;
+    assert!((cp.y - s.sim.snap.terrain.height(cp.x, cp.z)).abs() < 0.3, "set down on the ground");
+    // A horse that knows them is ridden; a person far off is waved at.
+    s.sim.social.bond(b, me, 0.6, s.sim.t);
+    s.sim.player.pos = beside(&s, b);
+    assert_eq!(s.sim.approach(me, b), super::carry::Approach::Ride);
+    assert_eq!(s.sim.approach(me, o), super::carry::Approach::Greet(super::actor::GestureKind::Wave));
+    let r = s.sim.act(me, s.sim.approach_action(me, b, None).unwrap());
+    assert!(r.is_ok() && s.sim.player.riding == Some(b), "{r:?}");
+    sound(&s);
+}
+
+/// Vehicles: a cart is got into, driven along the ground (turning only
+/// when it rolls), stopped by a hut it is driven at, and got out of beside
+/// it; a boat floats and keeps to the water.
+#[test]
+fn carts_drive_and_boats_float() {
+    let w = world("vehicles", 62);
+    let cart = add_type(&w, &fixture("vehicles/cart.js"));
+    let hut = add_type(&w, &fixture("sims/hut.js"));
+    let a = dry_spot(&w, 14.0, 1.1);
+    let cid = place(&w, cart, a, 0.0);
+    // A hut 14 m ahead (the cart faces +z).
+    let hp = ground(&w, a.x, a.z + 14.0);
+    place(&w, hut, hp, 0.0);
+    let mut s = session(&w, 62, None);
+    calm(&mut s);
+    let me = ActorId::Player;
+    s.sim.player.pos = ground(&w, a.x + 1.6, a.z);
+    assert!(s.sim.target_drive(&Target::Instance(cid)).is_some());
+    let r = s.sim.act(me, Action::Ride { target: Target::Instance(cid) });
+    assert!(r.is_ok(), "{r:?}");
+    let id = s.sim.player.aboard.expect("aboard");
+    // Standing still, steering doesn't turn it.
+    let yaw0 = s.sim.things.get(id).unwrap().yaw;
+    for _ in 0..10 {
+        s.sim.steer(me, 0.0, 1.0, 0.0, 0.1);
+        s.step(0.1);
+    }
+    assert!((s.sim.things.get(id).unwrap().yaw - yaw0).abs() < 1e-3, "no turning on the spot");
+    // Rolls forward, the traveler in its seat, its wheels on the ground.
+    let start = s.sim.things.get(id).unwrap().pos;
+    let solids = s.sim.solids_near(hp, 6.0);
+    assert!(!solids.is_empty());
+    let mut top: f32 = 0.0;
+    for _ in 0..200 {
+        s.sim.steer(me, 1.0, 0.0, 0.0, 0.1);
+        s.step(0.1);
+        let th = s.sim.things.get(id).unwrap().clone();
+        let ty = s.sim.snap.type_of(th.type_id).unwrap().clone();
+        let feet = th.pos.y + ty.bottom * th.scale;
+        let g = s.sim.snap.terrain.height(th.pos.x, th.pos.z);
+        assert!((feet - g).abs() < 0.5, "on the ground ({feet:.2} vs {g:.2})");
+        let c = super::render::thing_inst(&th, &ty, [0.0; 4]).center();
+        for sd in &solids {
+            assert!(sd.inst.sdf(&sd.ty.ct, c) > -0.2, "never into the hut");
+        }
+        top = top.max(s.sim.vehicle_speed(me).unwrap());
+        let p = s.sim.player.pos;
+        assert!(Vec3::new(p.x - th.pos.x, 0.0, p.z - th.pos.z).length() < 1.5 && p.y > g, "sitting in it");
+    }
+    let end = s.sim.things.get(id).unwrap().pos;
+    assert!(top > 4.0, "it got up to speed ({top:.1} m/s)");
+    assert!((end - start).length() > 6.0 && (end - start).length() < 14.0, "it rolled up to the hut and stopped ({:.1} m)", (end - start).length());
+    assert!(s.sim.vehicle_speed(me).unwrap().abs() < 0.5, "stopped by it");
+    // Turning while rolling (backing away from the hut).
+    for _ in 0..20 {
+        s.sim.steer(me, -1.0, 1.0, 0.0, 0.1);
+        s.step(0.1);
+    }
+    assert!((s.sim.things.get(id).unwrap().yaw - yaw0).abs() > 0.1, "it turned");
+    // Out, beside it, on the ground.
+    s.sim.act(me, Action::Dismount).unwrap();
+    assert!(s.sim.player.aboard.is_none());
+    let p = s.sim.player.pos;
+    let c = s.sim.things.get(id).unwrap().pos;
+    let d = Vec3::new(p.x - c.x, 0.0, p.z - c.z).length();
+    assert!(d > 0.8 && d < 4.0 && (p.y - s.sim.snap.terrain.height(p.x, p.z)).abs() < 0.3, "beside it ({d:.1} m)");
+    s.run(1.0, 0.1);
+    assert!((s.sim.things.get(id).unwrap().pos - c).length() < 0.3, "it stays where it was left");
+    assert!(s.sim.check_invariants().is_empty(), "{:?}", s.sim.check_invariants());
+    // A boat on deep water floats there, and won't go up onto land.
+    let wm = world("boat", 63);
+    let boat = add_type(&wm, &fixture("vehicles/boat.js"));
+    let deep = (0..6000).map(|i| {
+        let (ang, r) = (i as f32 * 2.399, (i as f32).sqrt() * 8.0);
+        wm.spawn + Vec3::new(ang.cos() * r, 0.0, ang.sin() * r)
+    }).find(|p| wm.terrain.height(p.x, p.z) < WATER_LEVEL - 0.6);
+    let Some(dp) = deep else {
+        eprintln!("no deep water near the spawn; boat part skipped");
+        return;
+    };
+    let bid = place(&wm, boat, dp, 0.0);
+    let mut s = session(&wm, 63, None);
+    calm(&mut s);
+    s.sim.player.pos = Vec3::new(dp.x + 1.4, wm.terrain.height(dp.x + 1.4, dp.z), dp.z);
+    s.sim.act(me, Action::Ride { target: Target::Instance(bid) }).unwrap();
+    let id = s.sim.player.aboard.unwrap();
+    for _ in 0..300 {
+        s.sim.steer(me, 1.0, 0.3, 0.0, 0.1);
+        s.step(0.1);
+        let th = s.sim.things.get(id).unwrap();
+        let g = s.sim.snap.terrain.height(th.pos.x, th.pos.z);
+        assert!(g < WATER_LEVEL + 0.25, "keeps to the water ({g:.2})");
+    }
+    let th = s.sim.things.get(id).unwrap().clone();
+    let ty = s.sim.snap.type_of(th.type_id).unwrap().clone();
+    let feet = th.pos.y + ty.bottom * th.scale;
+    let g = s.sim.snap.terrain.height(th.pos.x, th.pos.z);
+    assert!(g > WATER_LEVEL - 0.5 || (feet - WATER_LEVEL).abs() < 0.4, "afloat ({feet:.2} at water {WATER_LEVEL:.2})");
+    assert!((th.pos - dp).length() > 3.0, "it went somewhere ({:.1} m)", (th.pos - dp).length());
 }

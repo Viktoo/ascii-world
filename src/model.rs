@@ -400,6 +400,8 @@ impl WorldModel {
     }
 
     /// Scatter type ids per tag: universe types replace built-ins for a tag.
+    /// A reshaped thing's one-off type keeps its source's tags ("base",
+    /// "rock") but is that one thing only: it never scatters.
     fn scatter_map(&self, types: &[&TypeRec]) -> HashMap<String, Vec<u32>> {
         let mut tags: HashSet<String> = HashSet::new();
         for b in &self.look.biomes {
@@ -407,7 +409,7 @@ impl WorldModel {
         }
         let mut m = HashMap::new();
         for tag in tags {
-            let has = |t: &&&TypeRec| t.entry.has_tag(&tag) && t.entry.has_tag("base");
+            let has = |t: &&&TypeRec| t.entry.has_tag(&tag) && t.entry.has_tag("base") && !t.version.is_some_and(|v| self.reshape_versions.contains(&v));
             let custom: Vec<u32> = types.iter().filter(has).map(|t| t.entry.id).collect();
             let ids = if !custom.is_empty() {
                 custom
@@ -603,7 +605,10 @@ impl WorldModel {
                 y
             }
         };
-        let water_ok = entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
+        // A boat set on water floats on it (as `vehicle` keeps it).
+        let afloat = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "water");
+        let y = if afloat && pl.y.is_none() && ground < WATER_LEVEL - 0.1 { WATER_LEVEL - ((entry.top - entry.bottom) * scale * 0.25).clamp(0.1, 1.0) - entry.bottom * scale } else { y };
+        let water_ok = afloat || entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
         if ground < WATER_LEVEL - 0.6 && !water_ok {
             return Err(format!("{label} would stand in deep water at ({:.0}, {:.0})", pl.x, pl.z));
         }
