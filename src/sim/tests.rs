@@ -4969,3 +4969,32 @@ fn carts_drive_and_boats_float() {
     assert!(g > WATER_LEVEL - 0.5 || (feet - WATER_LEVEL).abs() < 0.4, "afloat ({feet:.2} at water {WATER_LEVEL:.2})");
     assert!((th.pos - dp).length() > 3.0, "it went somewhere ({:.1} m)", (th.pos - dp).length());
 }
+
+/// A thin rake stem is easy to point at: loose things are padded along their
+/// shape, so a ray a few cm off the stem still picks it, but one well clear
+/// of it does not. And a loose thing with no use of its own is one the use
+/// key just picks up; a log too heavy to lift is not.
+#[test]
+fn a_thin_stem_is_easy_to_point_at_and_e_picks_it_up() {
+    let w = world("thin", 41);
+    let rake = add_type(&w, r#"export const meta = { name: "rake", bounds: [0.8, 0.02, 0.02], tags: ["wood"], props: { mass: 1 } };
+export function sdf(x, y, z, k) { return capsule(x, y, z, -0.8, 0, 0, 0.8, 0, 0, 0.012); }
+export function color(x, y, z, k) { return rgb(120, 90, 60); }"#);
+    let log = add_type(&w, &fixture("sims/log.js"));
+    let mut s = session(&w, 3, None);
+    let p = s.sim.player.pos;
+    let r = s.sim.spawn_thing(rake, p + Vec3::new(2.0, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    let l = s.sim.spawn_thing(log, p + Vec3::new(-3.0, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    let c = {
+        let t = s.sim.things.get(r).unwrap();
+        let ty = s.sim.snap.type_of(t.type_id).unwrap().clone();
+        super::render::thing_inst(t, &ty, [0.0; 4]).center()
+    };
+    let down = Vec3::new(0.0, -1.0, 0.0);
+    let near = s.sim.pick(c + Vec3::new(0.3, 2.0, 0.045), down, 10.0, 0.0, Some(ActorId::Player));
+    assert_eq!(near.map(|p| p.target), Some(Target::Thing(r)), "4.5 cm off the stem still counts");
+    let far = s.sim.pick(c + Vec3::new(0.3, 2.0, 0.25), down, 10.0, 0.0, Some(ActorId::Player));
+    assert_ne!(far.map(|p| p.target), Some(Target::Thing(r)), "25 cm off is the ground");
+    assert!(s.sim.just_to_pick_up(&Target::Thing(r)));
+    assert!(!s.sim.just_to_pick_up(&Target::Thing(l)), "too heavy");
+}

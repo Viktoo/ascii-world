@@ -171,6 +171,8 @@ pub struct App {
     inspect: bool,
     /// What the middle of the view points at.
     pub pointed: Option<Picked>,
+    /// The pointed thing is loose with no use of its own (e picks it up).
+    pointed_loose: bool,
     last_pick: Instant,
     /// The loading screen, until the world around you is made.
     loading: Option<loading::Loading>,
@@ -268,6 +270,7 @@ impl App {
             genesis_pending: false,
             inspect: false,
             pointed: None,
+            pointed_loose: false,
             last_pick: Instant::now(),
             loading: None,
             achievements,
@@ -280,7 +283,7 @@ impl App {
         app.sync_sound();
         app.unstick();
         let name = app.snap.look.name.clone();
-        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use, g grab, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
+        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use or pick up, g grab/drop, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
             None => {
@@ -619,9 +622,11 @@ impl App {
                     _ => Action::Use { target: None, on: None, at: None },
                 }
             }
+            // Empty hands at a loose thing with no use of its own: pick it up.
+            (None, Some(t)) if self.pointed_loose => Action::Hold { target: t },
             (None, Some(t)) => Action::Use { target: Some(t), on: None, at },
             (None, None) => {
-                self.say(None, "Nothing to use there. (Point at something; g picks things up.)", DIM);
+                self.say(None, "Nothing to use there. (Point at something; e or g picks things up.)", DIM);
                 return;
             }
         };
@@ -784,7 +789,7 @@ impl App {
                     "/ <anything> — do or make anything, at what the middle of the view points at:",
                     "  /a lighthouse on that hill · /punch a hole here · /add the stick to this wall (stick in hand) · /rub the stone on the lantern",
                     "/undo — undo the last thing you created   /history — list world versions",
-                    "e use (opens doors; swings, chops or digs with a held tool; pets, rides, greets or feeds who is in front; gets into a cart or car) · g pick up / put down (small animals too, if they let you) · f throw · y/n answer",
+                    "e use (opens doors; swings, chops or digs with a held tool; pets, rides, greets or feeds who is in front; gets into a cart or car) · e also picks up a loose thing when your hands are empty · g pick up / put down (small animals too, if they let you) · f throw · y/n answer",
                     "/wave /bow /nod /cheer /dance /sit /hug NAME /kiss NAME /handshake NAME /highfive NAME · /gesture ANY [NAME]",
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/ride NAME · /drive (the vehicle in view) · /dismount · /pet NAME · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
@@ -1218,6 +1223,11 @@ impl App {
         if picked.as_ref().map(|p| (&p.target, p.name.as_str())) != self.pointed.as_ref().map(|p| (&p.target, p.name.as_str())) {
             self.dirty = true;
         }
+        let loose = picked.as_ref().is_some_and(|p| p.dist < crate::sim::actor::REACH + 1.0 && self.sim.just_to_pick_up(&p.target));
+        if loose != self.pointed_loose {
+            self.dirty = true;
+        }
+        self.pointed_loose = loose;
         self.pointed = picked;
     }
 
@@ -1389,6 +1399,7 @@ impl App {
                         format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
                     }
                     (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
+                    (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),

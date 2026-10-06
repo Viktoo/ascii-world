@@ -27,14 +27,24 @@ fn halo(r: f32, cone: f32, t: f32) -> f32 {
     ((r + HALO) * 1.25 - r).max(cone * 0.6 * t)
 }
 
+/// Loose things are padded along their own shape, so a thin one (a rake's
+/// stem, a stick) is as easy to point at as a thick one, without the whole
+/// thing becoming a ball: at least `THIN`, more far off (as `halo`).
+const THIN: f32 = 0.06;
+
+fn pad(cone: f32, t: f32) -> f32 {
+    THIN.max(cone * 0.6 * t)
+}
+
 enum Cand {
-    Shape(Target, GpuInst, Arc<TypeEntry>),
+    /// The last field: loose (could be picked up), so padded.
+    Shape(Target, GpuInst, Arc<TypeEntry>, bool),
     Body(ActorId, Vec3, f32),
 }
 
 fn sdf(c: &Cand, p: Vec3) -> f32 {
     match c {
-        Cand::Shape(_, g, ty) => {
+        Cand::Shape(_, g, ty, _) => {
             let ds = (p - g.center()).length() - g.radius();
             if ds > 0.4 {
                 return ds;
@@ -83,8 +93,9 @@ impl Sim {
                 }
                 let Some(ty) = snap.type_of(t.type_id) else { continue };
                 let g = super::render::thing_inst(t, ty, [0.0; 4]);
-                if ray_hits(ro, rd, g.center(), g.radius() + halo(g.radius(), cone, max), max) {
-                    cands.push(Cand::Shape(Target::Thing(id), g, ty.clone()));
+                let loose = !t.held() && t.liftable(1);
+                if ray_hits(ro, rd, g.center(), g.radius() + halo(g.radius(), cone, max) + THIN, max) {
+                    cands.push(Cand::Shape(Target::Thing(id), g, ty.clone(), loose));
                 }
             }
             for pl in snap.near_chunk(crate::world::chunk_of(p.x, p.z)) {
@@ -94,7 +105,7 @@ impl Sim {
                 let Some(ty) = snap.type_of(pl.type_id) else { continue };
                 let g = pl.gpu(ty, 1.0);
                 if ray_hits(ro, rd, g.center(), g.radius(), max) {
-                    cands.push(Cand::Shape(Target::Instance(pl.id), g, ty.clone()));
+                    cands.push(Cand::Shape(Target::Instance(pl.id), g, ty.clone(), false));
                 }
             }
             for it in self.cache.items_near(&snap, p, 8.0) {
@@ -106,8 +117,8 @@ impl Sim {
                     continue;
                 }
                 let g = it.inst;
-                if ray_hits(ro, rd, g.center(), g.radius() + halo(g.radius(), cone, max), max) {
-                    cands.push(Cand::Shape(Target::Cell([it.cell.0, it.cell.1]), g, ty.clone()));
+                if ray_hits(ro, rd, g.center(), g.radius() + halo(g.radius(), cone, max) + THIN, max) {
+                    cands.push(Cand::Shape(Target::Cell([it.cell.0, it.cell.1]), g, ty.clone(), ty.has_tag("small")));
                 }
             }
         }
@@ -129,7 +140,10 @@ impl Sim {
             let mut hit: Option<usize> = None;
             for (i, c) in cands.iter().enumerate() {
                 let mut dc = sdf(c, p);
-                if let Cand::Shape(_, g, _) = c {
+                if let Cand::Shape(_, g, _, loose) = c {
+                    if *loose {
+                        dc -= pad(cone, t);
+                    }
                     if g.radius() < SMALL {
                         // Small things are hard to point at: a halo around them counts.
                         dc = dc.min((p - g.center()).length() - g.radius() - halo(g.radius(), cone, t));
@@ -144,7 +158,7 @@ impl Sim {
                 return Some(match hit {
                     Some(i) => {
                         let (target, name) = match &cands[i] {
-                            Cand::Shape(tg, _, ty) => (tg.clone(), ty.name().to_string()),
+                            Cand::Shape(tg, _, ty, _) => (tg.clone(), ty.name().to_string()),
                             Cand::Body(a, _, _) => (Target::Actor(*a), self.actor_name(*a)),
                         };
                         Picked { target, pos: p, dist: t, name }
@@ -162,6 +176,35 @@ impl Sim {
 }
 
 impl Sim {
+    /// A loose thing with no use of its own (no code, no hinge, nothing to
+    /// ride in): the use key picks it up, as in most games.
+    pub fn just_to_pick_up(&mut self, t: &Target) -> bool {
+        let snap = self.snap.clone();
+        let ty = match t {
+            Target::Thing(id) => {
+                let Some(x) = self.things.get(*id) else { return false };
+                if x.held() || !x.liftable(1) {
+                    return false;
+                }
+                snap.type_of(x.type_id)
+            }
+            Target::Cell(c) => match self.things.taken.get(&(c[0], c[1])) {
+                Some(id) => return self.just_to_pick_up(&Target::Thing(*id)),
+                None => {
+                    let it = self.cache.item_at(&snap, (c[0], c[1]));
+                    it.and_then(|i| snap.type_of(i.inst.info[0])).filter(|ty| ty.has_tag("small"))
+                }
+            },
+            Target::Instance(i) => match self.things.by_instance.get(i) {
+                Some(id) => return self.just_to_pick_up(&Target::Thing(*id)),
+                None => None,
+            },
+            _ => None,
+        };
+        let plain = ty.is_some_and(|ty| ty.ct.behavior(crate::lang::ir::Behavior::Use).is_none());
+        plain && !self.target_hinged(t) && self.target_drive(t).is_none()
+    }
+
     /// The nearest small loose thing within reach in front of someone (for
     /// picking things up without aiming).
     pub fn nearest_in_front(&mut self, who: ActorId) -> Option<Target> {
