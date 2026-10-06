@@ -203,10 +203,17 @@ impl Sim {
     /// How much what is on a body hurts (by each property's harm), kept on
     /// the being: pain wears them out and is in what their planner sees.
     /// Living bodies mend (whole again in a day), and the badly hurt
-    /// sometimes stumble as they go.
+    /// sometimes stumble as they go. In a world where things die, a body
+    /// whose health the world's rules wore to nothing dies of it.
     pub fn feel_bodies(&mut self, dt: f32) {
         let vocab = self.vocab.clone();
         let t = self.t;
+        if self.cfg.hunting {
+            let spent: Vec<i64> = self.cast.npcs.iter().filter(|n| n.here() && n.props.len() > P_HEALTH && n.props[P_HEALTH] <= 0.0).map(|n| n.def.id).collect();
+            for c in spent {
+                self.kill(c, "worn down by what was on them", None);
+            }
+        }
         for n in self.cast.npcs.iter_mut().filter(|n| n.here()) {
             n.pain = if n.props.len() == vocab.len() && !n.species.touch.harms() { vocab.harm(&n.props) } else { 0.0 };
             if n.pain > 0.05 {

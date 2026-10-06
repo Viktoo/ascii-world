@@ -109,7 +109,8 @@ fn a_dog_rolls_onto_its_side() {
     calm(&mut s);
     let at = s.sim.cast.get(rex).unwrap().a.pos;
     let from = at + s.sim.cast.get(rex).unwrap().a.right() * -2.0;
-    s.sim.kill(rex, "struck down by a test", Some(from));
+    s.sim.player.pos = Vec3::new(from.x, s.sim.snap.terrain.height(from.x, from.z), from.z);
+    s.sim.kill(rex, "struck down by a test", Some(ActorId::Player));
     let body = remains_of(&s, rex).expect("the dog's body stays");
     let mid = s.sim.falling(&body).expect("it goes over, not pops over");
     assert!(mid.tilt().angle_between(glam::Quat::IDENTITY) < 0.2, "just begun to fall");
@@ -189,4 +190,121 @@ fn old_remains_go_unseen() {
     s.sim.player.pos = a + Vec3::new(200.0, 0.0, 0.0);
     s.sim.step_remains();
     assert!(remains_of(&s, ola).is_none(), "gone, unseen");
+}
+
+/// Strike `cid` with the sword the traveler holds until they die (or 60 tries).
+fn strike_down(s: &mut Session, cid: i64, at: Vec3) {
+    for _ in 0..60 {
+        if s.sim.cast.get(cid).unwrap().dead {
+            return;
+        }
+        let p = Vec3::new(at.x, s.sim.snap.terrain.height(at.x, at.z), at.z);
+        s.sim.cast.get_mut(cid).unwrap().a.pos = p;
+        s.sim.cast.get_mut(cid).unwrap().a.task = None;
+        s.sim.cast.get_mut(cid).unwrap().plan.clear();
+        act_once(s, ActorId::Player, Action::Use { target: None, on: Some(Target::Actor(ActorId::Npc(cid))), at: None }, 1.2);
+    }
+}
+
+/// Fear comes from health going down at someone's hand: the struck fear
+/// the striker (the timid more than the brave), those who watch a killing
+/// fear the killer, and it fades over days.
+#[test]
+fn a_killing_seen_is_feared() {
+    let w = world_with("fear", 77, bare());
+    let sword = add_type(&w, &fixture("physics/sword.js"));
+    let p = flat_spot(&w, 30.0);
+    let si = place(&w, sword, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let bo = add_char(&w, "Bo", "calm", &[], p + Vec3::new(0.0, 0.0, 1.6));
+    let ada = add_char(&w, "Ada", "timid, nervous", &[], p + Vec3::new(6.0, 0.0, 6.0));
+    let gus = add_char(&w, "Gus", "brave, bold soldier", &[], p + Vec3::new(-6.0, 0.0, 6.0));
+    let far = add_char(&w, "Nell", "calm", &[], p + Vec3::new(120.0, 0.0, 0.0));
+    let mut s = session(&w, 77, None);
+    calm(&mut s);
+    s.sim.cfg.hunting = true;
+    for (c, d) in [(ada, Vec3::new(6.0, 0.0, 6.0)), (gus, Vec3::new(-6.0, 0.0, 6.0)), (far, Vec3::new(120.0, 0.0, 0.0))] {
+        let q = p + d;
+        s.sim.cast.get_mut(c).unwrap().a.pos = ground(&w, q.x, q.z);
+    }
+    s.sim.player.pos = p;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(si) }, 0.5);
+    let me = ActorId::Player;
+    // One blow: Bo fears the traveler.
+    act_once(&mut s, me, Action::Use { target: None, on: Some(Target::Actor(ActorId::Npc(bo))), at: None }, 1.2);
+    assert!(s.sim.social.fear(ActorId::Npc(bo), me) > 0.1, "the struck fear the striker");
+    assert_eq!(s.sim.social.fear(me, ActorId::Npc(bo)), 0.0, "one way: the striker doesn't fear the struck");
+    strike_down(&mut s, bo, p + Vec3::new(0.0, 0.0, 1.6));
+    assert!(s.sim.cast.get(bo).unwrap().dead, "Bo was killed");
+    let (fa, fg, fn_) = (s.sim.social.fear(ActorId::Npc(ada), me), s.sim.social.fear(ActorId::Npc(gus), me), s.sim.social.fear(ActorId::Npc(far), me));
+    assert!(fa > 0.4, "Ada saw the killing and fears the killer: {fa:.2}");
+    assert!(fg > 0.05 && fg < fa, "the brave fear less: Gus {fg:.2}, Ada {fa:.2}");
+    assert_eq!(fn_, 0.0, "Nell, far off, saw nothing");
+    assert!(s.sim.cast.get(ada).unwrap().seen_dead.contains(&bo), "who saw the death needn't find the body");
+    // Her planner and her talk are told.
+    let ctx = s.sim.decide_context(ada, "test");
+    assert!(ctx.contains("afraid") || ctx.contains("terrified"), "fear is in what she's told: {ctx}");
+    assert!(ctx.contains("body of Bo"), "and the body is among what's around her");
+    assert!(s.sim.fear_line(ada, me).is_some_and(|l| l.contains("sword")), "{:?}", s.sim.fear_line(ada, me));
+    // The armed killer comes close: she runs.
+    let ap = s.sim.actor(ActorId::Npc(ada)).unwrap().pos;
+    s.sim.player.pos = ap + Vec3::new(2.0, 0.0, 0.0);
+    s.sim.cast.get_mut(ada).unwrap().feared_at = f64::MIN;
+    s.sim.step_fear();
+    assert!(events(&s.sim, "fled").iter().any(|e| e.actor == Some(ActorId::Npc(ada))), "Ada runs from the armed killer");
+    // Over days it fades.
+    s.sim.fade_fear((crate::render::sky::DAY_SECONDS * 2.0) as f32);
+    let later = s.sim.social.fear(ActorId::Npc(ada), me);
+    assert!((later - fa).abs() > 0.1 && (later / fa - 0.5).abs() < 0.05, "halved in two days: {fa:.2} → {later:.2}");
+    sound(&s);
+}
+
+/// Someone walking by a body they didn't know of stops, is shaken (more
+/// for a friend than a stranger), remembers it, and isn't shaken again by
+/// the same body. Animals don't take it in.
+#[test]
+fn a_body_is_come_upon() {
+    let w = world("found", 78);
+    let a = dry_spot(&w, 12.0, 0.4);
+    let bo = add_char(&w, "Bo", "calm", &["Ola: dear friend"], a);
+    let ola = add_char(&w, "Ola", "calm", &[], a + Vec3::new(60.0, 0.0, 0.0));
+    let rex = add_being(&w, "Rex", "dog", &[], a + Vec3::new(0.0, 0.0, 60.0));
+    let mut s = session(&w, 78, None);
+    calm(&mut s);
+    s.sim.social.rel_mut(ActorId::Npc(bo), ActorId::Npc(ola)).affection = 0.8;
+    s.sim.player.pos = a + Vec3::new(0.0, 0.0, -100.0);
+    s.sim.kill(bo, "taken by a test", None);
+    s.sim.step_found_bodies();
+    assert!(events(&s.sim, "found_body").is_empty(), "nobody near");
+    let body = remains_of(&s, bo).unwrap().pos;
+    for c in [ola, rex] {
+        s.sim.cast.get_mut(c).unwrap().a.pos = body + Vec3::new(4.0, 0.0, 0.0);
+    }
+    s.sim.step_found_bodies();
+    let found = events(&s.sim, "found_body");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].actor, Some(ActorId::Npc(ola)), "Ola found it; the dog doesn't take it in");
+    assert!(found[0].data["weight"].as_f64().unwrap() > 0.8, "a friend: badly shaken");
+    let n = s.sim.cast.get(ola).unwrap();
+    assert!(n.news.iter().any(|(_, t, _)| t.contains("body of Bo")), "she remembers it");
+    assert!(matches!(n.a.task, Some(super::super::actor::Task::Face { .. })), "she stops and stares");
+    s.sim.step_found_bodies();
+    assert_eq!(events(&s.sim, "found_body").len(), 1, "once per body");
+}
+
+/// A planner can choose to run from someone.
+#[test]
+fn flee_is_a_step() {
+    let step = crate::sim::npc::parse_step(&serde_json::json!({ "do": "run_away", "target": "the traveler" })).unwrap();
+    assert_eq!(step, Action::Flee { from: Target::Name("the traveler".into()) });
+    let w = world("flee", 79);
+    let a = dry_spot(&w, 12.0, 0.4);
+    let ola = add_char(&w, "Ola", "calm", &[], a);
+    let mut s = session(&w, 79, None);
+    calm(&mut s);
+    let start = s.sim.cast.get(ola).unwrap().a.pos;
+    s.sim.player.pos = start + Vec3::new(2.0, 0.0, 0.0);
+    s.sim.act(ActorId::Npc(ola), step).unwrap();
+    s.run(4.0, 0.05);
+    let now = s.sim.cast.get(ola).unwrap().a.pos;
+    assert!((now - s.sim.player.pos).length() > (start - s.sim.player.pos).length() + 4.0, "she got away");
 }

@@ -81,6 +81,9 @@ pub struct SavedState {
     /// Gone outside their hours (night beings by day).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub away: bool,
+    /// The dead whose bodies they have come upon (or saw die).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen_dead: Vec<i64>,
 }
 
 fn is_zero_i(v: &i64) -> bool {

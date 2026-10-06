@@ -133,6 +133,8 @@ pub enum Action {
     Sleep,
     Wake,
     GoHome,
+    /// Run from someone or something, well clear of it.
+    Flee { from: Target },
     /// Ask people, best first, to make or give something; one at a time until one agrees.
     Ask {
         #[serde(default)]
@@ -206,6 +208,7 @@ impl Action {
             Action::Sleep => "sleep",
             Action::Wake => "wake",
             Action::GoHome => "go_home",
+            Action::Flee { .. } => "flee",
             Action::Ask { .. } => "ask",
             Action::Plea { .. } => "plea",
             Action::WaitUntil { .. } => "wait_until",
@@ -835,6 +838,24 @@ impl Sim {
                     a.asleep = false;
                 }
                 Ok(Outcome::ok(format!("{name} wakes up")))
+            }
+            Action::Flee { from } => {
+                let r = self.resolve(&from, who).ok_or_else(|| not_found(&from))?;
+                let away = Vec3::new(me.pos.x - r.pos.x, 0.0, me.pos.z - r.pos.z).normalize_or(-me.forward());
+                let dest = me.pos + away * 18.0;
+                let deadline = self.t + 20.0;
+                self.set_task(who, Task::Goto { target: Target::Point(dest.to_array()), stop: 1.0, run: true, deadline });
+                if let ActorId::Npc(c) = who {
+                    self.set_aim(c, super::npc::Aim::Avoid, &format!("fleeing {}", the(&r.name)));
+                }
+                let msg = format!("{name} runs from {}", the(&r.name));
+                let subject = match r.target {
+                    Target::Actor(a) => Some(a.key()),
+                    Target::Thing(t) => Some(format!("thing:{t}")),
+                    _ => None,
+                };
+                self.event("fled", Some(who), subject, msg.clone(), Some(me.pos), json!({}));
+                Ok(Outcome::ok(msg))
             }
             Action::GoHome => {
                 // At night, to bed, when their house has one.

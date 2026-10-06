@@ -201,6 +201,10 @@ pub struct Npc {
     pub pain: f32,
     /// When its touch last landed (it draws back for a while after).
     pub touched_at: f64,
+    /// The dead whose bodies they have come upon (or saw die).
+    pub seen_dead: Vec<i64>,
+    /// When fear of someone near last moved them (see `fear`).
+    pub feared_at: f64,
 }
 
 impl Npc {
@@ -236,7 +240,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), corruption: 0.0, props: Default::default(), away: self.away }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), corruption: 0.0, props: Default::default(), away: self.away, seen_dead: self.seen_dead.clone() }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -390,6 +394,8 @@ impl Cast {
             props: Vec::new(),
             pain: 0.0,
             touched_at: f64::MIN,
+            seen_dead: s.seen_dead.clone(),
+            feared_at: f64::MIN,
         };
         if let Some(w) = s.work.as_ref() {
             n.restore_work(w);
@@ -483,6 +489,7 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "take_off" | "undress" | "doff" => "take_off",
         "douse" | "put_out" | "extinguish" | "fight_fire" | "beat_out" | "smother" | "rub" | "press" | "work" => "apply",
         "home" | "go_home" => "go_home",
+        "run_away" | "run_from" | "escape" | "get_away" | "flee_from" => "flee",
         "close" | "shut" | "unlatch" | "open_door" => "open",
         "swing" | "strike" | "hit" | "attack" | "chop" | "dig" | "stab" | "thrust" | "pour" | "swing_at" => "use",
         "duck" | "kneel_down" => "crouch",
@@ -504,7 +511,12 @@ pub fn parse_step(v: &Value) -> Option<Action> {
     if matches!(verb.as_str(), "do" | "use") && obj.get("at").is_some_and(|a| !a.is_array()) {
         obj.remove("at");
     }
-    for key in ["target", "at", "to", "on", "with"] {
+    if verb == "flee" && !obj.contains_key("from") {
+        if let Some(x) = obj.remove("target").or_else(|| obj.remove("at")) {
+            obj.insert("from".into(), x);
+        }
+    }
+    for key in ["target", "at", "to", "on", "with", "from"] {
         if let Some(x) = obj.get(key).cloned() {
             let fixed = match x {
                 Value::String(s) => Some(json!({ "name": s })),
@@ -1518,7 +1530,8 @@ impl Sim {
                 notes.push("needs two to carry".into());
             }
             let by = t.origin.made_by.clone().map(|m| format!(", made by {m}")).unwrap_or_default();
-            things.push(format!("{} ({:.0} m{}{}{})", ty.name(), (t.pos - pos).length(), if notes.is_empty() { "" } else { ", " }, notes.join(", "), by));
+            let tname = if t.origin.remains.is_some() { self.thing_name(id) } else { ty.name().to_string() };
+            things.push(format!("{tname} ({:.0} m{}{}{})", (t.pos - pos).length(), if notes.is_empty() { "" } else { ", " }, notes.join(", "), by));
         }
         for pl in &self.snap.instances {
             let d = (pl.pos - pos).length();
@@ -1539,7 +1552,13 @@ impl Sim {
             if d > 40.0 {
                 continue;
             }
-            let rel = self.social.rel(me, o).map(|r| r.describe()).unwrap_or_else(|| "a stranger".into());
+            let mut rel = self.social.rel(me, o).map(|r| r.describe()).unwrap_or_else(|| "a stranger".into());
+            if let Some(f) = super::social::fear_words(self.social.fear(me, o)) {
+                rel = format!("{rel}, you are {}", f.replace(" them", ""));
+            }
+            if let Some(w) = self.armed(o) {
+                rel = format!("{rel}, holding {}", super::actions::the(&w));
+            }
             let doing = match o {
                 ActorId::Npc(c) => self.cast.get(c).map(|x| x.doing.clone()).unwrap_or_default(),
                 ActorId::Player => "the traveler".into(),

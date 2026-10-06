@@ -139,6 +139,20 @@ Nothing here is drawn per weapon or per kind of body; the body itself shows it.
   carried by those strong enough (two people for a person).
 - Remains go after three game days, only while the traveler is 90 m off;
   what they wore is left there.
+- Fear (`sim/fear.rs`, `Rel::fear`, one way each) comes only from health
+  going down at someone's hand: the struck fear the striker, and everyone
+  within 25 m who saw a blow or a killing fears whoever did it (the timid
+  more, the brave less). It halves every two game days. Near someone they
+  fear, more so when that one holds a striking tool, a being runs; one that
+  thinks is asked what to do (plead, back off, flee, stand its ground), and
+  its fear and what the feared one holds are in its planner's context and
+  its talk. Planners have a `flee` step.
+- A thinking being that comes within 16 m of a body it didn't know of stops
+  and stares, remembers it, and is asked what to do, shaken by how close it
+  was to the dead (a dead animal shakes a person less). Those who saw the
+  death don't "find" it again.
+- In a world where things die (`hunting`), a body whose health the world's
+  rules wear to nothing dies of it.
 
 ## Exposure (`sim/exposure.rs`)
 

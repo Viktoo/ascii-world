@@ -882,6 +882,7 @@ impl App {
         let held = self.sim.player.held.map(|h| format!(" The traveler is holding {}.", crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
         let dark = self.sim.talking_to.and_then(|cid| self.sim.twist_line(ActorId::Npc(cid))).map(|l| format!(" {l}")).unwrap_or_default();
         let dark = format!("{dark}{}", self.sim.trouble_line(cam.pos).map(|l| format!(" {l}")).unwrap_or_default());
+        let dark = format!("{dark}{}", self.sim.talking_to.and_then(|cid| self.sim.fear_line(cid, ActorId::Player)).map(|l| format!(" {l}")).unwrap_or_default());
         format!(
             "It is {} in {}. Visible around you: {}. Recently the traveler {}.{held}{dark}",
             view.time,

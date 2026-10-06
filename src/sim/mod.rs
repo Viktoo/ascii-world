@@ -18,6 +18,7 @@ pub mod catchup;
 pub mod config;
 pub mod env;
 pub mod exposure;
+pub mod fear;
 pub mod footing;
 pub mod goals;
 pub mod headless;
@@ -867,6 +868,7 @@ impl Sim {
             self.acc_life = 0.0;
             self.step_life();
             self.step_remains();
+            self.fade_fear(60.0);
         }
         // The first step after loading: who is about at this hour, before anyone is drawn.
         if self.night.was_night.is_none() {
@@ -881,6 +883,8 @@ impl Sim {
             self.step_night();
             self.tell_weather();
             self.feel_bodies(1.0);
+            self.step_fear();
+            self.step_found_bodies();
             self.step_goals(1.0);
         }
         self.pump_requests(dt);

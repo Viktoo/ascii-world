@@ -31,6 +31,24 @@ pub struct Rel {
     pub owner: Option<i64>,
     #[serde(default)]
     pub last: f64,
+    /// How much each fears the other can hurt them (0..1), one way each:
+    /// [0] is the lower-coded one's fear of the higher (see `Social::fear`).
+    #[serde(default, skip_serializing_if = "no_fear")]
+    pub fear: [f32; 2],
+}
+
+fn no_fear(f: &[f32; 2]) -> bool {
+    f[0] == 0.0 && f[1] == 0.0
+}
+
+/// Fear in words, as the one who feels it would put it.
+pub fn fear_words(f: f32) -> Option<&'static str> {
+    match f {
+        f if f > 0.7 => Some("terrified of them"),
+        f if f > 0.4 => Some("afraid of them"),
+        f if f > 0.15 => Some("wary of them"),
+        _ => None,
+    }
 }
 
 impl Rel {
@@ -186,6 +204,21 @@ impl Social {
     pub fn rel_mut(&mut self, a: ActorId, b: ActorId) -> &mut Rel {
         self.dirty = true;
         self.rels.entry(key(a, b)).or_default()
+    }
+
+    /// How much `a` fears `b` can hurt them (0..1).
+    pub fn fear(&self, a: ActorId, b: ActorId) -> f32 {
+        self.rel(a, b).map(|r| r.fear[(a.code() > b.code()) as usize]).unwrap_or(0.0)
+    }
+
+    /// `a` comes to fear `b` more (or, below 0, less).
+    pub fn add_fear(&mut self, a: ActorId, b: ActorId, by: f32) {
+        if a == b {
+            return;
+        }
+        let i = (a.code() > b.code()) as usize;
+        let r = self.rel_mut(a, b);
+        r.fear[i] = (r.fear[i] + by).clamp(0.0, 1.0);
     }
 
     pub fn affection(&self, a: ActorId, b: ActorId) -> f32 {

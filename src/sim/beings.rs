@@ -491,7 +491,7 @@ impl Sim {
         let at = self.actor(prey).map(|a| a.pos).unwrap_or_default();
         if self.cfg.hunting {
             if let ActorId::Npc(p) = prey {
-                self.kill(p, &format!("killed by {name}"), self.actor(me).map(|a| a.pos));
+                self.kill(p, &format!("killed by {name}"), Some(me));
             }
             if let Some(n) = self.cast.get_mut(cid) {
                 n.needs.hunger = 0.0;
@@ -507,14 +507,19 @@ impl Sim {
         }
     }
 
-    /// A being dies: it leaves the living for good (it stays in the save,
-    /// dead) and its body stays where it fell (see `remains`), fallen away
-    /// from `from`, wearing what it wore.
-    pub fn kill(&mut self, cid: i64, how: &str, from: Option<Vec3>) {
+    /// A being dies (at `by`'s hand, if anyone's): it leaves the living for
+    /// good (it stays in the save, dead) and its body stays where it fell
+    /// (see `remains`), fallen away from its killer, wearing what it wore.
+    /// Those who saw come to fear the killer (see `fear`).
+    pub fn kill(&mut self, cid: i64, how: &str, by: Option<ActorId>) {
         let who = ActorId::Npc(cid);
         let Some(pos) = self.actor(who).map(|a| a.pos) else { return };
         if self.cast.get(cid).is_none_or(|n| n.dead) {
             return;
+        }
+        let from = by.and_then(|b| self.actor(b)).map(|a| a.pos);
+        if let Some(b) = by {
+            self.hurt_by(who, b, 1.0, true);
         }
         if let Some(h) = self.actor(who).and_then(|a| a.held) {
             self.release(h);

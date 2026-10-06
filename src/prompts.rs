@@ -345,7 +345,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "gesture", "kind": "wave|bow|nod|point|cheer|shrug|dance|sit|handshake|high_five|hug|kiss", "to": "Ola"}
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
-  {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}
+  {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}   {"do": "flee", "from": "Bo"}
   {"do": "open", "target": "door"}   {"do": "close", "target": "gate"}   (doors, gates, lids, trapdoors)
   {"do": "pet", "target": "Rex"}   (stroke or scratch an animal; one that trusts them likes it)   {"do": "hold", "target": "Mog"} picks up a small animal that lets them
   {"do": "swing", "at": "wolf"}   {"do": "chop", "at": "pine"}   {"do": "dig", "at": "garden"}   (work the tool they hold: a blade swings, an axe chops, a spade digs; it can hurt)
@@ -353,6 +353,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "ask", "who": ["Rosa", "Ben"], "for": "a grill"}   (ask people, best first, one at a time, to make or give you something; they may say no)
 Optional, in the same object: "promise": {"text": "make Ola a ball", "to": "Ola", "what": "a ball" or null (the thing they will hand over), "within_hours": 3} when they agree to do something for someone (they are held to it); "aim": {"text": "a few words", "within_hours": 24} for a longer aim of their own; "kept": true or false when asked whether a goal that came due was met.
 When something surprises them (they are told how much, 0–1), react as they would: a little, a glance or a word; a lot, drop what they are doing to go and look, call out, fetch someone, or back away if they are timid. Something that appeared where the traveler stands may be the traveler's doing.
+When they fear someone near (they are told how, and what that one holds), act as they would with their life at stake: plead, back away, flee, hide at home, warn others, or, if brave, stand their ground. When they come upon someone dead, react as they would to that death: to the death of someone dear, grief or panic; to a stranger's, shock, and fetching or warning others.
 They are told what they could do now, best first: what is really there. Pick from it, or anything else that fits who they are. Keep plans short (1–5 steps), in character, and grounded in what is actually around them. If nothing is worth doing, reply {"goal": "", "steps": []}.
 For an event "player_near", a plan may simply be [{"do": "goto", "target": "the traveler"}] with "say" set, or nothing."#;
 
