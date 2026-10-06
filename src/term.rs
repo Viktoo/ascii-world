@@ -51,10 +51,23 @@ pub fn restore() {
     let _ = out.write_all(b"\x1b[?2026l\x1b[0m");
     if ENHANCED.swap(false, Ordering::SeqCst) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
+        let _ = out.flush();
+        drain_input();
     }
     let _ = execute!(out, crossterm::event::DisableFocusChange, terminal::EnableLineWrap, cursor::Show, terminal::LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
     let _ = out.flush();
+}
+
+/// Swallow input still in flight, such as the release of the key that quit.
+/// Otherwise its kitty-protocol escape lands in the shell as `113;1:3u` junk.
+fn drain_input() {
+    use crossterm::event;
+    use std::time::{Duration, Instant};
+    let end = Instant::now() + Duration::from_millis(150);
+    while Instant::now() < end && event::poll(Duration::from_millis(30)).unwrap_or(false) {
+        let _ = event::read();
+    }
 }
 
 fn install_panic_hook() {
