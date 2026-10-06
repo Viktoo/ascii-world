@@ -40,8 +40,6 @@ pub enum Cmd {
     BuildGesture { id: u64, name: String, body: String },
     /// Rewrite one thing's shape code. Answered by `Event::TypeBuilt`.
     EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
-    /// Write a new species from a brief (`fixed` laid over it). Answered by `Event::SpeciesMade`.
-    NewSpecies { id: u64, brief: String, fixed: Value },
     /// A species (JSON) on a generic body gets its own, written from
     /// `template`. Answered by `Event::TypeBuilt`.
     SpeciesBody { id: u64, species: String, template: String },
@@ -73,8 +71,6 @@ pub enum Event {
     Progress { task: Task, frac: f32 },
     /// Something named as the world is made: ("shaping", "lighthouse").
     Made { task: Task, verb: &'static str, name: String },
-    /// A species was written (None: it failed).
-    SpeciesMade { id: u64, name: Option<String> },
 }
 
 enum CMsg {
@@ -204,7 +200,6 @@ impl Brain {
                         Cmd::Chat { a, b, .. } => Some(Event::ChatLines { a, b, lines: vec![] }),
                         Cmd::BuildType { id, .. } | Cmd::EditType { id, .. } | Cmd::SpeciesBody { id, .. } | Cmd::ReshapeBody { id, .. } => Some(Event::TypeBuilt { id, type_id: None }),
                         Cmd::BuildGesture { id, .. } => Some(Event::GestureBuilt { id, result: Err("no LLM".into()) }),
-                        Cmd::NewSpecies { id, .. } => Some(Event::SpeciesMade { id, name: None }),
                         _ => None,
                     };
                     if let Some(r) = reply {
@@ -399,18 +394,6 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             let d = ctx.decider.decide(dctx).await;
             let _ = ctx.events.send(Event::Decision { cid, decision: d });
         }
-        Cmd::NewSpecies { id, brief, fixed } => {
-            let _ = ctx.events.send(Event::Building(1));
-            let name = match new_species(&ctx, &brief, &fixed).await {
-                Ok(n) => Some(n),
-                Err(e) => {
-                    crate::log::error(format!("new species failed: {e:#}"));
-                    None
-                }
-            };
-            let _ = ctx.events.send(Event::SpeciesMade { id, name });
-            let _ = ctx.events.send(Event::Building(-1));
-        }
         Cmd::SpeciesBody { id, species, template } => {
             let _ = ctx.events.send(Event::Building(1));
             let type_id = match species_body(&ctx, &species, &template).await {
@@ -437,38 +420,6 @@ async fn run(ctx: Ctx, cmd: Cmd) {
         }
         Cmd::Undo | Cmd::History | Cmd::Witness { .. } => {}
     }
-}
-
-/// One species from a brief: written, its body built if new, stored, and
-/// the snapshot flipped so the body can be drawn.
-async fn new_species(ctx: &Ctx, brief: &str, fixed: &Value) -> anyhow::Result<String> {
-    let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
-    let task = prompts::species_task(brief, &species_list(&ctx.db));
-    let mut req = Req::new(Role::Builder, system.clone(), task);
-    req.max_tokens = 2000;
-    let reply = ctx.llm.complete(&req, "species").await?;
-    let mut v = extract_json(&reply)?;
-    if let Some(s) = v.get("species").cloned() {
-        v = s;
-    }
-    if let Some(a) = v.as_array().and_then(|a| a.first()).cloned() {
-        v = a;
-    }
-    if let (Some(o), Some(f)) = (v.as_object_mut(), fixed.as_object()) {
-        for (k, x) in f {
-            o.insert(k.clone(), x.clone());
-        }
-    }
-    let (types, names) = species_from(ctx, &system, &[v], 1).await;
-    let name = names.into_iter().next().ok_or_else(|| anyhow::anyhow!("the species was unreadable"))?;
-    if !types.is_empty() {
-        let ok = ctx
-            .commit(CommitRequest { kind: "species", summary: format!("new species: {name}"), new_types: types, placements: vec![], nudge: true, region: None, look: None })
-            .await
-            .map_err(|d| anyhow::anyhow!(format_diags(&d)))?;
-        let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
-    }
-    Ok(name)
 }
 
 fn budget_msg(e: &anyhow::Error) -> Option<String> {

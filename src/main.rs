@@ -293,7 +293,7 @@ fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f3
 
 fn camera_at(snap: &world::WorldSnapshot, x: f32, z: f32, yaw: f32) -> render::Camera {
     let y = snap.terrain.height(x, z).max(terrain::WATER_LEVEL - 0.4) + 1.65;
-    render::Camera { pos: Vec3::new(x, y, z), yaw, pitch: -0.06, fov_y: 1.05 }
+    render::Camera { pos: Vec3::new(x, y, z), yaw, pitch: -0.06, fov_y: 1.05, roll: 0.0 }
 }
 
 fn snapshot(args: &[String]) -> Result<()> {

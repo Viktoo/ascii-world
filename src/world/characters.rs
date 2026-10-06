@@ -72,9 +72,6 @@ pub struct SavedState {
     /// simulation's own shape (`sim::needs::Work`), so it carries on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<serde_json::Value>,
-    /// Older saves kept their darkness here; it is read into `props`.
-    #[serde(default, skip_serializing)]
-    pub corruption: f32,
     /// Their body's properties, where they differ from their species'.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub props: serde_json::Map<String, serde_json::Value>,

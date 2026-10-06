@@ -68,10 +68,6 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             brain.send(Cmd::EditType { id, name, source, change, spot, cuts, with });
             true
         }
-        Request::NewSpecies { id, brief, fixed } => {
-            brain.send(Cmd::NewSpecies { id, brief, fixed });
-            true
-        }
         Request::SpeciesBody { id, species, template } => {
             brain.send(Cmd::SpeciesBody { id, species, template });
             true
@@ -116,10 +112,6 @@ pub fn apply(sim: &mut Sim, ev: Event, talk: &mut HashMap<i64, String>) -> bool 
         }
         Event::GestureBuilt { id, result } => {
             sim.on_gesture_built(id, result);
-            true
-        }
-        Event::SpeciesMade { id, name } => {
-            sim.on_species_made(id, name);
             true
         }
         Event::Token { cid, text } => {

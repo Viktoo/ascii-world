@@ -532,9 +532,6 @@ pub fn builtin_specs() -> Vec<RuleSpec> {
         spec("conducts heat", Some(0.8), "self.conducts > 0 && other.conducts > 0 && self.temp > other.temp + 5", &["other.temp += (self.temp - other.temp) * self.conducts * other.conducts * dt"]),
         // A glow on a body (a touch's dust) fades; one hot enough to shine keeps it.
         spec("a glow fades", None, "self.body > 0 && self.light > 0 && self.heat < 500", &["self.light -= 0.002 * dt"]),
-        // Darkness passes between those it can take hold of, most at a touch.
-        spec("darkness passes on touch", Some(0.8), "self.body > 0 && self.susceptible > 0 && self.corruption >= 0.3 && other.susceptible > 0 && other.corruption < self.corruption", &["other.corruption += 0.05 * self.corruption * other.susceptible * dt / (1 + 10 * dist * dist)"]),
-        spec("kindness eases darkness", Some(0.8), "self.body > 0 && self.corruption > 0 && other.kindness > 0", &["self.corruption -= 0.05 * other.kindness * dt"]),
     ]
 }
 

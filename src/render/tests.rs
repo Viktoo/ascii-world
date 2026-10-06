@@ -146,7 +146,7 @@ fn renders_a_frame_quickly() {
     let terrain = crate::terrain::Terrain::new(7, default_biomes());
     let pal = crate::terrain::Palette::default();
     let h = terrain.height(0.0, 0.0);
-    let cam = Camera { pos: glam::Vec3::new(0.0, h.max(0.0) + 1.7, 0.0), yaw: 0.3, pitch: -0.05, fov_y: 1.0 };
+    let cam = Camera { pos: glam::Vec3::new(0.0, h.max(0.0) + 1.7, 0.0), yaw: 0.3, pitch: -0.05, fov_y: 1.0, roll: 0.0 };
     // A lighthouse ahead of the camera.
     let lid = 100;
     let lz = 30.0;

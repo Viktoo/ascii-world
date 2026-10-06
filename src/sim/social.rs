@@ -521,7 +521,7 @@ impl Sim {
         if why == "done" {
             self.social.bond(j.a, j.b, bond, self.t);
             // Time spent together is a warm touch for both.
-            self.kind_touch(j.a, j.b, 1.0, super::body::HUG_SECS, super::body::EMBRACE, true, true);
+            self.kind_touch(j.a, j.b, 1.0, super::body::HUG_SECS, super::body::EMBRACE, true);
         }
         for who in [j.a, j.b] {
             if let ActorId::Npc(c) = who {

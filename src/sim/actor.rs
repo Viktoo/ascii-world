@@ -469,6 +469,9 @@ pub struct Actor {
     pub support: Option<(Vec3, f32)>,
     /// Rocked by a blow or a stumble (see `Jolt`).
     pub jolt: Option<Jolt>,
+    /// What it last left the ground from, when that was something standing
+    /// on the land (a roof, a tree): how high its feet were, and its name.
+    pub perch: Option<(f32, String)>,
 }
 
 /// Bit mask of the roles a body lists.
@@ -487,7 +490,7 @@ pub const HUMAN_ROLES: u8 = 0b0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None, jolt: None }
+        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None, jolt: None, perch: None }
     }
 
     /// Sitting on something that carries it (a mount, a cart).

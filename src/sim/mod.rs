@@ -32,6 +32,7 @@ pub mod needs;
 pub mod night;
 pub mod npc;
 pub mod persist;
+pub mod phantom;
 pub mod physics;
 pub mod pick;
 pub mod props;
@@ -166,9 +167,6 @@ pub enum Request {
     /// `spot` (JSON, the type's own coordinates), with `cuts` baked in and
     /// maybe another thing worked in (name, source, its size relative to this one).
     EditType { id: u64, name: String, source: String, change: String, spot: String, cuts: Vec<[f32; 4]>, with: Option<(String, String, f32)> },
-    /// Write a new species from a brief, with `fixed` fields laid over what
-    /// is written. Answered through `on_species_made`.
-    NewSpecies { id: u64, brief: String, fixed: Value },
     /// A species (JSON) still on a generic body gets its own, written from
     /// `template`. Answered through `on_type_built`.
     SpeciesBody { id: u64, species: String, template: String },

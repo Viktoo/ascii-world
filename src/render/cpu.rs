@@ -157,11 +157,10 @@ impl Scene<'_> {
                         let fx = gi.fx;
                         let mut a = base.lerp(Vec3::new(0.07, 0.06, 0.055), fx[0].clamp(0.0, 1.0));
                         a *= 1.0 - 0.35 * fx[1].clamp(0.0, 1.0);
-                        a = a.lerp(Vec3::new(0.04, 0.03, 0.03), (-fx[3]).clamp(0.0, 1.0) * 0.7);
                         a = a.lerp(Vec3::new(1.0, 0.97, 0.8), fx[3].clamp(0.0, 1.0) * 0.28);
                         // The dark's own (charred past 1): whatever glows on it glows red.
                         let gc = if fx[0] > 1.5 { Vec3::new(1.0, 0.07, 0.03) } else { base };
-                        self.shade(p, n, a) + gc * fx[2].clamp(0.0, 2.0) * lit + Vec3::new(0.3, 0.02, 0.01) * (-fx[3]).clamp(0.0, 1.0) * 0.12
+                        self.shade(p, n, a) + gc * fx[2].clamp(0.0, 2.0) * lit
                     }
                 }
             }

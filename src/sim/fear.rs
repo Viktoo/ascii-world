@@ -65,8 +65,12 @@ impl Sim {
         }
     }
 
-    /// How much harder fear takes them: 0.4 for the bravest, 1.4 the timid.
+    /// How much harder fear takes them: 0.4 for the bravest, 1.4 the timid;
+    /// the dark's own fear nothing.
     fn timid(&self, who: ActorId) -> f32 {
+        if self.of_the_dark(who) {
+            return 0.0;
+        }
         match who {
             ActorId::Npc(c) => self.cast.get(c).map(|n| 1.4 - n.traits.brave).unwrap_or(1.0),
             ActorId::Player => 1.0,
@@ -98,7 +102,11 @@ impl Sim {
     /// How much `me` fears `o` right now: their fear of them, more when
     /// `o` is armed and close.
     pub fn menace(&self, me: ActorId, o: ActorId) -> f32 {
-        let f = self.social.fear(me, o);
+        // The dark's own are feared on sight; they fear nothing.
+        if self.of_the_dark(me) {
+            return 0.0;
+        }
+        let f = self.social.fear(me, o).max(if self.of_the_dark(o) { 0.6 } else { 0.0 });
         if f <= 0.0 {
             return 0.0;
         }

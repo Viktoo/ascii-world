@@ -369,16 +369,15 @@ impl Sim {
         let tname = self.thing_name(run.tool);
         let Some((opos, omass)) = self.actor(o).map(|a| (a.pos, a.dims.mass.max(1.0))) else { return };
         let hurt = (0.012 * tool_mass.min(20.0).sqrt() * speed * speed / 10.0 / (omass / 70.0).sqrt()).clamp(0.02, 0.9);
-        let mut died = false;
+        // What they wear softens it.
+        let hurt = hurt * (1.0 - self.protection(o));
+        let how = format!("struck by {name} with the {tname}");
+        let died = self.wound(o, hurt, who, &how);
         if let ActorId::Npc(c) = o {
-            let hunting = self.cfg.hunting;
-            if let Some(n) = self.cast.get_mut(c) {
-                if n.props.len() > P_HEALTH {
-                    let floor = if hunting { 0.0 } else { 0.1 };
-                    n.props[P_HEALTH] = (n.props[P_HEALTH] - hurt).max(floor);
-                    died = n.props[P_HEALTH] <= 0.0;
-                }
-            }
+            self.phantom_hurt(c, who, Some(tname.clone()), died);
+        }
+        if let ActorId::Npc(c) = who {
+            self.phantom_struck(c, o, died);
         }
         // Knocked back a little.
         let me = self.actor(who).map(|a| a.pos).unwrap_or(opos);
@@ -403,13 +402,14 @@ impl Sim {
         }
         if died {
             if let ActorId::Npc(c) = o {
-                self.kill(c, &format!("struck down by {name}"), Some(who));
+                self.kill(c, &format!("{how}, and died"), Some(who));
             }
             return;
         }
         if let ActorId::Npc(c) = o {
             let speaks = self.speaks(o);
-            if !speaks || self.cast.get(c).is_some_and(|n| n.traits.brave < 0.5) {
+            // The dark's own don't run.
+            if !self.of_the_dark(o) && (!speaks || self.cast.get(c).is_some_and(|n| n.traits.brave < 0.5)) {
                 self.flee(c, who, me);
             }
             if self.has_llm && speaks {

@@ -77,34 +77,45 @@ key poses, kept with the world, and anyone can do it after.
 
 Each world has a difficulty (`pocket new --difficulty normal`, or `Difficulty` in
 settings, `Esc`). New worlds start on normal (worlds made before difficulty existed stay
-peaceful). On peaceful nothing comes at night. On the others,
-something comes for you at night, because you can make things out of nothing:
+peaceful). On peaceful nothing comes at night. On the others, the dark comes for
+you every night, because you can make things out of nothing:
 
 | | Peaceful | Easy | Normal | Hard |
 |---|---|---|---|---|
-| charges (`✦`, start and dawn top-up) | ∞ | ∞ | 24 | 12 |
-| night horrors | none | some nights, 1 | every night | every night, more over time |
-| their touch | – | corruption | ✦ −1, corruption | ✦ −4, corruption |
-| corruption passes by touch (a hug, a gift, standing close) | no | no | slowly | yes |
+| night walkers | 0 | 1 | 1 | 2 |
+| phantoms | 0 | 1 | 1 | 2 |
 
-- Every `/` action costs a charge (none if nothing came of it). Dawn tops you back up to
-  the start; charges earned above it are kept: +2 for a night got through, +1 when you
-  are kind to someone (a gift, something done together; up to 4 a day). At `✦ 0` actions
-  wait for dawn.
-- The horror is written by the LLM for this world (a fallback one without an LLM), written in
-  the background from sunset. At nightfall it comes: out of the dark behind you, moves only while you aren't looking at it, waits at
-  the edge of any light (a lantern, a fire), and is gone at dawn. Animals bolt from it and
-  people fall quiet. At night people sleep by the nearest light.
-- Corruption glows purple, dims light, and twists minds: a corrupted character's words,
-  plans and makings turn their own nature bad; your own creations come out a little
-  wrong. It fades by day and faster in light; talking kindly, gifts, hugs and time spent
-  together draw it out of someone (a corrupted heart's touch isn't warm).
-- The status bar shows what matters: `night in 3m · ✦ 18 · corrupted 20% · 2 corrupted near`.
+- **Night walkers** come out of the dark behind you at nightfall, move only while you
+  aren't looking straight at them (the middle of your view; a little to the side they
+  creep), wait at the edge of any light, and are gone at dawn. Their touch takes a
+  quarter of your health, then they draw back. They can be struck down (one killed
+  isn't replaced till the next night). Animals bolt from them and people fall quiet.
+- **Phantoms** are characters: a body like a person's but wrong, a name ("the first
+  phantom"), a memory and a mind, with one drive: to hurt you, and anyone else they
+  come upon. They take up what strikes (a sword, an axe), put on what protects, make
+  one thing a night, plan their hunt with the LLM, and ignore light. They fade at dawn
+  with their gear and can't truly die: struck down, they drop what they carried and
+  rise the next night, remembering. At dawn each writes down what it learned of the
+  night, so they come back better armed and smarter.
+- **Health**: the bar at the bottom right (green, amber, red). Blows and touches take
+  it, less what you wear protects (a thing's `protect`: plate 0.5, a helmet 0.25); it
+  mends over a day. Drops from higher than your own height hurt too (12% per metre
+  beyond it: a roof a little, a tall tree a lot), for villagers and animals as well.
+  Deeds in words can hurt too (`/kick the wolf`, `/stab this stick into my eye`): the
+  interpreter says how much health they take, on whoever they are done to, you included.
+- **Falling**: at no health left you fall where you stand (the view drops and tips onto
+  its side) and drop what you held. The screen goes dark red with YOU DIED over it, but
+  the world shows through and goes on: whoever saw it remembers, villagers decide what
+  to do, the one who did it remembers it too, and the dark turns to whoever else is
+  about. Enter wakes you where the world began, in the morning, whole. What you dropped
+  stays where you fell.
+- The status bar shows `night in 3m`, and at night what is near: `1 walker · 1 phantom near`.
 
 Species can keep hours (`"active": "night"`: owls, moths), go after something
-(`"want"`), touch it (`"touch"`: a glow, needs, charges, corruption), shun a property
-(`"shuns": ["light"]`) and move only unseen (`"moves_unseen"`). Peaceful worlds use the
-same fields, minus the harm.
+(`"want"`), touch it (`"touch"`: a glow, needs, `hurt`), shun a property
+(`"shuns": ["light"]`), move only unseen (`"moves_unseen"`), mean harm (`"hostile"`)
+and carry a purpose told to their mind (`"drive"`). Peaceful worlds use the same
+fields, minus the harm.
 
 ### Weather
 
@@ -318,9 +329,7 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   touch curses whoever holds the idol, a kiln warms those by it, wading wets. What
   someone holds or wears touches them every pass; a hug, a gift or time spent together
   runs the rules between two bodies once, with `kindness` on whoever means it warmly.
-  Darkness (`corruption`) lives on the body: it passes on touch by a built-in rule,
-  gated by `susceptible` (set from the difficulty), and kindness eases it by another;
-  a touch's glow is the body's `light`, fading by a rule. Harm on a body hurts (it
+  A touch's glow is the body's `light`, fading by a rule. Harm on a body hurts (it
   wears them out and is in what their planner sees), and they let go of or take off
   what harms them. Crossings on bodies are told like any other ("Oda fell under the
   curse"). The traveler's body is never in the rules.
@@ -391,7 +400,7 @@ characters' minds. It runs in the game, headless in `pocket sim`, and under `poc
   something makes different beliefs: whoever saw a fire break out knows what started
   it; whoever only saw it reach them guesses it came from where it came at them. Gossip
   passes beliefs on, a little less sure each hop, so rumours emerge without lies. Only
-  corruption lies: a corrupted teller blames someone else (marked in the row); whoever
+  those who mean harm lie: such a teller blames someone else (marked in the row); whoever
   saw it themselves doesn't take it up. The planner and talk hear what they believe;
   the scorer sends them where they believe a thing lies, and they forget it when it
   isn't there. Each mind keeps at most `beliefs_per_mind` (200): the least important,

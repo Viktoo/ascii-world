@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod night;
 mod remains;
 mod weather;
 
@@ -1322,7 +1323,7 @@ fn render_live_scene_png() {
     let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
     let snap = model.snapshot().unwrap();
     s.sim.flip(snap.clone());
-    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.65, yaw: 0.0, pitch: -0.08, fov_y: 1.05 };
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.65, yaw: 0.0, pitch: -0.08, fov_y: 1.05, roll: 0.0 };
     let (pw, ph) = (320u32, 180u32);
     let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
@@ -1389,7 +1390,7 @@ fn render_day_scene_png() {
     let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
     let snap = model.snapshot().unwrap();
     s.sim.flip(snap.clone());
-    let cam = crate::render::Camera { pos: s.sim.player.pos + Vec3::Y * 1.65, yaw: 0.0, pitch: -0.12, fov_y: 1.05 };
+    let cam = crate::render::Camera { pos: s.sim.player.pos + Vec3::Y * 1.65, yaw: 0.0, pitch: -0.12, fov_y: 1.05, roll: 0.0 };
     let (pw, ph) = (320u32, 180u32);
     let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
@@ -1727,7 +1728,7 @@ fn render_edited_hut_png() {
     let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
     let snap = model.snapshot().unwrap();
     s.sim.flip(snap.clone());
-    let cam = crate::render::Camera { pos: Vec3::new(hp.x, w.terrain.height(hp.x, hp.z - 6.5) + 1.7, hp.z - 6.5), yaw: 0.0, pitch: -0.05, fov_y: 1.05 };
+    let cam = crate::render::Camera { pos: Vec3::new(hp.x, w.terrain.height(hp.x, hp.z - 6.5) + 1.7, hp.z - 6.5), yaw: 0.0, pitch: -0.05, fov_y: 1.05, roll: 0.0 };
     let (pw, ph) = (320u32, 180u32);
     let drawn = s.sim.draw(cam.pos, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
@@ -2004,7 +2005,7 @@ fn species_lineup_picture() {
         }
         s.run(1.0, 0.05);
     }
-    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.4 + Vec3::new(0.0, 0.0, -1.5), yaw: 0.0, pitch: -0.1, fov_y: 1.0 };
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.4 + Vec3::new(0.0, 0.0, -1.5), yaw: 0.0, pitch: -0.1, fov_y: 1.0, roll: 0.0 };
     render_png(&mut s, &w, cam, &out);
 }
 
@@ -2043,7 +2044,7 @@ fn cat_bodies_picture() {
         s.run(0.6, 0.05);
     }
     let y = s.sim.snap.terrain.height(me.x, me.z + 2.0);
-    let cam = crate::render::Camera { pos: Vec3::new(me.x, y + 0.45, me.z + 0.6), yaw: 0.0, pitch: -0.12, fov_y: 1.0 };
+    let cam = crate::render::Camera { pos: Vec3::new(me.x, y + 0.45, me.z + 0.6), yaw: 0.0, pitch: -0.12, fov_y: 1.0, roll: 0.0 };
     render_png(&mut s, &w, cam, &out);
 }
 
@@ -2375,7 +2376,7 @@ fn fantasy_lineup_picture() {
         let _ = s.sim.act(ActorId::Npc(vyrm), Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(ActorId::Npc(ilsa))) });
         s.run(8.0, 0.1);
     }
-    let cam = crate::render::Camera { pos: me + Vec3::Y * 2.2, yaw: 0.0, pitch: -0.08, fov_y: 1.05 };
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 2.2, yaw: 0.0, pitch: -0.08, fov_y: 1.05, roll: 0.0 };
     render_png(&mut s, &w, cam, &out);
 }
 
@@ -2540,7 +2541,7 @@ fn warriors_picture() {
     }
     let _ = s.sim.act(ActorId::Npc(ids[3]), Action::Gesture { kind: "bow".into(), to: None });
     s.run(0.8, 0.05);
-    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.5 + Vec3::new(0.0, 0.0, 0.5), yaw: 0.0, pitch: -0.12, fov_y: 0.9 };
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 1.5 + Vec3::new(0.0, 0.0, 0.5), yaw: 0.0, pitch: -0.12, fov_y: 0.9, roll: 0.0 };
     render_png(&mut s, &w, cam, &out);
 }
 
@@ -2806,7 +2807,7 @@ fn riders_picture() {
         }
         s.sim.t += 0.1;
     }
-    let cam = crate::render::Camera { pos: me + Vec3::Y * 2.0, yaw: 0.0, pitch: 0.02, fov_y: 1.05 };
+    let cam = crate::render::Camera { pos: me + Vec3::Y * 2.0, yaw: 0.0, pitch: 0.02, fov_y: 1.05, roll: 0.0 };
     render_png(&mut s, &w, cam, &out);
 }
 
@@ -2940,9 +2941,12 @@ fn a_deed_shows_as_work_and_counts_once_its_making_is_done() {
     let work = s.sim.work();
     assert_eq!(work.len(), 1, "the deed became a making");
     assert_eq!((work[0].kind, work[0].who, work[0].what.as_str()), (WorkKind::Making, Some(ActorId::Player), "reed flute"));
+    assert!(work[0].appears && work[0].at.is_some(), "a new thing out of nothing is marked where it will appear");
+    assert!(s.sim.flashes.is_empty());
     assert!(events(&s.sim, "interpreted").is_empty(), "not counted before it exists");
     s.sim.on_type_built(b, Some(stick));
     assert!(s.sim.work().is_empty());
+    assert_eq!(s.sim.flashes.len(), 1, "it appears in a flash");
     let done = events(&s.sim, "interpreted");
     assert_eq!(done.len(), 1);
     assert!(done[0].data.get("came_to_nothing").is_none() && done[0].data.get("effect").is_some(), "{:?}", done[0]);
@@ -3218,377 +3222,9 @@ fn run_for(s: &mut Session, secs: f32) {
     }
 }
 
+/// The night walkers about (alive).
 fn the_dark(s: &Session) -> Vec<i64> {
-    s.sim.cast.npcs.iter().filter(|n| !n.dead && n.species.touch.harms()).map(|n| n.def.id).collect()
-}
-
-/// On normal, something comes out of the dark at dusk, creeps up from
-/// behind, touches the traveler (a charge and some corruption), and is gone
-/// at dawn, when the charges are topped up with a bonus for the night.
-#[test]
-fn the_dark_comes_at_dusk_touches_you_and_leaves_at_dawn() {
-    let w = world("dark", 7);
-    let mut s = session(&w, 7, None);
-    s.sim.cfg.difficulty = 2;
-    s.sim.player.pos = w.spawn;
-    s.sim.player.yaw = 0.0;
-    s.sim.t = before_dusk(1.0, 2.0);
-    let all = record(&mut s);
-    for _ in 0..40 {
-        s.step(0.1);
-    }
-    assert!(s.sim.dark(), "night has fallen");
-    assert_eq!(s.sim.charges(), Some(24), "normal starts with 24");
-    let dark = the_dark(&s);
-    assert_eq!(dark.len(), 1, "one comes on normal: {:?}", of(&all, "dark_came"));
-    let h = s.sim.cast.get(dark[0]).unwrap();
-    assert!(h.here() && h.species.about(true) && !h.species.about(false));
-    assert!(h.corruption() > 0.9, "the dark is corrupt");
-    let d0 = (h.a.pos - s.sim.player.pos).length();
-    assert!(d0 > 35.0 && !s.sim.player_sees(h.a.pos), "it comes out of sight, behind: {d0:.0} m");
-    // The traveler stands still, looking away: it reaches them.
-    let mut touched = false;
-    for _ in 0..(120.0 / 0.1) as usize {
-        s.step(0.1);
-        if !of(&all, "touched").is_empty() {
-            touched = true;
-            break;
-        }
-    }
-    assert!(touched, "it reached the traveler; it is {:?}", s.sim.cast.get(dark[0]).map(|n| (n.doing.clone(), (n.a.pos - s.sim.player.pos).length())));
-    assert_eq!(s.sim.charges(), Some(23), "a touch takes a charge on normal");
-    assert!(s.sim.night.corruption > 0.2, "and lets something in");
-    // It draws back after.
-    for _ in 0..30 {
-        s.step(0.1);
-    }
-    assert_eq!(of(&all, "touched").len(), 1, "one touch, then it draws back");
-    // Dawn: it is gone (out of sight), the night is got through.
-    s.sim.player.yaw = std::f32::consts::PI;
-    s.sim.t = before_dawn(1.0, 1.0);
-    for _ in 0..(40.0 / 0.1) as usize {
-        s.step(0.1);
-    }
-    assert!(!s.sim.dark());
-    assert!(s.sim.cast.get(dark[0]).is_some_and(|n| n.away), "gone with the light");
-    let got = of(&all, "survived_night");
-    assert_eq!(got.len(), 1);
-    assert_eq!(got[0].data["untouched"], false);
-    assert_eq!(s.sim.charges(), Some(26), "topped up to 24, and 2 for the night");
-    // The next dusk it comes back (the same one), near the traveler again.
-    s.sim.t = before_dusk(2.0, 1.0);
-    for _ in 0..30 {
-        s.step(0.1);
-    }
-    assert_eq!(the_dark(&s), dark, "the same one comes back");
-    assert!(s.sim.cast.get(dark[0]).is_some_and(|n| n.here() && (n.a.pos - s.sim.player.pos).length() < 70.0));
-    sound(&s);
-}
-
-/// Watched, the dark's being stands still however near it is; at the very
-/// edge of the eye it still creeps closer.
-#[test]
-fn the_dark_freezes_when_watched_even_up_close() {
-    let w = world("dark close", 9);
-    let mut s = session(&w, 9, None);
-    s.sim.cfg.difficulty = 2;
-    s.sim.player.pos = w.spawn;
-    s.sim.player.yaw = 0.0;
-    s.sim.t = before_dusk(1.0, 2.0);
-    for _ in 0..40 {
-        s.step(0.1);
-    }
-    let dark = the_dark(&s);
-    assert_eq!(dark.len(), 1);
-    let put = |s: &mut Session, p: Vec3| {
-        let p = Vec3::new(p.x, s.sim.snap.terrain.height(p.x, p.z), p.z);
-        let n = s.sim.cast.get_mut(dark[0]).unwrap();
-        n.a.pos = p;
-        n.think_at = 0.0;
-    };
-    let me = s.sim.player.pos;
-    let f = s.sim.player.forward();
-    let all = record(&mut s);
-    put(&mut s, me + f * 2.5);
-    let at = s.sim.cast.get(dark[0]).unwrap().a.pos;
-    for _ in 0..30 {
-        s.step(0.1);
-    }
-    let moved = (s.sim.cast.get(dark[0]).unwrap().a.pos - at).length();
-    assert!(moved < 0.05, "looked at from 2.5 m it stays put: moved {moved:.2} m");
-    assert!(of(&all, "touched").is_empty(), "out of arm's reach: no touch");
-    // Within arm's reach looking doesn't save you.
-    put(&mut s, me + f * 1.2);
-    s.step(0.1);
-    assert_eq!(of(&all, "touched").len(), 1, "within arm's reach it touches you, watched or not");
-    if let Some(n) = s.sim.cast.get_mut(dark[0]) {
-        n.touched_at = -1e9;
-    }
-    // At the edge of the eye (95% of the way out), it comes on.
-    let r = s.sim.player.right();
-    let slope = 1.0;
-    put(&mut s, me + f * 10.0 + r * 10.0 * slope * 0.95);
-    let from = (s.sim.cast.get(dark[0]).unwrap().a.pos - me).length();
-    for _ in 0..30 {
-        s.step(0.1);
-    }
-    let to = (s.sim.cast.get(dark[0]).unwrap().a.pos - me).length();
-    assert!(to < from - 0.3, "at the edge of the eye it creeps closer: {from:.1} → {to:.1} m");
-}
-
-/// Every night horror is a "night walker" at the one pace; signs never say
-/// where, and what the game says of where is true.
-#[test]
-fn night_walkers_are_named_paced_and_placed_truly() {
-    let h = super::night::fallback_horror();
-    assert_eq!(h.name, "night walker");
-    assert!(h.signs.iter().all(|l| !l.to_lowercase().contains("behind")), "stock signs don't say where");
-    let mut odd = h.clone();
-    odd.moves.walk = 0.4;
-    odd.moves.run = 9.0;
-    odd.moves.fly = 6.0;
-    super::night::fit_horror(&mut odd);
-    assert_eq!((odd.moves.walk, odd.moves.run, odd.moves.fly), (h.moves.walk, h.moves.run, 0.0), "one pace for all");
-    let w = world("walkers", 21);
-    let mut s = session(&w, 21, None);
-    s.sim.cfg.difficulty = 2;
-    s.sim.player.pos = w.spawn;
-    s.sim.player.yaw = 0.0;
-    let me = s.sim.player.pos;
-    let (f, r) = (s.sim.player.forward(), s.sim.player.right());
-    assert_eq!(s.sim.where_is(me - f * 30.0), "behind you");
-    assert_eq!(s.sim.where_is(me - f * 5.0), "close behind you");
-    assert_eq!(s.sim.where_is(me + r * 30.0), "off to your right");
-    assert_eq!(s.sim.where_is(me - r * 30.0), "off to your left");
-    assert_eq!(s.sim.where_is(me + f * 30.0), "ahead of you, in the dark");
-    // It comes at dusk as the night walker.
-    s.sim.t = before_dusk(1.0, 2.0);
-    for _ in 0..40 {
-        s.step(0.1);
-    }
-    let dark = the_dark(&s);
-    assert_eq!(dark.len(), 1);
-    let n = s.sim.cast.get(dark[0]).unwrap();
-    assert_eq!(n.species.name, "night walker");
-    assert_eq!(s.sim.actor_name(ActorId::Npc(dark[0])), "the night walker");
-}
-
-/// Gone with the light stays gone: reopened by day, the dark's being isn't
-/// back, and nothing says it left again.
-#[test]
-fn the_dark_stays_away_by_day_after_reopening() {
-    let w = world("dark away", 13);
-    let h = {
-        let mut s = session(&w, 13, None);
-        s.sim.cfg.difficulty = 3;
-        s.sim.player.pos = w.spawn;
-        s.sim.t = before_dusk(1.0, 1.0);
-        run_for(&mut s, 3.0);
-        let h = the_dark(&s)[0];
-        s.sim.t = before_dawn(1.0, 1.0);
-        run_for(&mut s, 3.0);
-        assert!(s.sim.cast.get(h).is_some_and(|n| n.away), "gone at dawn");
-        s.sim.t = crate::render::sky::DAY_SECONDS * 2.45;
-        s.save();
-        h
-    };
-    let mut s = session(&w, 13, None);
-    assert!(!s.sim.dark());
-    s.step(0.1);
-    assert!(s.sim.cast.get(h).is_some_and(|n| n.away && !n.here()), "still away after reopening");
-    let told: Vec<String> = s.sim.drain_notes().iter().map(|n| n.text()).filter(|t| t.contains("gone with the light")).collect();
-    assert!(told.is_empty(), "nothing tells of it leaving again: {told:?}");
-}
-
-/// Peaceful: nothing comes, charges are unlimited, nothing twists.
-#[test]
-fn peaceful_nights_are_quiet_and_creation_is_free() {
-    let w = world("peace", 8);
-    let mut s = session(&w, 8, None);
-    assert_eq!(s.sim.cfg.difficulty, 0, "peaceful by default");
-    s.sim.t = before_dusk(1.0, 1.0);
-    for _ in 0..(60.0 / 0.1) as usize {
-        s.step(0.1);
-    }
-    assert!(s.sim.dark());
-    assert!(the_dark(&s).is_empty() && events(&s.sim, "dark_came").is_empty());
-    assert_eq!(s.sim.charges(), None);
-    assert!((0..100).all(|_| s.sim.spend_charge()));
-    assert_eq!(s.sim.night_status(), vec!["✦ ∞".to_string()]);
-    // Someone corrupted (a world made harder, then easier again) doesn't twist here.
-    let id = add_char(&w, "Ola", "kind", &[], w.spawn + Vec3::new(4.0, 0.0, 0.0));
-    let snap = s.sim.snap.clone();
-    let _ = (id, snap);
-    assert!(s.sim.twist_line(ActorId::Player).is_none());
-}
-
-/// The dark's kind is written slowly (or never comes back): the night
-/// doesn't wait forever, the stock horror comes, and the written kind joins
-/// later. A world past its first night asks for it at once.
-#[test]
-fn a_slow_writing_doesnt_keep_the_dark_away() {
-    use super::Request;
-    let w = world("slow dark", 12);
-    let mut s = session(&w, 12, None);
-    s.sim.has_llm = true;
-    s.sim.cfg.difficulty = 3;
-    s.sim.player.pos = w.spawn;
-    s.sim.player.yaw = 0.0;
-    s.sim.night.nights = 2;
-    // Step the sim alone: nothing answers its requests.
-    let run = |s: &mut Session, secs: f32| (0..(secs / 0.25).ceil() as usize).for_each(|_| s.sim.step(0.25));
-    s.sim.t = crate::render::sky::DAY_SECONDS * 2.4;
-    run(&mut s, 1.1);
-    let asked = |s: &mut Session| s.sim.drain_requests().into_iter().filter(|r| matches!(r, Request::NewSpecies { .. })).count();
-    assert_eq!(asked(&mut s), 1, "asked for by day, not at sunset");
-    s.sim.t = before_dusk(2.0, 1.0);
-    run(&mut s, 3.0);
-    assert!(s.sim.dark() && s.sim.night.hunting);
-    assert!(the_dark(&s).is_empty(), "waits a while for the writing");
-    run(&mut s, 60.0);
-    assert_eq!(the_dark(&s).len(), 1, "then the stock horror comes");
-    assert_eq!(asked(&mut s), 0, "and the writing isn't asked for twice");
-}
-
-/// Charges run out, deeds stop, and dawn brings them back; extra is kept.
-#[test]
-fn charges_run_out_and_dawn_tops_them_up() {
-    let w = world("charges", 9);
-    let mut s = session(&w, 9, None);
-    s.sim.cfg.difficulty = 3;
-    s.sim.t = crate::render::sky::DAY_SECONDS * 1.5;
-    run_for(&mut s, 1.1);
-    assert_eq!(s.sim.charges(), Some(12));
-    for _ in 0..12 {
-        assert!(s.sim.spend_charge());
-    }
-    assert!(!s.sim.spend_charge(), "spent");
-    assert_eq!(s.sim.charges(), Some(0));
-    // Dawn tops up to the start.
-    s.sim.t = before_dawn(1.0, 0.5);
-    run_for(&mut s, 0.1);
-    s.sim.night.was_night = Some(true);
-    s.sim.t = before_dawn(1.0, -1.0);
-    run_for(&mut s, 1.1);
-    assert_eq!(s.sim.charges(), Some(12));
-    // More than the start is kept at dawn.
-    s.sim.gain_charges(5, "test");
-    s.sim.night.was_night = Some(true);
-    run_for(&mut s, 1.1);
-    assert_eq!(s.sim.charges(), Some(17));
-    // Harder or easier keeps the same share: from hard (12) to normal (24) adds 12.
-    s.sim.cfg.difficulty = 2;
-    run_for(&mut s, 1.1);
-    assert_eq!(s.sim.charges(), Some(29));
-}
-
-/// It moves only while unwatched, and waits at the edge of a light.
-#[test]
-fn watched_it_stands_still_and_light_keeps_it_at_bay() {
-    let w = world("watched", 10);
-    let lantern = add_type(&w, &fixture("sims/lantern.js"));
-    let mut s = session(&w, 10, None);
-    s.sim.cfg.difficulty = 3;
-    s.sim.player.pos = w.spawn;
-    s.sim.player.yaw = 0.0;
-    s.sim.t = before_dusk(1.0, 1.0);
-    for _ in 0..30 {
-        s.step(0.1);
-    }
-    let h = the_dark(&s)[0];
-    // Put it in front of the traveler, 20 m away, watched.
-    let front = s.sim.player.pos + s.sim.player.forward() * 20.0;
-    let front = ground(&w, front.x, front.z);
-    s.sim.cast.get_mut(h).unwrap().a.pos = front;
-    for _ in 0..50 {
-        s.step(0.1);
-    }
-    let moved = (s.sim.cast.get(h).unwrap().a.pos - front).length();
-    assert!(moved < 0.2, "watched, it doesn't move ({moved:.2} m)");
-    // A lantern at the traveler's feet: turned away, it comes only to the light's edge.
-    s.sim.spawn_thing(lantern, s.sim.player.pos + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
-    s.sim.player.yaw = std::f32::consts::PI;
-    let mut closest = f32::MAX;
-    for _ in 0..(60.0 / 0.1) as usize {
-        s.step(0.1);
-        closest = closest.min((s.sim.cast.get(h).unwrap().a.pos - s.sim.player.pos).length());
-    }
-    assert!(closest < 15.0, "unwatched, it came closer ({closest:.1} m)");
-    assert!(closest > 6.0, "but not into the light ({closest:.1} m)");
-    assert!(events(&s.sim, "touched").is_empty(), "the light kept it off");
-    assert!(s.sim.cast.get(h).unwrap().doing.contains("edge of the light"), "{}", s.sim.cast.get(h).unwrap().doing);
-}
-
-/// Corruption passes by touch (on hard), twists minds, and kindness from the
-/// traveler draws it out: rules on the body's own `corruption` and a touch's
-/// `kindness`, with no code that looks at what kind of touch it was.
-#[test]
-fn corruption_spreads_by_touch_twists_and_kindness_draws_it_out() {
-    use super::body::{EMBRACE, HUG_SECS};
-    let w = world("corrupt", 11);
-    let a = add_char(&w, "Ada", "generous", &[], w.spawn + Vec3::new(3.0, 0.0, 0.0));
-    let b = add_char(&w, "Bo", "curious", &[], w.spawn + Vec3::new(5.0, 0.0, 0.0));
-    let c = add_char(&w, "Cy", "calm", &[], w.spawn + Vec3::new(7.0, 0.0, 0.0));
-    let mut s = session(&w, 11, None);
-    s.sim.cfg.difficulty = 3;
-    s.sim.t = crate::render::sky::DAY_SECONDS * 1.45;
-    run_for(&mut s, 1.1);
-    let (ada, bo, cy) = (ActorId::Npc(a), ActorId::Npc(b), ActorId::Npc(c));
-    s.sim.cast.get_mut(a).unwrap().props[P_CORRUPT] = 0.9;
-    assert!(s.sim.twist_line(ada).is_some_and(|l| l.contains("never say")));
-    assert!(s.sim.twist_line(bo).is_none());
-    assert!(s.sim.decide_context(a, "x").contains("Something dark has a hold on you"));
-    // Old saves' word for it is gone: events named like a hug do nothing.
-    s.sim.event("gesture", Some(ActorId::Player), Some(ada.key()), "the traveler hugs Ada", None, serde_json::json!({ "kind": "hug" }));
-    run_for(&mut s, 1.1);
-    assert!(s.sim.corruption_of(ada) > 0.85);
-    // Ada and Bo embrace, as a contact gesture does it.
-    for _ in 0..8 {
-        s.sim.touch_bodies(ada, bo, 0.5, 0.5, HUG_SECS, EMBRACE);
-        run_for(&mut s, 1.1);
-    }
-    let cb = s.sim.corruption_of(bo);
-    assert!(cb >= 0.3, "touch carried it to Bo ({cb:.2})");
-    // On easy darkness doesn't pass at all.
-    s.sim.cfg.difficulty = 1;
-    let before = s.sim.corruption_of(cy);
-    s.sim.touch_bodies(ada, cy, 0.5, 0.5, HUG_SECS, EMBRACE);
-    assert!(s.sim.corruption_of(cy) <= before, "easy: it doesn't pass ({before:.3} → {:.3})", s.sim.corruption_of(cy));
-    // Peaceful again: nothing twists, though the number stays.
-    s.sim.cfg.difficulty = 0;
-    assert!(s.sim.twist_line(ada).is_none());
-    s.sim.cfg.difficulty = 3;
-    // Kindness: hugs from the traveler.
-    for _ in 0..12 {
-        s.sim.touch_bodies(ActorId::Player, ada, 0.5, 0.0, HUG_SECS, EMBRACE);
-        run_for(&mut s, 1.1);
-    }
-    assert!(s.sim.corruption_of(ada) < 0.1, "{}", s.sim.corruption_of(ada));
-    assert_eq!(events(&s.sim, "cleansed").len(), 1, "the dark goes out of Ada");
-    assert_eq!(s.sim.night.corruption, 0.0, "the traveler is never touched by the rules");
-}
-
-#[test]
-fn species_hours_and_touch_read_and_default() {
-    let old: crate::world::species::Species = serde_json::from_value(serde_json::json!({ "name": "owl", "body": "quadruped" })).unwrap();
-    assert!(old.about(true) && old.about(false) && !old.touch.any() && old.want.is_empty());
-    let mut moth: crate::world::species::Species = serde_json::from_value(serde_json::json!({
-        "name": "Lamp Moth", "body": "moth", "active": "night", "want": "the traveler",
-        "touch": { "glow": 3.0, "needs": { "fatigue": 0.3, "bogus": 1.0 } }, "shuns": [" Wet "]
-    }))
-    .unwrap();
-    moth.sanitize();
-    assert!(moth.about(true) && !moth.about(false));
-    assert_eq!(moth.want, "traveler");
-    assert_eq!(moth.touch.glow, 1.0);
-    assert!(!moth.touch.harms() && moth.touch.any());
-    assert_eq!(moth.touch.needs.len(), 1);
-    assert_eq!(moth.shuns, vec!["wet".to_string()]);
-    let j = serde_json::to_value(&old).unwrap();
-    assert!(j.get("active").is_none() && j.get("touch").is_none(), "nothing new written for plain species");
-    let h = super::night::fallback_horror();
-    assert!(h.touch.harms() && h.moves_unseen && h.want == "traveler" && h.shuns == vec!["light".to_string()]);
-    assert!(h.signs.len() >= 4, "it gives signs of itself");
+    s.sim.cast.npcs.iter().filter(|n| !n.dead && n.species.touch.harms() && !n.species.hostile).map(|n| n.def.id).collect()
 }
 
 /// Bodies are written, not fixed: cats on the generic quadruped get their
@@ -4011,49 +3647,6 @@ export function color(x, y, z, k) { return rgb(120, 120, 130); }
     sound(&s);
 }
 
-/// A real hug on hard carries darkness from one body to the other; the
-/// traveler's gift draws some out and earns a charge. Nothing reads event names.
-#[test]
-fn a_hug_carries_darkness_on_hard_and_a_gift_eases_it() {
-    let w = world("hug-dark", 53);
-    let p = dry_spot(&w, 8.0, 0.4);
-    let a = add_char(&w, "Ada", "warm and affectionate", &["Bo: husband"], p);
-    let b = add_char(&w, "Bo", "warm and affectionate", &["Ada: wife"], p + Vec3::new(1.5, 0.0, 0.0));
-    let stick = builtin_id(&w, "stick");
-    let mut s = session(&w, 53, None);
-    s.sim.cfg.difficulty = 3;
-    s.sim.t = crate::render::sky::DAY_SECONDS * 1.45;
-    run_for(&mut s, 1.1);
-    let (ada, bo) = (ActorId::Npc(a), ActorId::Npc(b));
-    for (x, y) in [(ada, bo), (bo, ada)] {
-        let r = s.sim.social.rel_mut(x, y);
-        r.affection = 0.9;
-        r.partner = true;
-    }
-    s.sim.cast.get_mut(a).unwrap().props[P_CORRUPT] = 0.8;
-    let all = record(&mut s);
-    s.sim.act(ada, Action::Gesture { kind: "hug".into(), to: Some(Target::Actor(bo)) }).unwrap();
-    for _ in 0..300 {
-        s.step(0.1);
-        if !of(&all, "hug").is_empty() {
-            break;
-        }
-    }
-    assert!(!of(&all, "hug").is_empty(), "they hugged");
-    let cb = s.sim.corruption_of(bo);
-    assert!(cb > 0.05, "the hug carried darkness to Bo ({cb:.3})");
-    // The traveler hands Ada a stick: kindness eases her and earns a charge.
-    s.sim.player.pos = s.sim.actor(ada).unwrap().pos + Vec3::new(0.0, 0.0, -1.0);
-    let st = s.sim.spawn_thing(stick, s.sim.player.pos, 0.0, 1.0, Default::default(), true).unwrap();
-    s.sim.hand_to(ActorId::Player, st);
-    s.sim.cast.get_mut(a).unwrap().a.held = None;
-    let (ca, charges) = (s.sim.corruption_of(ada), s.sim.night.charges);
-    s.sim.act(ActorId::Player, Action::Give { to: Target::Actor(ada) }).unwrap();
-    assert!(s.sim.corruption_of(ada) < ca - 0.05, "the gift eased her ({ca:.2} → {:.2})", s.sim.corruption_of(ada));
-    assert_eq!(s.sim.night.charges, charges + 1, "kindness earns a charge");
-    sound(&s);
-}
-
 /// A kiln warms the people by it and kills nobody: heat reaches bodies by
 /// the same rule as it reaches grass, and the plants' "killed by heat"
 /// leaves bodies alone. Wading wets them.
@@ -4275,12 +3868,12 @@ export function color(x, y, z, k) { return rgb(200, 30, 30); }
 /// Beliefs: two villagers who saw different parts of a fire hold different
 /// causes (the one who saw it break out knows the lantern the traveler
 /// threw; the one it reached guesses it came from the grass). One who only
-/// heard of it believes the teller, less surely. A corrupted teller blames
+/// heard of it believes the teller, less surely. A teller who means harm blames
 /// someone else, and whoever saw it for themselves doesn't take it up; who
 /// didn't, does. People go where they believe a thing lies, and forget it
 /// when it isn't there. Each mind stays under its cap; repeats merge.
 #[test]
-fn beliefs_differ_by_what_was_seen_pass_on_and_only_corruption_lies() {
+fn beliefs_differ_by_what_was_seen_pass_on_and_only_the_harmful_lie() {
     use super::beliefs::{Claim, Source};
     let (w, a, dir) = grass_patch("beliefs", 45, 40.0);
     let lantern = add_type(&w, &fixture("sims/lantern.js"));
@@ -4324,9 +3917,13 @@ fn beliefs_differ_by_what_was_seen_pass_on_and_only_corruption_lies() {
     let told = s.sim.beliefs.get(cai, &key).cloned().expect("Cai heard of it");
     assert_eq!(told.source, Source::Told { by: "Ada".into() });
     assert!(told.claim == seen.claim && told.sure < seen.sure, "{told:?}");
-    // Dov saw it too, but darkness has a hold on him.
-    s.sim.cfg.difficulty = 3;
-    s.sim.cast.get_mut(dov).unwrap().props[P_CORRUPT] = 0.9;
+    // Dov saw it too, but he means harm (as a phantom does).
+    {
+        let n = s.sim.cast.get_mut(dov).unwrap();
+        let mut sp = (*n.species).clone();
+        sp.hostile = true;
+        n.species = Arc::new(sp);
+    }
     assert_eq!(s.sim.beliefs.get(dov, &key).map(|b| b.source.clone()), Some(Source::Saw));
     s.sim.converse(dov, eli);
     let lie = s.sim.beliefs.get(eli, &key).cloned().expect("Eli heard Dov's version");
@@ -4733,7 +4330,7 @@ fn render_village_png() {
     let eye = Vec3::new(h.x + 7.0, w.terrain.height(h.x + 7.0, h.z + 15.0) + 1.7, h.z + 15.0);
     let look = |from: Vec3, to: Vec3| {
         let d = to - from;
-        crate::render::Camera { pos: from, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 1.05 }
+        crate::render::Camera { pos: from, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 1.05, roll: 0.0 }
     };
     let day = look(eye, h + Vec3::new(-1.0, 1.2, 4.0));
     png_of(&mut s, &snap, &gpu, day, &format!("{dir}/pocket-village-day.png"));

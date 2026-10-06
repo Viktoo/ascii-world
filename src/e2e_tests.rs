@@ -191,7 +191,7 @@ fn story_pipeline_end_to_end() {
 
     // /a lighthouse: first attempt has a syntax error and is repaired.
     let mut cache = ScatterCache::default();
-    let cam = crate::render::Camera { pos: snap.spawn + Vec3::Y * 1.7, yaw: 0.0, pitch: -0.06, fov_y: 1.05 };
+    let cam = crate::render::Camera { pos: snap.spawn + Vec3::Y * 1.7, yaw: 0.0, pitch: -0.06, fov_y: 1.05, roll: 0.0 };
     let view = describe(&snap, &mut cache, &Vec::<NpcView>::new(), &cam, 1.6, 400.0);
     let target = {
         let p = snap.spawn + Vec3::new(0.0, 0.0, -45.0);

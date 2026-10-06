@@ -6,7 +6,6 @@
 
 use super::props::*;
 use super::things::Thing;
-use super::interp::WorkKind;
 use super::things::ThingId;
 use super::{ActorId, Sim, Target};
 use crate::render::{FX_CHAR, FX_GLOW, FX_HIGHLIGHT, FX_WET, GpuInst, PointLight};
@@ -64,7 +63,6 @@ pub fn look(p: &Props) -> [f32; 4] {
     fx[FX_CHAR] = p[P_CHAR].clamp(0.0, 1.0);
     fx[FX_WET] = (p[P_WET] * 0.6).clamp(0.0, 1.0);
     fx[FX_GLOW] = (p[P_LIGHT] * 0.9 + p[P_FIRE] * 0.4 + ((p[P_TEMP] - 400.0) / 800.0).max(0.0)).min(2.0);
-    fx[FX_HIGHLIGHT] = -p[P_CORRUPT].clamp(0.0, 1.0);
     fx
 }
 
@@ -121,7 +119,7 @@ impl Sim {
     fn work_marks(&self) -> Marks {
         let mut m = Marks::default();
         for w in self.work() {
-            if w.kind == WorkKind::Conjuring {
+            if w.appears {
                 if let Some(at) = w.at {
                     m.conjures.push((at, w.who == Some(ActorId::Player)));
                 }
@@ -180,18 +178,16 @@ impl Sim {
                     if let Some(q) = n.a.sway(self.t, n.hurt()) {
                         g.set_tilt(q);
                     }
-                    // Corruption shows as the dark creeping over them; a touch's glow as light.
-                    // The dark's own beings are black whatever colours their body has:
+                    // A touch's glow shows as light. The dark's own beings
+                    // (whose touch harms, but who don't think) are black whatever colours their body has:
                     // only their eyes show (the parts marked glow()), always, and red
                     // (charred past 1 is the renderer's sign for that).
-                    let of_the_dark = n.species.touch.harms();
+                    let of_the_dark = n.species.touch.harms() && !n.species.hostile;
                     g.fx[FX_GLOW] = n.glow();
                     g.fx[FX_WET] = n.props.get(super::props::P_WET).copied().unwrap_or(0.0).min(1.0) * 0.6;
                     if of_the_dark {
                         g.fx[FX_CHAR] = DARK_OWN;
                         g.fx[FX_GLOW] = if body.ct.marks_glow() { 1.6 } else { 0.0 };
-                    } else {
-                        g.fx[FX_HIGHLIGHT] = -n.corruption();
                     }
                     if marks.actors.contains(&ActorId::Npc(n.def.id)) {
                         g.fx[FX_HIGHLIGHT] = g.fx[FX_HIGHLIGHT].max(breath);
@@ -203,7 +199,7 @@ impl Sim {
                     if of_the_dark {
                         let p = n.a.pos + Vec3::Y * n.a.dims.eye;
                         lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(1.0, 0.08, 0.04), intensity: 0.12, reach: 1.6 }));
-                    } else if n.glow() > 0.05 && n.glow() > n.corruption() {
+                    } else if n.glow() > 0.05 {
                         let p = n.a.pos + Vec3::Y * n.a.dims.height * 0.6;
                         let gl = n.glow().min(1.0);
                         lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(0.95, 0.9, 0.5), intensity: 0.5 * gl, reach: 3.0 + 4.0 * gl }));
@@ -216,16 +212,21 @@ impl Sim {
                 }
             }
         }
-        // A glow or the dark on the traveler lights the ground about them.
-        let (pc, pg) = (self.night.corruption, self.night.glow);
-        if pc > 0.15 || pg > 0.05 {
+        // A glow on the traveler lights the ground about them.
+        let pg = self.night.glow;
+        if pg > 0.05 {
             let p = self.player.pos + Vec3::Y * 1.2;
-            let (color, k) = if pc >= pg { (Vec3::new(0.6, 0.05, 0.03), pc * 0.35) } else { (Vec3::new(0.95, 0.9, 0.5), pg) };
-            lights.push(((p - cam).length(), PointLight { pos: p, color, intensity: 0.4 * k, reach: 3.0 + 4.0 * k }));
+            lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(0.95, 0.9, 0.5), intensity: 0.4 * pg, reach: 3.0 + 4.0 * pg }));
         }
         for t in self.things.live() {
             if !near(t.pos) || t.worn.is_some() {
                 continue;
+            }
+            // Held by someone away (a phantom by day): gone with them.
+            if let Some(ActorId::Npc(c)) = t.holder {
+                if self.cast.get(c).is_some_and(|n| n.away) {
+                    continue;
+                }
             }
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };
             let mut fx = thing_look(&t.props, ty, t.scale);
@@ -359,8 +360,8 @@ impl Sim {
                 }
             }
         }
-        // Lights dim near the corrupted.
-        let dark: Vec<(Vec3, f32)> = self.cast.npcs.iter().filter(|n| n.here() && n.corruption() > 0.5).map(|n| (n.a.pos, n.corruption())).collect();
+        // Lights dim near the dark's own.
+        let dark: Vec<(Vec3, f32)> = self.cast.npcs.iter().filter(|n| n.here() && n.species.touch.harms() && !n.species.hostile).map(|n| (n.a.pos, 1.0)).collect();
         if !dark.is_empty() {
             for (_, l) in lights.iter_mut() {
                 if l.color.z > l.color.x {

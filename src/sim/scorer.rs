@@ -550,8 +550,9 @@ impl Sim {
     /// A free moment: choose what to do and set out.
     pub(super) fn decide(&mut self, cid: i64) {
         let me = ActorId::Npc(cid);
-        // Something it goes after (a night horror, a firefly drawn to you).
-        if self.pursue_want(cid) {
+        // Something it goes after (a night walker, a firefly drawn to you),
+        // or means harm to (a phantom).
+        if self.pursue_want(cid) || self.hunt(cid) {
             return;
         }
         // Carrying someone: it goes where it is steered, unless it takes

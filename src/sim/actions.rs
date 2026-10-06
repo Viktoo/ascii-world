@@ -503,6 +503,9 @@ impl Sim {
         if self.actor(who).is_none() {
             return fail("no such actor");
         }
+        if who == ActorId::Player && self.fallen() {
+            return fail("you lie where you fell");
+        }
         if who != ActorId::Player {
             if let Some(n) = self.cast.get_mut(who.code()) {
                 if n.a.asleep && !matches!(action, Action::Wake | Action::Sleep) {
@@ -650,10 +653,13 @@ impl Sim {
                 if !self.has_llm {
                     return fail("making new things needs an LLM");
                 }
+                if let Err(e) = self.may_make(who) {
+                    return fail(e);
+                }
                 let id = self.next_id();
                 let eye = me.eye();
                 let pitch = if who == ActorId::Player { self.look_pitch } else { -0.12 };
-                let cam = crate::render::Camera { pos: eye, yaw: me.yaw, pitch, fov_y: 1.05 };
+                let cam = crate::render::Camera { pos: eye, yaw: me.yaw, pitch, fov_y: 1.05, roll: 0.0 };
                 let npcs = self.npc_views();
                 let snap = self.snap.clone();
                 let view = crate::world::describe::describe(&snap, &mut self.cache, &npcs, &cam, 1.6, self.t);
@@ -669,6 +675,7 @@ impl Sim {
                     self.request(req, me.pos);
                 }
                 self.interp.creating.insert(id, (who, self.t, text.clone(), target));
+                self.made_one(who, &text);
                 self.event("create", Some(who), None, format!("{name} sets out to make {text}"), Some(me.pos), json!({ "text": text, "id": id }));
                 Ok(Outcome { ok: true, msg: format!("{name} starts making {text}"), pending: Some(id), thing: None })
             }
@@ -1299,7 +1306,7 @@ impl Sim {
             self.witness(p, 15.0, &format!("{name} gave {other} {} {tname}.", article(&tname)), 0.4, &[]);
         }
         self.social.bond(who, to, 0.12, self.t);
-        self.kind_touch(who, to, 1.0, super::body::GIFT_SECS, super::body::HAND, false, who == ActorId::Player);
+        self.kind_touch(who, to, 1.0, super::body::GIFT_SECS, super::body::HAND, false);
         self.goals_on_gift(who, to, id);
         self.on_gift(to, who, id);
         self.need_given(who, to);
