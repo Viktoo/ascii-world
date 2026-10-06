@@ -101,6 +101,9 @@ pub fn cull(snap: &WorldSnapshot, cache: &mut ScatterCache, cam: &Camera, aspect
                     if l > 0.0 && cache.overlay.lamps > 0.0 && (ty.ct.marks_glow() || ty.radius() * p.scale <= 2.0) {
                         g.fx[crate::render::FX_GLOW] = (l * 0.9 * cache.overlay.lamps).min(2.0);
                     }
+                    if let Some(k) = cache.overlay.pulse.get(&p.id) {
+                        g.fx[crate::render::FX_HIGHLIGHT] = g.fx[crate::render::FX_HIGHLIGHT].max(*k);
+                    }
                     push(g, f32::MAX, &mut list);
                 }
             }

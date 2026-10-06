@@ -8,6 +8,7 @@
 use super::actions::{ActErr, Outcome, Resolved};
 use super::props::*;
 use super::things::{Origin, ThingId};
+use super::render::FLASH_FOR;
 use super::{ActorId, Note, Request, Sim, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -231,8 +232,9 @@ pub struct PendingBuild {
 #[derive(Default)]
 pub struct Interp {
     pub pending: BTreeMap<u64, PendingInterp>,
-    /// Creations in progress: request id → (who, when, what).
-    pub creating: HashMap<u64, (ActorId, f64, String)>,
+    /// Creations in progress: request id → (who, when, what, where it
+    /// will appear: fixed when asked, so it can be marked while it's made).
+    pub creating: HashMap<u64, (ActorId, f64, String, glam::Vec3)>,
     pub building: HashMap<u64, PendingBuild>,
     pub building_names: HashMap<String, u64>,
     /// What a deed's story says, held back until the build it waits on is
@@ -280,13 +282,16 @@ impl WorkKind {
     }
 }
 
-/// One piece of slow work: its request id, kind, whose it is and what it is.
+/// One piece of slow work: its request id, kind, whose it is and what it
+/// is, where it is happening (or will appear) and what it is being done to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Work {
     pub id: u64,
     pub kind: WorkKind,
     pub who: Option<ActorId>,
     pub what: String,
+    pub at: Option<glam::Vec3>,
+    pub on: Option<Target>,
 }
 
 /// New loose things appear next to a target whose shape doesn't change (no
@@ -806,8 +811,12 @@ impl Sim {
     pub fn work(&self) -> Vec<Work> {
         let i = &self.interp;
         let mut out: Vec<Work> = Vec::new();
-        out.extend(i.pending.iter().map(|(id, p)| Work { id: *id, kind: WorkKind::Doing, who: Some(p.actor), what: p.text.clone() }));
-        out.extend(i.creating.iter().map(|(id, c)| Work { id: *id, kind: WorkKind::Conjuring, who: Some(c.0), what: c.2.clone() }));
+        out.extend(i.pending.iter().map(|(id, p)| {
+            let on = p.target.clone().filter(|t| !matches!(t, Target::Point(_) | Target::Name(_)));
+            let at = p.hit.or_else(|| p.target.as_ref().and_then(|t| self.work_spot(t)));
+            Work { id: *id, kind: WorkKind::Doing, who: Some(p.actor), what: p.text.clone(), at, on }
+        }));
+        out.extend(i.creating.iter().map(|(id, c)| Work { id: *id, kind: WorkKind::Conjuring, who: Some(c.0), what: c.2.clone(), at: Some(c.3), on: None }));
         out.extend(i.building.iter().map(|(id, b)| {
             let kind = if b.reshape.is_empty() && b.body_of.is_none() { WorkKind::Making } else { WorkKind::Reshaping };
             let what = match (b.reshape.first(), b.body_of) {
@@ -815,14 +824,35 @@ impl Sim {
                 (_, Some(c)) => format!("{}: {}", self.actor_name(ActorId::Npc(c)), b.change.trim()),
                 _ => b.name.clone(),
             };
-            Work { id: *id, kind, who: b.by, what }
+            let on = match (b.reshape.first(), b.body_of, b.then.first()) {
+                (Some((thing, _, _)), _, _) => Some(Target::Thing(*thing)),
+                (_, Some(c), _) => Some(Target::Actor(ActorId::Npc(c))),
+                (_, _, Some((thing, true))) => Some(Target::Thing(*thing)),
+                _ => None,
+            };
+            let at = b.place.map(|p| p.0).or_else(|| on.as_ref().and_then(|t| self.work_spot(t))).or_else(|| b.then.first().and_then(|(t, _)| self.work_spot(&Target::Thing(*t))));
+            Work { id: *id, kind, who: b.by, what, at, on }
         }));
         out.extend(i.gestures.iter().map(|(id, g)| {
             let name = g.2.split('@').next().unwrap_or("").replace('_', " ");
-            Work { id: *id, kind: WorkKind::Learning, who: Some(g.0), what: format!("how to {name}") }
+            Work { id: *id, kind: WorkKind::Learning, who: Some(g.0), what: format!("how to {name}"), at: None, on: None }
         }));
         out.sort_by_key(|w| w.id);
         out
+    }
+
+    /// Where work on a target shows: a thing's or placed object's middle, a
+    /// being's chest, a cell's item or a point.
+    fn work_spot(&self, t: &Target) -> Option<glam::Vec3> {
+        match t {
+            Target::Actor(a) => self.actor(*a).map(|a| a.pos + glam::Vec3::Y * a.dims.height * 0.6),
+            Target::Cell(c) => {
+                let (x, z) = ((c[0] as f32 + 0.5) * 4.0, (c[1] as f32 + 0.5) * 4.0);
+                Some(glam::Vec3::new(x, self.snap.terrain.height(x, z) + 0.5, z))
+            }
+            Target::Point(p) => Some(glam::Vec3::from(*p)),
+            _ => self.target_shape(t).map(|(pos, ty, scale)| pos + glam::Vec3::Y * ty.sphere_cy * scale),
+        }
     }
 
     /// A deed's story, told to those near and remembered by who saw it.
@@ -993,7 +1023,7 @@ impl Sim {
 
     /// A creation request finished: `instances` are the new placed objects.
     pub fn on_created(&mut self, id: u64, instances: &[i64]) {
-        let Some((who, _, _)) = self.interp.creating.remove(&id) else { return };
+        let Some((who, _, _, _)) = self.interp.creating.remove(&id) else { return };
         self.deed_landed(who);
         let maker = self.actor_name(who);
         for i in instances {
@@ -1018,6 +1048,9 @@ impl Sim {
             None => super::surprise::Sight { how, extent: 1.0, strange: 0.0 },
         };
         let surprise = (self.plain_surprise(sight) * 100.0).round() / 100.0;
+        let now = self.t;
+        self.flashes.retain(|f| now - f.1 < FLASH_FOR);
+        self.flashes.push((pos, now));
         if let Some(tid) = self.snap.instances.iter().find(|p| p.id == first).map(|p| p.type_id) {
             self.record_creation(tid, "built", Some(who), "", pos);
         }

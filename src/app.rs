@@ -1332,6 +1332,7 @@ impl App {
                 self.screen.fill_row(y, Cell { bg: [0, 0, 0], ..Cell::BLANK });
             }
         }
+        self.draw_work_marks(w, vh);
         self.draw_labels(w, vh);
         self.draw_pointer(w, vh);
         if self.debug {

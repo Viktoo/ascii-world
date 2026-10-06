@@ -342,6 +342,8 @@ pub struct Sim {
     acc_life: f32,
     /// Highlighted (hovered) target, drawn brighter.
     pub hover: Option<Target>,
+    /// Where new things just appeared, and when: a flash of light (see `render`).
+    pub flashes: Vec<(Vec3, f64)>,
     pub region_seen: HashMap<(i32, i32), f64>,
     next_req: u64,
     /// The things the player recently did (for dialogue context).
@@ -417,6 +419,7 @@ impl Sim {
             acc_regions: 1.0,
             acc_life: 0.0,
             hover: None,
+            flashes: Vec::new(),
             region_seen: HashMap::new(),
             next_req: 1,
             recent_player: VecDeque::new(),
@@ -843,6 +846,7 @@ impl Sim {
         self.step_weather();
         let dark = sky::lighting(self.t, &self.snap.look.palette).night;
         self.cache.overlay.lamps = dark;
+        self.mark_work();
         self.step_actors(dt);
         self.update_riders();
         self.step_social(dt);

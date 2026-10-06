@@ -2895,6 +2895,27 @@ fn families_grow_and_a_fed_wolf_line_turns_tame() {
 /// new thing while it is written. The deed counts ("interpreted", which
 /// achievements watch) only once that thing exists, or as having come to
 /// nothing when it never does.
+/// A conjuring knows where its thing will appear from the moment it is
+/// asked (so it can be marked while it is made), and it appears in a flash.
+#[test]
+fn a_conjuring_is_marked_where_it_will_appear() {
+    use super::Request;
+    use super::interp::WorkKind;
+    let w = world("conjure_mark", 43);
+    let stick = builtin_id(&w, "stick");
+    let made = place(&w, stick, w.spawn + Vec3::new(3.0, 0.0, 3.0), 0.0);
+    let mut s = session(&w, 8, None);
+    s.sim.has_llm = true;
+    s.sim.act(ActorId::Player, Action::Create { text: "a motorcycle".into() }).unwrap();
+    let (id, target) = s.sim.drain_requests().into_iter().find_map(|r| if let Request::Create { id, target, .. } = r { Some((id, target)) } else { None }).unwrap();
+    let work = s.sim.work();
+    assert_eq!((work[0].kind, work[0].at), (WorkKind::Conjuring, Some(target)));
+    assert!(s.sim.flashes.is_empty());
+    s.sim.on_created(id, &[made]);
+    assert!(s.sim.work().is_empty());
+    assert_eq!(s.sim.flashes.len(), 1, "it appears in a flash");
+}
+
 #[test]
 fn a_deed_shows_as_work_and_counts_once_its_making_is_done() {
     use super::Request;

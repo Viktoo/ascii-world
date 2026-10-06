@@ -156,6 +156,8 @@ pub struct Overlay {
     pub version: u64,
     /// How lit the land's lamps are (0 by day … 1 at night).
     pub lamps: f32,
+    /// Placed objects being worked on, and how bright they pulse now.
+    pub pulse: HashMap<i64, f32>,
 }
 
 impl Overlay {

@@ -1,9 +1,13 @@
 //! What the live world adds to a frame: characters (posed), live things
 //! (with their state and generic looks: charred, wet, glowing, highlighted),
 //! flames over everything burning, and point lights from fires and lamps.
+//! Work in progress shows too: what is being changed pulses, where something
+//! is being conjured glows violet until it appears in a flash.
 
 use super::props::*;
 use super::things::Thing;
+use super::interp::WorkKind;
+use super::things::ThingId;
 use super::{ActorId, Sim, Target};
 use crate::render::{FX_CHAR, FX_GLOW, FX_HIGHLIGHT, FX_WET, GpuInst, PointLight};
 use crate::world::TypeEntry;
@@ -77,6 +81,24 @@ fn thing_look(p: &Props, ty: &TypeEntry, scale: f32) -> [f32; 4] {
     fx
 }
 
+/// How long the flash lasts where something new appears (seconds).
+pub const FLASH_FOR: f64 = 1.4;
+const CONJURE_LIGHT: Vec3 = Vec3::new(0.8, 0.6, 1.0);
+
+/// How bright something being changed is lit now: a slow, gentle breath.
+fn pulse(t: f64) -> f32 {
+    0.15 + 0.2 * (0.5 + 0.5 * (t * 3.0).sin() as f32)
+}
+
+/// What work in progress marks this frame.
+#[derive(Default)]
+struct Marks {
+    things: Vec<ThingId>,
+    actors: Vec<ActorId>,
+    /// Where something is being conjured: (spot, the traveler's own).
+    conjures: Vec<(Vec3, bool)>,
+}
+
 pub struct Drawn {
     pub insts: Vec<GpuInst>,
     pub lights: Vec<PointLight>,
@@ -94,9 +116,43 @@ impl Sim {
         self.draw_from(cam.pos, view, Some(cam))
     }
 
+    /// What work in progress marks (the placed objects' pulse is kept in
+    /// the overlay, for the static world's own drawing).
+    fn work_marks(&self) -> Marks {
+        let mut m = Marks::default();
+        for w in self.work() {
+            if w.kind == WorkKind::Conjuring {
+                if let Some(at) = w.at {
+                    m.conjures.push((at, w.who == Some(ActorId::Player)));
+                }
+            }
+            match w.on {
+                Some(Target::Thing(id)) => m.things.push(id),
+                Some(Target::Instance(i)) => m.things.extend(self.things.by_instance.get(&i).copied()),
+                Some(Target::Actor(a)) => m.actors.push(a),
+                _ => {}
+            }
+        }
+        m
+    }
+
+    /// Placed objects being worked on pulse (once a frame).
+    pub(super) fn mark_work(&mut self) {
+        let k = pulse(self.t);
+        let ids: Vec<i64> = self.work().into_iter().filter_map(|w| match w.on {
+            Some(Target::Instance(i)) => Some(i),
+            _ => None,
+        }).collect();
+        let pulse = &mut self.cache.overlay.pulse;
+        pulse.clear();
+        pulse.extend(ids.into_iter().map(|i| (i, k)));
+    }
+
     fn draw_from(&self, cam: Vec3, view: f32, eye: Option<&crate::render::Camera>) -> Drawn {
         let mut insts = Vec::new();
         let mut lights: Vec<(f32, PointLight)> = Vec::new();
+        let marks = self.work_marks();
+        let breath = pulse(self.t);
         let near = |p: Vec3| (p - cam).length() < view;
         let hover_thing = match &self.hover {
             Some(Target::Thing(id)) => Some(*id),
@@ -137,6 +193,9 @@ impl Sim {
                     } else {
                         g.fx[FX_HIGHLIGHT] = -n.corruption();
                     }
+                    if marks.actors.contains(&ActorId::Npc(n.def.id)) {
+                        g.fx[FX_HIGHLIGHT] = g.fx[FX_HIGHLIGHT].max(breath);
+                    }
                     if hover_actor == Some(ActorId::Npc(n.def.id)) {
                         g.fx[FX_HIGHLIGHT] = 0.5;
                     }
@@ -170,6 +229,9 @@ impl Sim {
             }
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };
             let mut fx = thing_look(&t.props, ty, t.scale);
+            if marks.things.contains(&t.id) {
+                fx[FX_HIGHLIGHT] = fx[FX_HIGHLIGHT].max(breath);
+            }
             if hover_thing == Some(t.id) {
                 fx[FX_HIGHLIGHT] = 0.7;
             }
@@ -248,6 +310,28 @@ impl Sim {
                 insts.push(g);
                 let flicker = 0.85 + 0.15 * ((self.t as f32 * 9.0 + b.seed).sin() * (self.t as f32 * 5.3 + b.seed * 0.3).cos());
                 lights.push((*d, PointLight { pos: p + Vec3::Y * 0.5 * s, color: Vec3::new(1.0, 0.55, 0.22), intensity: (0.5 + 0.7 * b.fire * (b.size / 1.5).min(2.0)) * flicker, reach: 6.0 + 5.0 * s.min(4.0) }));
+            }
+        }
+        // Where something is being conjured: a violet glow, breathing, until
+        // it appears in a flash.
+        for (i, (at, mine)) in marks.conjures.iter().enumerate() {
+            let p = *at + Vec3::Y * 0.8;
+            let d = (p - cam).length();
+            if d < view {
+                // The traveler's own keeps its light among the many.
+                let d = if *mine { d * 0.2 } else { d };
+                let k = 0.75 + 0.25 * (self.t * 2.2 + i as f64).sin() as f32;
+                let (intensity, reach) = if *mine { (0.9, 7.0) } else { (0.45, 4.5) };
+                lights.push((d, PointLight { pos: p, color: CONJURE_LIGHT, intensity: intensity * k, reach }));
+            }
+        }
+        for (at, when) in &self.flashes {
+            let age = (self.t - when) as f32 / FLASH_FOR as f32;
+            let p = *at + Vec3::Y * 1.0;
+            let d = (p - cam).length();
+            if (0.0..1.0).contains(&age) && d < view {
+                let k = (1.0 - age).powi(2);
+                lights.push((d, PointLight { pos: p, color: Vec3::new(0.95, 0.88, 1.0), intensity: 2.5 * k, reach: 6.0 + 8.0 * k }));
             }
         }
         // Placed lamps and lit windows at night, and their light anchors.

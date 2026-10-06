@@ -668,7 +668,7 @@ impl Sim {
                 } else {
                     self.request(req, me.pos);
                 }
-                self.interp.creating.insert(id, (who, self.t, text.clone()));
+                self.interp.creating.insert(id, (who, self.t, text.clone(), target));
                 self.event("create", Some(who), None, format!("{name} sets out to make {text}"), Some(me.pos), json!({ "text": text, "id": id }));
                 Ok(Outcome { ok: true, msg: format!("{name} starts making {text}"), pending: Some(id), thing: None })
             }
