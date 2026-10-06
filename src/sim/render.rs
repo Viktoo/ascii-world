@@ -121,6 +121,9 @@ impl Sim {
             {
                 if (n.a.pos - cam).length() < 200.0 {
                     let mut g = n.gpu(body);
+                    if let Some(q) = n.a.sway(self.t, n.hurt()) {
+                        g.set_tilt(q);
+                    }
                     // Corruption shows as the dark creeping over them; a touch's glow as light.
                     // The dark's own beings are black whatever colours their body has:
                     // only their eyes show (the parts marked glow()), always, and red
@@ -206,7 +209,18 @@ impl Sim {
                     shown.yaw = c.yaw + 0.6;
                     insts.push(thing_inst(&shown, ty, fx));
                 }
-                None => insts.push(thing_inst(t, ty, fx)),
+                None => {
+                    let fell = self.falling(t);
+                    let g = thing_inst(fell.as_ref().unwrap_or(t), ty, fx);
+                    insts.push(g);
+                    // Remains wear what the living body wore.
+                    if let Some(c) = t.origin.remains {
+                        for w in worn.get(&ActorId::Npc(c)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                            let Some(lty) = self.snap.type_of(w.type_id) else { continue };
+                            insts.push(layer_inst(&g, ty, lty, look(&w.props)));
+                        }
+                    }
+                }
             }
             if t.props[P_LIGHT] > 0.05 {
                 let p = t.pos + Vec3::Y * (ty.sphere_cy * t.scale).max(0.2);

@@ -27,6 +27,9 @@ pub struct Origin {
     /// What it was made from (names).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub made_from: Vec<String>,
+    /// The being whose body this is (it died; see `remains`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remains: Option<i64>,
 }
 
 /// One change to what a thing is (cut, reshaped), and by whom.

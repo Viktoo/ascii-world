@@ -137,10 +137,33 @@ impl Sim {
         a.crouching
     }
 
-    /// How much a body's gait slows or speeds it now: running, crouching.
+    /// How much a body's gait slows or speeds it now: running, crouching,
+    /// favouring a hurt, knocked off its step.
     pub fn gait_factor(&self, id: ActorId) -> f32 {
         let Some(a) = self.actor(id) else { return 1.0 };
         let run = if a.running && a.crouch < 0.3 { 1.7 } else { 1.0 };
-        run * (1.0 - 0.5 * a.crouch)
+        let hurt = match id {
+            ActorId::Npc(c) => self.cast.get(c).map(|n| n.hurt()).unwrap_or(0.0),
+            ActorId::Player => 0.0,
+        };
+        // Hurt badly, a run is no more than a hobble.
+        let hurt_k = 1.0 - 0.55 * hurt;
+        let run = 1.0 + (run - 1.0) * (1.0 - hurt);
+        let stagger = if a.jolt.is_some_and(|j| j.staggers(self.t)) { 0.25 } else { 1.0 };
+        run * (1.0 - 0.5 * a.crouch) * hurt_k * stagger
+    }
+
+    /// A body is rocked along `dir` (level, world) by `size` radians (see
+    /// `Jolt`): a blow, a stumble, something heavy hitting it.
+    pub fn jolt(&mut self, id: ActorId, dir: Vec3, size: f32) {
+        let t = self.t;
+        let dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+        let Some(a) = self.actor_mut(id) else { return };
+        if dir == Vec3::ZERO || size <= 0.0 {
+            return;
+        }
+        // A fresh blow on one still reeling adds to it, up to a limit.
+        let left = a.jolt.map(|j| j.angle(t)).unwrap_or(0.0);
+        a.jolt = Some(super::actor::Jolt { t0: t, dir, size: (size + left * 0.5).min(0.5) });
     }
 }

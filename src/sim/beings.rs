@@ -491,7 +491,7 @@ impl Sim {
         let at = self.actor(prey).map(|a| a.pos).unwrap_or_default();
         if self.cfg.hunting {
             if let ActorId::Npc(p) = prey {
-                self.kill(p, &format!("killed by {name}"));
+                self.kill(p, &format!("killed by {name}"), self.actor(me).map(|a| a.pos));
             }
             if let Some(n) = self.cast.get_mut(cid) {
                 n.needs.hunger = 0.0;
@@ -507,18 +507,37 @@ impl Sim {
         }
     }
 
-    /// A being leaves the world for good (it stays in the save, dead).
-    pub fn kill(&mut self, cid: i64, how: &str) {
+    /// A being dies: it leaves the living for good (it stays in the save,
+    /// dead) and its body stays where it fell (see `remains`), fallen away
+    /// from `from`, wearing what it wore.
+    pub fn kill(&mut self, cid: i64, how: &str, from: Option<Vec3>) {
         let who = ActorId::Npc(cid);
         let Some(pos) = self.actor(who).map(|a| a.pos) else { return };
+        if self.cast.get(cid).is_none_or(|n| n.dead) {
+            return;
+        }
         if let Some(h) = self.actor(who).and_then(|a| a.held) {
             self.release(h);
         }
-        for id in self.worn_by(who) {
-            if let Some(t) = self.things.get_mut(id) {
-                t.worn = None;
-                t.asleep = false;
-                t.dirty = true;
+        // Off whatever carried it, and off it whoever rode it.
+        if let Some(a) = self.actor_mut(who) {
+            a.carried_by = None;
+            a.riding = None;
+            a.aboard = None;
+        }
+        for r in self.actor_ids() {
+            if let Some(a) = self.actor_mut(r).filter(|a| a.riding == Some(who)) {
+                a.riding = None;
+            }
+        }
+        let remains = self.leave_remains(cid, from);
+        if remains.is_none() {
+            for id in self.worn_by(who) {
+                if let Some(t) = self.things.get_mut(id) {
+                    t.worn = None;
+                    t.asleep = false;
+                    t.dirty = true;
+                }
             }
         }
         let name = self.actor_name(who);
@@ -527,6 +546,9 @@ impl Sim {
             n.dead = true;
             n.plan.clear();
             n.a.task = None;
+            n.a.gesture = None;
+            n.a.motion = None;
+            n.a.jolt = None;
         }
         let msg = format!("{name} was {how}");
         self.note_near(pos, 40.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));

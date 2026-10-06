@@ -334,6 +334,12 @@ impl Sim {
                         impact = -vn;
                         hit_name = Some(self.actor_name(a));
                     }
+                    // Something heavy and fast rocks the body it hits.
+                    let body = self.actor(a).map(|x| x.dims.mass.max(1.0)).unwrap_or(70.0);
+                    let give = mass * -vn / body * 0.25;
+                    if -vn > 2.0 && give > 0.03 {
+                        self.jolt(a, -n, give.min(0.35));
+                    }
                     v -= (1.0 + bounce * 0.5) * vn * n;
                 }
             }
@@ -376,6 +382,9 @@ impl Sim {
             } else {
                 t.rest_t = 0.0;
             }
+        }
+        if sleep {
+            self.rest_tilted(id);
         }
         if impact > IMPACT_SAFE {
             self.impact(id, impact, hit_name.clone());

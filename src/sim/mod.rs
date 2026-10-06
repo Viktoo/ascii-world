@@ -34,6 +34,7 @@ pub mod persist;
 pub mod physics;
 pub mod pick;
 pub mod props;
+pub mod remains;
 pub mod render;
 pub mod rooms;
 pub mod rules;
@@ -540,6 +541,9 @@ impl Sim {
     }
 
     pub fn thing_name(&self, id: ThingId) -> String {
+        if let Some(c) = self.things.get(id).and_then(|t| t.origin.remains) {
+            return self.remains_name(c);
+        }
         self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)).map(|t| t.name().to_string()).unwrap_or_else(|| "thing".into())
     }
 
@@ -862,6 +866,7 @@ impl Sim {
         if self.acc_life >= 60.0 {
             self.acc_life = 0.0;
             self.step_life();
+            self.step_remains();
         }
         // The first step after loading: who is about at this hour, before anyone is drawn.
         if self.night.was_night.is_none() {

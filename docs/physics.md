@@ -117,6 +117,29 @@ lies on it.
 - Boats set on water by a creation float there.
 - Only the traveler drives for now; characters can't board.
 
+## Blows, hurts and remains (`sim/remains.rs`, `Actor::sway`, `Sim::jolt`)
+
+Nothing here is drawn per weapon or per kind of body; the body itself shows it.
+
+- A blow (a sword, something heavy thrown) rocks the body that takes it: a
+  `Jolt` leans the whole shape about its feet, away from the blow, for about
+  half a second, and knocks it off its step for a third of that. Any body
+  can, since it is a tilt of the instance, not a pose.
+- Health under 0.6 shows in the gait: slower (a run no more than a hobble),
+  stooped, lurching onto one side every other step, and now and then a
+  stumble (a jolt forward). Living bodies mend, whole again in a game day.
+- A being that dies leaves its body: a live thing of its own body type, in its
+  look (sliders, clothes), `origin.remains` naming who it was ("body of Oda";
+  "Oda", "the body", "corpse" find it). Upright walkers topple away from the
+  blow; four-legged, crawling and floating bodies roll onto their side away
+  from it. The fall takes 0.8 s. Where it rests is probed from the shape
+  (`remains::lowest_point`), and any tilted thing that comes to rest is lifted
+  out of the ground the same way. Being a thing, the rules go on acting on it
+  (it no longer keeps itself warm), and it can be struck, cut, pushed, or
+  carried by those strong enough (two people for a person).
+- Remains go after three game days, only while the traveler is 90 m off;
+  what they wore is left there.
+
 ## Exposure (`sim/exposure.rs`)
 
 `Sim::exposure(p)` says how open a spot is to the sky, 0..1: how far it rises

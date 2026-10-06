@@ -333,7 +333,8 @@ impl Sim {
                 let th = self.things.get(*id)?;
                 let ty = self.snap.type_of(th.type_id)?;
                 let (c, _) = th.proxy(ty);
-                Some(Resolved::boxed(t.clone(), c, ty.name().to_string(), thing_inst(th, ty, [0.0; 4]), ty))
+                let name = th.origin.remains.map(|c| self.remains_name(c)).unwrap_or_else(|| ty.name().to_string());
+                Some(Resolved::boxed(t.clone(), c, name, thing_inst(th, ty, [0.0; 4]), ty))
             }
             Target::Actor(a) => {
                 let p = self.actor(*a)?.pos;
@@ -407,7 +408,15 @@ impl Sim {
         }
         for t in self.things.live() {
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };
-            if let Some(s) = score(ty.name()) {
+            // Remains answer to the dead one's name and to what they are.
+            let s = match t.origin.remains {
+                Some(c) => {
+                    let who = self.cast.get(c).map(|n| n.name().to_string()).unwrap_or_default();
+                    [format!("body of {who}"), format!("{who}'s body"), format!("{who}'s corpse"), "corpse".into(), "remains".into()].iter().filter_map(|n| score(n)).min_by(|a, b| a.total_cmp(b))
+                }
+                None => score(ty.name()),
+            };
+            if let Some(s) = s {
                 consider(s, (t.pos - near).length(), Target::Thing(t.id), &mut best);
             }
         }

@@ -369,6 +369,40 @@ impl GestureKind {
     }
 }
 
+/// A body rocked by a blow or a stumble: it gives along `dir` (world,
+/// level) by up to `size` radians, then rights itself. Drawn as a lean of
+/// the whole shape about its feet, so every body does it, whatever its build.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Jolt {
+    pub t0: f64,
+    pub dir: Vec3,
+    pub size: f32,
+}
+
+/// How long a jolt lasts, and how long it throws the step off (s).
+pub const JOLT_SECS: f32 = 0.6;
+pub const STAGGER_SECS: f32 = 0.35;
+/// Health below which a body favours its hurts: slower, lurching, stooped.
+pub const LIMP_FROM: f32 = 0.6;
+
+impl Jolt {
+    /// How far it is rocked now (radians): quick to give, slower to right.
+    pub fn angle(&self, t: f64) -> f32 {
+        let s = (t - self.t0) as f32;
+        if !(0.0..JOLT_SECS).contains(&s) {
+            return 0.0;
+        }
+        const GIVE: f32 = 0.07;
+        let k = if s < GIVE { s / GIVE } else { (-(s - GIVE) / 0.12).exp() };
+        self.size * k
+    }
+
+    /// Still knocked off its step.
+    pub fn staggers(&self, t: f64) -> bool {
+        (0.0..STAGGER_SECS as f64).contains(&(t - self.t0))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GestureRun {
     pub kind: GestureKind,
@@ -433,6 +467,8 @@ pub struct Actor {
     pub motion: Option<super::tool::MotionRun>,
     /// The support its last step found under it (where, and how high).
     pub support: Option<(Vec3, f32)>,
+    /// Rocked by a blow or a stumble (see `Jolt`).
+    pub jolt: Option<Jolt>,
 }
 
 /// Bit mask of the roles a body lists.
@@ -451,7 +487,7 @@ pub const HUMAN_ROLES: u8 = 0b0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None }
+        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None, jolt: None }
     }
 
     /// Sitting on something that carries it (a mount, a cart).
@@ -462,6 +498,31 @@ impl Actor {
     /// Off its own feet: seated, or carried.
     pub fn carried(&self) -> bool {
         self.seated() || self.carried_by.is_some()
+    }
+
+    /// How the body leans off upright as drawn (a tilt after its yaw):
+    /// rocked by a jolt, and, `hurt` (0 well … 1 barely standing), stooped
+    /// and lurching onto its good side every other step.
+    pub fn sway(&self, t: f64, hurt: f32) -> Option<glam::Quat> {
+        use glam::Quat;
+        let mut q = Quat::IDENTITY;
+        let mut any = false;
+        if hurt > 0.0 && !self.asleep && !self.carried() {
+            let walking = (self.moved > 0.002) as u8 as f32;
+            let step = self.phase.sin().max(0.0);
+            q *= Quat::from_rotation_x(hurt * 0.14) * Quat::from_rotation_z(-hurt * 0.16 * step * step * walking);
+            any = true;
+        }
+        if let Some(j) = &self.jolt {
+            let a = j.angle(t);
+            if a.abs() > 1e-4 {
+                let local = Quat::from_rotation_y(self.yaw).inverse() * j.dir;
+                let axis = Vec3::Y.cross(local).normalize_or(Vec3::X);
+                q = Quat::from_axis_angle(axis, a) * q;
+                any = true;
+            }
+        }
+        any.then_some(q)
     }
 
     pub fn forward(&self) -> Vec3 {

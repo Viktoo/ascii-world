@@ -25,6 +25,8 @@ pub const WORDS_SECS: f32 = 2.0;
 pub const EMBRACE: f32 = 0.1;
 pub const HAND: f32 = 0.3;
 pub const NEAR: f32 = 0.8;
+/// How much health a living body gets back in a game day.
+const MEND_PER_DAY: f32 = 1.0;
 /// The most charges kindness earns in one day.
 const KIND_PER_DAY: i32 = 4;
 
@@ -200,12 +202,23 @@ impl Sim {
 
     /// How much what is on a body hurts (by each property's harm), kept on
     /// the being: pain wears them out and is in what their planner sees.
+    /// Living bodies mend (whole again in a day), and the badly hurt
+    /// sometimes stumble as they go.
     pub fn feel_bodies(&mut self, dt: f32) {
         let vocab = self.vocab.clone();
+        let t = self.t;
         for n in self.cast.npcs.iter_mut().filter(|n| n.here()) {
             n.pain = if n.props.len() == vocab.len() && !n.species.touch.harms() { vocab.harm(&n.props) } else { 0.0 };
             if n.pain > 0.05 {
                 n.needs.fatigue = (n.needs.fatigue + n.pain * 0.004 * dt).min(1.0);
+            }
+            if n.props.len() > P_HEALTH && n.props[P_HEALTH] < 1.0 {
+                n.props[P_HEALTH] = (n.props[P_HEALTH] + dt * MEND_PER_DAY / crate::render::sky::DAY_SECONDS as f32).min(1.0);
+            }
+            let hurt = n.hurt();
+            let walking = n.a.moved > 0.01 && !n.a.carried() && n.a.grounded;
+            if walking && hurt > 0.4 && n.a.jolt.is_none_or(|j| j.angle(t) == 0.0) && n.rand() < hurt * 0.15 * dt {
+                n.a.jolt = Some(super::actor::Jolt { t0: t, dir: n.a.forward(), size: 0.12 + 0.12 * hurt });
             }
         }
     }

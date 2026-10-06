@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod remains;
 mod weather;
 
 fn fixture(p: &str) -> String {

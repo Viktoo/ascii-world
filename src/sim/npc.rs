@@ -218,6 +218,13 @@ impl Npc {
         self.props.get(P_CORRUPT).copied().unwrap_or(0.0)
     }
 
+    /// How badly hurt they are, as their body carries it: 0 while health
+    /// is above `LIMP_FROM`, 1 at none left.
+    pub fn hurt(&self) -> f32 {
+        let h = self.props.get(P_HEALTH).copied().unwrap_or(1.0);
+        ((super::actor::LIMP_FROM - h) / super::actor::LIMP_FROM).clamp(0.0, 1.0)
+    }
+
     /// A glow on them (a touch's dust; it fades).
     pub fn glow(&self) -> f32 {
         self.props.get(P_LIGHT).copied().unwrap_or(0.0)

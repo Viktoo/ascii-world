@@ -384,6 +384,10 @@ impl Sim {
         let me = self.actor(who).map(|a| a.pos).unwrap_or(opos);
         let push = Vec3::new(opos.x - me.x, 0.0, opos.z - me.z).normalize_or_zero() * (0.15 + 0.03 * speed) * (70.0 / omass).sqrt().min(2.0);
         self.walk(o, push);
+        // The body gives with the blow (a bigger blow, a bigger give).
+        if !died {
+            self.jolt(o, push, (0.1 + hurt * 0.9).min(0.4));
+        }
         let msg = format!("{name} struck {oname} with the {tname}");
         self.event("struck", Some(who), Some(o.key()), msg.clone(), Some(opos), json!({ "hurt": (hurt * 100.0).round() / 100.0, "motion": run.name }));
         let by = Some((crate::audio::call::Material::FLESH, tool_mass));
@@ -397,7 +401,7 @@ impl Sim {
         }
         if died {
             if let ActorId::Npc(c) = o {
-                self.kill(c, &format!("struck down by {name}"));
+                self.kill(c, &format!("struck down by {name}"), Some(me));
             }
             return;
         }

@@ -446,7 +446,7 @@ impl Sim {
         let ty = self.snap.type_of(t.type_id);
         let base = ty.map(|ty| scaled(type_props(&self.vocab, ty), t.scale));
         json!({
-            "name": ty.map(|t| t.name()).unwrap_or("thing"),
+            "name": self.thing_name(id),
             "tags": ty.map(|t| t.ct.meta.tags.clone()).unwrap_or_default(),
             "size_m": ty.map(|ty| { let b = ty.ct.meta.bounds; [b[0] * 2.0 * t.scale, b[1] * 2.0 * t.scale, b[2] * 2.0 * t.scale] }),
             "props": named(&self.vocab, &t.props),
@@ -578,7 +578,7 @@ impl Sim {
         let places: Vec<String> = places.into_iter().filter(|(_, n)| seen.insert(n.clone())).take(24).map(|(d, n)| format!("{n}, {d:.0} m")).collect();
         let mut things: Vec<(f32, String)> = self.things.live().filter(|t| t.holder.is_none()).filter_map(|t| {
             let d = (t.pos - at).length();
-            (d < 40.0).then(|| (d, self.snap.type_of(t.type_id).map(|ty| ty.name().to_string()).unwrap_or_default()))
+            (d < 40.0).then(|| (d, self.thing_name(t.id)))
         }).collect();
         things.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut seen = std::collections::HashSet::new();
