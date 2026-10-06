@@ -14,8 +14,7 @@
 
 use super::npc::Npc;
 use super::props::*;
-use super::{ActorId, Note, Sim};
-use serde_json::json;
+use super::{ActorId, Sim};
 
 /// How long a touch counts for, by what it is (s of the rules), and how
 /// close it is (m): a hug is a full embrace, kind words are only near.
@@ -26,9 +25,7 @@ pub const EMBRACE: f32 = 0.1;
 pub const HAND: f32 = 0.3;
 pub const NEAR: f32 = 0.8;
 /// How much health a living body gets back in a game day.
-const MEND_PER_DAY: f32 = 1.0;
-/// The most charges kindness earns in one day.
-const KIND_PER_DAY: i32 = 4;
+pub const MEND_PER_DAY: f32 = 1.0;
 
 impl Sim {
     /// A plain body of this being's species, as the rules see it.
@@ -61,13 +58,7 @@ impl Sim {
             }
             let props = if n.props.is_empty() {
                 let base = self.body_base(n);
-                let s = &n.def.state;
-                let mut p = apply_diff(&self.vocab, &base, &serde_json::Value::Object(s.props.clone()).to_string());
-                // Older saves kept darkness apart from the body.
-                if s.corruption > 0.0 && !s.props.contains_key("corruption") {
-                    p[P_CORRUPT] = s.corruption.clamp(0.0, 1.0);
-                }
-                p
+                apply_diff(&self.vocab, &base, &serde_json::Value::Object(n.def.state.props.clone()).to_string())
             } else {
                 let mut p = n.props.clone();
                 p.truncate(len);
@@ -88,35 +79,26 @@ impl Sim {
         diff(&self.vocab, &n.props, &self.body_base(n))
     }
 
-    /// How readily darkness takes hold of this body: the world's difficulty,
-    /// except for the dark's own (their touch does it, not the rules).
-    pub fn susceptibility(&self, n: &Npc) -> f32 {
-        if n.species.touch.harms() { 0.0 } else { self.level().spread }
-    }
-
     /// What the engine keeps true of a body before the rules see it: its
-    /// mass, that it is a body, and how readily darkness takes it.
+    /// mass, and that it is a body.
     pub fn refresh_body(&mut self, cid: i64) {
         let Some(n) = self.cast.get(cid) else { return };
         if n.props.len() != self.vocab.len() {
             return;
         }
-        let (mass, sus) = (n.a.dims.mass.max(1.0), self.susceptibility(n));
+        let mass = n.a.dims.mass.max(1.0);
         if let Some(n) = self.cast.get_mut(cid) {
             n.props[P_MASS] = mass;
             n.props[P_BODY] = 1.0;
-            n.props[P_SUSCEPT] = sus;
         }
     }
 
     /// A body as the rules see it: a being's own, or for the traveler a
-    /// stand-in (a plain body carrying the darkness in them).
+    /// plain stand-in.
     pub fn body_props(&self, who: ActorId) -> Props {
         if let ActorId::Npc(c) = who {
             if let Some(n) = self.cast.get(c).filter(|n| n.props.len() == self.vocab.len()) {
-                let mut p = n.props.clone();
-                p[P_SUSCEPT] = self.susceptibility(n);
-                return p;
+                return n.props.clone();
             }
         }
         let mut p = self.vocab.defaults.clone();
@@ -127,10 +109,6 @@ impl Sim {
         p[P_HEAT] = 36.0;
         p[P_ALIVE] = 1.0;
         p[P_BODY] = 1.0;
-        if who == ActorId::Player {
-            p[P_CORRUPT] = self.night.corruption;
-            p[P_SUSCEPT] = self.level().spread;
-        }
         p
     }
 
@@ -142,9 +120,8 @@ impl Sim {
             return;
         }
         let (mut pa, mut pb) = (self.body_props(a), self.body_props(b));
-        // A twisted heart's touch isn't warm.
-        pa[P_KIND] = kind_a.clamp(0.0, 1.0) * (1.0 - pa[P_CORRUPT]).max(0.0);
-        pb[P_KIND] = kind_b.clamp(0.0, 1.0) * (1.0 - pb[P_CORRUPT]).max(0.0);
+        pa[P_KIND] = kind_a.clamp(0.0, 1.0);
+        pb[P_KIND] = kind_b.clamp(0.0, 1.0);
         let rules = self.rules.clone();
         let (hour, night) = (self.hour(), self.night() as u32 as f32);
         let (mut na, mut nb) = (pa.clone(), pb.clone());
@@ -171,33 +148,13 @@ impl Sim {
                 continue;
             }
             self.tell_body_change(c, &name, pos, &before, &after, Some(other));
-            // The dark going out of someone through the traveler's kindness.
-            if other == ActorId::Player && before[P_CORRUPT] >= 0.1 && after[P_CORRUPT] < 0.1 {
-                self.event("cleansed", Some(ActorId::Player), Some(who.key()), format!("the traveler drew the dark out of {name}"), Some(pos), json!({}));
-                self.notes.push(Note::Notable(format!("The dark goes out of {name}.")));
-                self.witness(pos, 20.0, &format!("the traveler drew the dark out of {name}"), 0.7, &[]);
-            }
         }
     }
 
     /// Someone is kind to someone else (a gift handed over, time spent
-    /// together): their bodies touch with kindness, and the traveler's
-    /// kindness earns a charge now and then (`earns`).
-    pub fn kind_touch(&mut self, from: ActorId, to: ActorId, kindness: f32, secs: f32, dist: f32, both: bool, earns: bool) {
+    /// together): their bodies touch with kindness.
+    pub fn kind_touch(&mut self, from: ActorId, to: ActorId, kindness: f32, secs: f32, dist: f32, both: bool) {
         self.touch_bodies(from, to, kindness, if both { kindness } else { 0.0 }, secs, dist);
-        let other = if from == ActorId::Player { to } else if to == ActorId::Player && both { from } else { return };
-        if !earns || !matches!(other, ActorId::Npc(_)) {
-            return;
-        }
-        let day = super::night::NightState::day(self.t);
-        if self.night.kind_today.0 != day {
-            self.night.kind_today = (day, 0);
-        }
-        if self.night.kind_today.1 < KIND_PER_DAY {
-            self.night.kind_today.1 += 1;
-            let name = self.actor_name(other);
-            self.gain_charges(1, &format!("{} is glad of you.", super::physics::cap(&name)));
-        }
     }
 
     /// How much what is on a body hurts (by each property's harm), kept on

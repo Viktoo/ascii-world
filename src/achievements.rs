@@ -75,9 +75,9 @@ pub const ALL: &[Def] = &[
     a("a_name_of_their_own", "Generations", "A Name of Their Own", "That family gets a name of its own.", Diamond),
     a("origin_of_species", "Generations", "Origin of Species", "It becomes a whole new species.", Diamond),
     a("first_night", "The dark", "First Night", "Something comes for you in the night. Be there at dawn.", Silver),
-    a("not_a_scratch", "The dark", "Not a Scratch", "Get through a night the dark came without once being touched.", Gold),
-    a("talked_back", "The dark", "Talked Back", "Draw the darkness out of someone with kindness.", Gold),
-    a("twisted", "The dark", "Twisted", "Make something while the dark has hold of you.", Silver),
+    a("not_a_scratch", "The dark", "Not a Scratch", "Get through a night the dark came without once being hurt.", Gold),
+    a("into_the_dark", "The dark", "Back Into the Dark", "Strike down a night walker.", Silver),
+    a("not_for_long", "The dark", "Not for Long", "Strike down a phantom. It will remember.", Gold),
         a("life_goes_on", "Emergence", "Life Goes On", "Be gone a whole day and come back to a birth, a fire or something new.", Gold),
     a("nobody_touched_it", "Emergence", "Nobody Touched It", "A character makes something new for their own reasons.", Gold),
     a("pocket_universe", "Emergence", "Pocket Universe", "Earn every challenge.", Diamond),
@@ -278,8 +278,14 @@ fn check(id: &str, cx: &mut Cx, e: Option<&SimEvent>) -> bool {
         "word_made_real" => e.kind == "made" && by_player,
         "first_night" => e.kind == "survived_night" && by_player,
         "not_a_scratch" => e.kind == "survived_night" && by_player && e.data.get("untouched").and_then(Value::as_bool) == Some(true),
-        "talked_back" => e.kind == "cleansed" && by_player,
-        "twisted" => e.kind == "made" && by_player && sim.night.corruption >= crate::sim::night::TWISTED && sim.level().twist,
+        "into_the_dark" | "not_for_long" => {
+            let killed = e.kind == "died" && e.data.get("by").and_then(Value::as_str) == Some("player");
+            let kind = match e.actor {
+                Some(ActorId::Npc(c)) => sim.cast.get(c).map(|n| (n.species.touch.harms() && !n.species.hostile, n.species.hostile)),
+                _ => None,
+            };
+            killed && kind.is_some_and(|(walker, phantom)| if id == "into_the_dark" { walker } else { phantom })
+        }
         "second_draft" => e.kind == "reshaped" && by_player,
         "tinkerer" => (e.kind == "used" && by_player) || used_unplanned(e),
         "lost_and_found" => e.kind == "through" && by_player,

@@ -11,6 +11,8 @@ use glam::Vec3;
 pub const GRAVITY: f32 = super::physics::GRAVITY;
 /// A jump lifts a body this much of its own height.
 const JUMP: f32 = 0.5;
+/// Health a fall takes for each metre beyond one's own height.
+const FALL_HURT_PER_M: f32 = 0.12;
 /// How fast a crouch goes down or comes up (per second, of the whole way).
 const CROUCH_RATE: f32 = 5.0;
 
@@ -81,6 +83,7 @@ impl Sim {
                 // Walked off an edge.
                 grounded = false;
                 vy = 0.0;
+                self.note_perch(id);
             }
         }
         if !grounded {
@@ -108,10 +111,63 @@ impl Sim {
             a.crouch = crouch;
             a.support = None;
         }
+        if landed > 0.0 {
+            self.land_hard(id, landed);
+        }
         if landed > 3.0 {
             let mass = self.actor(id).map(|a| a.dims.mass).unwrap_or(70.0);
             let by = Some((crate::audio::call::Material::FLESH, mass));
             self.cue(Vec3::new(pos.x, feet, pos.z), Some(id), crate::audio::Heard::Hit { mat: crate::audio::call::Material::SOIL, mass: mass.min(400.0), speed: landed.min(12.0), by });
+        }
+    }
+
+    /// Landing from higher than one's own height hurts, more the further it
+    /// was (a jump on flat ground never does; off a roof or out of a tree
+    /// it does, and again and again it can kill).
+    fn land_hard(&mut self, id: ActorId, speed: f32) {
+        let Some(a) = self.actor_mut(id) else { return };
+        let perch = a.perch.take();
+        let drop = speed * speed / (2.0 * GRAVITY);
+        let over = drop - a.dims.height.max(1.0);
+        if over <= 0.0 {
+            return;
+        }
+        let (pos, fwd) = (a.pos, a.forward());
+        let hurt = (over * FALL_HURT_PER_M).min(1.0);
+        // From what, when it was off something (and fell most of the way from it).
+        let from = perch.filter(|(y, _)| y - pos.y > drop * 0.4).map(|(_, n)| format!(" from {}", super::actions::the(&n))).unwrap_or_default();
+        let how = format!("broken by a fall of {drop:.0} m{from}");
+        let died = self.wound(id, hurt, id, &how);
+        let name = self.actor_name(id);
+        self.event("fell_hard", Some(id), None, format!("{name} fell {drop:.0} m and landed hard"), Some(pos), serde_json::json!({ "drop": (drop * 10.0).round() / 10.0, "hurt": (hurt * 100.0).round() / 100.0 }));
+        if !died {
+            self.jolt(id, fwd * 0.2 - Vec3::Y * 0.1, (0.15 + hurt).min(0.5));
+        }
+        match id {
+            ActorId::Player if !died => self.notes.push(super::Note::Notable(if hurt > 0.3 { "You land badly. Something gives.".into() } else { "You land hard.".into() })),
+            ActorId::Npc(c) => {
+                self.note_near(pos, 30.0, super::Note::Ambient(format!("{} lands hard.", super::physics::cap(&name))));
+                if died {
+                    self.kill(c, &format!("{how}, and died"), None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Leaving the ground: remember what it stood on, if anything (a roof,
+    /// a tree), so a bad landing can say where it fell from.
+    fn note_perch(&mut self, id: ActorId) {
+        let Some(pos) = self.actor(id).map(|a| a.pos) else { return };
+        let land = self.snap.terrain.height(pos.x, pos.z);
+        let perch = if pos.y > land + 0.3 {
+            let feet = pos - Vec3::Y * 0.05;
+            self.solids_near(pos, 3.0).into_iter().map(|s| (s.sdf(feet), s.ty.name().to_string())).filter(|(d, _)| *d < 0.4).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, n)| (pos.y, n))
+        } else {
+            None
+        };
+        if let Some(a) = self.actor_mut(id) {
+            a.perch = perch;
         }
     }
 
@@ -123,6 +179,7 @@ impl Sim {
         }
         let h = a.dims.height * JUMP * (1.0 - 0.5 * a.crouch);
         let v = (2.0 * GRAVITY * h).sqrt();
+        self.note_perch(id);
         if let Some(a) = self.actor_mut(id) {
             a.vy = v;
             a.grounded = false;

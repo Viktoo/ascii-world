@@ -72,6 +72,18 @@ pub struct BeingFx {
     /// rewritten, for this being only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reshape: Option<String>,
+    /// Health it takes (0..1: a bruise 0.05, a deep cut 0.2, a grave wound
+    /// 0.5, 1 kills), less what the being wears softens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hurt: Option<f32>,
+    /// What the hurt was, as it would end "they were …" ("stabbed in the eye
+    /// with a stick"): remembered by whoever saw, and told if it kills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub how: Option<String>,
+    /// Done to the actor's own body (stab myself, eat the poison berries),
+    /// not to what they point at.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_self: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -284,6 +296,8 @@ impl WorkKind {
 
 /// One piece of slow work: its request id, kind, whose it is and what it
 /// is, where it is happening (or will appear) and what it is being done to.
+/// `appears`: something new will come out of nothing at `at` (a conjuring,
+/// or a deed's new kind of thing being written), not a change to something.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Work {
     pub id: u64,
@@ -292,6 +306,7 @@ pub struct Work {
     pub what: String,
     pub at: Option<glam::Vec3>,
     pub on: Option<Target>,
+    pub appears: bool,
 }
 
 /// New loose things appear next to a target whose shape doesn't change (no
@@ -328,8 +343,9 @@ fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<S
     // `changes`, `cut` and the being's needs and feelings are in `moved`.
     // New, removed and reshaped things, new beings and words show by themselves.
     if let Some(b) = being {
-        let BeingFx { needs: _, feel: _, look: _, grow: _, wear: _, take_off: _, learn: _, turn_into: _, reshape: _ } = b;
-        // Its look, size, layers, a trick, a new shape and a new species show by themselves.
+        let BeingFx { needs: _, feel: _, look: _, grow: _, wear: _, take_off: _, learn: _, turn_into: _, reshape: _, hurt: _, how: _, on_self: _ } = b;
+        // Its look, size, layers, a trick, a new shape and a new species show
+        // by themselves; a hurt is in `moved` (and the traveler's on their bar).
     }
     let parts: Vec<String> = moved.into_iter().map(|(what, shifts)| format!("{what}: {}", shifts.join(", "))).collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
@@ -372,11 +388,6 @@ impl Sim {
         };
         let key = cache_key(who, text, &format!("{held_name}{held_state}"), &format!("{target_name}{target_state}"));
         let name = self.actor_name(who);
-        // The traveler's deeds in words draw on their charges.
-        if who == ActorId::Player && self.has_llm && !self.spend_charge() {
-            self.notes.push(super::Note::Info("Your power is spent until dawn (✦ 0). Kindness and getting through the night bring it back.".into()));
-            return Ok(Outcome { ok: false, msg: "Your power is spent until dawn.".into(), pending: None, thing: None });
-        }
         self.deed_started(who, text, target.as_ref().map(|r| r.target.clone()));
         if let Some(fx) = super::persist::cached_interp(&self.db, &key) {
             self.interp.hits += 1;
@@ -516,9 +527,6 @@ impl Sim {
             v["species_looks"] = self.species_looks();
         }
         v["properties"] = json!(self.vocab.writable_names());
-        if let Some(l) = self.twist_line(who) {
-            v["darkness"] = json!(l);
-        }
         v.to_string()
     }
 
@@ -533,10 +541,6 @@ impl Sim {
                     self.deed_landed(p.actor);
                 }
                 if fx.changes_nothing() {
-                    // Nothing came of it: the charge isn't spent.
-                    if p.actor == ActorId::Player {
-                        self.refund_charge();
-                    }
                     // A "no" depends on the moment; never make it the rule.
                     match &fx.needs {
                         Some(need) => self.on_need(p.actor, &p.text, need, &fx.narration),
@@ -556,9 +560,6 @@ impl Sim {
             }
             Err(e) => {
                 self.deed_landed(p.actor);
-                if p.actor == ActorId::Player {
-                    self.refund_charge();
-                }
                 crate::log::error(format!("interpretation failed: {e}"));
                 self.note_near(self.actor(p.actor).map(|a| a.pos).unwrap_or_default(), 30.0, Note::seen("Nothing seems to happen.".into(), p.actor == ActorId::Player));
             }
@@ -603,8 +604,9 @@ impl Sim {
     pub fn apply_interp(&mut self, p: &PendingInterp, fx: &InterpEffect) -> (String, Option<u64>) {
         let pos = self.actor(p.actor).map(|a| a.pos).unwrap_or_default();
         // Changing someone takes their say-so; a refused change changes nothing.
-        let being = match &p.target {
-            Some(Target::Actor(a)) => Some(*a),
+        let being = match (&p.target, &fx.being) {
+            (_, Some(bf)) if bf.on_self => Some(p.actor),
+            (Some(Target::Actor(a)), _) => Some(*a),
             _ => None,
         };
         if let (Some(b), Some(bf)) = (being, &fx.being) {
@@ -759,7 +761,10 @@ impl Sim {
             }
             self.apply_being(p.actor, b, bf);
             let feel = bf.feel.iter().filter(|(k, _)| b != p.actor && matches!(k.as_str(), "affection" | "love" | "liking" | "trust" | "rivalry" | "anger"));
-            let shifts: Vec<String> = feel.chain(&bf.needs).filter_map(|(k, v)| shift(k, *v)).collect();
+            let mut shifts: Vec<String> = feel.chain(&bf.needs).filter_map(|(k, v)| shift(k, *v)).collect();
+            if bf.hurt.is_some_and(|h| h > 0.0) {
+                shifts.push("health ↓".into());
+            }
             if !shifts.is_empty() {
                 let name = if b == ActorId::Player { "you".to_string() } else { self.actor_name(b).trim_end_matches(|c: char| c.is_ascii_digit()).trim_end().to_string() };
                 moved.push((name, shifts));
@@ -814,9 +819,9 @@ impl Sim {
         out.extend(i.pending.iter().map(|(id, p)| {
             let on = p.target.clone().filter(|t| !matches!(t, Target::Point(_) | Target::Name(_)));
             let at = p.hit.or_else(|| p.target.as_ref().and_then(|t| self.work_spot(t)));
-            Work { id: *id, kind: WorkKind::Doing, who: Some(p.actor), what: p.text.clone(), at, on }
+            Work { id: *id, kind: WorkKind::Doing, who: Some(p.actor), what: p.text.clone(), at, on, appears: false }
         }));
-        out.extend(i.creating.iter().map(|(id, c)| Work { id: *id, kind: WorkKind::Conjuring, who: Some(c.0), what: c.2.clone(), at: Some(c.3), on: None }));
+        out.extend(i.creating.iter().map(|(id, c)| Work { id: *id, kind: WorkKind::Conjuring, who: Some(c.0), what: c.2.clone(), at: Some(c.3), on: None, appears: true }));
         out.extend(i.building.iter().map(|(id, b)| {
             let kind = if b.reshape.is_empty() && b.body_of.is_none() { WorkKind::Making } else { WorkKind::Reshaping };
             let what = match (b.reshape.first(), b.body_of) {
@@ -831,11 +836,12 @@ impl Sim {
                 _ => None,
             };
             let at = b.place.map(|p| p.0).or_else(|| on.as_ref().and_then(|t| self.work_spot(t))).or_else(|| b.then.first().and_then(|(t, _)| self.work_spot(&Target::Thing(*t))));
-            Work { id: *id, kind, who: b.by, what, at, on }
+            let appears = kind == WorkKind::Making && b.place.is_some_and(|p| p.1.is_none());
+            Work { id: *id, kind, who: b.by, what, at, on, appears }
         }));
         out.extend(i.gestures.iter().map(|(id, g)| {
             let name = g.2.split('@').next().unwrap_or("").replace('_', " ");
-            Work { id: *id, kind: WorkKind::Learning, who: Some(g.0), what: format!("how to {name}"), at: None, on: None }
+            Work { id: *id, kind: WorkKind::Learning, who: Some(g.0), what: format!("how to {name}"), at: None, on: None, appears: false }
         }));
         out.sort_by_key(|w| w.id);
         out
@@ -992,6 +998,9 @@ impl Sim {
             let maker = b.by.or(holder);
             let origin = Origin { made_by: maker.map(|h| self.actor_name(h)), ..Default::default() };
             if let Some(nid) = self.spawn_thing(tid, at, 0.0, 1.0, origin, holder.is_none()) {
+                if holder.is_none() {
+                    self.flash(at);
+                }
                 self.record_creation(tid, if maker.is_some() { "made" } else { "changed" }, maker, "", at);
                 let name = self.thing_name(nid);
                 if let Some(h) = holder {
@@ -1003,6 +1012,13 @@ impl Sim {
                 }
             }
         }
+    }
+
+    /// Something new appeared here: a flash of light.
+    fn flash(&mut self, at: glam::Vec3) {
+        let now = self.t;
+        self.flashes.retain(|f| now - f.1 < FLASH_FOR);
+        self.flashes.push((at, now));
     }
 
     /// Count a kind of thing made in the world's record of creations.
@@ -1048,9 +1064,7 @@ impl Sim {
             None => super::surprise::Sight { how, extent: 1.0, strange: 0.0 },
         };
         let surprise = (self.plain_surprise(sight) * 100.0).round() / 100.0;
-        let now = self.t;
-        self.flashes.retain(|f| now - f.1 < FLASH_FOR);
-        self.flashes.push((pos, now));
+        self.flash(pos);
         if let Some(tid) = self.snap.instances.iter().find(|p| p.id == first).map(|p| p.type_id) {
             self.record_creation(tid, "built", Some(who), "", pos);
         }

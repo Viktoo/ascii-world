@@ -125,6 +125,12 @@ pub struct App {
     debug: bool,
     pub screen: Screen,
     last_frame: Option<Frame>,
+    /// When the traveler was last seen hurt (the screen flashes red), and
+    /// the wounds then.
+    hurt_flash: Option<Instant>,
+    seen_wounds: f32,
+    /// When the traveler was seen to fall (the view drops and tips over).
+    fell_at: Option<Instant>,
     outstanding: u32,
     next_frame_id: u64,
     last_request: Instant,
@@ -236,6 +242,9 @@ impl App {
             debug: false,
             screen: Screen::new(s.size.0, s.size.1, s.truecolor),
             last_frame: None,
+            hurt_flash: None,
+            seen_wounds: 0.0,
+            fell_at: None,
             outstanding: 0,
             next_frame_id: 1,
             last_request: Instant::now(),
@@ -350,7 +359,23 @@ impl App {
 
     fn camera(&self) -> Camera {
         let p = self.sim.player.pos;
-        Camera { pos: Vec3::new(p.x, self.cam_y, p.z), yaw: self.sim.player.yaw, pitch: self.pitch, fov_y: FOV_Y }
+        let cam = Camera { pos: Vec3::new(p.x, self.cam_y, p.z), yaw: self.sim.player.yaw, pitch: self.pitch, fov_y: FOV_Y, roll: 0.0 };
+        if !self.sim.fallen() {
+            return cam;
+        }
+        // Fallen: the eyes drop to the ground and the view tips onto its side.
+        let s = self.fell_at.map(|t| t.elapsed().as_secs_f32()).unwrap_or(10.0);
+        let k = (s / FALL_SECS).clamp(0.0, 1.0);
+        let k = k * k * (3.0 - 2.0 * k);
+        // A small bounce as the head meets the ground.
+        let bump = if s > FALL_SECS { (-(s - FALL_SECS) * 9.0).exp() * ((s - FALL_SECS) * 18.0).sin() * 0.04 } else { 0.0 };
+        let ground = self.snap.terrain.height(p.x, p.z).max(crate::terrain::WATER_LEVEL - 0.2) + 0.22;
+        Camera {
+            pos: Vec3::new(p.x, cam.pos.y + (ground - cam.pos.y) * k + bump, p.z),
+            pitch: cam.pitch + (0.04 - cam.pitch) * k,
+            roll: 1.4 * k,
+            ..cam
+        }
     }
 
     /// Viewport size in cells.
@@ -398,6 +423,13 @@ impl App {
         }
         if self.loading.is_some() {
             return self.loading_key(k);
+        }
+        // Fallen: only waking (and the menu) answer.
+        if self.sim.fallen() && !matches!(k.code, KeyCode::Esc | KeyCode::F(10)) {
+            if k.code == KeyCode::Enter && k.kind == KeyEventKind::Press && self.fell_at.is_some_and(|t| t.elapsed().as_secs_f32() > FALL_SECS) {
+                self.wake();
+            }
+            return;
         }
         if k.code == KeyCode::F(10) {
             if k.kind == KeyEventKind::Press {
@@ -885,7 +917,7 @@ impl App {
         let seen: Vec<String> = view.visible.iter().take(10).map(|s| format!("{} ({:.0} m {})", s.name, s.distance, s.third)).collect();
         let place = view.region.clone().unwrap_or_else(|| view.biome.clone());
         let held = self.sim.player.held.map(|h| format!(" The traveler is holding {}.", crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
-        let dark = self.sim.talking_to.and_then(|cid| self.sim.twist_line(ActorId::Npc(cid))).map(|l| format!(" {l}")).unwrap_or_default();
+        let dark = self.sim.talking_to.and_then(|cid| self.sim.drive_line(cid)).map(|l| format!(" {l}")).unwrap_or_default();
         let dark = format!("{dark}{}", self.sim.trouble_line(cam.pos).map(|l| format!(" {l}")).unwrap_or_default());
         let dark = format!("{dark}{}", self.sim.talking_to.and_then(|cid| self.sim.fear_line(cid, ActorId::Player)).map(|l| format!(" {l}")).unwrap_or_default());
         format!(
@@ -1034,7 +1066,16 @@ impl App {
     // ------------------------------------------------------------------ sim
 
     fn tick(&mut self, dt: f32) {
-        if self.mode == Mode::Walk || self.noclip {
+        if self.sim.fallen() {
+            if self.fell_at.is_none() {
+                self.fell_at = Some(Instant::now());
+                self.keys.down.clear();
+                self.mode = Mode::Walk;
+                self.input.clear();
+            }
+            self.dirty = true;
+        }
+        if (self.mode == Mode::Walk || self.noclip) && !self.sim.fallen() {
             let fwd = self.held('w') as i32 - self.held('s') as i32;
             let turn = self.held('>') as i32 - self.held('<') as i32;
             let strafe = self.held('d') as i32 - self.held('a') as i32;
@@ -1352,6 +1393,8 @@ impl App {
             self.draw_inspect(w, vh);
         }
         self.draw_work(w, vh);
+        self.draw_hurt(w, vh);
+        self.draw_fallen(w, vh);
         self.draw_toast(w, vh);
         // Separator with mode (at the top when the log fills the screen).
         let sep = vh;
@@ -1405,6 +1448,7 @@ impl App {
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
                     (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings/quit".into(),
                 };
+                let hint = if self.sim.fallen() { "You lie where you fell.   Enter wake   Esc settings/quit".to_string() } else { hint };
                 self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
             }
             _ => {
@@ -1461,9 +1505,166 @@ impl App {
         if self.render.cpu_fallback {
             right = format!("{right}{}CPU renderer", if right.is_empty() { "" } else { " · " });
         }
-        let rx = w.saturating_sub(right.chars().count() as u16 + 1);
+        let bar = self.draw_health(w, sy);
+        let rx = bar.saturating_sub(right.chars().count() as u16 + 2);
         if !right.is_empty() {
             self.screen.text(rx, sy, &right, ACCENT, STATUS_BG, false);
+        }
+    }
+
+    /// The traveler's health at the right of the status bar: a heart and a
+    /// bar that runs green, amber, red as it empties, the heart flashing when
+    /// hurt. Returns the column it starts at.
+    fn draw_health(&mut self, w: u16, y: u16) -> u16 {
+        const CELLS: usize = 12;
+        const TRACK: [u8; 3] = [58, 60, 76];
+        let health = self.sim.health();
+        let x0 = w.saturating_sub(CELLS as u16 + 4);
+        let flash = self.hurt_flash.map(|t| t.elapsed().as_secs_f32()).filter(|s| *s < 0.6);
+        let tint = health_color(health);
+        let heart = match flash {
+            Some(s) if (s * 10.0) as u32 % 2 == 0 => [255, 255, 255],
+            _ => tint,
+        };
+        self.screen.set(x0, y, Cell { ch: '♥', fg: heart, bg: STATUS_BG, bold: true });
+        let fill = health * CELLS as f32;
+        const PART: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+        for i in 0..CELLS {
+            // A little light along the bar, brighter toward its head.
+            let k = 0.75 + 0.25 * (i as f32 + 1.0) / CELLS as f32;
+            let fg = tint.map(|c| (c as f32 * k).min(255.0) as u8);
+            let left = fill - i as f32;
+            let cell = if left >= 1.0 {
+                Cell { ch: '█', fg, bg: TRACK, bold: false }
+            } else if left > 0.0 {
+                Cell { ch: PART[((left * 8.0) as usize).min(7)], fg, bg: TRACK, bold: false }
+            } else {
+                Cell { ch: ' ', fg, bg: TRACK, bold: false }
+            };
+            self.screen.set(x0 + 2 + i as u16, y, cell);
+        }
+        x0
+    }
+
+    /// Wake from the fall: at the world's beginning, in the morning.
+    fn wake(&mut self) {
+        self.sim.wake_traveler();
+        self.fell_at = None;
+        self.hurt_flash = None;
+        self.seen_wounds = 0.0;
+        self.pitch = 0.0;
+        self.keys.down.clear();
+        self.cam_y = self.sim.player.pos.y + self.sim.player.dims.eye;
+        self.dirty = true;
+    }
+
+    /// Fallen: the view goes dark red (the world still showing through),
+    /// and over it, YOU DIED, who did it, and how to wake.
+    fn draw_fallen(&mut self, w: u16, vh: u16) {
+        if !self.sim.fallen() {
+            return;
+        }
+        let s = self.fell_at.map(|t| t.elapsed().as_secs_f32()).unwrap_or(10.0);
+        let k = (s / 1.4).clamp(0.0, 1.0) * 0.55;
+        const BLOOD: [f32; 3] = [96.0, 6.0, 4.0];
+        let tint = |v: [u8; 3]| [0, 1, 2].map(|i| (v[i] as f32 + (BLOOD[i] - v[i] as f32) * k) as u8);
+        for y in 0..vh {
+            for x in 0..w {
+                let Some(mut c) = self.screen.get(x, y) else { continue };
+                c.bg = tint(c.bg);
+                c.fg = tint(c.fg);
+                self.screen.set(x, y, c);
+            }
+        }
+        if s < FALL_SECS * 0.7 {
+            return;
+        }
+        let red = [236, 62, 50];
+        let shadow = [40, 0, 0];
+        let title = "YOU DIED";
+        let big: Vec<String> = (0..5).map(|row| title.chars().map(|ch| glyph(ch)[row]).collect::<Vec<_>>().join(" ")).collect();
+        let bw = big[0].chars().count() as u16;
+        let mut y = (vh as i32 / 2 - 5).max(1) as u16;
+        if bw + 4 <= w && vh >= 14 {
+            let x0 = (w - bw) / 2;
+            for (r, line) in big.iter().enumerate() {
+                for (i, ch) in line.chars().enumerate() {
+                    if ch == ' ' {
+                        continue;
+                    }
+                    let (x, yy) = (x0 + i as u16, y + r as u16);
+                    // A drop shadow, down and to the right.
+                    if let Some(mut c) = self.screen.get(x + 1, yy + 1) {
+                        c.bg = shadow;
+                        c.ch = ' ';
+                        self.screen.set(x + 1, yy + 1, c);
+                    }
+                    if let Some(mut c) = self.screen.get(x, yy) {
+                        c.ch = '█';
+                        c.fg = red;
+                        self.screen.set(x, yy, c);
+                    }
+                }
+            }
+            y += 7;
+        } else {
+            let x = w.saturating_sub(title.len() as u16) / 2;
+            self.text_over(x, y, title, red, true);
+            y += 2;
+        }
+        let by = self.sim.night.fallen.clone().unwrap_or_default();
+        let line = format!("{}.", crate::sim::physics::cap(&by));
+        self.text_over(w.saturating_sub(line.chars().count() as u16) / 2, y, &line, TEXT, false);
+        if s > FALL_SECS {
+            let hint = "Press Enter to wake where you began, in the morning";
+            let pulse = 0.6 + 0.4 * (s * 2.5).sin().abs();
+            let c = [(255.0 * pulse) as u8, (220.0 * pulse) as u8, (200.0 * pulse) as u8];
+            self.text_over(w.saturating_sub(hint.chars().count() as u16) / 2, y + 2, hint, c, false);
+        }
+    }
+
+    /// Text over the view, keeping what is behind it as its background.
+    fn text_over(&mut self, x: u16, y: u16, s: &str, fg: [u8; 3], bold: bool) {
+        for (i, ch) in s.chars().enumerate() {
+            if let Some(mut c) = self.screen.get(x + i as u16, y) {
+                c.ch = crate::term::narrow(ch);
+                c.fg = fg;
+                c.bold = bold;
+                c.bg = c.bg.map(|v| (v as f32 * 0.55) as u8);
+                self.screen.set(x + i as u16, y, c);
+            }
+        }
+    }
+
+    /// Hurt: the edges of the view flash red, fading.
+    fn draw_hurt(&mut self, w: u16, vh: u16) {
+        let wounds = self.sim.night.wounds;
+        if wounds > self.seen_wounds + 0.001 {
+            self.hurt_flash = Some(Instant::now());
+        }
+        self.seen_wounds = wounds;
+        let Some(s) = self.hurt_flash.map(|t| t.elapsed().as_secs_f32()) else { return };
+        if s > 0.6 {
+            self.hurt_flash = None;
+            return;
+        }
+        self.dirty = true;
+        let fade = 1.0 - s / 0.6;
+        let depth = (w.min(vh * 2) / 8).max(2) as f32;
+        for y in 0..vh {
+            for x in 0..w {
+                // Distance from the nearest edge, in cells (rows count double: they're tall).
+                let d = (x as f32).min((w - 1 - x) as f32).min(y as f32 * 2.0).min((vh - 1 - y) as f32 * 2.0);
+                if d >= depth {
+                    continue;
+                }
+                let k = (1.0 - d / depth).powi(2) * fade * 0.75;
+                let Some(mut c) = self.screen.get(x, y) else { continue };
+                let red = |v: [u8; 3]| [(v[0] as f32 + (200.0 - v[0] as f32) * k) as u8, (v[1] as f32 * (1.0 - k)) as u8, (v[2] as f32 * (1.0 - k)) as u8];
+                c.bg = red(c.bg);
+                c.fg = red(c.fg);
+                self.screen.set(x, y, c);
+            }
         }
     }
 
@@ -2417,6 +2618,44 @@ mod tests {
         assert!(app.pitch < PITCH_MAX - 0.2, "↓ looks back down, pitch {}", app.pitch);
         app.shutdown();
     }
+    /// Struck down: the view drops and tips, goes dark red with the world
+    /// showing through, YOU DIED over it with who did it; keys do nothing
+    /// but Enter, and only once the fall is over; Enter wakes the traveler
+    /// at the world's beginning.
+    #[test]
+    fn falling_shows_you_died_and_enter_wakes_you() {
+        let (mut app, _db) = make_app(false);
+        let mara = app.sim.cast.npcs[0].def.id;
+        app.sim.player.pos += Vec3::new(5.0, 0.0, 5.0);
+        let fell_at = app.sim.player.pos;
+        app.sim.wound(ActorId::Player, 1.0, ActorId::Npc(mara), "struck by Mara with the stick");
+        assert!(app.sim.fallen());
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        drive(&mut app, 0.3, |_, _| true);
+        assert!(app.sim.fallen(), "Enter does nothing mid-fall");
+        assert!(app.camera().roll > 0.1, "the view tips over");
+        drive(&mut app, 1.2, |_, _| true);
+        let cam = app.camera();
+        assert!(cam.roll > 1.3 && cam.pos.y < app.sim.player.pos.y + 0.5, "lying on the ground: roll {:.2}, eye {:.2} over the ground", cam.roll, cam.pos.y - app.sim.player.pos.y);
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
+        drive(&mut app, 0.4, |_, _| true);
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Release));
+        let moved = Vec3::new(app.sim.player.pos.x - fell_at.x, 0.0, app.sim.player.pos.z - fell_at.z).length();
+        assert!(moved < 0.05, "the fallen don't walk: {moved:.2} m");
+        app.compose();
+        let text = screen_text(&app);
+        if std::env::var("POCKET_SHOW").is_ok() {
+            eprintln!("{text}");
+        }
+        assert!(text.contains("Struck by Mara with the stick.") && text.contains("Press Enter") && text.contains("█   █"), "{text}");
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(!app.sim.fallen() && app.sim.health() == 1.0);
+        let spawn = app.snap.spawn;
+        assert!(Vec3::new(app.sim.player.pos.x - spawn.x, 0.0, app.sim.player.pos.z - spawn.z).length() < 0.01);
+        assert_eq!(app.camera().roll, 0.0);
+        app.shutdown();
+    }
+
     fn screen_text(app: &App) -> String {
         let mut out = String::new();
         for y in 0..app.screen.h {
@@ -2766,4 +3005,30 @@ fn slow(what: &str, t0: Instant, detail: impl FnOnce() -> String) {
     }
     *last = Some(Instant::now());
     crate::log::info(format!("slow {what}: {ms:.0} ms ({})", detail()));
+}
+
+/// The health bar's colour: green when whole, amber at half, red near none.
+fn health_color(h: f32) -> [u8; 3] {
+    const GREEN: [f32; 3] = [96.0, 214.0, 120.0];
+    const AMBER: [f32; 3] = [240.0, 186.0, 64.0];
+    const RED: [f32; 3] = [226.0, 64.0, 58.0];
+    let (a, b, k) = if h >= 0.5 { (AMBER, GREEN, (h - 0.5) * 2.0) } else { (RED, AMBER, h * 2.0) };
+    let k = k.clamp(0.0, 1.0);
+    [0, 1, 2].map(|i| (a[i] + (b[i] - a[i]) * k) as u8)
+}
+
+/// How long the fall takes (s).
+const FALL_SECS: f32 = 0.9;
+
+/// Big letters for the death screen: five rows each.
+fn glyph(c: char) -> [&'static str; 5] {
+    match c {
+        'Y' => ["█   █", " █ █ ", "  █  ", "  █  ", "  █  "],
+        'O' => [" ███ ", "█   █", "█   █", "█   █", " ███ "],
+        'U' => ["█   █", "█   █", "█   █", "█   █", " ███ "],
+        'D' => ["████ ", "█   █", "█   █", "█   █", "████ "],
+        'I' => ["███", " █ ", " █ ", " █ ", "███"],
+        'E' => ["████", "█   ", "███ ", "█   ", "████"],
+        _ => ["  ", "  ", "  ", "  ", "  "],
+    }
 }

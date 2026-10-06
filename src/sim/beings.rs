@@ -536,6 +536,10 @@ impl Sim {
             }
         }
         let remains = self.leave_remains(cid, from);
+        // A phantom's gear is left for the taking.
+        if self.cast.get(cid).is_some_and(|n| n.species.hostile) {
+            self.drop_worn(cid, pos);
+        }
         if remains.is_none() {
             for id in self.worn_by(who) {
                 if let Some(t) = self.things.get_mut(id) {
@@ -558,7 +562,7 @@ impl Sim {
         let msg = format!("{name} was {how}");
         self.note_near(pos, 40.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
         self.witness(pos, 40.0, &msg, 0.8, &[who]);
-        self.event("died", Some(who), None, msg, Some(pos), json!({}));
+        self.event("died", Some(who), None, msg, Some(pos), json!({ "by": by.map(|b| b.key()) }));
     }
 
     /// Something this species eats, near `p`: food anyone eats, and for
@@ -631,8 +635,50 @@ impl Sim {
     }
 
     /// The parts of a deed that change a being.
+    /// A deed hurts `b` (themselves, when `b` is the actor): their health
+    /// goes, less what they wear softens; it can kill.
+    fn deed_hurts(&mut self, actor: ActorId, b: ActorId, hurt: f32, how: Option<&str>) {
+        let hurt = hurt * (1.0 - self.protection(b));
+        let Some(at) = self.actor(b).map(|a| a.pos) else { return };
+        let (name, bname) = (self.actor_name(actor), self.actor_name(b));
+        let how = match how.map(|h| h.trim().trim_end_matches('.').chars().take(90).collect::<String>()).filter(|h| !h.is_empty()) {
+            Some(h) => h,
+            None if actor == b => "hurt by their own hand".into(),
+            None => format!("hurt by {name}"),
+        };
+        let died = self.wound(b, hurt, actor, &how);
+        let msg = format!("{bname} was {how}");
+        self.event("hurt_by_deed", Some(actor), Some(b.key()), msg.clone(), Some(at), json!({ "hurt": (hurt * 100.0).round() / 100.0 }));
+        if let ActorId::Npc(c) = b {
+            self.phantom_hurt(c, actor, None, died);
+        }
+        if let ActorId::Npc(c) = actor {
+            if actor != b {
+                self.phantom_struck(c, b, died);
+            }
+        }
+        if died {
+            if let ActorId::Npc(c) = b {
+                self.kill(c, &format!("{how}, and died"), (actor != b).then_some(actor));
+            }
+            return;
+        }
+        let dir = self.actor(actor).map(|a| (at - a.pos).normalize_or_zero()).unwrap_or(Vec3::ZERO);
+        self.jolt(b, dir * 0.2, (0.1 + hurt).min(0.4));
+        if actor != b {
+            self.hurt_by(b, actor, hurt, false);
+            self.witness(at, 25.0, &msg, 0.6 + 0.3 * hurt, &[]);
+        }
+    }
+
     pub fn apply_being(&mut self, actor: ActorId, b: ActorId, fx: &super::interp::BeingFx) {
         let t = self.t;
+        if let Some(h) = fx.hurt.filter(|h| h.is_finite() && *h > 0.0) {
+            self.deed_hurts(actor, b, h.min(1.0), fx.how.as_deref());
+            if matches!(b, ActorId::Npc(c) if self.cast.get(c).is_none_or(|n| n.dead)) {
+                return;
+            }
+        }
         if let ActorId::Npc(c) = b {
             if let Some(n) = self.cast.get_mut(c) {
                 for (k, v) in &fx.needs {

@@ -83,8 +83,7 @@ pub struct GpuInst {
     /// Live state k.s0 … k.s7 (behaviour code, poses).
     pub s0: [f32; 4],
     pub s1: [f32; 4],
-    /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1
-    /// (below 0: corrupted, darkened with a dull red glow).
+    /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1.
     pub fx: [f32; 4],
     pub info: [u32; 4],
     /// Cuts taken out of the shape, in its local frame: centre xyz and size
@@ -202,6 +201,9 @@ pub struct Camera {
     pub pitch: f32,
     /// Vertical field of view, radians.
     pub fov_y: f32,
+    /// Tilt about the view direction, radians (positive: the world tips
+    /// left, as when falling onto the right side).
+    pub roll: f32,
 }
 
 impl Camera {
@@ -213,7 +215,11 @@ impl Camera {
         let f = self.forward();
         let r = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
         let u = r.cross(f).normalize() * -1.0;
-        (f, r, u)
+        if self.roll == 0.0 {
+            return (f, r, u);
+        }
+        let (s, c) = self.roll.sin_cos();
+        (f, r * c + u * s, u * c - r * s)
     }
 }
 

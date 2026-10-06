@@ -176,16 +176,12 @@ impl Active {
 }
 
 /// What a being's touch does to whatever it goes after (see `Species::want`).
-/// Harm (`charges`, `corruption`) is scaled by the world's difficulty; on
-/// peaceful worlds it is nothing.
+/// Harmful beings come only on worlds whose difficulty lets them.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Touch {
-    /// Takes this many of the traveler's charges (times the difficulty's drain).
+    /// Takes this much of their health (0..1), less what they wear softens.
     #[serde(default)]
-    pub charges: f32,
-    /// Adds this much corruption (0..1).
-    #[serde(default)]
-    pub corruption: f32,
+    pub hurt: f32,
     /// Makes them glow for a while (0..1), like a firefly's dust.
     #[serde(default)]
     pub glow: f32,
@@ -196,7 +192,7 @@ pub struct Touch {
 
 impl Touch {
     pub fn harms(&self) -> bool {
-        self.charges > 0.0 || self.corruption > 0.0
+        self.hurt > 0.0
     }
     pub fn any(&self) -> bool {
         self.harms() || self.glow > 0.0 || !self.needs.is_empty()
@@ -274,6 +270,15 @@ pub struct Species {
     /// It moves only while the traveler isn't looking at it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub moves_unseen: bool,
+    /// It means harm: to the traveler most, but to anyone not its own kind.
+    /// It arms and armours itself with what it finds, and goes after them
+    /// (the night's phantoms).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hostile: bool,
+    /// A purpose every one of its kind is born with, told to its mind with
+    /// everything else it weighs.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub drive: String,
     /// What the traveler notices when it is near but out of sight ("You
     /// hear a rustle behind you."), written for the species.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -339,12 +344,13 @@ impl Species {
         }
         self.varieties.truncate(6);
         self.description = self.description.chars().take(160).collect();
+        self.drive = self.drive.trim().chars().take(400).collect();
         self.want = self.want.trim().to_lowercase();
         if matches!(self.want.as_str(), "player" | "the traveler" | "traveller" | "the traveller" | "you") {
             self.want = "traveler".into();
         }
         let t = &mut self.touch;
-        for v in [&mut t.charges, &mut t.corruption, &mut t.glow] {
+        for v in [&mut t.hurt, &mut t.glow] {
             *v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
         }
         t.needs.retain(|k, v| v.is_finite() && matches!(k.as_str(), "hunger" | "fatigue" | "social" | "fun" | "curiosity"));

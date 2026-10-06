@@ -1,73 +1,53 @@
-//! Night, corruption and the power of creation (docs/night-plan.md).
+//! The night hunt (docs/night-hunt-plan.md).
 //!
 //! Nothing here is written for one monster. Beings keep hours
 //! (`Species::active`) and are away outside them; some go after something
 //! (`want`) and their touch does something to it (`touch`); some won't come
-//! near a property (`shuns`) or move only unwatched (`moves_unseen`).
-//! Corruption is a number on beings and a property on things. The world's
-//! difficulty scales the harm: on peaceful worlds harmful beings never come.
-//! What the traveler makes costs charges, topped up each dawn.
+//! near a property (`shuns`) or move only unwatched (`moves_unseen`); some
+//! mean harm and think about how (`hostile`: see `phantom`). The world's
+//! difficulty says how many of the dark's own come each night: on peaceful
+//! worlds none. Their touch and their blows take health, the traveler's
+//! too, less what is worn softens.
 
-use super::props::{P_CORRUPT, P_LIGHT};
-use super::{ActorId, Note, Request, Sim, Target};
+use super::props::{P_HEALTH, P_LIGHT, P_PROTECT};
+use super::{ActorId, Note, Sim, Target};
 use crate::render::sky::{self, DAY_SECONDS};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use crate::world::species::Social;
+use std::collections::BTreeMap;
 
 /// One difficulty's numbers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Level {
     pub name: &'static str,
-    /// The traveler's charges at the start, topped up to at dawn (None: no limit).
-    pub charges: Option<i32>,
-    /// Harmful beings come one night in this many (0: never).
-    pub horror_nights: u32,
-    /// Harmful beings out on one night...
-    pub horrors: u32,
-    /// ...and one more every this many nights got through (0: never more).
-    pub more_every: u32,
-    /// Charges a harmful touch takes, times its species' `touch.charges`.
-    pub drain: f32,
-    /// Corruption a harmful touch gives, times its species' `touch.corruption`.
-    pub corrupt: f32,
-    /// How readily corruption passes between people (0: never).
-    pub spread: f32,
-    /// Corrupted minds twist (one line in their prompts).
-    pub twist: bool,
+    /// Night walkers out each night.
+    pub walkers: u32,
+    /// Phantoms out each night.
+    pub phantoms: u32,
 }
 
 pub const LEVELS: [Level; 4] = [
-    Level { name: "peaceful", charges: None, horror_nights: 0, horrors: 0, more_every: 0, drain: 0.0, corrupt: 0.0, spread: 0.0, twist: false },
-    Level { name: "easy", charges: None, horror_nights: 2, horrors: 1, more_every: 0, drain: 0.0, corrupt: 0.5, spread: 0.0, twist: true },
-    Level { name: "normal", charges: Some(24), horror_nights: 1, horrors: 1, more_every: 0, drain: 1.0, corrupt: 1.0, spread: 0.3, twist: true },
-    Level { name: "hard", charges: Some(12), horror_nights: 1, horrors: 1, more_every: 2, drain: 4.0, corrupt: 1.0, spread: 1.0, twist: true },
+    Level { name: "peaceful", walkers: 0, phantoms: 0 },
+    Level { name: "easy", walkers: 1, phantoms: 1 },
+    Level { name: "normal", walkers: 1, phantoms: 1 },
+    Level { name: "hard", walkers: 2, phantoms: 2 },
 ];
 
-/// Most harmful kinds-worth out at once (a lone one, or a pack, each).
-const MAX_HORRORS: u32 = 4;
-/// How many of a pack kind come together, and the most out at once.
-const PACK: [u32; 2] = [3, 4];
-const MAX_OUT: u32 = 8;
-/// Corruption from which minds twist and the glow shows plainly.
-pub const TWISTED: f32 = 0.3;
-/// After its touch lands, a being draws back this long (s).
+/// After its touch lands, a night walker draws back this long (s).
 pub const TOUCH_GAP: f64 = 25.0;
 /// Gap between its body and the traveler's within which a watched being
 /// still reaches them (m): arm's reach, from its nearest edge.
 const WATCHED_REACH: f32 = 1.0;
-/// A harmful being comes back this far from the traveler, out of sight (m).
-const ARRIVE_AT: f32 = 48.0;
-/// Corruption fading by day, and again near light (per second).
-const FADE_DAY: f32 = 0.0006;
-const FADE_LIGHT: f32 = 0.0008;
-/// Charges for getting through a night the dark came.
-const NIGHT_BONUS: i32 = 2;
-/// How long a night waits for its kind to be written before the stock
-/// horror comes instead (s of world time).
-const WRITE_WAIT: f64 = 60.0;
-
+/// The middle part of the view that counts as looking at something (of
+/// its half-width): what moves unseen creeps in the rest.
+const WATCHING: f32 = 0.4;
+/// A hunter comes back this far from the traveler, out of sight (m).
+pub const ARRIVE_AT: f32 = 48.0;
+/// The most what someone wears can soften a blow.
+const MAX_PROTECT: f32 = 0.7;
+/// The traveler's health back in a game day.
+const MEND_PER_DAY: f32 = super::body::MEND_PER_DAY;
 
 /// When something that hunts the traveler arrives ({} is where it is,
 /// told truly: "behind you", "off to your left").
@@ -77,25 +57,54 @@ const ARRIVAL: &[&str] = &[
     "A twig snaps somewhere {}.",
     "The dark gets a little thicker, {}.",
 ];
-/// Every night horror is called this (more kinds: "night walker 2", …).
-pub const HORROR_NAME: &str = "night walker";
-/// Every night horror's pace, whatever its shape: tuned to be the right
+/// The night walker's species.
+pub const WALKER: &str = "night walker";
+/// The night walker's pace, whatever its shape: tuned to be the right
 /// amount of frightening (it walks, then runs the last stretch).
-const HORROR_WALK: f32 = 1.1;
-const HORROR_RUN: f32 = 3.4;
+const WALKER_WALK: f32 = 1.1;
+const WALKER_RUN: f32 = 3.4;
 /// Words that say where something is: signs may not (the game tells it).
 const PLACE_WORDS: &[&str] = &["behind", "left", "right", "ahead", "in front", "above", "overhead", "below", "beside", "nearby", "far off", "off to"];
+
+/// What one phantom did and met tonight, for what it learns at dawn.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tally {
+    /// How much of the traveler's health it took.
+    pub hurt_traveler: f32,
+    /// Whom else it struck, and killed.
+    pub struck: Vec<String>,
+    pub killed: Vec<String>,
+    /// Who hurt it, and with what ("the traveler, with the iron sword").
+    pub hurt_by: Vec<String>,
+    /// Who struck it down.
+    pub killed_by: Option<String>,
+    /// What the traveler was seen holding to fight with.
+    pub traveler_arms: Option<String>,
+    /// It came near the traveler.
+    pub reached: bool,
+    /// It struck the traveler down.
+    pub killed_traveler: bool,
+    /// What it made.
+    pub made: Vec<String>,
+}
 
 /// The night's own state, saved with the world (kv `sim.night`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NightState {
-    /// The traveler's charges (only counted when the difficulty limits them).
-    pub charges: i32,
-    /// The limit the charges were last counted against (None: unlimited).
-    pub limit: Option<i32>,
-    /// How much darkness has got into the traveler (0..1).
-    pub corruption: f32,
+    /// How much of the traveler's health is gone (0: whole, 1: none left).
+    pub wounds: f32,
+    /// When the traveler was last hurt (s of world time).
+    #[serde(skip)]
+    pub hurt_at: f64,
+    /// The traveler has fallen (health gone): what struck them down. They
+    /// lie where they fell, and the world goes on, till they wake.
+    pub fallen: Option<String>,
+    /// When they fell (s of world time).
+    pub fallen_at: f64,
+    /// The traveler fell tonight.
+    pub fell_tonight: bool,
     /// A glow someone's touch left on the traveler (0..1), fading.
     #[serde(skip)]
     pub glow: f32,
@@ -108,23 +117,20 @@ pub struct NightState {
     pub survived: u32,
     /// The dark comes tonight.
     pub hunting: bool,
-    /// Harmful touches on the traveler tonight.
-    pub touched: u32,
+    /// Times the dark hurt the traveler tonight.
+    pub wounded: u32,
     /// Something actually came tonight.
     pub came: bool,
-    /// Beings the night brought (kept as characters: away by day).
-    pub horrors: Vec<i64>,
-    /// Their species.
-    pub kinds: Vec<String>,
-    /// A species being written (request id; not kept: a write cut short by
-    /// quitting is simply asked for again).
-    #[serde(skip)]
-    pub writing: Option<u64>,
-    /// When the night started waiting for that writing (asked for, or nightfall).
-    #[serde(skip)]
-    pub wait_from: f64,
-    /// Charges kindness earned today, and which day.
-    pub kind_today: (i64, i32),
+    /// Night walkers (kept as characters: away by day). The ones killed
+    /// tonight are counted till dusk.
+    #[serde(alias = "horrors")]
+    pub walkers: Vec<i64>,
+    /// Phantoms: they never truly die, and come back each night.
+    pub phantoms: Vec<i64>,
+    /// Phantoms that made their one thing tonight.
+    pub made: Vec<i64>,
+    /// What each phantom did tonight.
+    pub tally: BTreeMap<i64, Tally>,
     #[serde(skip)]
     pub last_dread: f64,
     /// How wide the traveler's view is: tan of half its width (the app
@@ -133,16 +139,10 @@ pub struct NightState {
     pub view_slope: f32,
 }
 
-impl NightState {
-    pub fn day(t: f64) -> i64 {
-        (t / DAY_SECONDS).floor() as i64
-    }
-}
-
+/// When the fallen traveler wakes (of the day).
+pub const MORNING: f32 = 0.30;
 /// When the dark is about: nightfall to dawn (the sky's night).
 pub const DARK_FROM: f32 = 0.80;
-/// Sunset, the start of dusk: the dark's first kind starts being written.
-pub const SUNSET: f32 = 0.71;
 pub const DARK_UNTIL: f32 = 0.21;
 
 pub fn is_dark(t: f64) -> bool {
@@ -159,93 +159,145 @@ impl Sim {
         LEVELS[(self.cfg.difficulty as usize).min(LEVELS.len() - 1)]
     }
 
-    /// The traveler's charges (None: no limit).
-    pub fn charges(&self) -> Option<i32> {
-        self.level().charges.map(|_| self.night.charges)
+    // ------------------------------------------------------------ health
+
+    /// The traveler's health (0..1).
+    pub fn health(&self) -> f32 {
+        (1.0 - self.night.wounds).clamp(0.0, 1.0)
     }
 
-    /// Spend one charge on a deed in words. False (and nothing spent) when
-    /// they are used up.
-    pub fn spend_charge(&mut self) -> bool {
-        self.sync_level();
-        if self.level().charges.is_none() {
-            return true;
-        }
-        if self.night.charges <= 0 {
+    /// How much what someone wears (and their own hide) softens a blow (0..`MAX_PROTECT`).
+    pub fn protection(&self, who: ActorId) -> f32 {
+        let worn: f32 = self.worn_by(who).iter().filter_map(|id| self.things.get(*id)).map(|t| t.props.get(P_PROTECT).copied().unwrap_or(0.0)).sum();
+        let own = match who {
+            ActorId::Npc(c) => self.cast.get(c).and_then(|n| n.props.get(P_PROTECT).copied()).unwrap_or(0.0),
+            ActorId::Player => 0.0,
+        };
+        (worn + own).clamp(0.0, MAX_PROTECT)
+    }
+
+    /// `who` loses `hurt` of their health at `by`'s hand (what they wear
+    /// already taken off); `how` is what happened to them, as it ends
+    /// "they were …" ("struck by the first phantom with the rusty sword",
+    /// "broken by a fall of 7 m from the oak"): it is what is remembered when
+    /// it kills. True when a being died of it. At none left the
+    /// traveler only stays at none, for now.
+    pub fn wound(&mut self, who: ActorId, hurt: f32, by: ActorId, how: &str) -> bool {
+        if hurt <= 0.0 {
             return false;
         }
-        self.night.charges -= 1;
-        true
-    }
-
-    pub fn refund_charge(&mut self) {
-        if self.level().charges.is_some() {
-            self.night.charges += 1;
-        }
-    }
-
-    pub fn gain_charges(&mut self, n: i32, why: &str) {
-        if self.level().charges.is_none() || n <= 0 {
-            return;
-        }
-        self.night.charges += n;
-        let left = self.night.charges;
-        self.notes.push(Note::Info(format!("{why} ✦ +{n} ({left})")));
-        self.event("charges", Some(ActorId::Player), None, format!("the traveler's power grew by {n}: {why}"), Some(self.player.pos), json!({ "gain": n, "left": left }));
-    }
-
-    /// Count the charges against the difficulty, when it changed.
-    fn sync_level(&mut self) {
-        let limit = self.level().charges;
-        // Unlimited for now: remember the count, so going back is no refill.
-        if limit.is_none() || limit == self.night.limit {
-            return;
-        }
-        match (self.night.limit, limit) {
-            (None, Some(n)) => self.night.charges = n,
-            // A harder or easier world: the same share of power, moved by the difference.
-            (Some(a), Some(b)) => self.night.charges = (self.night.charges + b - a).max(0),
-            _ => {}
-        }
-        self.night.limit = limit;
-    }
-
-    /// Corruption of anyone (0..1).
-    pub fn corruption_of(&self, who: ActorId) -> f32 {
         match who {
-            ActorId::Player => self.night.corruption,
-            ActorId::Npc(c) => self.cast.get(c).map(|n| n.corruption()).unwrap_or(0.0),
-        }
-    }
-
-    fn add_corruption(&mut self, who: ActorId, d: f32) {
-        match who {
-            ActorId::Player => self.night.corruption = (self.night.corruption + d).clamp(0.0, 1.0),
-            ActorId::Npc(c) => {
-                if let Some(v) = self.cast.get_mut(c).and_then(|n| n.props.get_mut(P_CORRUPT)) {
-                    *v = (*v + d).clamp(0.0, 1.0);
+            ActorId::Player => {
+                if self.fallen() {
+                    return false;
                 }
+                self.night.wounds = (self.night.wounds + hurt).min(1.0);
+                self.night.hurt_at = self.t;
+                if self.dark() {
+                    self.night.wounded += 1;
+                }
+                if let ActorId::Npc(c) = by {
+                    if let Some(t) = self.night.tally.get_mut(&c) {
+                        t.hurt_traveler += hurt;
+                        t.reached = true;
+                    }
+                }
+                let pct = (self.health() * 100.0).round();
+                let text = format!("the traveler was {how}");
+                self.event("hurt", Some(by), Some("player".into()), text, Some(self.player.pos), json!({ "hurt": (hurt * 100.0).round() / 100.0, "health": pct / 100.0 }));
+                if self.night.wounds >= 1.0 {
+                    self.traveler_falls(by, how);
+                    return true;
+                }
+                false
+            }
+            ActorId::Npc(c) => {
+                // The dark's own can always be struck down; others only where things die.
+                let dark = self.cast.get(c).is_some_and(|n| n.species.touch.harms() || n.species.hostile);
+                let floor = if self.cfg.hunting || dark { 0.0 } else { 0.1 };
+                let Some(n) = self.cast.get_mut(c) else { return false };
+                if n.props.len() <= P_HEALTH {
+                    return false;
+                }
+                n.props[P_HEALTH] = (n.props[P_HEALTH] - hurt).max(floor);
+                n.props[P_HEALTH] <= 0.0
             }
         }
     }
 
-    /// The line a corrupted mind's prompts carry (None: not corrupted enough,
-    /// or the world doesn't twist).
-    pub fn twist_line(&self, who: ActorId) -> Option<String> {
-        let c = self.corruption_of(who);
-        if !self.level().twist || c < TWISTED {
-            return None;
-        }
-        let pct = (c * 100.0).round();
-        Some(match who {
-            ActorId::Player => format!(
-                "Darkness has got into the traveler ({pct}%): whatever they make or change comes out a little wrong (twisted, sinister or spoiled in some way that fits it), and carries some corruption (set its \"corruption\" property, about {c:.1})."
-            ),
-            ActorId::Npc(_) => format!(
-                "Something dark has a hold on you ({pct}%). Your own nature has turned: the generous grasp, the curious pry, the sociable whisper and sow doubt, the crafty make things that harm, the brave pick fights. Let your words and deeds twist in your own way (what you make carries some corruption); never say that you are corrupted."
-            ),
-        })
+    /// Whether the traveler lies fallen.
+    pub fn fallen(&self) -> bool {
+        self.night.fallen.is_some()
     }
+
+    /// The traveler's health is gone: they fall where they stand, letting go
+    /// of what they held. Nothing else is decided here: whoever saw it
+    /// remembers it, the thinking ones are asked what they do, the killer
+    /// counts it, and the dark turns to whoever else is about.
+    fn traveler_falls(&mut self, by: ActorId, how: &str) {
+        let name = self.actor_name(by);
+        let at = self.player.pos;
+        self.night.fallen = Some(how.to_string());
+        self.night.fallen_at = self.t;
+        self.night.fell_tonight |= self.dark();
+        if let Some(h) = self.player.held {
+            self.release(h);
+            if let Some(t) = self.things.get_mut(h) {
+                t.pos = at + self.player.forward() * 0.6 + Vec3::Y * 0.4;
+                t.asleep = false;
+                t.dirty = true;
+            }
+        }
+        self.player_plan.clear();
+        self.player.task = None;
+        self.player.motion = None;
+        self.player.riding = None;
+        self.player.aboard = None;
+        let msg = format!("the traveler was {how}, and fell and lay still");
+        self.event("traveler_fell", Some(by), Some("player".into()), msg.clone(), Some(at), json!({ "by": by.key(), "how": how }));
+        self.notes.push(Note::Notable(if by == ActorId::Player { "Everything goes dark.".into() } else { format!("You fall. {} stands over you.", super::physics::cap(&name)) }));
+        self.hurt_by(ActorId::Player, by, 1.0, true);
+        self.witness(at, 35.0, &msg, 0.95, &[by]);
+        if self.has_llm {
+            let seen: Vec<(i64, Vec3)> = self
+                .cast
+                .npcs
+                .iter()
+                .filter(|n| n.here() && !n.a.asleep && n.species.mind == crate::world::species::Mind::Sapient && !n.species.hostile && (n.a.pos - at).length() < 30.0)
+                .map(|n| (n.def.id, n.a.pos))
+                .collect();
+            for (c, p) in seen {
+                let ctx = format!("You just saw the traveler fall: they were {how}. The traveler lies on the ground {:.0} m from you and doesn't move.", (p - at).length());
+                let context = self.decide_context(c, &ctx);
+                self.request_weighted(super::Request::Decide { cid: c, event: "traveler_fell".into(), context }, p, 1.0);
+            }
+        }
+    }
+
+    /// The fallen traveler wakes where the world began, in the morning,
+    /// whole. What they dropped stays where they fell.
+    pub fn wake_traveler(&mut self) {
+        let Some(by) = self.night.fallen.take() else { return };
+        let spawn = self.snap.spawn;
+        self.player.pos = Vec3::new(spawn.x, self.snap.terrain.height(spawn.x, spawn.z), spawn.z);
+        self.night.wounds = 0.0;
+        let day = (self.t / DAY_SECONDS).floor();
+        let morning = MORNING as f64;
+        let phase = sky::day_phase(self.t) as f64;
+        self.t = (day + if phase >= morning { 1.0 } else { 0.0 } + morning) * DAY_SECONDS;
+        self.event("traveler_woke", Some(ActorId::Player), None, format!("the traveler woke where the world began, after {by} struck them down"), Some(self.player.pos), json!({}));
+        self.notes.push(Note::Notable("You wake where you first came into this world. It is morning.".into()));
+    }
+
+    /// The traveler mends, slowly (once a second).
+    fn mend(&mut self) {
+        if self.fallen() {
+            return;
+        }
+        self.night.wounds = (self.night.wounds - MEND_PER_DAY / DAY_SECONDS as f32).max(0.0);
+    }
+
+    // ------------------------------------------------------------ sight
 
     /// Whether `p` is anywhere on the traveler's screen (or just off it),
     /// near enough for the hour: nothing may appear or vanish there.
@@ -254,11 +306,10 @@ impl Sim {
     }
 
     /// Whether the traveler is looking at a body at `p`, `r` wide: any of
-    /// it in the middle of the view. The outer tenth on each side doesn't
-    /// count, so what moves unseen can still be caught creeping at the edge
-    /// of the eye.
+    /// it in the middle of the view. The outer part on each side doesn't
+    /// count, so what moves unseen can still creep in from the edge of the eye.
     pub fn player_watches(&self, p: Vec3, r: f32) -> bool {
-        self.in_view(p, r, 0.8)
+        self.in_view(p, r, WATCHING)
     }
 
     /// Any of a body at `p`, `r` wide, within `part` of the view's
@@ -334,6 +385,11 @@ impl Sim {
         self.cast.npcs.iter().any(|n| n.here() && n.species.touch.harms() && (n.a.pos - p).length() < range)
     }
 
+    /// Whether `who` is one of the dark's own (a night walker, a phantom).
+    pub fn of_the_dark(&self, who: ActorId) -> bool {
+        matches!(who, ActorId::Npc(c) if self.cast.get(c).is_some_and(|n| n.species.touch.harms() || n.species.hostile))
+    }
+
     /// Where someone sleeps tonight: at home, or with the dark about, by the
     /// nearest light near home.
     pub fn night_shelter(&mut self, home: Vec3) -> Vec3 {
@@ -353,22 +409,13 @@ impl Sim {
 
     // ------------------------------------------------------------ the clock
 
-    /// Once a second: dusk and dawn, beings coming and going, corruption.
+    /// Once a second: dusk and dawn, the dark coming and going.
     pub fn step_night(&mut self) {
-        self.sync_level();
         let night = self.dark();
         let first = self.night.was_night.is_none();
         match self.night.was_night {
             None => {
-                // An older world's stock horrors take its current shape.
-                let stock = fallback_horror();
-                let old: Vec<String> = self.night.kinds.iter().filter(|k| self.snap.species.get(k).is_some_and(|s| s.body == stock.body && (s.look != stock.look || s.moves != stock.moves || s.signs != stock.signs))).cloned().collect();
-                for name in old {
-                    let mut sp = stock.clone();
-                    sp.plural = format!("{name}s");
-                    sp.name = name;
-                    self.store_species(sp);
-                }
+                self.settle_night_kinds();
                 if night && self.night.hunting {
                     self.call_the_dark();
                 }
@@ -383,175 +430,115 @@ impl Sim {
             _ => {}
         }
         self.night.was_night = Some(night);
-        self.write_ahead();
-        // Nothing came yet tonight (the writing is slow, or there was no
-        // room behind the traveler): keep trying.
-        if night && self.night.hunting && !self.night.came {
+        // Nothing came yet tonight (no room behind the traveler): keep trying.
+        if night && self.night.hunting {
             self.call_the_dark();
         }
         self.comings_and_goings(night, first);
-        self.fade(night);
+        if !night {
+            self.fade_dark_remains();
+        }
+        self.mend();
+        self.night.glow = (self.night.glow - 0.002).max(0.0);
         self.dread();
     }
 
     fn dusk(&mut self) {
         self.night.nights += 1;
-        self.night.touched = 0;
+        self.night.wounded = 0;
+        self.night.fell_tonight = false;
         self.night.came = false;
+        self.night.made.clear();
+        self.night.tally.clear();
         let lv = self.level();
         let n = self.night.nights;
-        self.night.hunting = lv.horror_nights > 0
-            && (n == 1 || match lv.horror_nights {
-                1 => true,
-                k => crate::noise::pcg(n ^ self.seed as u32 ^ 0xD00D) % k == 0,
-            });
+        self.night.hunting = lv.walkers + lv.phantoms > 0;
+        // Walkers struck down last night are gone for good.
+        self.night.walkers.retain(|id| self.cast.get(*id).is_some_and(|n| !n.dead));
         self.event("dusk", None, None, format!("night {n} falls"), Some(self.player.pos), json!({ "night": n, "dark": self.night.hunting }));
-        // Written by day and not ready yet: it gets a while more.
-        self.night.wait_from = self.t;
-        // Nothing tells of it until it is here.
         if self.night.hunting {
+            self.raise_phantoms();
             self.call_the_dark();
         }
     }
 
     fn dawn(&mut self) {
-        if let Some(n) = self.level().charges {
-            self.night.charges = self.night.charges.max(n);
-        }
-        if self.night.hunting && self.night.came {
+        if self.night.hunting && self.night.came && !self.night.fell_tonight {
             self.night.survived += 1;
-            let clean = self.night.touched == 0;
+            let clean = self.night.wounded == 0;
             self.event("survived_night", Some(ActorId::Player), None, format!("the traveler got through night {}", self.night.nights), Some(self.player.pos), json!({ "untouched": clean, "night": self.night.nights }));
             self.notes.push(Note::Notable("Dawn. The dark draws back.".into()));
-            self.gain_charges(NIGHT_BONUS, "You got through the night.");
+        }
+        if self.night.hunting {
+            self.phantom_lessons();
         }
         self.night.hunting = false;
     }
 
-    /// The dark comes for the traveler: enough harmful beings for tonight,
-    /// writing a new kind when there is none yet (or now and then).
+    /// Whether a being of the dark has its place tonight: the first so many
+    /// of its kind, by the difficulty (a world made easier keeps the rest away).
+    fn has_place(&self, cid: i64) -> bool {
+        let lv = self.level();
+        match self.night.walkers.iter().position(|id| *id == cid) {
+            Some(i) => (i as u32) < lv.walkers,
+            None => match self.night.phantoms.iter().position(|id| *id == cid) {
+                Some(i) => (i as u32) < lv.phantoms,
+                None => true,
+            },
+        }
+    }
+
+    /// The dark comes for the traveler: as many night walkers and phantoms
+    /// as the difficulty says (a walker struck down tonight isn't replaced
+    /// till tomorrow).
     fn call_the_dark(&mut self) {
         let lv = self.level();
-        let want = (lv.horrors + if lv.more_every > 0 { self.night.survived / lv.more_every } else { 0 }).min(MAX_HORRORS);
-        self.night.horrors.retain(|id| self.cast.get(*id).is_some_and(|n| !n.dead));
-        self.night.kinds.retain(|k| self.snap.species.get(k).is_some());
-        let have = self.night.horrors.len() as u32;
-        let pack_kind = self.night.kinds.last().and_then(|k| self.snap.species.get(k)).is_some_and(|s| s.social == Social::Pack);
-        let groups = if pack_kind { have.div_ceil(PACK[0]) } else { have };
-        if groups >= want || have >= MAX_OUT {
-            return;
+        self.settle_night_kinds();
+        while (self.night.walkers.len() as u32) < lv.walkers {
+            let Some(at) = self.arrival_spot(ARRIVE_AT) else { return };
+            let Some(sp) = self.snap.species.get(WALKER).cloned() else { return };
+            let persona = crate::world::Persona { name: format!("the {}", sp.name), species: sp.name.clone(), appearance: sp.description.clone(), ..Default::default() };
+            let state = crate::world::characters::SavedState { x: at.x, z: at.z, ..Default::default() };
+            let Some(id) = self.add_being(persona, at, state) else { return };
+            self.night.walkers.push(id);
+            self.night.came = true;
+            self.event("dark_came", Some(ActorId::Npc(id)), Some("player".into()), format!("{} came out of the dark", self.actor_name(ActorId::Npc(id))), Some(at), json!({ "species": sp.name }));
+            self.arrival_note(at);
         }
-        let fresh_kind = self.night.kinds.is_empty() || (self.night.nights % 5 == 0 && self.night.kinds.len() < 3);
-        // Waited long enough: the stock horror (or the last kind) comes now,
-        // and the written one joins the dark when it is ready.
-        let waited = self.night.writing.is_some() && self.t - self.night.wait_from > WRITE_WAIT;
-        if fresh_kind && self.has_llm && !waited {
-            if self.night.writing.is_none() {
-                self.write_horror();
+        while (self.night.phantoms.len() as u32) < lv.phantoms {
+            let Some(at) = self.arrival_spot(super::phantom::PHANTOM_AT) else { return };
+            if self.make_phantom(at).is_none() {
+                return;
             }
-            return;
         }
-        let kind = match self.night.kinds.last().cloned() {
-            Some(k) => k,
-            None => {
-                let mut sp = fallback_horror();
-                sp.name = self.free_horror_name();
-                sp.plural = format!("{}s", sp.name);
-                let name = sp.name.clone();
+    }
+
+    /// The night's kinds are the built-in ones: stored when missing, and set
+    /// right when older worlds kept another shape of them (their LLM-written
+    /// horrors become night walkers, keeping their names).
+    fn settle_night_kinds(&mut self) {
+        let stock = walker_species();
+        let mut names: Vec<String> = self.night.walkers.iter().filter_map(|id| self.cast.get(*id)).map(|n| n.species.name.clone()).collect();
+        names.push(WALKER.to_string());
+        names.sort();
+        names.dedup();
+        for name in names {
+            let mut sp = stock.clone();
+            sp.plural = format!("{name}s");
+            sp.name = name.clone();
+            let same = self.snap.species.get(&name).is_some_and(|s| **s == sp);
+            if !same {
                 self.store_species(sp);
-                self.night.kinds.push(name.clone());
-                name
-            }
-        };
-        let Some(sp) = self.snap.species.get(&kind).cloned() else { return };
-        // A pack comes as one: a few together, from one spot.
-        let size = if sp.social == Social::Pack { PACK[0] + (self.rand() * (PACK[1] - PACK[0] + 1) as f32) as u32 } else { 1 };
-        for _ in groups..want {
-            let Some(at) = self.arrival_spot(ARRIVE_AT) else { break };
-            let mut first = None;
-            for i in 0..size.min(MAX_OUT.saturating_sub(self.night.horrors.len() as u32)) {
-                let a = i as f32 * 2.4 + self.rand();
-                let p = if i == 0 { at } else { at + Vec3::new(a.cos(), 0.0, a.sin()) * (1.5 + self.rand() * 2.5) };
-                let p = Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z);
-                if let Some(id) = self.bring_horror(&sp, p) {
-                    first.get_or_insert(id);
-                }
-            }
-            if first.is_some() {
-                self.arrival_note(at);
             }
         }
-    }
-
-    /// Have the dark's first kind written from sunset, quietly, so it is
-    /// ready at nightfall (it is stored, never shown or told of).
-    fn write_ahead(&mut self) {
-        if self.level().horror_nights == 0 || !self.has_llm || self.night.writing.is_some() {
-            return;
-        }
-        // A new world gets its first day to choose its difficulty: not
-        // before its first sunset. After that, as soon as it is missing.
-        if self.night.nights == 0 && !self.dark() && sky::day_phase(self.t) < SUNSET {
-            return;
-        }
-        self.night.kinds.retain(|k| self.snap.species.get(k).is_some());
-        if !self.night.kinds.is_empty() {
-            return;
-        }
-        self.write_horror();
-    }
-
-    fn write_horror(&mut self) {
-        let id = self.next_id();
-        self.night.writing = Some(id);
-        self.night.wait_from = self.t;
-        let mut fixed = horror_fixed();
-        let name = self.free_horror_name();
-        fixed["name"] = json!(name);
-        fixed["plural"] = json!(format!("{name}s"));
-        self.request_now(Request::NewSpecies { id, brief: horror_brief(), fixed });
-    }
-
-    /// "night walker", or the first "night walker N" no species has yet.
-    fn free_horror_name(&self) -> String {
-        (1..).map(|i| if i == 1 { HORROR_NAME.to_string() } else { format!("{HORROR_NAME} {i}") }).find(|n| self.snap.species.get(n).is_none() && !self.night.kinds.contains(n)).unwrap()
-    }
-
-    /// A species the brain wrote (for `Request::NewSpecies`) is ready.
-    pub fn on_species_made(&mut self, id: u64, name: Option<String>) {
-        if self.night.writing != Some(id) {
-            return;
-        }
-        self.night.writing = None;
-        let rows = self.db.with(|c| crate::db::species_rows(c)).unwrap_or_default();
-        let book = crate::world::species::SpeciesBook::load(&rows, self.db.kv_get("species.world").as_deref());
-        let made = name.and_then(|n| book.get(&n).map(|s| (**s).clone()));
-        let sp = match made {
-            Some(mut sp) => {
-                merge_fixed(&mut sp, &horror_fixed());
-                fit_horror(&mut sp);
-                // Its own body failed: the stock one, not a stray quadruped.
-                if matches!(sp.body.as_str(), "quadruped" | "figure") {
-                    let stock = fallback_horror();
-                    sp.body = stock.body;
-                    sp.look = stock.look;
-                }
-                sp
-            }
-            None => fallback_horror(),
-        };
-        let name = sp.name.clone();
-        self.store_species(sp);
-        if !self.night.kinds.contains(&name) {
-            self.night.kinds.push(name);
-        }
-        if self.dark() && self.night.hunting {
-            self.call_the_dark();
+        let ph = super::phantom::phantom_species();
+        if self.snap.species.get(&ph.name).is_none_or(|s| **s != ph) {
+            self.store_species(ph);
         }
     }
 
     /// Keep a species in the save and use it now.
-    fn store_species(&mut self, mut sp: crate::world::species::Species) {
+    pub(super) fn store_species(&mut self, mut sp: crate::world::species::Species) {
         sp.sanitize();
         if let Ok(j) = serde_json::to_string(&sp) {
             let _ = self.db.with(|c| crate::db::put_species(c, &sp.name, &j));
@@ -563,18 +550,8 @@ impl Sim {
         self.cast.sync(&snap, self.seed);
     }
 
-    fn bring_horror(&mut self, sp: &crate::world::species::Species, at: Vec3) -> Option<i64> {
-        let persona = crate::world::Persona { name: format!("the {}", sp.name), species: sp.name.clone(), appearance: sp.description.clone(), ..Default::default() };
-        let state = crate::world::characters::SavedState { x: at.x, z: at.z, corruption: 1.0, ..Default::default() };
-        let id = self.add_being(persona, at, state)?;
-        self.night.horrors.push(id);
-        self.night.came = true;
-        self.event("dark_came", Some(ActorId::Npc(id)), Some("player".into()), format!("{} came out of the dark", self.actor_name(ActorId::Npc(id))), Some(at), json!({ "species": sp.name }));
-        Some(id)
-    }
-
     /// Tell the traveler, quietly, that something has arrived.
-    fn arrival_note(&mut self, at: Vec3) {
+    pub(super) fn arrival_note(&mut self, at: Vec3) {
         let i = (self.rand() * ARRIVAL.len() as f32) as usize % ARRIVAL.len();
         let line = ARRIVAL[i].replace("{}", &self.where_is(at));
         self.notes.push(Note::Info(line));
@@ -598,7 +575,7 @@ impl Sim {
     }
 
     /// A spot about `dist` from the traveler, behind them, on dry land.
-    fn arrival_spot(&mut self, dist: f32) -> Option<Vec3> {
+    pub(super) fn arrival_spot(&mut self, dist: f32) -> Option<Vec3> {
         let back = -self.player.forward();
         let base = back.z.atan2(back.x);
         for i in 0..10 {
@@ -615,44 +592,48 @@ impl Sim {
     }
 
     /// Beings go away outside their hours and come back in them, never
-    /// before the traveler's eyes.
+    /// before the traveler's eyes. A phantom keeps what it holds and wears
+    /// while away.
     /// `quiet`: the first look after loading (older saves didn't keep who was
     /// away): out-of-hours beings are simply gone, nothing told.
     fn comings_and_goings(&mut self, night: bool, quiet: bool) {
         let hunting = self.night.hunting;
-        let ids: Vec<(i64, bool, bool, Vec3, bool)> = self
+        let ids: Vec<(i64, bool, bool, Vec3, bool, bool)> = self
             .cast
             .npcs
             .iter()
-            .filter(|n| !n.dead && (n.species.active != crate::world::species::Active::Always || n.species.touch.harms() || !n.species.comes_with.is_empty()))
+            .filter(|n| !n.dead && (n.species.active != crate::world::species::Active::Always || n.species.touch.harms() || n.species.hostile || !n.species.comes_with.is_empty()))
             .map(|n| {
-                let harms = n.species.touch.harms();
-                let due = n.species.about(night) && crate::world::weather::suits(&n.species.comes_with, &self.wx) && (!harms || hunting);
-                (n.def.id, n.away, due, n.a.pos, harms && n.species.want == "traveler")
+                let dark = n.species.touch.harms() || n.species.hostile;
+                let due = n.species.about(night) && crate::world::weather::suits(&n.species.comes_with, &self.wx) && (!dark || hunting && self.has_place(n.def.id));
+                (n.def.id, n.away, due, n.a.pos, dark && (n.species.want == "traveler" || n.species.hostile), n.species.hostile)
             })
             .collect();
-        for (cid, away, due, pos, hunts_you) in ids {
+        for (cid, away, due, pos, hunts_you, hostile) in ids {
             if !away && !due {
                 // Slip away out of sight (or, watched, now and then: gone between glances).
                 if !quiet && self.player_sees(pos) && self.rand() < 0.85 {
                     continue;
                 }
                 let name = self.actor_name(ActorId::Npc(cid));
-                if let Some(h) = self.actor(ActorId::Npc(cid)).and_then(|a| a.held) {
-                    self.release(h);
+                if !hostile {
+                    if let Some(h) = self.actor(ActorId::Npc(cid)).and_then(|a| a.held) {
+                        self.release(h);
+                    }
                 }
                 self.social.joints.retain(|j| !j.has(ActorId::Npc(cid)));
                 if let Some(n) = self.cast.get_mut(cid) {
                     n.away = true;
                     n.plan.clear();
                     n.a.task = None;
+                    n.a.motion = None;
                     n.doing = "away".into();
                 }
                 if !quiet && self.dist_to_player(pos) < 60.0 && hunts_you {
                     self.notes.push(Note::Ambient(format!("{} is gone with the light.", super::physics::cap(&name))));
                 }
             } else if away && due {
-                let at = if hunts_you { self.arrival_spot(ARRIVE_AT) } else { Some(pos).filter(|p| !self.player_sees(*p)) };
+                let at = if hunts_you { self.arrival_spot(if hostile { super::phantom::PHANTOM_AT } else { ARRIVE_AT }) } else { Some(pos).filter(|p| !self.player_sees(*p)) };
                 let Some(at) = at else { continue };
                 let t = self.t;
                 if let Some(n) = self.cast.get_mut(cid) {
@@ -664,24 +645,40 @@ impl Sim {
                 }
                 if hunts_you {
                     self.night.came = true;
-                    self.arrival_note(at);
+                    if hostile {
+                        self.phantom_arrives(cid, at);
+                    } else {
+                        self.arrival_note(at);
+                    }
                 }
             }
         }
     }
 
-    /// Corruption fades by day, faster near light (a glow on a body fades
-    /// by a rule; the traveler's here).
-    fn fade(&mut self, night: bool) {
-        let light = vec!["light".to_string()];
-        let lit_player = self.shunned_at(self.player.pos, &light).is_some();
-        let k = |lit: bool| if night { 0.0 } else { FADE_DAY } + if lit { FADE_LIGHT } else { 0.0 };
-        self.night.corruption = (self.night.corruption - k(lit_player)).max(0.0);
-        self.night.glow = (self.night.glow - 0.002).max(0.0);
-        let ids: Vec<(i64, Vec3)> = self.cast.npcs.iter().filter(|n| n.here() && n.corruption() > 0.0 && !n.species.touch.harms()).map(|n| (n.def.id, n.a.pos)).collect();
-        for (cid, pos) in ids {
-            let lit = self.dist_to_player(pos) < self.cfg.medium && self.shunned_at(pos, &light).is_some();
-            self.add_corruption(ActorId::Npc(cid), -k(lit));
+    /// By day, what is left of the dark's dead is gone (out of sight).
+    fn fade_dark_remains(&mut self) {
+        let gone: Vec<(super::things::ThingId, i64)> = self
+            .things
+            .live()
+            .filter_map(|t| t.origin.remains.map(|c| (t.id, c, t.pos)))
+            .filter(|(_, c, p)| self.of_the_dark(ActorId::Npc(*c)) && !self.player_sees(*p))
+            .map(|(id, c, _)| (id, c))
+            .collect();
+        for (id, c) in gone {
+            self.drop_worn(c, self.things.get(id).map(|t| t.pos).unwrap_or_default());
+            self.things.remove(id);
+        }
+    }
+
+    /// What someone wore falls where they lie.
+    pub(super) fn drop_worn(&mut self, cid: i64, at: Vec3) {
+        for w in self.worn_by(ActorId::Npc(cid)) {
+            if let Some(t) = self.things.get_mut(w) {
+                t.worn = None;
+                t.pos = at + Vec3::Y * 0.3;
+                t.asleep = false;
+                t.dirty = true;
+            }
         }
     }
 
@@ -743,7 +740,7 @@ impl Sim {
         let want = n.species.want.as_str();
         match want {
             "" => None,
-            "traveler" => Some((ActorId::Player, self.player.pos)).filter(|(_, p)| (*p - pos).length() < 150.0),
+            "traveler" => Some((ActorId::Player, self.player.pos)).filter(|(_, p)| (*p - pos).length() < 150.0 && !self.fallen()),
             _ => self
                 .actor_ids()
                 .into_iter()
@@ -787,7 +784,7 @@ impl Sim {
             let away = (pos - tp).normalize_or_zero();
             let away = if away == Vec3::ZERO { Vec3::X } else { away };
             let p = tp + away * 20.0;
-            self.plan(me, vec![Action::Goto { target: Target::Point(p.to_array()), run: false }], "draw back", false);
+            self.plan(me, vec![super::actions::Action::Goto { target: Target::Point(p.to_array()), run: false }], "draw back", false);
             self.set_doing(cid, "drawing back");
             next(self, 3.0);
             return true;
@@ -797,7 +794,7 @@ impl Sim {
             let out = (pos - at).normalize_or_zero();
             let out = if out == Vec3::ZERO { Vec3::Z } else { out };
             let p = at + out * (r + 2.0);
-            self.plan(me, vec![Action::Goto { target: Target::Point(p.to_array()), run: true }], "get out of the light", false);
+            self.plan(me, vec![super::actions::Action::Goto { target: Target::Point(p.to_array()), run: true }], "get out of the light", false);
             self.set_doing(cid, "shrinking back");
             next(self, 1.5);
             return true;
@@ -808,9 +805,9 @@ impl Sim {
             let side = if side == Vec3::ZERO { Vec3::X } else { side };
             let p = at + side * (r + 1.0);
             if (p - pos).length() > 1.5 {
-                self.plan(me, vec![Action::Goto { target: Target::Point(p.to_array()), run: false }], "wait at the edge", false);
+                self.plan(me, vec![super::actions::Action::Goto { target: Target::Point(p.to_array()), run: false }], "wait at the edge", false);
             } else {
-                self.plan(me, vec![Action::Wait { secs: 2.0 }], "wait at the edge", false);
+                self.plan(me, vec![super::actions::Action::Wait { secs: 2.0 }], "wait at the edge", false);
                 if let Some(n) = self.cast.get_mut(cid) {
                     n.a.face(tp - pos, 10.0);
                 }
@@ -825,11 +822,21 @@ impl Sim {
             if touch.any() {
                 self.touch(cid, target);
             } else {
-                self.plan(me, vec![Action::Wait { secs: 3.0 }], "stay near", false);
+                self.plan(me, vec![super::actions::Action::Wait { secs: 3.0 }], "stay near", false);
             }
             next(self, 1.0);
             return true;
         }
+        self.go_after(cid, target, tp, d < 14.0);
+        next(self, 1.0);
+        true
+    }
+
+    /// Head for `target` (stepping round what blocks the way).
+    pub(super) fn go_after(&mut self, cid: i64, target: ActorId, tp: Vec3, run: bool) {
+        let me = ActorId::Npc(cid);
+        let tname = self.actor_name(target);
+        let Some(pos) = self.actor(me).map(|a| a.pos) else { return };
         // Blocked (a tree, a wall): step round it, one side or the other.
         if self.actor(me).is_some_and(|a| a.stuck > 0.6) {
             let dir = (tp - pos).normalize_or_zero();
@@ -838,14 +845,11 @@ impl Sim {
             if let Some(a) = self.actor_mut(me) {
                 a.stuck = 0.0;
             }
-            self.plan(me, vec![Action::Goto { target: Target::Point(p.to_array()), run: false }], &format!("go after {tname}"), false);
-            next(self, 2.5);
-            return true;
+            self.plan(me, vec![super::actions::Action::Goto { target: Target::Point(p.to_array()), run: false }], &format!("go after {tname}"), false);
+            return;
         }
-        self.plan(me, vec![Action::Goto { target: Target::Actor(target), run: d < 14.0 }], &format!("go after {tname}"), false);
+        self.plan(me, vec![super::actions::Action::Goto { target: Target::Actor(target), run }], &format!("go after {tname}"), false);
         self.set_doing(cid, &format!("coming for {tname}"));
-        next(self, 1.0);
-        true
     }
 
     /// A watched being that wants the traveler close enough to touch them
@@ -853,7 +857,7 @@ impl Sim {
     /// out of what it shuns.
     pub(super) fn watched_reach(&mut self, cid: i64) -> bool {
         let Some(n) = self.cast.get(cid) else { return false };
-        if n.species.want != "traveler" || !n.species.touch.any() {
+        if n.species.want != "traveler" || !n.species.touch.any() || self.fallen() {
             return false;
         }
         let shuns = n.species.shuns.clone();
@@ -862,23 +866,18 @@ impl Sim {
         gap < WATCHED_REACH && self.shunned_at(self.player.pos, &shuns).is_none()
     }
 
-    /// Its touch lands on `target`.
+    /// Its touch lands on `target`: a glow, a change to their needs, and
+    /// for the dark's own, a wound.
     pub fn touch(&mut self, cid: i64, target: ActorId) {
         let Some(n) = self.cast.get_mut(cid) else { return };
         n.touched_at = self.t;
         let touch = n.species.touch.clone();
         let me = ActorId::Npc(cid);
-        let lv = self.level();
         let name = self.actor_name(me);
         let at = self.actor(target).map(|a| a.pos).unwrap_or_default();
-        let lost = if target == ActorId::Player && lv.charges.is_some() { ((touch.charges * lv.drain).round() as i32).min(self.night.charges.max(0)) } else { 0 };
-        let dark = touch.corruption * lv.corrupt * 0.5;
+        let hurt = touch.hurt * (1.0 - self.protection(target));
         if target == ActorId::Player {
-            self.night.charges -= lost;
             self.night.glow = (self.night.glow + touch.glow).min(1.0);
-            if touch.harms() {
-                self.night.touched += 1;
-            }
         } else if let ActorId::Npc(c) = target {
             if let Some(m) = self.cast.get_mut(c) {
                 if let Some(l) = m.props.get_mut(P_LIGHT) {
@@ -896,31 +895,43 @@ impl Sim {
                 }
             }
         }
-        if dark > 0.0 {
-            self.add_corruption(target, dark);
-        }
         let tname = self.actor_name(target);
-        self.event("touched", Some(me), Some(target.key()), format!("{name} touched {tname}"), Some(at), json!({ "charges": lost, "corruption": dark, "glow": touch.glow }));
+        let verb = if touch.harms() { "claws at" } else { "touches" };
+        let died = self.wound(target, hurt, me, &format!("clawed by {name}"));
+        self.event("touched", Some(me), Some(target.key()), format!("{name} {verb} {tname}"), Some(at), json!({ "hurt": (hurt * 100.0).round() / 100.0, "glow": touch.glow }));
+        if touch.harms() {
+            let from = self.actor(me).map(|a| a.pos).unwrap_or(at);
+            let push = Vec3::new(at.x - from.x, 0.0, at.z - from.z).normalize_or_zero() * 0.25;
+            self.jolt(target, push, 0.25);
+            self.cue(at + Vec3::Y, Some(target), crate::audio::Heard::Hit { mat: crate::audio::call::Material::FLESH, mass: 60.0, speed: 3.0, by: None });
+            self.phantom_struck(cid, target, died);
+            if !died {
+                self.hurt_by(target, me, hurt, false);
+            }
+        }
         if target == ActorId::Player {
             let mut what = Vec::new();
-            if lost > 0 {
-                what.push(format!("your power ebbs (✦ −{lost}, {} left)", self.night.charges));
-            }
-            if dark > 0.0 {
-                what.push("something cold gets in".into());
+            if hurt > 0.0 {
+                what.push("it hurts".to_string());
             }
             if touch.glow > 0.0 {
                 what.push("you glow faintly".into());
             }
             let tail = if what.is_empty() { String::new() } else { format!(": {}", what.join("; ")) };
-            self.notes.push(Note::Notable(format!("{} touches you{tail}.", super::physics::cap(&name))));
+            self.notes.push(Note::Notable(format!("{} {verb} you{tail}.", super::physics::cap(&name))));
         } else {
-            self.witness(at, 25.0, &format!("{name} touched {tname}"), if touch.harms() { 0.8 } else { 0.3 }, &[me]);
-            self.note_near(at, 30.0, Note::Ambient(format!("{} touches {tname}.", super::physics::cap(&name))));
+            self.witness(at, 25.0, &format!("{name} {verb} {tname}"), if touch.harms() { 0.8 } else { 0.3 }, &[me]);
+            self.note_near(at, 30.0, Note::Ambient(format!("{} {verb} {tname}.", super::physics::cap(&name))));
         }
-        // Whoever sees a harmful touch runs.
+        if died {
+            if let ActorId::Npc(c) = target {
+                self.kill(c, &format!("clawed by {name}, and died"), Some(me));
+            }
+            return;
+        }
+        // Whoever sees the dark's harm runs.
         if touch.harms() {
-            let near: Vec<i64> = self.cast.npcs.iter().filter(|m| m.here() && m.def.id != cid && !m.species.touch.harms() && (m.a.pos - at).length() < 20.0).map(|m| m.def.id).collect();
+            let near: Vec<i64> = self.cast.npcs.iter().filter(|m| m.here() && m.def.id != cid && !m.species.touch.harms() && !m.species.hostile && (m.a.pos - at).length() < 20.0).map(|m| m.def.id).collect();
             for c in near {
                 self.flee(c, me, at);
             }
@@ -928,65 +939,10 @@ impl Sim {
     }
 }
 
-use super::actions::Action;
-
-/// What the brain is asked for when the dark needs a new kind.
-fn horror_brief() -> String {
-    "Invent one night horror for this world (it is called the night walker; its name is given): what comes out of the dark at night for the traveler, because the traveler can make things out of nothing. Let this world's lore choose where it comes from and how it is felt, and its form: it may walk upright, crawl, slither, or glide low on wings; be one huge thing or a pack of lean ones. Its body must borrow nothing from this world's own people or animals: no ears, fur, whiskers, tails, muzzles or faces like theirs, nothing cute or familiar. It must be frightening to meet in a dark, low-resolution world: an unnatural silhouette (wrong proportions, joints that bend wrong, too many of something, a face that is not a face). It is black, the colour of the dark itself (never purple or any bright colour, and its body gives no light); its eyes, two or many, glow red, and are the only lit part. Give it a description of under 25 words, a body (a new body name of your own, not \"night walker\", with a body_description of how it looks and moves, which says it is black all over, borrows nothing from the world's creatures, and only its red eyes shine, marked with glow()), \"social\": \"solitary\" if it comes alone or \"pack\" if a few come together, a \"size\" (1 for something person-sized, up to 3 for something huge), look ranges that keep it near black, 2–4 \"sounds\": what the traveler hears of it, each read after \"You hear\" (\"a wet click\", \"slow, dragging steps\"), with a \"voice\" for each that is wrong to hear (breath that is too slow, a groan too low, clicks too wet), and 5–8 \"signs\": short lines, to the traveler, of what they notice when it is near but out of sight, in this world's own textures (\"The crickets stop, all at once.\", \"You feel watched.\"); signs never say where it is (no behind, ahead, left or right: the game says that), and none may name or describe it outright.".into()
-}
-
-/// What every night horror is, whatever the brain wrote.
-fn horror_fixed() -> serde_json::Value {
-    json!({
-        "mind": "instinct", "speech": "sounds",
-        "diet": { "plants": 0.0, "meat": 0.0 },
-        "temper": { "bold": 1.0, "wary": 0.0, "playful": 0.0, "tame": 0.0 },
-        "life": { "sleep": [7, 19] },
-        "active": "night", "want": "traveler", "shuns": ["light"], "moves_unseen": true,
-        "touch": { "charges": 1.0, "corruption": 0.5 }
-    })
-}
-
-/// Fixed fields laid over a written species.
-pub fn merge_fixed(sp: &mut crate::world::species::Species, fixed: &serde_json::Value) {
-    let Ok(mut v) = serde_json::to_value(&*sp) else { return };
-    if let (Some(o), Some(f)) = (v.as_object_mut(), fixed.as_object()) {
-        for (k, x) in f {
-            o.insert(k.clone(), x.clone());
-        }
-    }
-    if let Ok(s) = serde_json::from_value(v) {
-        *sp = s;
-    }
-    // Never faster than the traveler can walk away.
-    sp.moves.walk = sp.moves.walk.min(1.6);
-    sp.moves.run = sp.moves.run.clamp(sp.moves.walk, 3.8);
-}
-
-/// What the brain may choose for a horror, kept inside what is fair: alone
-/// or a pack, no bigger than a house, never faster than the traveler.
-pub fn fit_horror(sp: &mut crate::world::species::Species) {
-    if sp.social != Social::Pack {
-        sp.social = Social::Solitary;
-    }
-    sp.size = sp.size.clamp(0.5, 3.5);
-    // One pace for all of them; winged ones glide low at it, never take off.
-    sp.moves.walk = HORROR_WALK;
-    sp.moves.run = HORROR_RUN;
-    sp.moves.fly = 0.0;
-}
-
-/// A sign that says where something is (which only the game may say).
-fn says_where(line: &str) -> bool {
-    let l: String = line.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
-    let l = format!(" {} ", l.split_whitespace().collect::<Vec<_>>().join(" "));
-    PLACE_WORDS.iter().any(|w| l.contains(&format!(" {w} ")))
-}
-
-/// A night horror for when no LLM writes one.
-pub fn fallback_horror() -> crate::world::species::Species {
-    let mut v = json!({
-        "name": "night walker", "plural": "night walkers", "body": "night walker", "mass": 60,
+/// What every night walker is.
+pub fn walker_species() -> crate::world::species::Species {
+    let v = json!({
+        "name": WALKER, "plural": "night walkers", "body": "night walker", "mass": 60,
         "look": { "height": [2.2, 2.6], "build": [0.75, 0.9], "shade": [0.0, 0.4], "eyes": [0.85, 1.0] },
         "sounds": ["a wet click", "a long, slow breath", "something saying your name, almost", "slow steps that stop when you stop"],
         "signs": [
@@ -996,41 +952,50 @@ pub fn fallback_horror() -> crate::world::species::Species {
             "The night has gone very quiet.",
             "The hair on your neck stands up."
         ],
-        "description": "too tall, hunched and black as the dark it came from; two red eyes, and arms that nearly touch the ground"
+        "description": "too tall, hunched and black as the dark it came from; two red eyes, and arms that nearly touch the ground",
+        "mind": "instinct", "speech": "sounds", "social": "solitary",
+        "diet": { "plants": 0.0, "meat": 0.0 },
+        "temper": { "bold": 1.0, "wary": 0.0, "playful": 0.0, "tame": 0.0 },
+        "life": { "sleep": [7, 19] },
+        "move": { "walk": WALKER_WALK, "run": WALKER_RUN },
+        "active": "night", "want": "traveler", "shuns": ["light"], "moves_unseen": true,
+        "touch": { "hurt": 0.25 }
     });
-    if let (Some(o), Some(f)) = (v.as_object_mut(), horror_fixed().as_object()) {
-        for (k, x) in f {
-            o.insert(k.clone(), x.clone());
-        }
-    }
-    let mut sp: crate::world::species::Species = serde_json::from_value(v).expect("fallback horror");
+    let mut sp: crate::world::species::Species = serde_json::from_value(v).expect("night walker");
     sp.sanitize();
-    fit_horror(&mut sp);
     sp
 }
 
+/// A sign that says where something is (which only the game may say).
+fn says_where(line: &str) -> bool {
+    let l: String = line.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
+    let l = format!(" {} ", l.split_whitespace().collect::<Vec<_>>().join(" "));
+    PLACE_WORDS.iter().any(|w| l.contains(&format!(" {w} ")))
+}
+
 impl Sim {
-    /// The night's part of the status line: the hour to come, charges,
-    /// corruption (parts that don't apply are left out).
+    /// The night's part of the status line: the hour to come, and what of
+    /// the dark is near (parts that don't apply are left out).
     pub fn night_status(&self) -> Vec<String> {
         let mut out = Vec::new();
         let lv = self.level();
-        if lv.horror_nights > 0 {
+        if lv.walkers + lv.phantoms > 0 {
             let (night, mins) = minutes_to_turn(self.t);
             let m = mins.ceil().max(1.0);
             out.push(if night { format!("dawn in {m:.0}m") } else { format!("night in {m:.0}m") });
         }
-        out.push(match self.charges() {
-            Some(n) => format!("✦ {n}"),
-            None => "✦ ∞".into(),
-        });
-        if self.night.corruption >= 0.05 {
-            out.push(format!("corrupted {:.0}%", self.night.corruption * 100.0));
-        }
         let p = self.player.pos;
-        let near = self.cast.npcs.iter().filter(|n| n.here() && n.corruption() >= TWISTED && !n.species.touch.harms() && (n.a.pos - p).length() < 60.0).count();
-        if near > 0 {
-            out.push(format!("{near} corrupted near"));
+        let near = |phantom: bool| self.cast.npcs.iter().filter(|n| n.here() && n.species.hostile == phantom && (phantom || n.species.touch.harms()) && (n.a.pos - p).length() < 60.0).count();
+        let (w, ph) = (near(false), near(true));
+        let mut parts = Vec::new();
+        if w > 0 {
+            parts.push(format!("{w} walker{}", if w == 1 { "" } else { "s" }));
+        }
+        if ph > 0 {
+            parts.push(format!("{ph} phantom{}", if ph == 1 { "" } else { "s" }));
+        }
+        if !parts.is_empty() {
+            out.push(format!("{} near", parts.join(" · ")));
         }
         out
     }

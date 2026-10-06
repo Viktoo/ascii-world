@@ -86,7 +86,7 @@ impl App {
             }
             let who = (!mine).then(|| w.who.map(|a| self.sim.actor_name(a)).unwrap_or_else(|| "the world".into()));
             let at = w.at.filter(|_| w.kind != WorkKind::Learning);
-            now.push((w.id, w.kind.verb(), kind_color(w.kind), who, w.what, at, w.kind == WorkKind::Conjuring));
+            now.push((w.id, w.kind.verb(), kind_color(w.kind), who, w.what, at, w.appears));
         }
         if show == ShowWork::Everyone && !self.regions_inflight.is_empty() {
             let n = self.regions_inflight.len();
@@ -117,6 +117,7 @@ impl App {
                         changed = true;
                     }
                     r.at = at;
+                    r.conjure = conjure;
                 }
                 None => {
                     let mine = who.is_none() && id != LAND;
@@ -282,7 +283,7 @@ impl App {
                 // Each mote rises and fades at its own pace, from its own place.
                 let seed = id.wrapping_mul(2654435761).wrapping_add(i as u64 * 40503) as u32;
                 let rnd = |k: u32| ((seed.wrapping_mul(k).wrapping_add(k >> 3)) % 1000) as f32 / 1000.0;
-                let speed = 0.35 + 0.5 * rnd(7919);
+                let speed = if conjure { 0.2 + 0.3 * rnd(7919) } else { 0.35 + 0.5 * rnd(7919) };
                 let life = (secs * speed + rnd(104729)).fract();
                 let x = col + ((rnd(1301) * 2.0 - 1.0) * width as f32).round() as i32;
                 let y = row - (life * height as f32) as i32;

@@ -22,6 +22,7 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/figure.js"),
     include_str!("builtin/quadruped.js"),
     include_str!("builtin/nightwalker.js"),
+    include_str!("builtin/phantom.js"),
     include_str!("builtin/tree.js"),
     include_str!("builtin/pine.js"),
     include_str!("builtin/rock.js"),
@@ -1014,7 +1015,7 @@ pub fn probe_globals(terrain: &Terrain) -> crate::render::Globals {
     let sp = crate::render::SceneParams {
         terrain,
         palette: &pal,
-        camera: crate::render::Camera { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, fov_y: 1.0 },
+        camera: crate::render::Camera { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, fov_y: 1.0, roll: 0.0 },
         width: 1,
         height: 1,
         pixel_aspect: 1.0,

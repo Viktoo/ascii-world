@@ -194,7 +194,7 @@ pub struct Npc {
     /// Out of its hours (see `Species::active`): not drawn, simulated or met.
     pub away: bool,
     /// Their body's properties, like a thing's (empty until the sim fits
-    /// it to the vocabulary; see `Sim::fit_bodies`): darkness, a touch's
+    /// it to the vocabulary; see `Sim::fit_bodies`): a touch's
     /// glow, wetness, warmth, and whatever the world's own rules put on them.
     pub props: Props,
     /// How much what is on their body hurts them right now (by its harm).
@@ -217,11 +217,6 @@ impl Npc {
         &self.def.persona.name
     }
 
-    /// How much darkness has got into them (0..1; see `night`).
-    pub fn corruption(&self) -> f32 {
-        self.props.get(P_CORRUPT).copied().unwrap_or(0.0)
-    }
-
     /// How badly hurt they are, as their body carries it: 0 while health
     /// is above `LIMP_FROM`, 1 at none left.
     pub fn hurt(&self) -> f32 {
@@ -240,7 +235,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), corruption: 0.0, props: Default::default(), away: self.away, seen_dead: self.seen_dead.clone() }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), props: Default::default(), away: self.away, seen_dead: self.seen_dead.clone() }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -1027,7 +1022,7 @@ impl Sim {
         }
         // Night: home and to bed.
         let Some(n) = self.cast.get_mut(cid) else { return };
-        if night && !n.a.asleep && n.a.task.is_none() && n.mission.is_none() && !n.plan.iter().any(|a| matches!(a, Action::Sleep)) && !self.social.busy(ActorId::Npc(cid)) && n.species.want.is_empty() {
+        if night && !n.a.asleep && n.a.task.is_none() && n.mission.is_none() && !n.plan.iter().any(|a| matches!(a, Action::Sleep)) && !self.social.busy(ActorId::Npc(cid)) && n.species.want.is_empty() && !n.species.hostile {
             let home = n.def.home;
             // With the dark about, people sleep by the nearest light.
             let home = if sapient { self.night_shelter(home) } else { home };
@@ -1075,6 +1070,15 @@ impl Sim {
             if !self.pursue_want(cid) {
                 if let Some(n) = self.cast.get_mut(cid) {
                     n.think_at = t + 2.0;
+                }
+            }
+        }
+        // Meaning harm: its reflexes look again every second or so (its
+        // quarry moves, comes within reach, a weapon lies near).
+        if !asleep && self.cast.get(cid).is_some_and(|n| n.species.hostile && t >= n.think_at) && self.talking_to != Some(cid) {
+            if !self.hunt(cid) {
+                if let Some(n) = self.cast.get_mut(cid) {
+                    n.think_at = t + 1.5;
                 }
             }
         }
@@ -1566,7 +1570,7 @@ impl Sim {
             people.push(format!("{} ({d:.0} m, {rel}{}{})", self.actor_name(o), if doing.is_empty() { "" } else { ", " }, doing));
         }
         let recent: Vec<String> = self.log.recent.iter().rev().filter(|e| e.pos.is_some_and(|p| (Vec3::from(p) - pos).length() < 40.0) && self.t - e.t < 300.0).take(6).map(|e| e.text.clone()).collect();
-        let twist = self.twist_line(me).map(|l| format!("\n{l}")).unwrap_or_default();
+        let twist = self.drive_line(cid).map(|l| format!("\n{l}")).unwrap_or_default();
         let meanings: Vec<String> = shown.iter().map(|i| format!("{}: {}", self.vocab.names[*i], self.vocab.meanings[*i])).collect();
         let twist = if meanings.is_empty() { twist } else { format!("{twist}\nWhat those numbers mean: {}.", meanings.join("; ")) };
         let twist = format!("{twist}{}", self.trouble_line(pos).map(|l| format!("\n{l}")).unwrap_or_default());

@@ -9,9 +9,9 @@
 //! whoever only saw it reach them guesses it came from where it came at
 //! them. Gossip passes beliefs on, marked as told and a little less sure
 //! each hop. Honest people pass on what they believe, which can be stale or
-//! a guess: rumours emerge without lies. Only corruption lies: a corrupted
-//! teller may twist a claim (blame the wrong one), marked in the row; those
-//! who saw it themselves don't take it up.
+//! a guess: rumours emerge without lies. Only those who mean harm lie (the
+//! night's phantoms): such a teller twists a claim (blames the wrong one),
+//! marked in the row; those who saw it themselves don't take it up.
 //!
 //! Each mind keeps at most `beliefs_per_mind`: the least important, least
 //! sure and oldest fade first, and a repeat raises sureness instead of
@@ -292,8 +292,8 @@ impl Sim {
     }
 
     /// One of the teller's beliefs passes to the listener: the most
-    /// important one they don't hold the same way. A corrupted teller may
-    /// twist it (blame someone else); a listener who saw it themselves
+    /// important one they don't hold the same way. A teller who means harm
+    /// twists it (blame someone else); a listener who saw it themselves
     /// keeps what they saw. Returns the claim passed, if any.
     pub fn pass_belief(&mut self, teller: i64, listener: i64) -> Option<Claim> {
         if !self.speaks_or_thinks(teller) || !self.speaks_or_thinks(listener) {
@@ -311,8 +311,8 @@ impl Sim {
             .cloned()?;
         let mut claim = pick.claim.clone();
         let mut twisted = pick.twisted;
-        // Only corruption lies: blame someone else.
-        if self.twist_line(ActorId::Npc(teller)).is_some() {
+        // Only those who mean harm lie: blame someone else.
+        if self.cast.get(teller).is_some_and(|n| n.species.hostile) {
             if let Claim::Cause { by, .. } = &mut claim {
                 let scapegoat = self.scapegoat(teller, by.as_deref());
                 if scapegoat.is_some() && scapegoat != *by {
