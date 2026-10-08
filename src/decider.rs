@@ -52,7 +52,7 @@ impl Decider for LlmDecider {
             let system = format!("{}\n\nUniverse:\n{}", crate::prompts::DECIDER_TASK, universe);
             let user = serde_json::to_string_pretty(&ctx).ok()?;
             let mut req = Req::new(Role::Decider, system, user);
-            req.max_tokens = 700;
+            req.max_tokens = 1500;
             req.effort = Some("low");
             let reply = self.llm.complete(&req, "decide").await.ok()?;
             let v = extract_json(&reply).ok()?;

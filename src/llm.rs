@@ -83,8 +83,9 @@ pub struct Llm {
     pub budget: Mutex<Option<f64>>,
 }
 
-/// (input, output, cache read) USD per million tokens.
-fn price(model: &str) -> (f64, f64, f64) {
+/// (input, output, cache read) USD per million tokens. `prompt` is the
+/// request's whole input (fresh + cached), which picks Haiku 5.5's rate card.
+fn price(model: &str, prompt: u64) -> (f64, f64, f64) {
     if let (Ok(i), Ok(o)) = (std::env::var("POCKET_PRICE_IN"), std::env::var("POCKET_PRICE_OUT")) {
         let i: f64 = i.parse().unwrap_or(0.0);
         return (i, o.parse().unwrap_or(0.0), i * 0.1);
@@ -95,6 +96,8 @@ fn price(model: &str) -> (f64, f64, f64) {
         m if m.starts_with("claude-fable") => (10.0, 50.0, 0.25),
         m if m.starts_with("claude-sonnet-4") => (3.0, 15.0, 0.30),
         m if m.starts_with("claude-sonnet") => (2.0, 10.0, 0.20),
+        m if m.starts_with("claude-haiku-5-5") && prompt > 100_000 => (0.50, 2.50, 0.05),
+        m if m.starts_with("claude-haiku-5-5") => (0.10, 0.50, 0.01),
         m if m.starts_with("claude-haiku") => (1.0, 5.0, 0.10),
         _ => (0.0, 0.0, 0.0),
     }
@@ -103,6 +106,11 @@ fn price(model: &str) -> (f64, f64, f64) {
 /// Models that accept `fallbacks: "default"` on the Claude API.
 fn supports_fallback(model: &str) -> bool {
     ["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"].contains(&model)
+}
+
+/// Models that take `output_config.effort` (Haiku 4.5 and Claude 3 reject it).
+fn supports_effort(model: &str) -> bool {
+    !model.starts_with("claude-haiku-4") && !model.starts_with("claude-3")
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -137,7 +145,7 @@ impl Llm {
             }
             match (&provider, r) {
                 (Provider::Anthropic { .. }, Role::Builder | Role::Character) => "claude-opus-5-5".into(),
-                (Provider::Anthropic { .. }, _) => "claude-haiku-4-5".into(),
+                (Provider::Anthropic { .. }, _) => "claude-haiku-5-5".into(),
                 _ => "llama3.1".into(),
             }
         };
@@ -170,7 +178,7 @@ impl Llm {
     }
 
     fn account(&self, purpose: &str, model: &str, u: Usage) {
-        let (pi, po, pc) = price(model);
+        let (pi, po, pc) = price(model, u.input + u.cache_read + u.cache_write);
         let cost = (u.input as f64 * pi + u.cache_write as f64 * pi * 1.25 + u.cache_read as f64 * pc + u.output as f64 * po) / 1e6;
         *self.spent.lock() += cost;
         let _ = self.db.add_usage(purpose, u.input + u.cache_read + u.cache_write, u.output, cost);
@@ -229,8 +237,7 @@ impl Llm {
             "system": system,
             "messages": messages,
         });
-        let is_claude5 = !model.starts_with("claude-haiku") && !model.starts_with("claude-3");
-        if let (Some(e), true) = (req.effort, is_claude5) {
+        if let (Some(e), true) = (req.effort, supports_effort(model)) {
             body["output_config"] = json!({ "effort": e });
         }
         let mut rb = self.http.post(format!("{base}/v1/messages")).header("x-api-key", key).header("anthropic-version", "2023-06-01").header("content-type", "application/json");
@@ -287,6 +294,11 @@ impl Llm {
         if stop == "refusal" {
             self.account("refused", model, usage);
             bail!("the model declined this request");
+        }
+        if stop == "max_tokens" && text.trim().is_empty() {
+            // Thinking counts toward max_tokens and can use it all up.
+            self.account("truncated", model, usage);
+            bail!("the model ran out of tokens before answering");
         }
         Ok((text, usage))
     }
@@ -450,6 +462,19 @@ mod tests {
         let mut out = s.feed(b"event: a\ndata: {\"x\":1}\n\ndata: {\"y\"");
         out.extend(s.feed(b":2}\n\n"));
         assert_eq!(out, vec!["{\"x\":1}", "{\"y\":2}"]);
+    }
+
+    #[test]
+    fn haiku_5_5_pricing_and_effort() {
+        assert_eq!(price("claude-haiku-5-5", 2_000), (0.10, 0.50, 0.01));
+        assert_eq!(price("claude-haiku-5-5", 100_000), (0.10, 0.50, 0.01));
+        assert_eq!(price("claude-haiku-5-5", 100_001), (0.50, 2.50, 0.05));
+        assert_eq!(price("claude-haiku-4-5", 200_000), (1.0, 5.0, 0.10));
+        assert!(supports_effort("claude-haiku-5-5"));
+        assert!(supports_effort("claude-opus-5-5"));
+        assert!(!supports_effort("claude-haiku-4-5"));
+        assert!(!supports_effort("claude-3-5-haiku-20241022"));
+        assert!(!supports_fallback("claude-haiku-5-5"));
     }
 
     #[test]

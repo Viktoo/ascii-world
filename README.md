@@ -186,7 +186,9 @@ relationships, recent decisions and memories.
 | `POCKET_SIM_MAX_AWAKE`, `POCKET_SIM_MAX_FLAMES`, `POCKET_SIM_MAX_THINGS`, `POCKET_SIM_CHAT_RANGE`, `POCKET_SIM_RULES_HZ`, `POCKET_SIM_BEHAVIOR_HZ`, `POCKET_SIM_MEDIUM_LLM` | Further limits. Each can also be set per universe in its `kv` table as `sim.<name>`. |
 
 Defaults on the Claude API: `claude-opus-5-5` for the builder (region plans and object
-code) and for characters, `claude-haiku-4-5` for the fast decider and summariser.
+code) and for characters, `claude-haiku-5-5` for the fast decider and summariser.
+Set `POCKET_MODEL_DECIDER` / `POCKET_MODEL_SUMMARIZER` to `claude-haiku-4-5` to keep the
+older Haiku.
 Opus requests opt into server-side refusal fallbacks. The running cost of the session
 is in the status bar, and every call is recorded in the `llm_usage` table.
 

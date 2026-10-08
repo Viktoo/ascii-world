@@ -336,7 +336,7 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             };
             let _ = base;
             let mut req = Req::new(Role::Decider, prompts::GESTURE_TASK, task);
-            req.max_tokens = 600;
+            req.max_tokens = 1500; // room for thinking on Claude 5 models
             req.effort = Some("low");
             let result = match ctx.llm.complete(&req, "gesture").await {
                 Ok(reply) => extract_json(&reply).map_err(|e| e.to_string()),
@@ -1849,7 +1849,8 @@ async fn talk(ctx: &Ctx, cid: i64, text: &str, context: &str, history: &[(bool, 
             let recent: Vec<String> = mems.iter().rev().take(12).rev().map(|m| format!("- {}", m.text)).collect();
             let user = format!("Character: {name}\nPrevious summary: {prev}\nRecent memories:\n{}", recent.join("\n"));
             let mut req = Req::new(Role::Summarizer, prompts::SUMMARY_TASK, user);
-            req.max_tokens = 600;
+            req.max_tokens = 1500;
+            req.effort = Some("low");
             if let Ok(s) = ctx2.llm.complete(&req, "summary").await {
                 let _ = ctx2.db.set_summary(cid, s.trim());
             }
