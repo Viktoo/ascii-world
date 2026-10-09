@@ -57,6 +57,45 @@ fn gpu_parity_types_and_terrain() {
     eprintln!("terrain parity worst error {worst:e}");
 }
 
+/// Cliffs agree on the GPU and the CPU, faces and all: points packed onto
+/// the steepest ground of a land that is cliffs wherever it has hills.
+#[test]
+fn cliffs_agree_on_gpu_and_cpu() {
+    let Ok(gpu) = Gpu::new() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let types = all_types();
+    let refs: Vec<(u32, &CompiledType)> = types.iter().map(|(i, t)| (*i, t)).collect();
+    let pipe = gpu.build_pipeline(&shader::assemble(&refs), 1).unwrap();
+    let mut biomes = default_biomes();
+    for b in &mut biomes {
+        (b.amp, b.rough, b.cliffs) = (b.amp.max(25.0), 0.5, 1.0);
+    }
+    let terrain = crate::terrain::Terrain::new(4321, biomes);
+    let mut pts = Vec::new();
+    for j in 0..200 {
+        for i in 0..200 {
+            let (x, z) = (i as f32 * 5.0 - 500.0, j as f32 * 5.0 - 500.0);
+            if terrain.normal(x, z).y < 0.6 {
+                // Across the face, finely.
+                for k in 0..8 {
+                    pts.push([x + k as f32 * 0.3, 0.0, z, 0.0]);
+                }
+            }
+        }
+    }
+    assert!(pts.len() > 2000, "faces to probe: {}", pts.len());
+    pts.truncate(60_000);
+    let out = gpu.probe(&pipe, &probe_globals(&terrain), 1, 0, &GpuInst::default(), &pts).unwrap();
+    let mut worst = 0.0f32;
+    for (p, g) in pts.iter().zip(&out) {
+        worst = worst.max((g[0] - terrain.height(p[0], p[2])).abs());
+    }
+    eprintln!("cliff parity over {} points: worst error {worst:e}", pts.len());
+    assert!(worst <= 1e-3, "cliff parity: worst abs error {worst}");
+}
+
 /// Cuts take the same pieces out on the GPU as on the CPU.
 #[test]
 fn cuts_agree_on_gpu_and_cpu() {

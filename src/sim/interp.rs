@@ -853,7 +853,7 @@ impl Sim {
         match t {
             Target::Actor(a) => self.actor(*a).map(|a| a.pos + glam::Vec3::Y * a.dims.height * 0.6),
             Target::Cell(c) => {
-                let (x, z) = ((c[0] as f32 + 0.5) * 4.0, (c[1] as f32 + 0.5) * 4.0);
+                let (x, z) = crate::world::scatter::cell_centre((c[0], c[1]));
                 Some(glam::Vec3::new(x, self.snap.terrain.height(x, z) + 0.5, z))
             }
             Target::Point(p) => Some(glam::Vec3::from(*p)),

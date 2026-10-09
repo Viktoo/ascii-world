@@ -371,7 +371,7 @@ pub struct SceneParams<'a> {
 pub fn terrain_epoch(t: &Terrain) -> u32 {
     let mut h = crate::noise::pcg(t.seed);
     for b in &t.biomes {
-        for v in [b.base, b.amp, b.rough] {
+        for v in [b.base, b.amp, b.rough, b.cliffs] {
             h = crate::noise::pcg(h ^ v.to_bits());
         }
     }
@@ -393,7 +393,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         let g2 = rgbv(b.ground2);
         biomes[i * 3] = [c[0], c[1], b.base, b.amp];
         biomes[i * 3 + 1] = [b.rough, g1.x, g1.y, g1.z];
-        biomes[i * 3 + 2] = [g2.x, g2.y, g2.z, 0.0];
+        biomes[i * 3 + 2] = [g2.x, g2.y, g2.z, b.cliffs];
     }
     let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
     let mut flags = 0;
