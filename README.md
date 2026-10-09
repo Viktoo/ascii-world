@@ -210,7 +210,7 @@ instances. The CPU culls instances by view distance and frustum and uploads them
 sorted list of the bounding spheres it crosses. Each march step only evaluates spheres
 the ray is inside, behind a tight local-box test. Distant terrain is read from a
 camera-centred heightmap (512², rebuilt on the GPU every 24 m), with the exact noise
-used near the camera. Shading: sun/moon with soft shadows, sky ambient, AO, distance fog,
+used near the camera and on rock faces within 80 m. Shading: sun/moon with soft shadows, sky ambient, AO, distance fog,
 sky gradient with stars, and water with Fresnel reflections. One in-game day lasts 20
 real minutes.
 
@@ -222,8 +222,12 @@ block, in one write. Never clears. Raw mode, alternate screen and keyboard flags
 restored on quit, Ctrl-C, SIGTERM/SIGHUP or a panic.
 
 **The world** (`src/world/`). 64 m chunks, 4×4-chunk regions. Terrain, biomes and scatter
-(trees, rocks, bushes, grass) are pure functions of the seed and are never stored. The
-noise and terrain exist twice (Rust and WGSL) and are tested to agree within 1e-3.
+(trees, rocks, bushes, grass, flowers, tall grass) are pure functions of the seed and are
+never stored. The noise and terrain exist twice (Rust and WGSL) and are tested to agree
+within 1e-3. Hilly biomes can step up in cliffs (ledges, sheer banded rock faces, gullies
+to climb, boulders heaped at their feet), and everything scattered gathers as in nature:
+woods with clearings, flower fields of one colour, meadows of tall grass, boulder fields,
+one kind of tree leading in each stand. See [docs/terrain.md](docs/terrain.md).
 The story layer is LLM-written: when the player comes within 2 regions of an unplanned
 region, one call plans it (name, mood, lore facts, landmarks, a settlement, characters),
 new object types are generated, and the result fades in (dithered) when ready, with a
@@ -530,11 +534,13 @@ How the acceptance criteria are covered:
 | Generation never blocks rendering or input | same test: 35+ regions and pipeline rebuilds during the walk |
 | Malicious fixtures rejected at the allowlist step | `fixtures/malicious/*`, `lang::tests::malicious_fixtures_rejected_at_allowlist` |
 | Broken fixtures repaired or rejected | `fixtures/broken/*`, `lang::tests::*`, floating placement + syntax repair in `e2e_tests` |
-| CPU/GPU parity within 1e-3 | `render::tests::gpu_parity_types_and_terrain`, `pocket selftest` |
+| CPU/GPU parity within 1e-3 | `render::tests::gpu_parity_types_and_terrain`, `cliffs_agree_on_gpu_and_cpu`, `pocket selftest` |
+| Cliffs only where there are hills; old worlds' ground unchanged; no seams | `terrain::tests` |
+| Fields, woods and boulder fields keep each biome's density; picked flowers stay picked | `world::scatter::tests`, `sim::tests::fields_woods_and_screes` |
 | Atomic flip, exact and instant undo | `WorldSnapshot::check_consistent` on every flip in `e2e_tests`; undo latency asserted |
 | `/a lighthouse on that hill` while walking | `app::tests::talk_create_undo_via_keys`, `e2e_tests` |
 | Character remembers after a restart | `e2e_tests` (reopens the file, checks the prompt and the reply) |
-| Can't walk through solids; sliding | `world::collide::tests` |
+| Can't walk through solids or up rock faces; sliding | `world::collide::tests` |
 | Terminal restored after quit / Ctrl-C / panic | verified in a pty: raw mode off, echo on, alternate screen left, cursor shown |
 | Copy a `.pocket` file → identical world that diverges independently | `e2e_tests` |
 | Constant-speed held keys with keyboard enhancement | `app::tests::held_key_moves_at_constant_speed_and_stops_on_release` |
@@ -576,6 +582,9 @@ The LLM-dependent tests use a scripted model in-process (no network).
   below its probed bottom could be clipped.
 - The terrain makes lakes and coasts, not brooks: water stops fire because no fuel
   stands in it and heat reaches about 6 m.
+- The ground is a heightfield: cliffs, but no overhangs, arches or caves (a cave would
+  be a shape set into a cliff, like a house set into a hill). Nobody climbs a rock face;
+  the way up is round it or by a gully.
 - Physics is deliberately a toy: spheres against shapes, no stacking or joints.
 - Bodies are one shape each with eight pose roles and five look sliders; gestures
   are stylised. Every body moves the same way over the ground (gait only sets how its

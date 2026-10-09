@@ -28,6 +28,8 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/rock.js"),
     include_str!("builtin/bush.js"),
     include_str!("builtin/grass.js"),
+    include_str!("builtin/flower.js"),
+    include_str!("builtin/tallgrass.js"),
     include_str!("builtin/flame.js"),
     include_str!("builtin/stick.js"),
     include_str!("builtin/stone.js"),

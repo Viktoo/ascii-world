@@ -444,7 +444,8 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
         .filter_map(|t| {
             let from = start_pos.get(&t.id).copied().or_else(|| {
                 let c = t.origin.cell?;
-                Some(Vec3::new((c.0 as f32 + 0.5) * 4.0, t.pos.y, (c.1 as f32 + 0.5) * 4.0))
+                let (x, z) = crate::world::scatter::cell_centre(c);
+                Some(Vec3::new(x, t.pos.y, z))
             })?;
             Some(Vec3::new(t.pos.x - from.x, 0.0, t.pos.z - from.z).length())
         })

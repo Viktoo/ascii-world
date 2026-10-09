@@ -21,7 +21,7 @@ struct Globals {
   grid1: vec4u,       // cells x, cells z, point lights, -
   probe: vec4u,       // count, mode (0 = type, 1 = terrain), type id, -
   hmap: vec4f,        // heightmap origin x, origin z, cell size, cells per side (0 = none)
-  biomes: array<vec4f, 18>, // per biome: (cx, cy, base, amp), (rough, g1), (g2, -)
+  biomes: array<vec4f, 18>, // per biome: (cx, cy, base, amp), (rough, g1), (g2, cliffs)
   lights: array<vec4f, 8>,     // point lights: position, intensity
   light_cols: array<vec4f, 8>, // colour, reach (m)
   extra: vec4u,       // hollows, roads, -, -
@@ -154,7 +154,7 @@ fn terrain_weights(x: f32, z: f32) -> Weights {
 }
 
 fn terrain_height_w(x: f32, z: f32, wt: Weights) -> f32 {
-  var base = 0.0; var amp = 0.0; var rough = 0.0;
+  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
     if (i < G.seed.y) {
       let b0 = G.biomes[i * 3u];
@@ -162,12 +162,33 @@ fn terrain_height_w(x: f32, z: f32, wt: Weights) -> f32 {
       base = base + wt.w[i] * b0.z;
       amp = amp + wt.w[i] * b0.w;
       rough = rough + wt.w[i] * b1.x;
+      cl = cl + wt.w[i] * G.biomes[i * 3u + 2u].w;
     }
   }
   let s = G.seed.x;
   let n = fbm2(x * 0.0045 + G.toff1.x, z * 0.0045 + G.toff1.y, s + 101u, 5u);
   let r = ridged2(x * 0.0032 + G.toff1.y, z * 0.0032 + G.toff1.x, s + 202u, 3u);
-  return base + amp * nlerp(n, r * 2.0 - 0.6, rough);
+  return cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp);
+}
+
+const CLIFF_FACE: f32 = 0.12;
+const CLIFF_TILT: f32 = 0.2;
+
+// Ledges and rock faces where the land has cliffs. Twin of Terrain::cliff
+// in terrain.rs (see there for how it works); keep the operation order.
+fn cliff_h(x: f32, z: f32, h: f32, cl: f32, amp: f32) -> f32 {
+  if (cl < 0.01) { return h; }
+  let s = G.seed.x;
+  let k = sstep(1.0 - cl, 1.3 - cl, vnoise2(x * 0.004, z * 0.004, s + 404u)) * sstep(3.0, 12.0, amp);
+  if (k <= 0.0) { return h; }
+  let st = 5.0 + 7.0 * vnoise2(x * 0.0023, z * 0.0023, s + 405u);
+  let j = (0.3 * vnoise2(x * 0.02, z * 0.02, s + 406u) + 0.08 * vnoise2(x * 0.12, z * 0.12, s + 408u)) * sstep(4.0, 20.0, amp);
+  let w = nlerp(CLIFF_FACE, 1.0, sstep(0.6, 0.75, vnoise2(x * 0.03, z * 0.03, s + 407u)));
+  let wf = min(w * (0.55 + 0.9 * vnoise2(x * 0.2, z * 0.2, s + 409u)), 1.0);
+  let q = h / st + j;
+  let t = q - floor(q);
+  let g = CLIFF_TILT * t + (1.0 - CLIFF_TILT) * sstep(1.0 - wf, 1.0, t);
+  return h + k * (g - t) * st;
 }
 
 const HOLLOW_EDGE: f32 = 0.35;
@@ -209,7 +230,7 @@ fn terrain_height(x: f32, z: f32) -> f32 {
 // out (blended, so nothing pops). Collision, placement and parity use the
 // full terrain_height.
 // Bilinear lookup in the camera-centred heightmap (rendering only).
-fn hmap_height(x: f32, z: f32, ok: ptr<function, bool>) -> f32 {
+fn hmap_height(x: f32, z: f32, ok: ptr<function, bool>, steep: ptr<function, bool>) -> f32 {
   let n = G.hmap.w;
   let gx = (x - G.hmap.x) / G.hmap.z;
   let gz = (z - G.hmap.y) / G.hmap.z;
@@ -221,8 +242,15 @@ fn hmap_height(x: f32, z: f32, ok: ptr<function, bool>) -> f32 {
   let a = hmap[i0]; let b = hmap[i0 + 1u];
   let c = hmap[i0 + ni]; let d = hmap[i0 + ni + 1u];
   *ok = true;
+  // A cell this steep (a rock face) is too coarse to draw from up close.
+  *steep = max(max(a, b), max(c, d)) - min(min(a, b), min(c, d)) > HMAP_STEEP;
   return mix(mix(a, b, fx), mix(c, d, fx), fz);
 }
+
+// Rise across one heightmap cell beyond which, within HMAP_EXACT metres,
+// the exact height is used instead (sheer faces stay sharp).
+const HMAP_STEEP: f32 = 1.2;
+const HMAP_EXACT: f32 = 80.0;
 
 fn terrain_height_lod(x: f32, z: f32, t: f32) -> f32 {
   let h = terrain_height_lod_raw(x, z, t);
@@ -233,13 +261,14 @@ fn terrain_height_lod(x: f32, z: f32, t: f32) -> f32 {
 fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   if (t > 12.0) {
     var ok = false;
-    let h = hmap_height(x, z, &ok);
-    if (ok) { return h; }
+    var steep = false;
+    let h = hmap_height(x, z, &ok, &steep);
+    if (ok && (!steep || t > HMAP_EXACT)) { return h; }
   }
   let fine = 1.0 - clamp((t - 35.0) / 40.0, 0.0, 1.0);
   if (fine >= 1.0) { return terrain_height(x, z); }
   let wt = terrain_weights(x, z);
-  var base = 0.0; var amp = 0.0; var rough = 0.0;
+  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
     if (i < G.seed.y) {
       let b0 = G.biomes[i * 3u];
@@ -247,6 +276,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
       base = base + wt.w[i] * b0.z;
       amp = amp + wt.w[i] * b0.w;
       rough = rough + wt.w[i] * b1.x;
+      cl = cl + wt.w[i] * G.biomes[i * 3u + 2u].w;
     }
   }
   let s = G.seed.x;
@@ -267,7 +297,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   if (rough > 0.02) {
     r = ridged2(x * 0.0032, z * 0.0032, s + 202u, select(3u, 2u, fine <= 0.0));
   }
-  return base + amp * nlerp(n, r * 2.0 - 0.6, rough);
+  return cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp);
 }
 
 fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -289,7 +319,9 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
     }
   }
   let steep = sstep(0.82, 0.68, ny);
-  c = mix(c, G.rock.xyz * (0.85 + 0.3 * v), steep);
+  let strata = sstep(0.3, 0.7, vnoise2(h * 0.9, (x + z) * 0.015, s + 305u));
+  let bed = G.rock.xyz * (0.55 + 0.25 * v + 0.45 * strata);
+  c = mix(c, bed * vec3f(1.0 + 0.1 * strata, 1.0, 1.0 - 0.1 * strata), steep);
   let beach = sstep(G.water.w + 1.4, G.water.w + 0.3, h);
   c = mix(c, G.sand.xyz, beach);
   let snowy = sstep(46.0, 56.0, h + v * 6.0) * sstep(0.6, 0.8, ny);

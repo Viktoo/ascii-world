@@ -1415,6 +1415,178 @@ fn render_day_scene_png() {
     std::fs::write(&out, crate::png::encode(f.width * sc, f.height * sc, &rgb)).unwrap();
 }
 
+/// A land of cliffs, groves and flower fields, as pictures: a map from above
+/// (hill-shaded, rock faces dark, each scattered thing a dot in its kind's
+/// colour) and first-person views at a cliff and in a meadow. Writes PNGs
+/// to POCKET_PNG_OUT (a directory; the temp dir by default).
+#[test]
+#[ignore]
+fn land_pictures() {
+    let look = crate::world::Look { name: "Crags".into(), biomes: crate::terrain::default_biomes(), ..Default::default() };
+    land_pictures_of("land", look);
+    // Canyon country, as a world might ask for it: cliffs wherever it has hills.
+    let mut biomes = crate::terrain::default_biomes();
+    for b in &mut biomes {
+        (b.amp, b.rough, b.cliffs) = (b.amp.max(30.0), b.rough.max(0.4), 0.9);
+        b.ground = [176, 120, 82];
+        b.ground2 = [196, 150, 100];
+    }
+    let mut look = crate::world::Look { name: "Red Canyons".into(), biomes, ..Default::default() };
+    look.palette.rock = [168, 92, 62];
+    land_pictures_of("canyon", look);
+}
+
+fn land_pictures_of(name: &str, look: crate::world::Look) {
+    let dir = std::env::var("POCKET_PNG_OUT").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+    let w = world_with(name, 7, look);
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    let t = &snap.terrain;
+    let mut cache = crate::world::scatter::ScatterCache::default();
+
+    // The map: 2 km square around the spawn, 1 px per 2 m.
+    let draw_map = |cache: &mut crate::world::scatter::ScatterCache, centre: Vec3, cell: f32, n: usize, file: &str| {
+        let (ox, oz) = (centre.x - n as f32 * cell * 0.5, centre.z - n as f32 * cell * 0.5);
+        let mut img = vec![0u8; n * n * 3];
+        let pal = &snap.look.palette;
+        for j in 0..n {
+            for i in 0..n {
+                let (x, z) = (ox + i as f32 * cell, oz + j as f32 * cell);
+                let h = t.height(x, z);
+                let nn = t.normal(x, z);
+                let c = if h < WATER_LEVEL { crate::terrain::rgbv(pal.water) } else { t.ground_color(pal, x, z, h, nn.y) };
+                let shade = (nn.dot(Vec3::new(-0.5, 0.75, -0.45).normalize()) * 0.75 + 0.35).clamp(0.2, 1.3);
+                let c = (c * shade).clamp(Vec3::ZERO, Vec3::ONE);
+                let k = (j * n + i) * 3;
+                img[k..k + 3].copy_from_slice(&[(c.x * 255.0) as u8, (c.y * 255.0) as u8, (c.z * 255.0) as u8]);
+            }
+        }
+        let lo = crate::world::chunk_of(ox, oz);
+        let hi = crate::world::chunk_of(ox + n as f32 * cell, oz + n as f32 * cell);
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for cz in lo.1..=hi.1 {
+            for cx in lo.0..=hi.0 {
+                for it in cache.get(&snap, (cx, cz)).iter() {
+                    let Some(ty) = snap.type_of(it.inst.info[0]) else { continue };
+                    let tag = ["flower", "tallgrass", "tree", "pine", "bush", "rock", "grass", "stone", "stick", "mushroom"].into_iter().find(|g| ty.has_tag(g)).unwrap_or("other");
+                    *counts.entry(tag.to_string()).or_default() += 1;
+                    let col: [u8; 3] = match tag {
+                        "flower" => [235, 60, 200],
+                        "tallgrass" => [230, 205, 90],
+                        "tree" => [20, 70, 20],
+                        "pine" => [10, 45, 35],
+                        "bush" => [90, 140, 40],
+                        "rock" => [245, 245, 245],
+                        _ => continue,
+                    };
+                    let p = it.inst.pos();
+                    let (pi, pj) = (((p.x - ox) / cell) as i64, ((p.z - oz) / cell) as i64);
+                    let r = ((it.inst.radius() * 0.5 / cell) as i64).clamp(0, 6);
+                    for dj in -r..=r {
+                        for di in -r..=r {
+                            let (a, b) = (pi + di, pj + dj);
+                            if a >= 0 && b >= 0 && (a as usize) < n && (b as usize) < n {
+                                let k = (b as usize * n + a as usize) * 3;
+                                img[k..k + 3].copy_from_slice(&col);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::fs::write(dir.join(format!("pocket-{name}-{file}.png")), crate::png::encode(n as u32, n as u32, &img)).unwrap();
+        counts
+    };
+    let cell: f32 = 2.0;
+    let n = 1024usize;
+    let (ox, oz) = (w.spawn.x - n as f32 * cell * 0.5, w.spawn.z - n as f32 * cell * 0.5);
+    let counts = draw_map(&mut cache, w.spawn, cell, n, "map");
+    eprintln!("scatter on the map: {counts:?}");
+
+    // Where to stand: facing the tallest sheer face near the spawn, and in
+    // the thickest flower field.
+    let mut face: Option<(f32, Vec3, Vec3)> = None;
+    let mut field: Option<(usize, Vec3)> = None;
+    let mut meadow: Option<(usize, Vec3)> = None;
+    for j in (0..n).step_by(4) {
+        for i in (0..n).step_by(4) {
+            let (x, z) = (ox + i as f32 * cell, oz + j as f32 * cell);
+            let nn = t.normal(x, z);
+            if nn.y < 0.45 && t.height(x, z) > WATER_LEVEL + 3.0 {
+                let away = Vec3::new(nn.x, 0.0, nn.z).normalize_or_zero();
+                let stand = Vec3::new(x, 0.0, z) + away * 22.0;
+                let eye = t.height(stand.x, stand.z) + 1.65;
+                let top = t.height(x - away.x * 4.0, z - away.z * 4.0);
+                // In plain view: nothing between the eye and the face's foot.
+                let foot = t.height(x + away.x * 2.0, z + away.z * 2.0);
+                let seen = (1..10).all(|s| {
+                    let f = s as f32 / 10.0;
+                    let q = stand.lerp(Vec3::new(x, 0.0, z), f);
+                    t.height(q.x, q.z) < eye + (foot - eye) * f + 0.3
+                });
+                // Lit: facing the morning sun.
+                let sun = crate::render::sky::lighting(crate::render::sky::DAY_SECONDS * 0.42, &snap.look.palette).sun_dir;
+                let drop = (top - eye) * (0.2 + nn.dot(sun).max(0.0));
+                let clear = !cache.items_near(&snap, stand, 3.0).iter().any(|it| it.solid);
+                if seen && clear && t.height(stand.x, stand.z) > WATER_LEVEL + 0.5 && face.is_none_or(|f| drop > f.0) {
+                    face = Some((drop, stand, Vec3::new(x, 0.0, z)));
+                }
+            }
+            let p = Vec3::new(x, 0.0, z);
+            let near = cache.items_near(&snap, p, 10.0).iter().filter(|it| snap.type_of(it.inst.info[0]).is_some_and(|ty| ty.has_tag("flower"))).count();
+            if near > field.map(|f| f.0).unwrap_or(0) && t.height(x, z) > WATER_LEVEL + 0.5 {
+                field = Some((near, p));
+            }
+            let tall = cache.items_near(&snap, p, 10.0).iter().filter(|it| snap.type_of(it.inst.info[0]).is_some_and(|ty| ty.has_tag("tallgrass"))).count();
+            if tall > meadow.map(|f| f.0).unwrap_or(0) && t.height(x, z) > WATER_LEVEL + 0.5 {
+                meadow = Some((tall, p));
+            }
+        }
+    }
+    let mut views: Vec<(&str, Vec3, f32, f32)> = Vec::new();
+    if let Some((drop, stand, at)) = face {
+        eprintln!("cliff: {drop:.1} m of rise, seen from {stand}");
+        let d = at - stand;
+        views.push(("cliff", stand, d.x.atan2(d.z), 0.22));
+        draw_map(&mut cache, at, 0.5, 512, "cliff-map");
+    }
+    if let Some((k, p)) = field {
+        eprintln!("flower field: {k} clumps within 10 m of {p}");
+        views.push(("flowers", p - Vec3::new(0.0, 0.0, 12.0), 0.0, -0.1));
+    }
+    if let Some((k, p)) = meadow {
+        eprintln!("tall grass: {k} sheaves within 10 m of {p}");
+        views.push(("tallgrass", p - Vec3::new(0.0, 0.0, 8.0), 0.0, -0.08));
+    }
+    let mut handle = match &gpu {
+        Some(g) => crate::render::gpu::spawn(g.clone()),
+        None => crate::render::cpu::spawn(),
+    };
+    for (i, (view, p, yaw, pitch)) in views.into_iter().enumerate() {
+        let cam = crate::render::Camera { pos: Vec3::new(p.x, t.height(p.x, p.z) + 1.65, p.z), yaw, pitch, fov_y: 1.05, roll: 0.0 };
+        let (pw, ph) = (320u32, 180u32);
+        let culled = crate::world::cull::cull(&snap, &mut cache, &cam, pw as f32 / ph as f32, &[], &Default::default());
+        eprintln!("{name} {view}: {} things drawn (at most {})", culled.insts.len(), crate::world::cull::MAX_VISIBLE);
+        let light = crate::render::sky::lighting(crate::render::sky::DAY_SECONDS * 0.42, &snap.look.palette);
+        let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &[], weather: Default::default() };
+        let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+        let req = crate::render::FrameRequest { id: i as u64 + 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+        handle.tx.send(crate::render::RenderMsg::Frame(Box::new(req))).unwrap();
+        let f = handle.rx.recv_timeout(std::time::Duration::from_secs(300)).unwrap();
+        let sc = 3u32;
+        let mut rgb = Vec::new();
+        for y in 0..f.height * sc {
+            for x in 0..f.width * sc {
+                rgb.extend_from_slice(&crate::render::unpack(f.pixels[((y / sc) * f.width + x / sc) as usize]));
+            }
+        }
+        std::fs::write(dir.join(format!("pocket-{name}-{view}.png")), crate::png::encode(f.width * sc, f.height * sc, &rgb)).unwrap();
+    }
+    handle.shutdown();
+}
+
 /// Through the brain with a scripted LLM: genesis brings the universe's own
 /// properties and rules, characters overhear each other, and spawn() of a
 /// name nobody has written yet gets it written.
@@ -1525,6 +1697,96 @@ fn eaten_plants_stay_gone_then_grow_back() {
     s.sim.t += crate::render::sky::DAY_SECONDS * 1.1;
     s.run(1.5, 0.1);
     assert!(s.sim.cache.overlay.shows(it.cell), "grown back");
+}
+
+/// The land gathers as in nature: a field's flowers fill its cells' quarters
+/// (each one its own, to pick or eat), sticks lie under trees, and boulders
+/// heap at the foot of cliffs.
+#[test]
+fn fields_woods_and_screes() {
+    use crate::world::scatter::{parent_cell, sub_cell};
+    let look = crate::world::Look { name: "Crags".into(), biomes: crate::terrain::default_biomes(), ..Default::default() };
+    let w = world_with("gather", 7, look);
+    let mut s = session(&w, 18, None);
+    let snap = s.sim.snap.clone();
+    let t = snap.terrain.clone();
+    let c0 = crate::world::chunk_of(w.spawn.x, w.spawn.z);
+    let mut items = Vec::new();
+    for dz in -8..=8 {
+        for dx in -8..=8 {
+            items.extend(s.sim.cache.get(&snap, (c0.0 + dx, c0.1 + dz)).iter().cloned());
+        }
+    }
+    let has = |it: &crate::world::scatter::ScatterItem, tag: &str| snap.type_of(it.inst.info[0]).is_some_and(|ty| ty.has_tag(tag));
+
+    // A field's quarters: each found by its own name, picked on its own.
+    let quarter = items.iter().find(|it| parent_cell(it.cell) != it.cell && has(it, "flower")).expect("a flower field fills quarters").clone();
+    let home = parent_cell(quarter.cell);
+    assert!((1..=3).any(|q| sub_cell(home, q) == quarter.cell));
+    assert_eq!(s.sim.cache.item_at(&snap, quarter.cell).map(|it| it.inst.pos()), Some(quarter.inst.pos()));
+    let id = s.sim.promote_cell(quarter.cell).expect("picked");
+    assert!(!s.sim.cache.overlay.shows(quarter.cell));
+    assert!(s.sim.cache.overlay.shows(home), "its cell's own flower stays");
+    assert_eq!(s.sim.things.get(id).map(|th| th.pos), Some(quarter.inst.pos()));
+
+    // Sticks lie under trees: nearer a tree than the land on average.
+    let trees: Vec<Vec3> = items.iter().filter(|it| has(it, "tree") || has(it, "pine")).map(|it| it.inst.pos()).collect();
+    let nearest = |p: Vec3| trees.iter().map(|q| Vec3::new(q.x - p.x, 0.0, q.z - p.z).length()).fold(f32::MAX, f32::min);
+    let sticks: Vec<f32> = items.iter().filter(|it| has(it, "stick")).map(|it| nearest(it.inst.pos())).collect();
+    let land: Vec<f32> = items.iter().filter(|it| has(it, "grass")).map(|it| nearest(it.inst.pos())).collect();
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+    eprintln!("nearest tree: from a stick {:.1} m, from the land {:.1} m ({} sticks)", mean(&sticks), mean(&land), sticks.len());
+    assert!(sticks.len() > 50 && mean(&sticks) < mean(&land) * 0.8, "sticks under trees");
+
+    // Boulders at the foot of cliffs: far more often than the land is a foot.
+    let rocks: Vec<Vec3> = items.iter().filter(|it| has(it, "rock")).map(|it| it.inst.pos()).collect();
+    let at_foot = |p: &Vec3| t.height_and_foot(p.x, p.z).1 > 0.3;
+    let rock_share = rocks.iter().filter(|p| at_foot(p)).count() as f32 / rocks.len().max(1) as f32;
+    let land_share = items.iter().filter(|it| has(it, "grass")).filter(|it| at_foot(&it.inst.pos())).count() as f32 / land.len().max(1) as f32;
+    eprintln!("at a cliff's foot: {:.1}% of boulders, {:.1}% of the land", rock_share * 100.0, land_share * 100.0);
+    assert!(land_share > 0.0 && rock_share > land_share * 2.0, "boulders heap under cliffs");
+}
+
+/// Looking at a rock face, the world calls it a cliff (what "a cave in that
+/// cliff" or a character's sense of the place goes by).
+#[test]
+fn a_rock_face_is_seen_as_a_cliff() {
+    let mut biomes = crate::terrain::default_biomes();
+    for b in &mut biomes {
+        (b.amp, b.rough, b.cliffs) = (30.0, 0.5, 1.0);
+    }
+    let w = world_with("cliffseen", 9, crate::world::Look { name: "Crags".into(), biomes, ..Default::default() });
+    let s = session(&w, 18, None);
+    let snap = s.sim.snap.clone();
+    let t = &snap.terrain;
+    let mut cache = crate::world::scatter::ScatterCache::default();
+    let mut looked = 0;
+    let mut cliffs = 0;
+    for j in 0..200 {
+        for i in 0..200 {
+            let (x, z) = (w.spawn.x + i as f32 * 3.0 - 300.0, w.spawn.z + j as f32 * 3.0 - 300.0);
+            let n = t.normal(x, z);
+            if n.y > 0.3 || t.height(x, z) < WATER_LEVEL + 3.0 {
+                continue;
+            }
+            // From 8 m out, eye level with the middle of the face.
+            let away = Vec3::new(n.x, 0.0, n.z).normalize();
+            let at = Vec3::new(x, t.height(x, z), z);
+            let eye = at + away * 8.0;
+            let to = at - eye;
+            let cam = crate::render::Camera { pos: eye, yaw: to.x.atan2(to.z), pitch: (to.y / Vec3::new(to.x, 0.0, to.z).length()).atan(), fov_y: 1.0, roll: 0.0 };
+            let view = crate::world::describe::describe(&snap, &mut cache, &[], &cam, 1.6, 0.0);
+            if let Some(tg) = view.target.filter(|tg| tg.object.is_none()) {
+                looked += 1;
+                cliffs += (tg.terrain == "cliff") as usize;
+            }
+            if looked == 30 {
+                break;
+            }
+        }
+    }
+    assert!(looked >= 10, "faces looked at: {looked}");
+    assert!(cliffs as f32 >= looked as f32 * 0.7, "{cliffs} of {looked} seen as cliffs");
 }
 
 /// A gesture nobody knew: the LLM writes its key poses once; it is kept and
@@ -2068,10 +2330,25 @@ fn a_dog_follows_and_fetches_and_a_wary_cat_keeps_its_distance() {
     // Ola walks off; Rex goes with her.
     let far = dry_spot(&w, 34.0, 0.9);
     s.sim.act(o, Action::Goto { target: Target::Point(far.to_array()), run: false }).unwrap();
-    s.run(40.0, 0.1);
-    let (op, rp) = (s.sim.actor(o).unwrap().pos, s.sim.actor(r).unwrap().pos);
+    // Watch them go: Rex keeps up on the way and is with her when she gets
+    // there (after that he may wander off and sniff about).
+    let (mut kept, mut seen, mut on_arrival) = (0, 0, None);
+    for k in 0..80 {
+        s.run(0.5, 0.1);
+        let (op, rp) = (s.sim.actor(o).unwrap().pos, s.sim.actor(r).unwrap().pos);
+        if on_arrival.is_none() && (op - far).length() < 3.0 {
+            on_arrival = Some((op - rp).length());
+        }
+        if k >= 20 && on_arrival.is_none() {
+            seen += 1;
+            kept += ((op - rp).length() < 6.0) as usize;
+        }
+    }
+    let op = s.sim.actor(o).unwrap().pos;
     assert!((op - far).length() < 3.0, "Ola got there");
-    assert!((op - rp).length() < 6.0, "Rex stayed with Ola ({:.1} m): {:?}", (op - rp).length(), s.sim.cast.get(rex).unwrap().decisions);
+    let d = on_arrival.expect("Ola got there");
+    assert!(d < 6.0, "Rex was with Ola when she got there ({d:.1} m): {:?}", s.sim.cast.get(rex).unwrap().decisions);
+    assert!(kept as f32 >= seen as f32 * 0.8, "Rex kept up on the way ({kept} of {seen})");
     assert!(events(&s.sim, "gesture").iter().any(|e| e.actor == Some(r) && e.data["kind"] == "wag"), "Rex wagged on meeting her");
     // Ola throws a stick; Rex brings it back to her.
     let stick = s.sim.type_by_name("stick").unwrap().id;
@@ -2877,7 +3154,9 @@ fn families_grow_and_a_fed_wolf_line_turns_tame() {
     // A fed line drifts tame, generation by generation, and gets a name.
     let tames: Vec<f32> = of(&all, "born").iter().map(|e| e.data["tame"].as_f64().unwrap_or(0.0) as f32).collect();
     let base = s.sim.snap.species.get("wolf").unwrap().temper.tame;
-    let last = tames.iter().rev().take(2).sum::<f32>() / 2.0;
+    // The latest third of the young (the last two alone swing with chance).
+    let k = (tames.len() / 3).max(2);
+    let last = tames.iter().rev().take(k).sum::<f32>() / k as f32;
     assert!(last > base + 0.08, "later young are tamer ({base:.2} → {last:.2}): {tames:?}");
     let named = of(&all, "new_variety");
     assert!(!named.is_empty() || !of(&all, "new_species").is_empty(), "the line got its own name: {:?}", tames);
@@ -4595,3 +4874,5 @@ export function color(x, y, z, k) { return rgb(120, 90, 60); }"#);
     assert!(s.sim.just_to_pick_up(&Target::Thing(r)));
     assert!(!s.sim.just_to_pick_up(&Target::Thing(l)), "too heavy");
 }
+
+

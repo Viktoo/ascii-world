@@ -119,6 +119,10 @@ fn terrain_kind(snap: &WorldSnapshot, p: Vec3) -> &'static str {
     if p.y < WATER_LEVEL + 0.05 {
         return "water";
     }
+    // A rock face (steeper than anyone climbs).
+    if t.normal(p.x, p.z).y < (1.0 / (1.0 + crate::world::collide::MAX_CLIMB * crate::world::collide::MAX_CLIMB)).sqrt() {
+        return "cliff";
+    }
     let mut avg = 0.0;
     for i in 0..12 {
         let a = i as f32 / 12.0 * std::f32::consts::TAU;

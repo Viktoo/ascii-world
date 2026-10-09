@@ -253,6 +253,9 @@ fn inst_normal(idx: u32, p: vec3f, t: f32) -> vec3f {
                  + k3 * inst_sdf(idx, p + k3 * e) + k4 * inst_sdf(idx, p + k4 * e));
 }
 
+// Shadow rays read the heightmap, but exact heights on steep cells (below HMAP_EXACT).
+const SHADOW_LOD: f32 = 40.0;
+
 fn soft_shadow(ro: vec3f, rd: vec3f) -> f32 {
   let tmax = 24.0;
   gather(ro, rd, tmax);
@@ -260,8 +263,10 @@ fn soft_shadow(ro: vec3f, rd: vec3f) -> f32 {
   var t = 0.08;
   for (var i = 0; i < 28; i = i + 1) {
     let p = ro + rd * t;
-    // Coarse terrain is plenty for a short soft shadow.
-    let m = map_ray(p, t, 1000.0, 1.0);
+    // Coarse terrain is plenty for a short soft shadow, except on a rock
+    // face: there a heightmap cell spans the wall and would put the start
+    // of the ray inside it (black blots along the foot of every cliff).
+    let m = map_ray(p, t, SHADOW_LOD, 1.0);
     res = min(res, 10.0 * m.z / t);
     if (res < 0.02) { return 0.0; }
     t = t + clamp(m.x, 0.08 + 0.04 * t, 3.0);

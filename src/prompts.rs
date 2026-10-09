@@ -86,7 +86,7 @@ export function touch(s, w, k) { if (w.impact > 6) { w.health = w.health - 0.5; 
 - Results must be finite everywhere in and around the bounds: guard divisions and sqrt of possibly negative values.
 - Keep the distance field well-behaved: when adding noise to a shape, keep the amplitude small (< 0.3 m) and multiply the result by ~0.8.
 - sdf may use at most ~8000 operations per call; prefer a few primitives and short loops.
-- Tags: use lower-case words. "building", "landmark", "tree", "rock", "bush", "grass", "flower", "prop" … Add "nonsolid" for things the player can walk through. Add "water" for things meant to stand in water.
+- Tags: use lower-case words. "building", "landmark", "tree", "rock", "bush", "grass", "flower", "tallgrass", "prop" … Add "nonsolid" for things the player can walk through. Add "water" for things meant to stand in water.
 
 ## Parts, insides and tools (optional meta)
 Bodies walk on what you draw: floors, stairs, ramps, roofs and ledges are real. A body steps up anything lower than about a quarter of its height (a person: 0.4 m; a stair is 0.15–0.25 m), jumps about half its height, crouches to about 60% of it, and walks through any gap wider than about 0.8 m and taller than it is. So:
@@ -129,13 +129,15 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
     "rock": [r,g,b], "snow": [r,g,b], "sand": [r,g,b], "fog": 1.0
   },
   "biomes": [
-    { "name": "…", "base": 4, "amp": 12, "rough": 0.2, "ground": [r,g,b], "ground2": [r,g,b],
-      "scatter": { "tree": 0.3, "bush": 0.5, "rock": 0.2, "grass": 2.0 } }
+    { "name": "…", "base": 4, "amp": 12, "rough": 0.2, "cliffs": 0, "ground": [r,g,b], "ground2": [r,g,b],
+      "scatter": { "tree": 0.3, "bush": 0.5, "rock": 0.2, "grass": 2.0, "flower": 0.6 }, "clump": { "tree": 0.7 } }
   ]
 }
 - land and start: the description above may name one place or one event; the world is far larger. "land" widens it into a whole country with room for many different places (other villages, wild country, neighbours who live differently): its geography, peoples, ways of life and any strangeness. "start" keeps the particular place and situation the description names (the vanished keeper, the wedding), or "" if it names none. Every region is planned from "land"; only the traveler's first region from "start".
 - 3 to 6 biomes. base = mean ground height in metres (-10..30; below 0 makes lakes and coast), amp = hill height in metres (2..50; keep towns, cities and farmland at 2..6 so buildings stand on level ground, and save big hills for wild land), rough 0 (rolling) .. 1 (craggy), ground/ground2 = two ground colours that blend.
-- scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3). Use the tags of your base types below; "grass" tufts already exist.
+- cliffs 0..1 = how much of the biome's relief stands as cliffs: the land steps up in ledges with sheer rock faces between (in the palette's rock colour, banded in beds), and here and there a steep gully to climb. 0 = rolling land; 0.3 = the odd crag; 0.7 = canyon, mesa, gorge or fjord country; 1 = cliffs wherever there are hills. Faces only stand where the land has relief, so give cliffs with amp 15 or more (and rough for jagged crags). Keep 0 where people live and farm. Boulders and stones gather at the foot of cliffs by themselves.
+- scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3, flowers 0.2–1.5, tall grass 0.3–2). Use the tags of your base types below; "grass" tufts, "flower" (wildflowers) and "tallgrass" already exist, and your own types of a tag take its place.
+- clump (optional) = how strongly a tag grows in patches, 0 (spread evenly) .. 1 (only in patches, with bare ground between). Without it things gather as in nature: trees 0.6 (woods with clearings and lone trees between), pines 0.45, flowers 0.9 (fields of one colour), tall grass 0.85 (meadows), bushes 0.5, rocks 0.55 (boulder fields). Set it when the land calls for it: a savanna's lone trees 0, an even jungle 0.2, orchard groves 0.9.
 - fog: 1 = clear air, up to 3 = misty.
 
 Also in the same JSON object, the land's weather: 2 to 6 kinds it has, each with how often it comes and how long a spell lasts. Fit them to the land (a desert: fair, haze, the odd sandstorm; a coast: fair, sea fog, squalls; a fae wood: soft sun, glimmer rain; a dead land: grey, ash fall), and let at least one kind make sunsets worth seeing (some cloud, not all of it):
@@ -173,7 +175,7 @@ Optionally, the universe's peoples and beasts beyond plain humans (people always
 - optional "voice": how each of "sounds" sounds, one entry per sound in the same order, each a list of 1–4 parts played in turn: { "kind": "voice" (a throat: calls, growls, groans; "breath": 1 for breathing), "whistle" (a pure tone: birdsong, hoots, insects), "noise" (hiss, rustle, splash) or "knock" (clicks, taps, clatter), "hz": its pitch, or [start, middle, end] for a glide, "len": seconds, "times": repeats, "gap": seconds between repeats, "vowel": the mouth's shape, one to three of a e i o u m n (glided through), and 0–1 sliders "rough" (growl, rasp), "breath" (airy), "nasal" (horn, trunk, whine), "wobble" (vibrato), "swell" (slow start), "loud" }. Think what makes the sound, then use real pitches (a cat's meow about 500–800 Hz rising then falling, a wolf's howl 300–600 Hz, a crow's caw about 1500 Hz and rough, an elephant's rumble 15–30 Hz, a cricket 4–5 kHz chirps of 3–4 pulses). Each one is scaled to its own size by the game.
 - attitudes: how peoples start out feeling about each other (-0.8..0.8); only the start, people's own history takes over. sizes: multiply a species everywhere ("everyone is a giant": "human": 1.8). traveler_height: the player's own height in metres (only if the world says they are small or big).
 
-2. Then 4 to 8 base object types, each in its own ```js block, following the module rules exactly. These are scattered across the land by the scatter densities (trees, rocks, bushes, flowers, reeds…), so each must be small to medium (bounds under ~8 m) and varied per instance with hash(k.seed). Give each the scatter tag it fills (e.g. "tree", "rock", "bush", "flower") and fitting meta.props (trees and grass burn and are alive).
+2. Then 4 to 8 base object types, each in its own ```js block, following the module rules exactly. These are scattered across the land by the scatter densities (trees, rocks, bushes, flowers, reeds…), so each must be small to medium (bounds under ~8 m) and varied per instance with hash(k.seed). Things of one patch or stand share k.a (0..1): use it for what a whole stand has in common (a flower field's colour, a grove's autumn tint, a reed bed's ripeness), and hash(k.seed) for each one's own variety; k.b is how deep in its patch it stands (0 at the edge .. 1 in the heart). Make flowers and tall grass a clump (several stems, 0.5–1.2 m across) so a field reads as a field. Give each the scatter tag it fills (e.g. "tree", "rock", "bush", "flower", "tallgrass") and fitting meta.props (trees and grass burn and are alive).
 "#;
 
 pub const REGION_TASK: &str = r#"Plan the story layer of one region (256 m × 256 m). Reply with one ```json block:

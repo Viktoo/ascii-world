@@ -424,7 +424,7 @@ impl App {
                     let shade = (0.55 + 0.55 * n.dot(sun).max(0.0)).min(1.15) * 0.85;
                     let color = [c.x, c.y, c.z].map(|v| (v * shade * 255.0).clamp(0.0, 255.0) as u8);
                     let b = &terrain.biomes[terrain.biome_at(q.x, q.z)];
-                    let density: f32 = b.scatter.iter().filter(|(k, _)| ["tree", "pine", "palm"].iter().any(|t| k.contains(t))).map(|(_, d)| d).sum();
+                    let density = crate::world::scatter::trees_at(&terrain, b, q.x, q.z);
                     cells.push(Ground { h, color, steep: n.y < 0.8, trees: density * sx * sz / 100.0 });
                 }
             }
