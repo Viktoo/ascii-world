@@ -61,10 +61,10 @@ impl Sim {
         if other.is_some() {
             ctx_set(&mut ctx, "on", 1.0);
         }
-        let mut k = [0.0f32; 16];
+        let mut k = [0.0f32; 17];
         k[..8].copy_from_slice(&t.params);
         k[1] = t.scale;
-        k[8..].copy_from_slice(&t.state);
+        k[8..16].copy_from_slice(&t.state);
         let mut state = t.state;
         let mut effects = Vec::new();
         let r = ty.ct.run_behavior(b, BehaviorIo { k: &k, state: &mut state, ctx: &ctx, props: &mut props, other: &mut oprops, effects: &mut effects }, BEHAVIOR_FUEL);

@@ -738,6 +738,10 @@ impl Sim {
                 }
             }
         }
+        // The traveler's own look (their build, their colour) is kept with the world.
+        if b == ActorId::Player && !fx.look.is_empty() {
+            self.set_own_look(&fx.look);
+        }
         if let ActorId::Npc(c) = b {
             let grow = fx.grow.filter(|g| g.is_finite() && *g > 0.0 && (*g - 1.0).abs() > 0.01);
             if !fx.look.is_empty() || grow.is_some() {

@@ -13,9 +13,9 @@ pub const NPC_RUN: f32 = 3.2;
 /// How far an actor can reach to pick something up or use it.
 pub const REACH: f32 = 2.4;
 
-/// Pose roles (k.s0 … k.s7 of every body). Each body decides what a role
+/// Pose roles (k.s0 … k.s8 of every body). Each body decides what a role
 /// moves: arms on a person, paws on a dog, wings on a dragon.
-pub type Pose = [f32; 8];
+pub type Pose = [f32; 9];
 pub const L_RAISE: usize = 0;
 pub const R_RAISE: usize = 1;
 pub const L_FWD: usize = 2;
@@ -24,6 +24,8 @@ pub const LEAN: usize = 4;
 pub const NOD: usize = 5;
 pub const CROUCH: usize = 6;
 pub const SPREAD: usize = 7;
+/// The hands closing: 0 open … 1 a fist (a grip on a handle is about 0.8).
+pub const GRIP: usize = 8;
 
 /// Gestures every body knows. New kinds are written as data (pose keyframes)
 /// and registered by name: `Custom` indexes that registry.
@@ -46,6 +48,12 @@ pub enum GestureKind {
     Wag,
     /// Stroking an animal: a hand down and along, leaning in.
     Pet,
+    /// What the hands do when acting (not asked for by name): a fist
+    /// thrown, a hand reaching to take, an arm throwing, a hand laid on.
+    Punch,
+    Grab,
+    Throw,
+    Touch,
     Custom(u16),
 }
 
@@ -85,7 +93,7 @@ fn default_distance() -> f32 {
     3.0
 }
 
-pub const CHANNELS: [&str; 8] = crate::lang::ir::ROLES;
+pub const CHANNELS: [&str; 9] = crate::lang::ir::ROLES;
 
 static CUSTOM: std::sync::RwLock<Vec<CustomGesture>> = std::sync::RwLock::new(Vec::new());
 
@@ -174,6 +182,13 @@ impl GestureKind {
         })
     }
 
+    /// A gesture by its own name, including those the hands make when
+    /// acting (punch, grab, throw, touch), which `parse` leaves out.
+    pub fn named(s: &str) -> Option<GestureKind> {
+        let acting = [GestureKind::Punch, GestureKind::Grab, GestureKind::Throw, GestureKind::Touch];
+        acting.into_iter().find(|k| k.name() == s).or_else(|| GestureKind::parse(s))
+    }
+
     pub fn name(self) -> String {
         if let GestureKind::Custom(i) = self {
             return custom(i).map(|g| g.name).unwrap_or_else(|| "gesture".into());
@@ -193,6 +208,10 @@ impl GestureKind {
             GestureKind::Kiss => "kiss",
             GestureKind::Wag => "wag",
             GestureKind::Pet => "pet",
+            GestureKind::Punch => "punch",
+            GestureKind::Grab => "grab",
+            GestureKind::Throw => "throw",
+            GestureKind::Touch => "touch",
             GestureKind::Custom(_) => "gesture",
         }
         .to_string()
@@ -210,8 +229,8 @@ impl GestureKind {
     }
 
     /// Whether this gesture moves roles a body lacks (`roles` bit mask).
-    pub fn needs_roles(self, roles: u8) -> bool {
-        (0..8).any(|i| roles & (1 << i) == 0 && [0.3f32, 0.5, 0.7].iter().any(|u| self.pose(*u, 0.0)[i].abs() > 0.15))
+    pub fn needs_roles(self, roles: u16) -> bool {
+        (0..9).any(|i| roles & (1 << i) == 0 && [0.3f32, 0.5, 0.7].iter().any(|u| self.pose(*u, 0.0)[i].abs() > 0.15))
     }
 
     /// Gestures that need the other person close and willing.
@@ -254,6 +273,10 @@ impl GestureKind {
             GestureKind::Kiss => 2.2,
             GestureKind::Wag => 2.0,
             GestureKind::Pet => 2.4,
+            GestureKind::Punch => 0.45,
+            GestureKind::Grab => 0.6,
+            GestureKind::Throw => 0.6,
+            GestureKind::Touch => 0.9,
             GestureKind::Custom(_) => 2.0,
         }
     }
@@ -275,7 +298,7 @@ impl GestureKind {
     /// The pose at progress u (0..1) through the gesture. `t` is game time
     /// (for rhythmic gestures).
     pub fn pose(self, u: f32, t: f32) -> Pose {
-        let mut p = [0.0; 8];
+        let mut p = [0.0; 9];
         let ease = (u * 4.0).min(1.0).min((1.0 - u) * 4.0).max(0.0);
         match self {
             GestureKind::Custom(i) => {
@@ -295,6 +318,7 @@ impl GestureKind {
                 }
             }
             GestureKind::Wave => {
+                p[GRIP] = 0.05;
                 p[R_RAISE] = 0.85 * ease;
                 p[R_FWD] = 0.1 * ease;
                 p[LEAN] = -0.05 * ease;
@@ -308,10 +332,12 @@ impl GestureKind {
                 p[NOD] = (u * std::f32::consts::TAU * 2.0).sin().abs() * 0.9;
             }
             GestureKind::Point => {
+                p[GRIP] = 0.6;
                 p[R_FWD] = 1.0 * ease;
                 p[R_RAISE] = 0.12 * ease;
             }
             GestureKind::Cheer => {
+                p[GRIP] = 0.9;
                 p[L_RAISE] = 0.95 * ease;
                 p[R_RAISE] = 0.95 * ease;
                 p[LEAN] = -0.08 * ease;
@@ -334,6 +360,7 @@ impl GestureKind {
                 p[LEAN] = 0.15 * ease;
             }
             GestureKind::Handshake => {
+                p[GRIP] = 0.5;
                 p[R_FWD] = 0.75 * ease;
                 p[R_RAISE] = (0.05 + (t * 12.0).sin() * 0.03) * ease;
             }
@@ -363,6 +390,45 @@ impl GestureKind {
                 p[LEAN] = 0.3 * ease;
                 p[CROUCH] = 0.3 * ease;
                 p[NOD] = 0.25 * ease;
+                p[GRIP] = 0.15;
+            }
+            GestureKind::Punch => {
+                // Out fast, back slower.
+                let jab = if u < 0.35 { u / 0.35 } else { (1.0 - (u - 0.35) / 0.65).max(0.0) };
+                p[R_FWD] = jab.sqrt();
+                p[R_RAISE] = 0.1 * jab;
+                p[LEAN] = 0.12 * jab;
+                p[GRIP] = 1.0;
+            }
+            GestureKind::Grab => {
+                let s = (u * std::f32::consts::PI).sin();
+                p[R_FWD] = 0.85 * s;
+                p[LEAN] = 0.2 * s;
+                p[CROUCH] = 0.08 * s;
+                // Open on the way out, closing on what it takes.
+                p[GRIP] = if u < 0.45 { 0.0 } else { 0.7 };
+            }
+            GestureKind::Throw => {
+                // Back and up, then over and out, letting go.
+                if u < 0.4 {
+                    let k = u / 0.4;
+                    p[R_RAISE] = 0.75 * k;
+                    p[R_FWD] = 0.3 * (1.0 - k);
+                    p[LEAN] = -0.08 * k;
+                    p[GRIP] = 0.8;
+                } else {
+                    let k = ((u - 0.4) / 0.6).min(1.0);
+                    let out = (k * std::f32::consts::PI).sin();
+                    p[R_RAISE] = 0.75 * (1.0 - k).powi(2);
+                    p[R_FWD] = (0.4 + 0.6 * out) * (1.0 - k * k * 0.5) * ease.max(0.3);
+                    p[LEAN] = 0.15 * out;
+                    p[GRIP] = if k < 0.15 { 0.8 } else { 0.0 };
+                }
+            }
+            GestureKind::Touch => {
+                p[R_FWD] = 0.8 * ease;
+                p[LEAN] = 0.12 * ease;
+                p[GRIP] = 0.1;
             }
         }
         p
@@ -444,7 +510,7 @@ pub struct Actor {
     /// Species name for gestures written for it ("" for people).
     pub species: String,
     /// Roles the body answers to (bit i = k.s<i>).
-    pub roles: u8,
+    pub roles: u16,
     /// In the air (bodies that fly), this high above the ground (m).
     pub alt: f32,
     /// Sitting on another body that carries it.
@@ -472,11 +538,13 @@ pub struct Actor {
     /// What it last left the ground from, when that was something standing
     /// on the land (a roof, a tree): how high its feet were, and its name.
     pub perch: Option<(f32, String)>,
+    /// Bringing something into being (a conjuring underway): hands up and open.
+    pub conjuring: bool,
 }
 
 /// Bit mask of the roles a body lists.
-pub fn role_mask(b: &crate::lang::ir::Body) -> u8 {
-    let mut m = 0u8;
+pub fn role_mask(b: &crate::lang::ir::Body) -> u16 {
+    let mut m = 0u16;
     for (i, r) in crate::lang::ir::ROLES.iter().enumerate() {
         if b.has_role(r) {
             m |= 1 << i;
@@ -485,12 +553,12 @@ pub fn role_mask(b: &crate::lang::ir::Body) -> u8 {
     m
 }
 
-/// A person's roles: arms, lean, head, crouch (no spread).
-pub const HUMAN_ROLES: u8 = 0b0111_1111;
+/// A person's roles: arms, lean, head, crouch, grip (no spread).
+pub const HUMAN_ROLES: u16 = 0b1_0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 8], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None, jolt: None, perch: None }
+        Actor { pos, yaw, held: None, pose: [0.0; 9], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None, jolt: None, perch: None, conjuring: false }
     }
 
     /// Sitting on something that carries it (a mount, a cart).
@@ -542,7 +610,14 @@ impl Actor {
     /// grip (the right hand at rest). Bodies without arms hold it at their
     /// grip (a mouth, a claw), pushed forward a little by the reach roles.
     pub fn hand(&self, big: bool) -> Vec3 {
-        let w = if self.dims.arms && !self.dims.human_arms {
+        let w = self.hand_offset(big);
+        self.pos + self.right() * w.x + Vec3::Y * w.y + self.forward() * w.z
+    }
+
+    /// Where a held thing sits in the body's own frame (x right, y up,
+    /// z forward; metres): see `hand`.
+    pub fn hand_offset(&self, big: bool) -> Vec3 {
+        if self.dims.arms && !self.dims.human_arms {
             let r = self.grip_hand(1.0, R_RAISE, R_FWD);
             if big {
                 let m = (self.grip_hand(-1.0, L_RAISE, L_FWD) + r) * 0.5;
@@ -565,8 +640,7 @@ impl Actor {
             let fwd = self.pose[L_FWD].max(self.pose[R_FWD]).clamp(0.0, 1.0);
             let head = self.pose[NOD].clamp(0.0, 1.0);
             g + Vec3::new(0.0, -head * g.y * 0.6, fwd * self.dims.radius * 0.5)
-        };
-        self.pos + self.right() * w.x + Vec3::Y * w.y + self.forward() * w.z
+        }
     }
 
     /// Where a rider sits (world space), if this body can be ridden.
@@ -640,17 +714,28 @@ impl Actor {
 
     /// Ease the pose towards what the body is doing now.
     pub fn update_pose(&mut self, t: f64, dt: f32, holding_big: Option<bool>) {
-        let mut goal = [0.0f32; 8];
+        let mut goal = [0.0f32; 9];
         // Hovering bodies keep drifting (their phase bobs them) at rest.
         if !self.asleep {
             self.phase += dt * self.dims.idle;
         }
         if let Some(big) = holding_big {
             goal[R_FWD] = 0.55;
+            goal[GRIP] = 0.75;
             if big {
                 goal[L_FWD] = 0.6;
                 goal[R_FWD] = 0.6;
+                goal[GRIP] = 0.55;
             }
+        }
+        if self.conjuring {
+            // Both hands up before it, open, fingers working.
+            let w = t as f32 * 3.1;
+            goal[L_FWD] = 0.9 + 0.05 * w.sin();
+            goal[R_FWD] = 0.9 + 0.05 * (w * 1.3).cos();
+            goal[L_RAISE] = 0.06 + 0.03 * (w * 0.7).cos();
+            goal[R_RAISE] = 0.06 + 0.03 * w.sin();
+            goal[GRIP] = 0.12 + 0.12 * (w * 2.0).sin();
         }
         if self.catching > t {
             goal[L_FWD] = 0.7;
@@ -681,7 +766,7 @@ impl Actor {
         if let Some(g) = &self.gesture {
             let u = ((t - g.t0) as f32 / g.dur).clamp(0.0, 1.0);
             let gp = g.kind.for_body(&self.species).pose(u, t as f32);
-            for i in 0..8 {
+            for i in 0..9 {
                 if gp[i].abs() > goal[i].abs() || g.kind.contact() {
                     goal[i] = gp[i];
                 }
@@ -705,16 +790,20 @@ impl Actor {
             goal[NOD] = goal[SPREAD].abs() * 0.3;
         }
         // The body's own stance holds unless something asks more of it.
-        for i in 0..8 {
-            if goal[i].abs() < self.dims.rest[i].abs() {
-                goal[i] = self.dims.rest[i];
+        for i in 0..9 {
+            let rest = self.dims.rest.get(i).copied().unwrap_or(0.0);
+            if goal[i].abs() < rest.abs() {
+                goal[i] = rest;
             }
             if !has(i) {
                 goal[i] = 0.0;
             }
         }
+        // Hands close and open quicker than arms move.
         let k = (dt * 8.0).min(1.0);
-        for i in 0..8 {
+        let kg = (dt * 16.0).min(1.0);
+        for i in 0..9 {
+            let k = if i == GRIP { kg } else { k };
             self.pose[i] += (goal[i] - self.pose[i]) * k;
         }
         // A tool's motion moves the arm at its own pace.

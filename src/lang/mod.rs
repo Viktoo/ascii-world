@@ -95,14 +95,14 @@ thread_local! {
 }
 
 impl CompiledType {
-    pub fn sdf_checked(&self, p: [f32; 3], k: &[f32; 16], fuel: u32) -> Result<(f32, u32), vm::VmError> {
+    pub fn sdf_checked(&self, p: [f32; 3], k: &[f32; 17], fuel: u32) -> Result<(f32, u32), vm::VmError> {
         REGS.with(|r| self.sdf.run(&mut r.borrow_mut(), p, k, fuel).map(|(o, u)| (o[0], u)))
     }
-    pub fn color_checked(&self, p: [f32; 3], k: &[f32; 16], fuel: u32) -> Result<([f32; 3], u32), vm::VmError> {
+    pub fn color_checked(&self, p: [f32; 3], k: &[f32; 17], fuel: u32) -> Result<([f32; 3], u32), vm::VmError> {
         REGS.with(|r| self.color.run(&mut r.borrow_mut(), p, k, fuel))
     }
     /// The colour and how much it glows (0..1), from glow() in color().
-    pub fn color_glow(&self, p: [f32; 3], k: &[f32; 16]) -> ([f32; 3], f32) {
+    pub fn color_glow(&self, p: [f32; 3], k: &[f32; 17]) -> ([f32; 3], f32) {
         api::split_glow(self.color(p, k))
     }
     /// Whether color() marks which parts give off light.
@@ -125,13 +125,13 @@ impl CompiledType {
         Some(REGS.with(|r| prog.run_behavior(&mut r.borrow_mut(), io, fuel)))
     }
     /// Distance in local space; a failing evaluation counts as "far away".
-    pub fn sdf(&self, p: [f32; 3], k: &[f32; 16]) -> f32 {
+    pub fn sdf(&self, p: [f32; 3], k: &[f32; 17]) -> f32 {
         match self.sdf_checked(p, k, RUN_FUEL) {
             Ok((d, _)) if d.is_finite() => d,
             _ => 1e9,
         }
     }
-    pub fn color(&self, p: [f32; 3], k: &[f32; 16]) -> [f32; 3] {
+    pub fn color(&self, p: [f32; 3], k: &[f32; 17]) -> [f32; 3] {
         match self.color_checked(p, k, RUN_FUEL) {
             Ok((c, _)) if c.iter().all(|v| v.is_finite()) => c,
             _ => [1.0, 0.0, 1.0],

@@ -41,7 +41,7 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
   pocket prompts [--sample N]            print N random prompts (default 20)
   pocket [FILE]                          reopen FILE, or your last universe
   pocket list                            pick one of your worlds (or start a new one)
-  pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME]
+  pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
   pocket sim FILE [--hours H] [--seed S] [--events out.jsonl] [--save] [--no-llm] [--verify]
@@ -263,7 +263,7 @@ fn parse_size(args: &[String]) -> Result<(u16, u16)> {
 }
 
 /// One frame, rendered synchronously (shared by snapshot and tests).
-fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>) -> Result<render::Frame> {
+fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>, hands: Option<&str>) -> Result<render::Frame> {
     let snap = &l.snap;
     let mut live = sim::Sim::new(l.db.clone(), snap.clone(), cam.pos, cam.yaw, t_game, 1);
     if let Some(name) = weather {
@@ -272,7 +272,29 @@ fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f3
         live.step_weather();
     }
     let aspect = w as f32 / h as f32 * pixel_aspect;
-    let drawn = live.draw(cam.pos, render::VIEW_DIST);
+    // Seen through the traveler's eyes, their arms posed: a gesture's
+    // height ("punch", "grab", "wave"…), "hold", or "conjure".
+    let drawn = match hands {
+        Some(pose) => {
+            live.player.pos = cam.pos - Vec3::Y * live.player.dims.eye;
+            live.player.yaw = cam.yaw;
+            live.player.conjuring = pose == "conjure";
+            let kind = sim::actor::GestureKind::named(pose);
+            if pose != "conjure" && pose != "hold" && kind.is_none() {
+                bail!("--hands takes a gesture (punch, grab, throw, touch, wave, point…), hold or conjure");
+            }
+            if let Some(k) = kind {
+                let at = if matches!(k, sim::actor::GestureKind::Punch) { 0.35 } else { 0.5 };
+                live.player.gesture = Some(sim::actor::GestureRun { kind: k, with: None, t0: t_game - (k.duration() * at) as f64, dur: k.duration() });
+            }
+            let held = live.held_size(sim::ActorId::Player).or((pose == "hold").then_some(false));
+            for _ in 0..60 {
+                live.player.update_pose(t_game, 0.05, held);
+            }
+            live.draw_first_person(&cam, render::VIEW_DIST)
+        }
+        None => live.draw(cam.pos, render::VIEW_DIST),
+    };
     let culled = world::cull::cull(snap, &mut live.cache, &cam, aspect, &drawn.insts, &Default::default());
     let light = render::sky::lighting(t_game, &snap.look.palette);
     let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: w, height: h, pixel_aspect, light, time: 0.0, frame: 0, shadows: l.gpu.is_some() && std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &drawn.lights, weather: render::WeatherView::of(&live.wx, 0.0, !live.open_sky(cam.pos)) };
@@ -307,7 +329,10 @@ fn snapshot(args: &[String]) -> Result<()> {
     if let Some(h) = flag(args, "--time").and_then(|h| h.parse::<f64>().ok()) {
         t_game = (h / 24.0).rem_euclid(1.0) * render::sky::DAY_SECONDS;
     }
-    let cam = camera_at(&l.snap, x, z, yaw);
+    let mut cam = camera_at(&l.snap, x, z, yaw);
+    if let Some(p) = flag(args, "--pitch").and_then(|p| p.parse::<f32>().ok()) {
+        cam.pitch = p.to_radians();
+    }
     let png_out = flag(args, "--png");
     // Quadrant cells: 2×2 pixels each. A PNG gets square pixels at the same detail.
     let (pw, ph, pa) = match (ascii, png_out.is_some()) {
@@ -315,7 +340,7 @@ fn snapshot(args: &[String]) -> Result<()> {
         (false, true) => (w as u32 * 2, h as u32 * 4, 1.0),
         (false, false) => (w as u32 * 2, h as u32 * 2, 0.5),
     };
-    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref())?;
+    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref(), flag(args, "--hands").as_deref())?;
     if let Some(png) = png_out {
         let s = if ascii { 4u32 } else { 2 };
         let mut rgb = Vec::with_capacity((f.width * s * f.height * s * 3) as usize);

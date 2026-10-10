@@ -108,8 +108,8 @@ impl Sim {
         self.draw_from(cam, view, None)
     }
 
-    /// As `draw`, seen through the player's eyes: what they hold is shown
-    /// low and to the right of the view, where a hand would bring it.
+    /// As `draw`, seen through the player's eyes: their own arms at work
+    /// come into view (see `hands`), and what they hold is in their hand.
     pub fn draw_first_person(&self, cam: &crate::render::Camera, view: f32) -> Drawn {
         self.draw_from(cam.pos, view, Some(cam))
     }
@@ -218,6 +218,17 @@ impl Sim {
                 }
             }
         }
+        // The traveler's own body, seen from inside, in what they wear.
+        let own = eye.and_then(|c| self.own_view(c));
+        if let Some(v) = &own {
+            insts.push(v.inst);
+            for t in worn.get(&ActorId::Player).map(|v| v.as_slice()).unwrap_or(&[]) {
+                let Some(ty) = self.snap.type_of(t.type_id) else { continue };
+                let mut l = layer_inst(&v.inst, &v.body, ty, look(&t.props));
+                l.cuts = v.inst.cuts;
+                insts.push(l);
+            }
+        }
         // A glow on the traveler lights the ground about them.
         let pg = self.night.glow;
         if pg > 0.05 {
@@ -260,7 +271,11 @@ impl Sim {
                     shown.yaw = c.yaw;
                     // Pitch with the view, so it stays in sight looking up or down.
                     let q = glam::Quat::from_rotation_x(-c.pitch) * super::tool::tool_turn(tool, &fr);
-                    let hand = c.pos + f * (0.32 + 0.25 * fr.reach) + r * (0.22 - 0.1 * fr.reach) - u * (0.26 - 0.18 * fr.raise);
+                    // In the fist, else where a hand would bring it.
+                    let hand = match &own {
+                        Some(v) => v.hand(false) + v.forward() * 0.05,
+                        None => c.pos + f * (0.32 + 0.25 * fr.reach) + r * (0.22 - 0.1 * fr.reach) - u * (0.26 - 0.18 * fr.raise),
+                    };
                     shown.pos = hand - glam::Quat::from_rotation_y(c.yaw) * (q * (Vec3::from_array(tool.grip) * shown.scale));
                     shown.hold_tilt = Some(q);
                     insts.push(thing_inst(&shown, ty, fx));
@@ -269,13 +284,23 @@ impl Sim {
                     // The view-model: in front, low right, scaled to fit.
                     let (f, r, u) = c.basis();
                     let size = (ty.radius() * t.scale).max(0.05);
-                    let k = (0.1 / size).min(1.0);
+                    let big = own.is_some() && self.held_size(ActorId::Player).unwrap_or(false);
+                    // Something big lies across both hands, as wide as they
+                    // are apart; something small sits in one.
+                    let k = match &own {
+                        Some(v) if big => (v.hand_gap() * 0.6 / size).min(1.0),
+                        _ => (0.2 / size).min(1.0),
+                    };
                     let mut shown = t.clone();
                     shown.scale = t.scale * k;
-                    let centre = c.pos + f * 0.6 + r * 0.27 - u * 0.21;
+                    let centre = match &own {
+                        Some(v) if big => v.hand(true) + v.up() * 0.03,
+                        Some(v) => v.hand(false) + v.forward() * (0.07 + size * k * 0.5) + v.up() * 0.03,
+                        None => c.pos + f * 0.6 + r * 0.27 - u * 0.21,
+                    };
                     let (cc, _) = shown.proxy(ty);
                     shown.pos += centre - cc;
-                    shown.yaw = c.yaw + 0.6;
+                    shown.yaw = if big { c.yaw } else { c.yaw + 0.6 };
                     insts.push(thing_inst(&shown, ty, fx));
                 }
                 None => {

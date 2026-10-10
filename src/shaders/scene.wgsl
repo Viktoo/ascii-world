@@ -14,7 +14,7 @@ var<private> dither: f32;
 
 fn inst_params(i: Inst) -> Params {
   return Params(i.k0.x, i.k0.y, i.k0.z, i.k0.w, i.k1.x, i.k1.y, i.k1.z, i.k1.w,
-                i.s0.x, i.s0.y, i.s0.z, i.s0.w, i.s1.x, i.s1.y, i.s1.z, i.s1.w);
+                i.s0.x, i.s0.y, i.s0.z, i.s0.w, i.s1.x, i.s1.y, i.s1.z, i.s1.w, i.s2.x);
 }
 
 // Rotate v by the unit quaternion (q, w) with w = sqrt(1 - |q|^2).
@@ -377,52 +377,74 @@ fn fog_color(rd: vec3f) -> vec3f {
   return G.sky_hor.xyz + G.sun_col.xyz * pow(s, 6.0) * 0.25 * G.sun_dir.w + glow;
 }
 
-// What falls (rain, snow, ash, motes), drawn over the view in three layers
-// at set depths, each hidden behind anything nearer than it. Drops are
-// placed by direction, so they stay put in the world as the view turns.
+// What falls (rain, snow, ash, motes). Drops live in the world, on a grid of
+// unseen upright sheets (one set facing x, one facing z) that the view ray
+// crosses near the eye. Each sheet carries its own falling drops, so near
+// ones sweep past as you walk and far ones barely move; anything nearer
+// than a drop hides it.
 fn precip(col: vec3f, rd: vec3f, hit: f32) -> vec3f {
   let amount = G.wx[2].w;
   if (amount < 0.01) { return col; }
   let look = u32(G.wx[3].w + 0.5);
-  let ppr_v = f32(G.dims.y) / (2.0 * atan(length(G.cam_up.xyz)));
-  let ppr_h = f32(G.dims.x) / (2.0 * atan(length(G.cam_right.xyz)));
-  let az = atan2(rd.x, rd.z);
-  let el = asin(clamp(rd.y, -1.0, 1.0));
+  let ro = G.cam_pos.xyz;
   let tm = G.cam_pos.w;
-  // How the wind leans what falls, across the view.
-  let right = normalize(vec2f(G.cam_right.x, G.cam_right.z) + vec2f(1e-4, 0.0));
-  let lean = dot(G.wx[3].xy, right) * G.wx[3].z;
+  let tw = tm % 600.0;
+  // How big one pixel is, a metre away.
+  let px = 2.0 * atan(length(G.cam_up.xyz)) / f32(G.dims.y);
+  var speed = 8.0; var carry = 0.35; var cw = 0.5; var ch = 2.4; var hw = 0.004; var hl = 0.2; var alpha = 0.5; var dens = 0.45;
+  if (look == 1u) { speed = 1.1; carry = 0.9; cw = 0.35; ch = 0.35; hw = 0.005; hl = 0.005; alpha = 0.7; dens = 0.16; }
+  if (look == 2u) { speed = 0.15; carry = 0.3; cw = 0.5; ch = 0.5; hw = 0.006; hl = 0.006; alpha = 0.85; dens = 0.18; }
+  // Everything falls with the wind; drops drawn as it streaks.
+  let wind = G.wx[3].xy * G.wx[3].z * speed * carry;
+  let vel = vec3f(wind.x, -speed, wind.y);
   let light = clamp(dot(G.sky_hor.xyz, vec3f(0.33)) * 1.1 + 0.1 + G.wx[1].w, 0.12, 1.4);
+  let gap = 1.5;
+  let reach = 18.0;
+  let tmax = min(hit, reach);
+  // Under a roof nothing falls right before the eyes; flakes and motes
+  // keep a little further off so none fills the view.
+  let tmin = select(select(1.4, 0.8, look == 0u), 6.0, G.wx[4].z > 0.5);
   var out = col;
-  for (var i = 0u; i < 3u; i = i + 1u) {
-    let depth = 2.5 * pow(2.2, f32(i));
-    if (hit < depth) { continue; }
-    if (G.wx[4].z > 0.5 && depth < 9.0) { continue; }
-    var speed = 9.0;
-    var tall = 4.0;
-    var alpha = 0.42;
-    if (look == 1u) { speed = 1.2; tall = 1.0; alpha = 0.75; }
-    if (look == 2u) { speed = 0.2; tall = 1.0; alpha = 0.85; }
-    let spacing = 2.0 + f32(i) * 1.5;
-    let cw = spacing / ppr_h;
-    let ch = spacing * tall / ppr_v;
-    let x = az + el * lean * select(0.9, 0.3, look != 0u);
-    let cx = floor(x / cw);
-    let hc = u2f(h2(i32(cx), i32(i), 4421u));
-    let y = el + tm * speed / depth * (0.8 + 0.4 * hc) + hc * 37.0;
-    let cy = floor(y / ch);
-    let h = h2(i32(cx), i32(cy), 977u + i * 13u);
-    if (u2f(h) > amount * (0.2 + 0.14 * f32(i))) { continue; }
-    var dx = 0.25 + 0.5 * u2f(pcg(h));
-    if (look != 0u) { dx = dx + 0.25 * sin(tm * (0.7 + u2f(pcg(h ^ 3u))) + f32(h & 63u)); }
-    let dy = 0.2 + 0.6 * u2f(pcg(h ^ 7u));
-    let hx = 0.5 / spacing;
-    let hy = select(1.2 / (spacing * tall), 0.5 / spacing, look != 0u);
-    let ax = 1.0 - sstep(hx, hx * 2.2, abs(fract(x / cw) - dx));
-    let ay = 1.0 - sstep(hy, hy * 2.0, abs(fract(y / ch) - dy));
-    var a = ax * ay * alpha * (1.0 - 0.22 * f32(i));
-    if (look == 2u) { a = a * (0.55 + 0.45 * sin(tm * 3.0 + f32(h & 255u))); }
-    if (a > 0.0) { out = mix(out, G.wx[2].xyz * light, a); }
+  for (var f = 0u; f < 2u; f = f + 1u) {
+    let d = select(rd.x, rd.z, f == 1u);
+    let o = select(ro.x, ro.z, f == 1u);
+    let ad = abs(d);
+    if (ad < 0.04) { continue; }
+    let dir = sign(d);
+    var k = select(ceil(o / gap) - 1.0, floor(o / gap) + 1.0, d > 0.0);
+    for (var j = 0u; j < 14u; j = j + 1u) {
+      let t = (k * gap - o) / d;
+      let ki = i32(k);
+      k = k + dir;
+      if (t > tmax) { break; }
+      if (t < tmin) { continue; }
+      // Where on this sheet, in the drops' own falling frame.
+      let q = ro + rd * t - vel * tw;
+      let vu = select(vel.z, vel.x, f == 1u);
+      let u = select(q.z, q.x, f == 1u) + vu / speed * q.y;
+      let v = q.y;
+      let col_i = i32(floor(u / cw));
+      let hc = u2f(h2(col_i, ki, 5113u + f));
+      let vv = v + hc * 97.0;
+      let cell = vec2i(col_i, i32(floor(vv / ch)));
+      let h = h3(cell.x, cell.y, ki, 977u + f * 31u);
+      if (u2f(h) > amount * dens) { continue; }
+      var cx = 0.2 + 0.6 * u2f(pcg(h));
+      let cy = 0.2 + 0.6 * u2f(pcg(h ^ 7u));
+      if (look != 0u) { cx = cx + 0.2 * sin(tm * (0.7 + u2f(pcg(h ^ 3u))) + f32(h & 63u)); }
+      // Never thinner than about a pixel, seen edge-on or far away; a flake
+      // smaller than its pixel shows only as faint as the share it covers.
+      let p = px * t;
+      let w = max(hw, 0.5 * p / ad);
+      let l = max(hl, 0.5 * p);
+      let ax = 1.0 - sstep(w, w + 0.5 * p / ad, abs((fract(u / cw) - cx) * cw));
+      let ay = 1.0 - sstep(l, l + 0.5 * p, abs((fract(vv / ch) - cy) * ch));
+      var a = ax * ay * alpha;
+      if (look != 0u) { a = a * min(sqrt(hw * hl / (w * l)) * 1.6, 1.0); } else { a = a * min(sqrt(hw / w) * 1.2, 1.0); }
+      a = a * sstep(tmin, tmin + 1.5, t) * (1.0 - sstep(reach * 0.55, reach, t)) * sstep(0.04, 0.2, ad);
+      if (look == 2u) { a = a * (0.55 + 0.45 * sin(tm * 3.0 + f32(h & 255u))); }
+      if (a > 0.0) { out = mix(out, G.wx[2].xyz * light, a); }
+    }
   }
   return out;
 }

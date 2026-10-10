@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod hands;
 mod night;
 mod remains;
 mod weather;
@@ -3726,7 +3727,12 @@ fn noises_bumps_and_impacts_are_heard_where_they_happen() {
     let landed = s.sim.things.get(id).unwrap().pos;
     let hit = s.sim.sounds.iter().find_map(|c| if let Heard::Hit { mat, mass, .. } = c.what { Some((c.at, mat, mass)) } else { None }).expect("the stone is heard landing");
     assert!(hit.1.hard > 0.6 && hit.1.leafy < 0.5, "stone: {:?}", hit.1);
-    assert!((hit.0 - landed).length() < 4.0, "where it landed");
+    // Heard where it came down on the ground (not on the thrower: a throw
+    // over the shoulder leaves the hand without striking the body), on its
+    // way to where it came to rest.
+    let ground = s.sim.snap.terrain.height(hit.0.x, hit.0.z);
+    assert!((hit.0.y - ground).abs() < 0.6, "on the ground: {:?} (ground {ground:.2})", hit.0);
+    assert!((hit.0 - landed).length() < 8.0 && events(&s.sim, "hit").iter().all(|e| !e.text.contains("traveler")), "where it landed");
 }
 
 /// A world with sound never changes what happens: the same seed makes the

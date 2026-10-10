@@ -514,7 +514,13 @@ impl Sim {
             }
         }
         let verb = action.verb();
+        let hands = self.hand_move(who, &action);
         let r = self.act_inner(who, action);
+        if let (Some(k), Ok(o)) = (hands, &r) {
+            if o.ok {
+                self.play_hands(who, k);
+            }
+        }
         if who == ActorId::Player {
             if let Ok(o) = &r {
                 if o.ok && !matches!(verb, "move" | "turn" | "wait" | "goto") {

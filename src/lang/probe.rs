@@ -20,8 +20,8 @@ pub struct ProbeReport {
     pub max_fuel: u32,
 }
 
-pub fn default_k(seed: f32) -> [f32; 16] {
-    let mut k = [0.0; 16];
+pub fn default_k(seed: f32) -> [f32; 17] {
+    let mut k = [0.0; 17];
     k[..8].copy_from_slice(&[seed, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
     k
 }
@@ -71,7 +71,7 @@ pub fn probe(t: &CompiledType) -> Result<ProbeReport, Vec<Diag>> {
 
 /// A body must answer to every role it lists, and stay sound in any pose and
 /// at the ends of its look sliders.
-fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 16]) -> Result<(), Vec<Diag>> {
+fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 17]) -> Result<(), Vec<Diag>> {
     use super::ir::ROLES;
     let pts: Vec<[f32; 3]> = sample_points(t.meta.bounds).into_iter().step_by(5).collect();
     let base: Vec<f32> = pts.iter().map(|p| t.sdf(*p, k)).collect();
@@ -82,7 +82,20 @@ fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 16]) -> Result
         }
         let mut kk = *k;
         kk[8 + i] = if *role == "lean" { 0.4 } else { 0.8 };
-        let changed = pts.iter().zip(&base).filter(|(p, d)| (t.sdf(**p, &kk) - **d).abs() > 0.01).count();
+        // A grip is small: look for it with the arms out, among all the points.
+        let changed = if *role == "grip" {
+            let mut out = *k;
+            for r in ["reach_l", "reach_r"] {
+                if let Some(j) = ROLES.iter().position(|x| *x == r).filter(|_| body.has_role(r)) {
+                    out[8 + j] = 0.9;
+                }
+            }
+            let mut closed = out;
+            closed[8 + i] = 1.0;
+            sample_points(t.meta.bounds).iter().filter(|p| (t.sdf(**p, &closed) - t.sdf(**p, &out)).abs() > 0.005).count()
+        } else {
+            pts.iter().zip(&base).filter(|(p, d)| (t.sdf(**p, &kk) - **d).abs() > 0.01).count()
+        };
         if changed == 0 {
             dead.push(*role);
         }
@@ -116,7 +129,7 @@ fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 16]) -> Result
     Ok(())
 }
 
-pub fn probe_with(t: &CompiledType, k: &[f32; 16]) -> Result<ProbeReport, Vec<Diag>> {
+pub fn probe_with(t: &CompiledType, k: &[f32; 17]) -> Result<ProbeReport, Vec<Diag>> {
     let b = t.meta.bounds;
     let pts = sample_points(b);
     let mut diags = Vec::new();
@@ -300,7 +313,7 @@ pub fn probe_with(t: &CompiledType, k: &[f32; 16]) -> Result<ProbeReport, Vec<Di
 
 /// Behaviour code must stay cheap and finite: run every entry point through
 /// a few typical situations (day and night, held and not, hit, used on things).
-pub fn probe_behavior(t: &CompiledType, k: &[f32; 16]) -> Result<(), Vec<Diag>> {
+pub fn probe_behavior(t: &CompiledType, k: &[f32; 17]) -> Result<(), Vec<Diag>> {
     let n = t.prop_names.len();
     for b in [Behavior::Tick, Behavior::Use, Behavior::Touch] {
         if t.behavior(b).is_none() {

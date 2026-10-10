@@ -21,6 +21,7 @@ pub mod exposure;
 pub mod fear;
 pub mod footing;
 pub mod goals;
+pub mod hands;
 pub mod headless;
 pub mod incident;
 pub mod inspect;
@@ -314,6 +315,8 @@ pub struct Sim {
     /// Game time in seconds (one day = sky::DAY_SECONDS).
     pub t: f64,
     pub player: Actor,
+    /// What the traveler chose about their own body (see `hands`).
+    pub own: hands::OwnBody,
     pub cast: Cast,
     pub things: Things,
     pub field: env::Field,
@@ -395,6 +398,7 @@ impl Sim {
             rng: seed ^ 0x9E37_79B9_7F4A_7C15,
             t,
             player: Actor::new(player_pos, player_yaw),
+            own: Default::default(),
             cast: Cast::default(),
             things: Things::default(),
             field: env::Field::default(),
@@ -441,6 +445,7 @@ impl Sim {
             weather_st: Default::default(),
         };
         sim.player.dims = traveler_dims(&snap);
+        sim.load_own_body();
         sim.load_universe_rules();
         persist::load_gestures(&sim.db);
         sim.cast.sync(&snap, seed);

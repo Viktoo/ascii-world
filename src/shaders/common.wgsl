@@ -42,13 +42,14 @@ struct Inst {
   k1: vec4f,          // c, d, e, f
   s0: vec4f,          // live state s0..s3
   s1: vec4f,          // live state s4..s7
+  s2: vec4f,          // s8 (a body's grip), spare
   fx: vec4f,          // charred, wet, glow, highlight
   info: vec4u,        // type id, sphere centre y, box half-extents x/z
   cuts: array<vec4f, 4>, // local centre, size (>0 sphere radius, <0 cube half-size, 0 none)
 }
 
 struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32,
-  s0: f32, s1: f32, s2: f32, s3: f32, s4: f32, s5: f32, s6: f32, s7: f32, }
+  s0: f32, s1: f32, s2: f32, s3: f32, s4: f32, s5: f32, s6: f32, s7: f32, s8: f32, }
 
 @group(0) @binding(0) var<uniform> G: Globals;
 @group(0) @binding(1) var<storage, read> insts: array<Inst>;

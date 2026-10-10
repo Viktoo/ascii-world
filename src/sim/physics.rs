@@ -304,6 +304,11 @@ impl Sim {
             if self.things.get(id).is_some_and(|t| t.holder == Some(a)) {
                 continue;
             }
+            // Just let go of: it leaves the hand that threw it without
+            // striking the body behind (a throw over the shoulder).
+            if thrown.is_some_and(|(by, at)| by == a && self.t - at < 0.4) {
+                continue;
+            }
             let height = self.actor_height(a);
             let (d, n) = body_dist(p, body.0, height);
             if d < r + 0.25 && body.1 > self.t && v.length() > 0.5 && self.actor(a).is_some_and(|x| x.held.is_none()) && mass <= self.strength(a) {

@@ -80,9 +80,11 @@ pub struct GpuInst {
     /// Static parameters k.seed, k.scale, k.a … k.f.
     pub k0: [f32; 4],
     pub k1: [f32; 4],
-    /// Live state k.s0 … k.s7 (behaviour code, poses).
+    /// Live state k.s0 … k.s7 (behaviour code, poses), then k.s8 (a
+    /// body's grip) and three spare.
     pub s0: [f32; 4],
     pub s1: [f32; 4],
+    pub s2: [f32; 4],
     /// Generic look: charred 0..1, wet 0..1, glow 0..1, highlight 0..1.
     pub fx: [f32; 4],
     pub info: [u32; 4],
@@ -123,12 +125,13 @@ pub const FX_GLOW: usize = 2;
 pub const FX_HIGHLIGHT: usize = 3;
 
 impl GpuInst {
-    pub fn k(&self) -> [f32; 16] {
-        let mut k = [0.0; 16];
+    pub fn k(&self) -> [f32; 17] {
+        let mut k = [0.0; 17];
         k[0..4].copy_from_slice(&self.k0);
         k[4..8].copy_from_slice(&self.k1);
         k[8..12].copy_from_slice(&self.s0);
         k[12..16].copy_from_slice(&self.s1);
+        k[16] = self.s2[0];
         k
     }
     /// The shape's distance at world point `p` (CPU), cuts included.
@@ -139,6 +142,12 @@ impl GpuInst {
     pub fn set_state(&mut self, s: &[f32; 8]) {
         self.s0.copy_from_slice(&s[0..4]);
         self.s1.copy_from_slice(&s[4..8]);
+    }
+    /// A body's pose: the eight state slots, then the grip.
+    pub fn set_pose(&mut self, p: &crate::sim::actor::Pose) {
+        self.s0.copy_from_slice(&p[0..4]);
+        self.s1.copy_from_slice(&p[4..8]);
+        self.s2[0] = p[8];
     }
     pub fn pos(&self) -> Vec3 {
         Vec3::new(self.pos_scale[0], self.pos_scale[1], self.pos_scale[2])

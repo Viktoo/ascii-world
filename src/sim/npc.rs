@@ -239,22 +239,7 @@ impl Npc {
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
-        let rot = self.a.yaw;
-        let d = &self.a.dims;
-        // Bodies that draw their own height (people) are scaled only by the
-        // world's size; others by their whole size.
-        let own_height = body.ct.meta.body.as_ref().is_some_and(|b| b.slider("height").is_some());
-        let r = if own_height { d.ratio } else { d.scale };
-        let mut g = GpuInst {
-            pos_scale: [self.a.pos.x, self.a.pos.y, self.a.pos.z, d.scale],
-            rot: [rot.cos(), rot.sin(), body.sphere_r * r.max(d.scale), 1.0],
-            k0: [self.def.id as f32 % 97.0, d.scale, self.sliders[0], self.sliders[1]],
-            k1: [self.sliders[2], self.sliders[3], self.sliders[4], self.a.phase],
-            info: body.gpu_info(),
-            ..Default::default()
-        };
-        g.set_state(&self.a.pose);
-        g
+        body_inst(&self.a, body, &self.sliders, self.def.id as f32 % 97.0)
     }
 
     /// Avoid remembering the same thing over and over.
@@ -407,6 +392,26 @@ impl Cast {
     pub fn get_mut(&mut self, id: i64) -> Option<&mut Npc> {
         self.index.get(&id).copied().map(move |i| &mut self.npcs[i])
     }
+}
+
+/// A body's instance: where it stands, its look sliders and its pose.
+pub fn body_inst(a: &super::actor::Actor, body: &TypeEntry, sliders: &[f32; 5], seed: f32) -> GpuInst {
+    let rot = a.yaw;
+    let d = &a.dims;
+    // Bodies that draw their own height (people) are scaled only by the
+    // world's size; others by their whole size.
+    let own_height = body.ct.meta.body.as_ref().is_some_and(|b| b.slider("height").is_some());
+    let r = if own_height { d.ratio } else { d.scale };
+    let mut g = GpuInst {
+        pos_scale: [a.pos.x, a.pos.y, a.pos.z, d.scale],
+        rot: [rot.cos(), rot.sin(), body.sphere_r * r.max(d.scale), 1.0],
+        k0: [seed, d.scale, sliders[0], sliders[1]],
+        k1: [sliders[2], sliders[3], sliders[4], a.phase],
+        info: body.gpu_info(),
+        ..Default::default()
+    };
+    g.set_pose(&a.pose);
+    g
 }
 
 /// Fit a character to its species: body, look sliders, size, roles and
@@ -617,6 +622,7 @@ impl Sim {
         self.step_footing(ActorId::Player, dt);
         let held_big = self.held_size(ActorId::Player);
         let t = self.t;
+        self.step_hands();
         self.player.update_pose(t, dt, held_big);
         let near = self.cfg.near;
         let medium = self.cfg.medium;
@@ -651,7 +657,7 @@ impl Sim {
         self.worn_mass = None;
     }
 
-    fn held_size(&self, who: ActorId) -> Option<bool> {
+    pub fn held_size(&self, who: ActorId) -> Option<bool> {
         if self.carried_of(who).is_some() {
             return Some(true);
         }

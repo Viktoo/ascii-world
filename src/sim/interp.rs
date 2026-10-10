@@ -524,6 +524,10 @@ impl Sim {
             "weather": self.wx.words(),
             "held": held.map(|h| self.describe_thing(h)),
         });
+        if who == ActorId::Player {
+            let wears: Vec<String> = self.worn_by(who).into_iter().map(|id| self.thing_name(id)).collect();
+            v["self"] = json!({ "body": self.body_name(who), "look_sliders": self.own_look_sliders(), "wears": wears });
+        }
         if let Some(r) = target {
             let tv = match &r.target {
                 Target::Actor(a) => self.describe_being(*a, who),

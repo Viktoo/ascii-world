@@ -4,8 +4,9 @@
 use super::api::{Api, Ty};
 
 /// Instance parameter fields readable as `k.<name>`: 8 static parameters,
-/// then the 8 live state slots (`s0`..`s7`, written by behaviour code).
-pub const K_FIELDS: [&str; 16] = ["seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
+/// then the 8 live state slots (`s0`..`s7`, written by behaviour code),
+/// then `s8`, a body's grip (posed by the engine, never written by code).
+pub const K_FIELDS: [&str; 17] = ["seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
 /// State slots writable as `s.<name>` in behaviour functions.
 pub const STATE_FIELDS: [&str; 8] = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
 /// What a behaviour function knows about its situation, read as `w.<name>`.
@@ -265,8 +266,9 @@ pub struct Hollow {
     pub floor: f32,
 }
 
-/// The pose roles a body can answer to (k.s0 … k.s7).
-pub const ROLES: [&str; 8] = ["raise_l", "raise_r", "reach_l", "reach_r", "lean", "head", "crouch", "spread"];
+/// The pose roles a body can answer to (k.s0 … k.s8). `grip` closes the
+/// hands (0 open … 1 a fist; a claw, a fin folding in).
+pub const ROLES: [&str; 9] = ["raise_l", "raise_r", "reach_l", "reach_r", "lean", "head", "crouch", "spread", "grip"];
 
 /// Look sliders a body may declare: k.a … k.e, in order.
 pub const MAX_SLIDERS: usize = 5;

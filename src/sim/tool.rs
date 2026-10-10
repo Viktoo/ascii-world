@@ -467,8 +467,9 @@ impl Sim {
 }
 
 /// The arm's pose during a motion, laid over a body's pose.
-pub fn arm_pose(run: &MotionRun, now: f64, pose: &mut [f32; 8]) {
+pub fn arm_pose(run: &MotionRun, now: f64, pose: &mut super::actor::Pose) {
     let fr = frame(run.name, run.progress(now));
+    pose[super::actor::GRIP] = 0.9;
     pose[R_RAISE] = fr.raise;
     pose[R_FWD] = fr.reach;
     pose[LEAN] = fr.lean;
