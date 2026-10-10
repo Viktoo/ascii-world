@@ -432,7 +432,8 @@ impl Sim {
         let depth;
         {
             let mut c = terrain.carve.write();
-            match c.dug.iter_mut().find(|h| (h.c[0] - at.x).hypot(h.c[1] - at.z) < h.half[0] * 0.8) {
+            // A spade's own pit (not a crater someone conjured around it).
+            match c.dug.iter_mut().find(|h| h.round && h.half[0] <= 1.1 && (h.c[0] - at.x).hypot(h.c[1] - at.z) < h.half[0] * 0.8) {
                 Some(h) => {
                     let ground = terrain.sample(h.c[0], h.c[1]).height;
                     h.floor = (h.floor - bite).max(ground - 2.2);
@@ -440,10 +441,8 @@ impl Sim {
                     depth = ground - h.floor;
                 }
                 None => {
-                    c.dug.push(crate::terrain::Hollow { c: [at.x, at.z], rot: [1.0, 0.0], half: [0.55, 0.55], floor: natural - bite, round: true });
-                    if c.dug.len() > 200 {
-                        c.dug.remove(0);
-                    }
+                    c.dug.push(crate::terrain::Hollow { c: [at.x, at.z], rot: [1.0, 0.0], half: [0.55, 0.55], floor: natural - bite, round: true, edge: crate::terrain::HOLLOW_EDGE });
+                    crate::terrain::Carve::trim_dug(&mut c.dug);
                     depth = bite;
                 }
             }

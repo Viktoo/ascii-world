@@ -154,8 +154,8 @@ fn tilt_and_hollows_agree_on_gpu_and_cpu() {
     {
         let mut cv = terrain.carve.write();
         let h = terrain.natural_height(3.0, 2.0);
-        cv.fixed.push(crate::terrain::Hollow { c: [3.0, 2.0], rot: [0.8f32.cos(), 0.8f32.sin()], half: [2.0, 1.2], floor: h - 2.0, round: false });
-        cv.dug.push(crate::terrain::Hollow { c: [-4.0, 1.0], rot: [1.0, 0.0], half: [0.6, 0.6], floor: terrain.natural_height(-4.0, 1.0) - 0.7, round: true });
+        cv.fixed.push(crate::terrain::Hollow { c: [3.0, 2.0], rot: [0.8f32.cos(), 0.8f32.sin()], half: [2.0, 1.2], floor: h - 2.0, round: false, edge: crate::terrain::HOLLOW_EDGE });
+        cv.dug.push(crate::terrain::Hollow { c: [-4.0, 1.0], rot: [1.0, 0.0], half: [0.6, 0.6], floor: terrain.natural_height(-4.0, 1.0) - 0.7, round: true, edge: 1.5 });
         cv.reindex();
     }
     let mut pts = Vec::new();

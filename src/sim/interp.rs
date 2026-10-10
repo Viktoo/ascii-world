@@ -136,6 +136,33 @@ pub struct ReshapeFx {
     pub with: Option<String>,
 }
 
+/// Ground taken away where the deed points: a hole, pit, crater, trench,
+/// a cave's mouth dug into a hillside.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct GroundFx {
+    /// How deep, in metres.
+    #[serde(default = "two")]
+    pub depth_m: f32,
+    /// How wide across, in metres.
+    #[serde(default = "three")]
+    pub wide_m: f32,
+    /// How long, for a trench or a ditch (along the way the actor looks);
+    /// None for a round hole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_m: Option<f32>,
+    /// "sheer" (default: straight sides) or "sloped" (a bowl anyone can
+    /// walk down into and out of).
+    #[serde(default)]
+    pub sides: String,
+}
+
+fn two() -> f32 {
+    2.0
+}
+fn three() -> f32 {
+    3.0
+}
+
 fn target_role() -> String {
     "target".into()
 }
@@ -160,6 +187,9 @@ pub struct InterpEffect {
     pub cut: Vec<CutFx>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reshape: Vec<ReshapeFx>,
+    /// The land itself dug away where the deed points.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ground: Vec<GroundFx>,
     /// What it does to a person or creature (the target).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub being: Option<BeingFx>,
@@ -202,7 +232,7 @@ impl InterpEffect {
 
     /// Nothing in the world changes: a refusal or a "nothing happens".
     fn changes_nothing(&self) -> bool {
-        self.changes.is_empty() && self.create.is_empty() && self.remove.is_empty() && self.make.is_empty() && self.cut.is_empty() && self.reshape.is_empty() && self.being.is_none() && self.beings.is_empty() && self.weather.is_none()
+        self.changes.is_empty() && self.create.is_empty() && self.remove.is_empty() && self.make.is_empty() && self.cut.is_empty() && self.reshape.is_empty() && self.ground.is_empty() && self.being.is_none() && self.beings.is_empty() && self.weather.is_none()
     }
 }
 
@@ -350,7 +380,7 @@ fn shift(name: &str, d: f32) -> Option<String> {
 /// an answer is named here, so a new kind of effect decides whether it shows.
 fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<String> {
     // The weather shows by itself.
-    let InterpEffect { narration: _, changes: _, cut: _, create: _, remove: _, make: _, reshape: _, beings: _, say: _, needs: _, cache: _, weather: _, being } = fx;
+    let InterpEffect { narration: _, changes: _, cut: _, create: _, remove: _, make: _, reshape: _, ground: _, beings: _, say: _, needs: _, cache: _, weather: _, being } = fx;
     // `changes`, `cut` and the being's needs and feelings are in `moved`.
     // New, removed and reshaped things, new beings and words show by themselves.
     if let Some(b) = being {
@@ -745,6 +775,15 @@ impl Sim {
                 }
             }
         }
+        for g in fx.ground.iter().take(1) {
+            let at = match &p.target {
+                Some(Target::Point(q)) => Some(glam::Vec3::from(*q)),
+                _ => p.hit.or_else(|| target_thing.and_then(|t| self.things.get(t).map(|x| x.pos))),
+            };
+            if let Err(e) = self.dig_ground(p.actor, at, p.aim, g) {
+                why.push(e);
+            }
+        }
         for m in fx.make.iter().take(1) {
             if !m.text.trim().is_empty() {
                 match self.create(p.actor, m.text.trim().to_string(), p.aim) {
@@ -893,6 +932,85 @@ impl Sim {
             self.tell_story(at, who, &msg, effect);
         }
         any
+    }
+
+    /// Take the ground away for a deed (see `GroundFx`), at `at` or, with
+    /// nowhere pointed at, just ahead of the doer. The traveler digs as big
+    /// as they ask; anyone else only what a person could dig.
+    fn dig_ground(&mut self, who: ActorId, at: Option<glam::Vec3>, aim: Option<Aim>, g: &GroundFx) -> Result<(), String> {
+        let me = self.actor(who).map(|a| (a.pos, a.forward())).ok_or("no one to dig")?;
+        let ok = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
+        let (most_deep, most_wide) = if who == ActorId::Player { (40.0, 80.0) } else { (2.5, 4.0) };
+        let depth = ok(g.depth_m, 0.3, most_deep);
+        let wide = ok(g.wide_m, 0.5, most_wide);
+        let long = g.long_m.map(|l| ok(l, wide, most_wide * 1.5));
+        let sloped = g.sides.trim().eq_ignore_ascii_case("sloped");
+        let edge = if sloped { (depth * 1.4).max(crate::terrain::HOLLOW_EDGE) } else { (depth * 0.08).max(crate::terrain::HOLLOW_EDGE) };
+        let fwd = aim.map(|a| glam::Vec3::new(a.yaw.sin(), 0.0, a.yaw.cos())).unwrap_or(me.1);
+        let at = at.unwrap_or(me.0 + fwd * (wide * 0.5 + 2.0));
+        // A trench runs the way the doer looks at it.
+        let along = glam::Vec2::new(at.x - me.0.x, at.z - me.0.z).try_normalize().unwrap_or(glam::Vec2::new(fwd.x, fwd.z).normalize_or(glam::Vec2::Y));
+        let half = |w: f32| (w * 0.5 - edge).max(w * 0.25);
+        let terrain = self.snap.terrain.clone();
+        let floor = terrain.height(at.x, at.z) - depth;
+        let hollow = crate::terrain::Hollow {
+            c: [at.x, at.z],
+            rot: [along.y, along.x],
+            half: [half(wide), long.map(half).unwrap_or(half(wide))],
+            floor,
+            round: long.is_none(),
+            edge,
+        };
+        // What stands there, and the ground under it before: placed things
+        // (buildings, made things) never look at the ground again by
+        // themselves, so they are brought live to settle with it.
+        let span = hollow.half[0].max(hollow.half[1]) * 1.5 + edge + 1.0;
+        let placed: Vec<i64> = self.snap.instances.iter().filter(|q| glam::Vec2::new(q.pos.x - at.x, q.pos.z - at.z).length() < span).map(|q| q.id).collect();
+        for i in placed {
+            self.promote_instance(i);
+        }
+        let standing: Vec<(ThingId, f32)> = self.things.near(at, span).into_iter().filter_map(|id| self.things.get(id).filter(|t| !t.held() && t.worn.is_none()).map(|t| (id, terrain.height(t.pos.x, t.pos.z)))).collect();
+        {
+            let mut c = terrain.carve.write();
+            // Dug again where a hollow was dug before: that one grows to take
+            // it in (deeper, wider) rather than another piling up on it.
+            match c.dug.iter_mut().rev().find(|h| h.half[0].max(h.half[1]) > 1.1 && h.outside(at.x, at.z) < 0.0) {
+                Some(h) => {
+                    h.floor = h.floor.min(floor);
+                    h.edge = h.edge.max(edge);
+                    let r = hollow.half[0].max(hollow.half[1]);
+                    let (dx, dz) = (at.x - h.c[0], at.z - h.c[1]);
+                    if h.round {
+                        h.half[0] = h.half[0].max((dx * dx + dz * dz).sqrt() + r).min(60.0);
+                    } else {
+                        let (lx, lz) = (h.rot[0] * dx - h.rot[1] * dz, h.rot[1] * dx + h.rot[0] * dz);
+                        h.half = [h.half[0].max(lx.abs() + r).min(60.0), h.half[1].max(lz.abs() + r).min(90.0)];
+                    }
+                }
+                None => {
+                    c.dug.push(hollow);
+                    crate::terrain::Carve::trim_dug(&mut c.dug);
+                }
+            }
+        }
+        terrain.carve.write().reindex();
+        self.dug_dirty = true;
+        // What lay there drops in; what is fixed in place sinks with the ground.
+        for (id, was) in standing {
+            let Some(t) = self.things.get_mut(id) else { continue };
+            let drop = was - terrain.height(t.pos.x, t.pos.z);
+            if drop <= 0.01 {
+                continue;
+            }
+            if t.anchored {
+                t.pos.y -= drop;
+                t.dirty = true;
+            } else {
+                t.asleep = false;
+                t.rest_t = 0.0;
+            }
+        }
+        Ok(())
     }
 
     fn apply_make_props(&mut self, id: ThingId, m: &Make) {

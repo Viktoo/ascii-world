@@ -4876,3 +4876,93 @@ export function color(x, y, z, k) { return rgb(120, 90, 60); }"#);
 }
 
 
+
+/// "Dig a big hole there": the land itself gives way where the traveler
+/// points, as deep and wide as asked, and a sloped crater can be walked out
+/// of; a character only digs what one person could, and a spade at a
+/// crater's floor digs its own pit there instead of shrinking the crater.
+#[test]
+fn deeds_dig_into_the_ground() {
+    use super::interp::{GroundFx, InterpEffect, PendingInterp};
+    let w = world("ground deed", 83);
+    let p = dry_spot(&w, 40.0, 0.3);
+    let q = dry_spot(&w, 120.0, 2.0);
+    let ada = add_char(&w, "Ada", "calm", &[], q + Vec3::X * 4.0);
+    let mut s = session(&w, 83, None);
+    s.sim.player.pos = p - Vec3::X * 30.0;
+    let deed = |s: &mut Session, who: ActorId, at: Vec3, g: GroundFx| {
+        let pi = PendingInterp { actor: who, text: "dig".into(), held: None, target: Some(Target::Point(at.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+        s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![g], ..Default::default() });
+    };
+    let before = s.sim.snap.terrain.height(p.x, p.z);
+    deed(&mut s, ActorId::Player, p, GroundFx { depth_m: 12.0, wide_m: 20.0, long_m: None, sides: "sloped".into() });
+    let t = s.sim.snap.terrain.clone();
+    assert!((before - t.height(p.x, p.z) - 12.0).abs() < 0.05, "12 m deep: {}", before - t.height(p.x, p.z));
+    assert!(s.sim.dug_dirty, "saved with the world");
+    // Its sides slope: no step on the way out is steeper than a hillside.
+    let worst = (0..200).map(|i| {
+        let x = p.x + i as f32 * 0.2;
+        (t.height(x + 0.2, p.z) - t.height(x, p.z)).abs() / 0.2
+    }).fold(0.0f32, f32::max);
+    assert!(worst < 1.5, "walkable sides: slope {worst}");
+    // Dug again there, it deepens the same hollow rather than adding one.
+    let n = t.carve.read().dug.len();
+    for _ in 0..10 {
+        deed(&mut s, ActorId::Player, p + Vec3::X * 2.0, GroundFx { depth_m: 3.0, wide_m: 8.0, long_m: None, sides: "sheer".into() });
+    }
+    assert_eq!(t.carve.read().dug.len(), n, "still one hollow");
+    assert!(before - t.height(p.x, p.z) > 12.0 + 25.0, "ten digs deeper: {}", before - t.height(p.x, p.z));
+    // A character digs only a person's hole, however much is asked.
+    let h0 = t.height(q.x, q.z);
+    deed(&mut s, ActorId::Npc(ada), q, GroundFx { depth_m: 30.0, wide_m: 50.0, long_m: None, sides: "sheer".into() });
+    let dug = h0 - t.height(q.x, q.z);
+    assert!(dug > 2.0 && dug <= 2.5 + 0.05, "a person's hole: {dug}");
+    // A long trench runs the way it was looked along.
+    let r = dry_spot(&w, 200.0, 4.0);
+    s.sim.player.pos = r - Vec3::Z * 20.0;
+    let hr = t.height(r.x, r.z);
+    deed(&mut s, ActorId::Player, r, GroundFx { depth_m: 1.5, wide_m: 2.0, long_m: Some(16.0), sides: "sheer".into() });
+    assert!(hr - t.height(r.x, r.z + 6.0) > 1.0, "dug along its length");
+    assert!(hr - t.height(r.x + 6.0, r.z) < 0.5, "not across it");
+    // The scatter there is placed again.
+    use crate::world::CHUNK;
+    let c = crate::world::chunk_of(p.x, p.z);
+    assert_ne!(t.carve_sig(c.0 as f32 * CHUNK, c.1 as f32 * CHUNK, (c.0 + 1) as f32 * CHUNK, (c.1 + 1) as f32 * CHUNK), 0);
+    // Spade pits don't evict it.
+    {
+        let mut cv = t.carve.write();
+        for i in 0..crate::terrain::MAX_DUG + 5 {
+            cv.dug.push(crate::terrain::Hollow { c: [i as f32 * 3.0, -500.0], rot: [1.0, 0.0], half: [0.55, 0.55], floor: -1.0, round: true, edge: crate::terrain::HOLLOW_EDGE });
+            crate::terrain::Carve::trim_dug(&mut cv.dug);
+        }
+        assert!(cv.dug.iter().any(|h| h.half[0] > 3.0), "the crater outlasts spade pits");
+    }
+}
+
+/// What stands where ground is dug goes down with it: a hut (fixed in
+/// place, placed long before) sinks to the new ground, a loose ball falls.
+#[test]
+fn what_stands_in_a_dug_hole_goes_down_with_it() {
+    use super::interp::{GroundFx, InterpEffect, PendingInterp};
+    let w = world("dug under", 84);
+    let p = dry_spot(&w, 40.0, 0.3);
+    let hut = add_type(&w, &fixture("sims/hut.js"));
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let h = place(&w, hut, p + Vec3::new(3.0, 0.0, 0.0), 0.0);
+    let b = place(&w, ball, p + Vec3::new(-2.0, 0.0, 1.0), 0.0);
+    let mut s = session(&w, 84, None);
+    s.sim.player.pos = p - Vec3::X * 16.0;
+    let pi = PendingInterp { actor: ActorId::Player, text: "dig".into(), held: None, target: Some(Target::Point(p.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![GroundFx { depth_m: 1.2, wide_m: 24.0, long_m: None, sides: "sheer".into() }], ..Default::default() });
+    let t = s.sim.snap.terrain.clone();
+    let hid = *s.sim.things.by_instance.get(&h).expect("the hut was brought live");
+    let hp = s.sim.things.get(hid).unwrap().pos;
+    assert!(t.height(hp.x, hp.z) > WATER_LEVEL, "dug above the water");
+    assert!((hp.y - t.height(hp.x, hp.z)).abs() < 0.1, "the hut stands on the new ground: {} vs {}", hp.y, t.height(hp.x, hp.z));
+    let bid = *s.sim.things.by_instance.get(&b).expect("the ball was brought live");
+    for _ in 0..240 {
+        s.sim.step(1.0 / 30.0);
+    }
+    let bp = s.sim.things.get(bid).unwrap().pos;
+    assert!(bp.y < t.height(bp.x, bp.z) + 0.4, "the ball fell in: {} above", bp.y - t.height(bp.x, bp.z));
+}

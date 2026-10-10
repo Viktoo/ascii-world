@@ -43,7 +43,7 @@ pub struct Globals {
     pub light_cols: [[f32; 4]; MAX_LIGHTS],
     /// Hollows in use, roads in use, -, -.
     pub extra: [u32; 4],
-    /// Ground taken away, two per hollow: (centre x, z, cos, sin), (half x, z, floor, round).
+    /// Ground taken away, two per hollow: (centre x, z, cos, sin), (half x, z, floor, rim width: + round, - box).
     pub hollows: [[f32; 4]; MAX_HOLLOWS * 2],
     /// Roads, two per stretch: (a.x, a.z, b.x, b.z), (half width, r, g, b).
     pub roads: [[f32; 4]; MAX_ROADS * 2],
@@ -52,7 +52,7 @@ pub struct Globals {
 }
 
 pub const MAX_LIGHTS: usize = 8;
-pub const MAX_HOLLOWS: usize = 8;
+pub const MAX_HOLLOWS: usize = 32;
 pub const MAX_ROADS: usize = 16;
 
 /// A light-emitting thing (lantern, fire) near the camera.
@@ -412,7 +412,8 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
     let mut hollow_buf = [[0.0f32; 4]; MAX_HOLLOWS * 2];
     for (i, h) in hollows.iter().enumerate() {
         hollow_buf[i * 2] = [h.c[0], h.c[1], h.rot[0], h.rot[1]];
-        hollow_buf[i * 2 + 1] = [h.half[0], h.half[1], h.floor, if h.round { 1.0 } else { 0.0 }];
+        let edge = h.edge.max(0.01);
+        hollow_buf[i * 2 + 1] = [h.half[0], h.half[1], h.floor, if h.round { edge } else { -edge }];
     }
     let roads = t.roads_near(cp.x, cp.z, VIEW_DIST * 0.6, MAX_ROADS);
     let mut road_buf = [[0.0f32; 4]; MAX_ROADS * 2];

@@ -200,10 +200,18 @@ pub struct Hollow {
     pub half: [f32; 2],
     pub floor: f32,
     pub round: bool,
+    /// How far its sides slope out past `half` (m): its rim. Steep for a
+    /// cellar or a spade's pit; wide for a crater anyone can walk out of.
+    #[serde(default = "hollow_edge")]
+    pub edge: f32,
 }
 
-/// How far a hollow's sides slope out (m): its rim.
+/// The usual rim of a hollow (m): steep sides.
 pub const HOLLOW_EDGE: f32 = 0.35;
+
+fn hollow_edge() -> f32 {
+    HOLLOW_EDGE
+}
 
 impl Hollow {
     /// How far (x, z) lies outside the hollow (negative inside).
@@ -220,7 +228,7 @@ impl Hollow {
 
     /// The bounding radius, rim included.
     pub fn reach(&self) -> f32 {
-        if self.round { self.half[0] + HOLLOW_EDGE } else { (self.half[0] * self.half[0] + self.half[1] * self.half[1]).sqrt() + HOLLOW_EDGE }
+        if self.round { self.half[0] + self.edge } else { (self.half[0] * self.half[0] + self.half[1] * self.half[1]).sqrt() + self.edge }
     }
 }
 
@@ -267,7 +275,19 @@ impl Road {
     }
 }
 
+/// The most hollows kept dug; past it the oldest small ones fill back in.
+pub const MAX_DUG: usize = 200;
+
 impl Carve {
+    /// Keep `dug` within `MAX_DUG`, filling in the oldest spade pits first
+    /// (a conjured crater outlasts them).
+    pub fn trim_dug(dug: &mut Vec<Hollow>) {
+        while dug.len() > MAX_DUG {
+            let i = dug.iter().position(|h| h.half[0].max(h.half[1]) <= 1.1).unwrap_or(0);
+            dug.remove(i);
+        }
+    }
+
     pub fn all(&self) -> impl Iterator<Item = &Hollow> {
         self.fixed.iter().chain(self.dug.iter())
     }
@@ -308,10 +328,10 @@ impl Carve {
                 continue;
             }
             let e = hl.outside(x, z);
-            if e >= HOLLOW_EDGE {
+            if e >= hl.edge {
                 continue;
             }
-            let w = smoothstep(HOLLOW_EDGE, 0.0, e);
+            let w = smoothstep(hl.edge, 0.0, e);
             if h > hl.floor {
                 out = out.min(h - w * (h - hl.floor));
             }
@@ -492,6 +512,32 @@ impl Terrain {
     /// Whether (x, z) lies on a road (scatter keeps off it).
     pub fn on_road(&self, x: f32, z: f32, margin: f32) -> bool {
         self.carve.read().roads.iter().any(|r| r.dist(x, z) < r.half + margin)
+    }
+
+    /// A fingerprint of the hollows reaching into the box (x0, z0)–(x1, z1):
+    /// changes when ground there is dug, so what stands on it can be placed
+    /// again (see `world::scatter::ScatterCache`).
+    pub fn carve_sig(&self, x0: f32, z0: f32, x1: f32, z1: f32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let c = self.carve.read();
+        if c.index.is_empty() {
+            return 0;
+        }
+        let mut ids: Vec<u32> = Vec::new();
+        for cz in (z0 / CARVE_CELL).floor() as i32..=(z1 / CARVE_CELL).floor() as i32 {
+            for cx in (x0 / CARVE_CELL).floor() as i32..=(x1 / CARVE_CELL).floor() as i32 {
+                ids.extend(c.index.get(&(cx, cz)).into_iter().flatten());
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for hl in ids.into_iter().filter_map(|i| c.get(i)) {
+            for v in [hl.c[0], hl.c[1], hl.half[0], hl.half[1], hl.floor, hl.edge] {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        h.finish()
     }
 
     /// The hollows nearest `p` (at most `n`), for the renderer.

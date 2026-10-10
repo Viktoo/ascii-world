@@ -454,7 +454,7 @@ mod tests {
         let floor = terrain.natural_height(c.x, c.y) - 2.0;
         {
             let mut cv = terrain.carve.write();
-            cv.dug.push(crate::terrain::Hollow { c: [c.x, c.y], rot: [1.0, 0.0], half: [1.0, 1.0], floor, round: true });
+            cv.dug.push(crate::terrain::Hollow { c: [c.x, c.y], rot: [1.0, 0.0], half: [1.0, 1.0], floor, round: true, edge: crate::terrain::HOLLOW_EDGE });
             cv.reindex();
         }
         let start = Vec3::new(c.x, terrain.height(c.x, c.y), c.y);

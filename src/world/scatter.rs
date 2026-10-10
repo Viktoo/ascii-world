@@ -374,6 +374,9 @@ pub struct ScatterCache {
 fn signature(snap: &WorldSnapshot, c: (i32, i32)) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     snap.scatter_epoch.hash(&mut h);
+    // Ground dug in it: what stood there settles into the hollow.
+    let (x0, z0) = (c.0 as f32 * CHUNK, c.1 as f32 * CHUNK);
+    snap.terrain.carve_sig(x0, z0, x0 + CHUNK, z0 + CHUNK).hash(&mut h);
     for p in snap.near_chunk(c) {
         p.id.hash(&mut h);
     }

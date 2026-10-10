@@ -1115,6 +1115,7 @@ pub fn hollow_of(p: &Placed, h: &crate::lang::ir::Hollow) -> crate::terrain::Hol
         half: [h.half[0] * p.scale, h.half[1] * p.scale],
         floor: p.pos.y + h.floor * p.scale,
         round: false,
+        edge: crate::terrain::HOLLOW_EDGE,
     }
 }
 

@@ -25,7 +25,7 @@ struct Globals {
   lights: array<vec4f, 8>,     // point lights: position, intensity
   light_cols: array<vec4f, 8>, // colour, reach (m)
   extra: vec4u,       // hollows, roads, -, -
-  hollows: array<vec4f, 16>,   // per hollow: (cx, cz, cos, sin), (hx, hz, floor, round)
+  hollows: array<vec4f, 64>,   // per hollow: (cx, cz, cos, sin), (hx, hz, floor, ±edge: + round, - box)
   roads: array<vec4f, 32>,     // per road: (ax, az, bx, bz), (half width, r, g, b)
   // weather: 0 (cover, drift x, drift z, cloud height), 1 (cloud rgb, flash),
   // 2 (falls rgb, amount), 3 (wind dir x, z, wind, falls look), 4 (soak, dusk,
@@ -191,29 +191,29 @@ fn cliff_h(x: f32, z: f32, h: f32, cl: f32, amp: f32) -> f32 {
   return h + k * (g - t) * st;
 }
 
-const HOLLOW_EDGE: f32 = 0.35;
-
 // Ground taken away (cellars, houses set into hills, dug pits): the height
 // with the hollows taken out (x) and how far into one the point is (y).
 // Twin of Carve::apply in terrain.rs.
 fn carve(x: f32, z: f32, h: f32) -> vec2f {
   var out = h;
   var wmax = 0.0;
-  let n = min(G.extra.x, 8u);
+  let n = min(G.extra.x, 32u);
   for (var i = 0u; i < n; i = i + 1u) {
     let a = G.hollows[i * 2u];
     let b = G.hollows[i * 2u + 1u];
     let dx = x - a.x; let dz = z - a.y;
     var e: f32;
-    if (b.w > 0.5) {
+    // w: the rim's width, negative for a box.
+    let edge = abs(b.w);
+    if (b.w > 0.0) {
       e = sqrt(dx * dx + dz * dz) - b.x;
     } else {
       let lx = a.z * dx - a.w * dz;
       let lz = a.w * dx + a.z * dz;
       e = max(abs(lx) - b.x, abs(lz) - b.y);
     }
-    if (e >= HOLLOW_EDGE) { continue; }
-    let w = sstep(HOLLOW_EDGE, 0.0, e);
+    if (e >= edge) { continue; }
+    let w = sstep(edge, 0.0, e);
     if (h > b.z) { out = min(out, h - w * (h - b.z)); }
     wmax = max(wmax, w);
   }

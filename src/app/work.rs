@@ -1,4 +1,5 @@
-//! The "working on" box, above the log on the right: slow work in progress
+//! The "working on" box, above the log on the left (clear of what the
+//! traveler holds, on the right): slow work in progress
 //! (a deed the world is deciding, a thing being made or reshaped, a new
 //! gesture), from when it starts until it is done, so there is always a sign
 //! that something is happening. Its kinds are the sim's `WorkKind`s; the land
@@ -136,7 +137,7 @@ impl App {
         }
     }
 
-    /// The box itself, floating bottom right of the view, a little off the
+    /// The box itself, floating bottom left of the view, a little off the
     /// edge and the log. Each line is written out in full, wrapped.
     pub(super) fn draw_work(&mut self, w: u16, vh: u16) {
         if self.work.rows.is_empty() || self.log_view == 2 || self.menu.is_some() {
@@ -195,7 +196,7 @@ impl App {
         }
         let more = first;
         let height = used as u16;
-        let x0 = w - mx - bw as u16;
+        let x0 = mx;
         let y0 = vh - my - height;
         for row in 0..height {
             for col in 0..bw {
