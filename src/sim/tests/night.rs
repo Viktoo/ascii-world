@@ -459,25 +459,28 @@ fn night_lineup_picture() {
     let w = world("night lineup", 43);
     let plate = add_type(&w, &fixture("layers/breastplate.js"));
     let me = w.spawn;
-    let ola = add_char(&w, "Ola", "kind", &[], ground(&w, me.x - 2.4, me.z + 6.0));
+    let ola = add_char(&w, "Ola", "kind", &[], ground(&w, me.x - 2.4, me.z + 4.0));
     let mut s = session(&w, 17, None);
     calm(&mut s);
     s.sim.store_species(super::super::night::walker_species());
     s.sim.store_species(super::super::phantom::phantom_species());
     let mut ids = vec![ola];
     for (i, (name, sp)) in [("the first phantom", "phantom"), ("the second phantom", "phantom"), ("the night walker", "night walker")].iter().enumerate() {
-        let at = ground(&w, me.x - 0.8 + i as f32 * 1.6, me.z + 6.0);
+        let at = ground(&w, me.x - 0.8 + i as f32 * 1.6, me.z + 4.0);
         let persona = crate::world::Persona { name: name.to_string(), species: sp.to_string(), ..Default::default() };
         ids.push(s.sim.add_being(persona, at, Default::default()).unwrap());
     }
     let pl = s.sim.spawn_thing(plate, me, 0.0, 1.0, Default::default(), true).unwrap();
     s.sim.wear(ActorId::Npc(ids[2]), ActorId::Npc(ids[2]), pl).unwrap();
     calm(&mut s);
-    s.sim.t = crate::render::sky::DAY_SECONDS * 0.45;
+    // POCKET_HOUR=22 shows them at night.
+    let hour: f32 = std::env::var("POCKET_HOUR").ok().and_then(|h| h.parse().ok()).unwrap_or(10.8);
+    s.sim.t = crate::render::sky::DAY_SECONDS * (hour / 24.0) as f64;
     for id in &ids {
         let n = s.sim.cast.get_mut(*id).unwrap();
         n.away = false;
-        n.a.yaw = 0.0;
+        // Facing the camera.
+        n.a.yaw = std::env::var("POCKET_YAW").ok().and_then(|y| y.parse().ok()).unwrap_or(std::f32::consts::PI);
     }
     s.run(0.2, 0.05);
     // Night beings shown by day.
@@ -487,6 +490,13 @@ fn night_lineup_picture() {
         sp.active = crate::world::species::Active::Always;
         n.species = Arc::new(sp);
         n.away = false;
+    }
+    // Settle into their stances.
+    for _ in 0..20 {
+        let t = s.sim.t;
+        for id in &ids {
+            s.sim.cast.get_mut(*id).unwrap().a.update_pose(t, 0.05, None);
+        }
     }
     let cam = crate::render::Camera { pos: me + Vec3::Y * 1.5 + Vec3::new(0.0, 0.0, 0.5), yaw: 0.0, pitch: -0.05, fov_y: 1.0, roll: 0.0 };
     render_png(&mut s, &w, cam, &out);
@@ -605,7 +615,7 @@ fn deeds_can_hurt_the_traveler_themselves_and_others() {
     s.sim.cfg.hunting = true;
     s.sim.player.pos = p;
     let deed = |s: &mut Session, target: Option<Target>, hurt: f32, on_self: bool| {
-        let pi = PendingInterp { actor: ActorId::Player, text: "stab".into(), held: None, target, hit: None, key: String::new(), at: 0.0 };
+        let pi = PendingInterp { actor: ActorId::Player, text: "stab".into(), held: None, target, hit: None, key: String::new(), at: 0.0, aim: None };
         let how = (hurt >= 1.0 && !on_self).then(|| "stabbed in the eye with a stick".to_string());
         let fx = InterpEffect { narration: "It hurts.".into(), being: Some(BeingFx { hurt: Some(hurt), how, on_self, ..Default::default() }), ..Default::default() };
         s.sim.apply_interp(&pi, &fx);

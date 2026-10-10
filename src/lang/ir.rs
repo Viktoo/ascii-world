@@ -301,11 +301,15 @@ pub struct Body {
     /// cat's reshaped body from the cat's): layers and kin follow the line.
     #[serde(default)]
     pub from: Option<String>,
+    /// How it stands at rest, per role (in ROLES order): a stoop, an arm
+    /// always half-raised. Added to every pose, so what it wears follows.
+    #[serde(default)]
+    pub rest: [f32; 8],
 }
 
 impl Default for Body {
     fn default() -> Self {
-        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), from: None }
+        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), from: None, rest: [0.0; 8] }
     }
 }
 

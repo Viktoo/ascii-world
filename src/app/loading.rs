@@ -24,6 +24,10 @@ const GENESIS_WEIGHT: f32 = 2.0;
 const BG: [u8; 3] = [10, 11, 15];
 const FOG: [u8; 3] = [40, 43, 56];
 const FAINT: [u8; 3] = [64, 68, 84];
+/// Seconds the countdown starts from: about how long a whole new world takes.
+const ETA_FULL: f32 = 14.0 * 60.0;
+/// While the builder thinks and nothing has come back, the bar creeps towards this.
+const CREEP: f32 = 0.09;
 
 pub(super) struct Loading {
     start: Instant,
@@ -48,6 +52,16 @@ pub(super) struct Loading {
     born: HashMap<i64, Instant>,
     born_beings: HashMap<String, Instant>,
     map: Option<MapCache>,
+    /// How far the bar crept while nothing had come back (frozen once work arrives).
+    creep: f32,
+    /// When the first real progress arrived (the stirring fog fades from then).
+    woke: Option<Instant>,
+    /// How many of the opening lines are shown.
+    intro: usize,
+    /// Seconds left, as shown: ticks down, and drops to what progress says.
+    eta: f32,
+    /// Since when the countdown has been ahead of progress and is held back.
+    held: Option<Instant>,
 }
 
 struct Line {
@@ -104,6 +118,11 @@ impl App {
             born: HashMap::new(),
             born_beings: HashMap::new(),
             map: None,
+            creep: 0.0,
+            woke: None,
+            intro: 0,
+            eta: ETA_FULL,
+            held: None,
         });
         if self.settled() {
             self.loading = None;
@@ -239,9 +258,27 @@ impl App {
         }
         let settled = self.settled();
         let Some(mut l) = self.loading.take() else { return };
-        let target = if settled { 1.0 } else { self.load_progress(&l).min(0.99) };
+        let quiet = !l.work.values().any(|&f| f > 0.0);
+        if quiet {
+            l.creep = CREEP * (1.0 - (-l.start.elapsed().as_secs_f32() / 40.0).exp());
+        } else if l.woke.is_none() {
+            l.woke = Some(Instant::now());
+        }
+        l.opening(quiet);
+        // Real progress fills what the creep left.
+        let target = if settled { 1.0 } else { (l.creep + (1.0 - l.creep) * self.load_progress(&l)).min(0.99) };
         if target > l.shown {
             l.shown = (l.shown + (target - l.shown) * (dt * 2.5).min(1.0) + dt * 0.02).min(target);
+        }
+        // The countdown ticks by itself, drops to what progress says, and never
+        // runs far ahead of it.
+        let by_progress = ETA_FULL * (1.0 - l.shown);
+        l.eta = (l.eta - dt).min(by_progress);
+        if l.eta < by_progress * 0.75 {
+            l.eta = by_progress * 0.75;
+            l.held.get_or_insert_with(Instant::now);
+        } else {
+            l.held = None;
         }
         if settled && l.done_at.is_none() {
             l.done_at = Some(Instant::now());
@@ -341,8 +378,14 @@ impl App {
             format!("filling in the land around you  {k}/{}", rs.len())
         };
         self.screen.text(x0, bar_y + 1, &label, DIM, BG, false);
-        let secs = l.start.elapsed().as_secs();
-        let mut right = format!("{}:{:02}", secs / 60, secs % 60);
+        let secs = l.eta.ceil() as u32;
+        let mut right = if l.held.is_some_and(|h| h.elapsed() > Duration::from_secs(15)) {
+            "a little longer…".to_string()
+        } else if secs < 10 {
+            "almost there".to_string()
+        } else {
+            format!("~{}:{:02} left", secs / 60, secs % 60)
+        };
         if self.brain.has_llm {
             right = format!("{right} · ${:.2}", self.spent());
         }
@@ -435,6 +478,10 @@ impl App {
         // The land forms out to `reach` (in map radii), with a ragged edge.
         let reach = 0.05 + 1.6 * l.shown;
         let frame = (t * 10.0) as u32;
+        // Before anything comes back the fog stirs: motes drift on a slow wind and
+        // a ring pulses out from you. It fades once work arrives.
+        let stir = l.woke.map_or(1.0, |w| 1.0 - w.elapsed().as_secs_f32() / 3.0).max(0.0);
+        let ring = (t / 3.0).fract() * 1.3;
         for j in 0..mh {
             for i in 0..mw {
                 let g = cells[j as usize * mw as usize + i as usize];
@@ -442,7 +489,18 @@ impl App {
                 let v = (j as f32 + 0.5 - mh as f32 / 2.0) / (mh as f32 / 2.0);
                 let e = (u * u + v * v).sqrt() + hash01(i as u32, j as u32, 1) * 0.18;
                 let (ch, fg) = if e > reach {
-                    if i % 4 == 0 && j % 2 == 0 { ('·', FOG) } else { (' ', BG) }
+                    let r = (u * u + v * v).sqrt();
+                    let drift = (t * (0.6 + hash01(j as u32, 0, 8) * 1.4)) as u32;
+                    let mote = hash01((i as u32).wrapping_sub(drift), j as u32, 9);
+                    if stir > 0.0 && (r - ring).abs() < 0.035 && ring < 1.2 {
+                        ('·', mix(FOG, ACCENT, stir * 0.6 * (1.0 - ring / 1.3)))
+                    } else if stir > 0.0 && mote < 0.05 * stir {
+                        (if mote < 0.015 { ':' } else { '·' }, mix(FOG, FAINT, 1.0 - r * 0.5))
+                    } else if i % 4 == 0 && j % 2 == 0 {
+                        ('·', FOG)
+                    } else {
+                        (' ', BG)
+                    }
                 } else if e > reach - 0.07 {
                     let k = (hash01(i as u32, j as u32, frame) * 4.0) as usize;
                     (['·', ':', '+', '*'][k.min(3)], mix(FOG, ACCENT, 0.55))
@@ -511,6 +569,12 @@ impl App {
             }
             let verb = format!("{:>9}  ", line.verb);
             let x2 = self.screen.text(x, row, &verb, mix(DIM, FOG, age), BG, false);
+            if line.text.is_empty() {
+                // The builder thinking: dots that come and go until work arrives.
+                let n = if l.woke.is_none() { 1 + (line.at.elapsed().as_secs_f32() * 2.0) as usize % 3 } else { 3 };
+                self.screen.text(x2, row, &"·".repeat(n), if l.woke.is_none() { ACCENT } else { fg }, BG, false);
+                continue;
+            }
             self.screen.text(x2, row, &clip_words(&line.text, w.saturating_sub(11)), fg, BG, false);
         }
     }
@@ -530,6 +594,34 @@ fn clip_words(s: &str, n: usize) -> String {
 }
 
 impl Loading {
+    /// The first lines, so the log says what is happening while the builder
+    /// thinks and nothing has come back yet.
+    fn opening(&mut self, quiet: bool) {
+        if !quiet {
+            return;
+        }
+        let t = self.start.elapsed().as_secs_f32();
+        let words: Vec<&str> = self.prompt.split_whitespace().collect();
+        let asked = if words.len() > 7 { format!("“{}…”", words[..7].join(" ")) } else { format!("“{}”", words.join(" ")) };
+        let lines: Vec<(f32, &'static str, String)> = if self.genesis {
+            vec![
+                (0.3, "reading", if words.is_empty() { "a blank page".into() } else { asked }),
+                (1.6, "asking", "the builder to dream up a land".into()),
+                (3.2, "thinking", String::new()),
+                (25.0, "", "a whole land takes a minute or so to imagine before it starts to arrive".into()),
+            ]
+        } else {
+            vec![(0.3, "asking", "the builder for the land around you".into()), (1.6, "thinking", String::new())]
+        };
+        while let Some((at, verb, text)) = lines.get(self.intro) {
+            if t < *at {
+                break;
+            }
+            self.push(verb, text);
+            self.intro += 1;
+        }
+    }
+
     fn push(&mut self, verb: &'static str, text: &str) {
         self.lines.push_back(Line { verb, text: text.to_string(), at: Instant::now() });
         while self.lines.len() > 200 {
@@ -627,6 +719,9 @@ mod tests {
         assert_eq!(app.spent(), 0.0, "making the world is not counted in the session's spend");
         assert!(saw_bar && saw_names, "bar {saw_bar}, names {saw_names}");
         assert_eq!(app.snap.look.name, "Greywater Coast");
+        // Genesis starts you in the middle of a region: only that one is in sight.
+        let needed = app.settle_regions();
+        assert_eq!(needed.len(), 1, "{needed:?}");
         for r in needed {
             assert!(app.snap.regions.contains_key(&r) || app.regions_failed.contains(&r), "region {r:?} made before entering");
         }

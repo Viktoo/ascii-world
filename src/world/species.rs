@@ -528,6 +528,8 @@ pub struct Dims {
     /// at rest (hovering bodies keep bobbing).
     pub stride: f32,
     pub idle: f32,
+    /// The body's stance at rest, added to every pose (role order).
+    pub rest: [f32; 8],
 }
 
 impl Default for Dims {
@@ -560,6 +562,7 @@ impl Dims {
             mass,
             stride: stride(&b.gait, b.height * r, b.radius * r),
             idle: if b.gait == "hover" { 2.0 } else { 0.0 },
+            rest: b.rest,
         }
     }
 }

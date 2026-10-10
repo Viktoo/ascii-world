@@ -220,6 +220,17 @@ pub struct PendingInterp {
     pub hit: Option<glam::Vec3>,
     pub key: String,
     pub at: f64,
+    /// Where the doer stood and looked when asking: what it makes appears there.
+    pub aim: Option<Aim>,
+}
+
+/// A pose to make things from: feet, eye, and where the eye looks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Aim {
+    pub pos: glam::Vec3,
+    pub eye: glam::Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -391,7 +402,7 @@ impl Sim {
         self.deed_started(who, text, target.as_ref().map(|r| r.target.clone()));
         if let Some(fx) = super::persist::cached_interp(&self.db, &key) {
             self.interp.hits += 1;
-            let p = PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t };
+            let p = PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t, aim: Some(self.aim_of(who)) };
             let (msg, wait) = self.apply_interp(&p, &fx);
             if !fx.builds() {
                 self.deed_landed(who);
@@ -417,7 +428,7 @@ impl Sim {
             let at = self.actor(who).map(|a| a.pos).unwrap_or_default();
             self.request(req, at);
         }
-        self.interp.pending.insert(id, PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t });
+        self.interp.pending.insert(id, PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t, aim: Some(self.aim_of(who)) });
         Ok(Outcome { ok: true, msg: format!("{name} tries to {text}…"), pending: Some(id), thing: None })
     }
 
@@ -736,7 +747,7 @@ impl Sim {
         }
         for m in fx.make.iter().take(1) {
             if !m.text.trim().is_empty() {
-                match self.act(p.actor, super::Action::Create { text: m.text.trim().to_string() }) {
+                match self.create(p.actor, m.text.trim().to_string(), p.aim) {
                     Ok(o) => waits.extend(o.pending),
                     Err(e) => why.push(e.to_string()),
                 }

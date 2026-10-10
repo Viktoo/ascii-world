@@ -649,36 +649,7 @@ impl Sim {
                 }
                 self.interpret(who, &text, target, at.map(Vec3::from))
             }
-            Action::Create { text } => {
-                if !self.has_llm {
-                    return fail("making new things needs an LLM");
-                }
-                if let Err(e) = self.may_make(who) {
-                    return fail(e);
-                }
-                let id = self.next_id();
-                let eye = me.eye();
-                let pitch = if who == ActorId::Player { self.look_pitch } else { -0.12 };
-                let cam = crate::render::Camera { pos: eye, yaw: me.yaw, pitch, fov_y: 1.05, roll: 0.0 };
-                let npcs = self.npc_views();
-                let snap = self.snap.clone();
-                let view = crate::world::describe::describe(&snap, &mut self.cache, &npcs, &cam, 1.6, self.t);
-                let ahead = me.pos + me.forward() * 6.0;
-                let target = match &view.target {
-                    Some(t) if t.distance > 3.0 && t.distance < 30.0 => Vec3::new(t.x, t.y, t.z),
-                    _ => Vec3::new(ahead.x, self.snap.terrain.height(ahead.x, ahead.z), ahead.z),
-                };
-                let req = Request::Create { id, by: who, text: text.clone(), target, yaw: me.yaw, view: Box::new(view) };
-                if who == ActorId::Player {
-                    self.request_now(req);
-                } else {
-                    self.request(req, me.pos);
-                }
-                self.interp.creating.insert(id, (who, self.t, text.clone(), target));
-                self.made_one(who, &text);
-                self.event("create", Some(who), None, format!("{name} sets out to make {text}"), Some(me.pos), json!({ "text": text, "id": id }));
-                Ok(Outcome { ok: true, msg: format!("{name} starts making {text}"), pending: Some(id), thing: None })
-            }
+            Action::Create { text } => self.create(who, text, None),
             Action::Say { text, to } => {
                 let text = text.trim().to_string();
                 if text.is_empty() {
@@ -1165,6 +1136,47 @@ impl Sim {
         };
         let target = object.or(Some(tool));
         self.interpret(who, &text, target, at)
+    }
+
+    /// Start making `text` where `aim` looked (the pose when the deed was
+    /// asked for), or else where the maker looks now.
+    pub(super) fn create(&mut self, who: ActorId, text: String, aim: Option<super::interp::Aim>) -> Result<Outcome, ActErr> {
+        let me = self.actor(who).cloned().ok_or(ActErr::Fail("no such actor".into()))?;
+        let name = self.actor_name(who);
+        if !self.has_llm {
+            return fail("making new things needs an LLM");
+        }
+        if let Err(e) = self.may_make(who) {
+            return fail(e);
+        }
+        let aim = aim.unwrap_or_else(|| self.aim_of(who));
+        let id = self.next_id();
+        let cam = crate::render::Camera { pos: aim.eye, yaw: aim.yaw, pitch: aim.pitch, fov_y: 1.05, roll: 0.0 };
+        let npcs = self.npc_views();
+        let snap = self.snap.clone();
+        let view = crate::world::describe::describe(&snap, &mut self.cache, &npcs, &cam, 1.6, self.t);
+        let ahead = aim.pos + Vec3::new(aim.yaw.sin(), 0.0, aim.yaw.cos()) * 6.0;
+        let target = match &view.target {
+            Some(t) if t.distance > 3.0 && t.distance < 30.0 => Vec3::new(t.x, t.y, t.z),
+            _ => Vec3::new(ahead.x, self.snap.terrain.height(ahead.x, ahead.z), ahead.z),
+        };
+        let req = Request::Create { id, by: who, text: text.clone(), target, yaw: aim.yaw, view: Box::new(view) };
+        if who == ActorId::Player {
+            self.request_now(req);
+        } else {
+            self.request(req, me.pos);
+        }
+        self.interp.creating.insert(id, (who, self.t, text.clone(), target));
+        self.made_one(who, &text);
+        self.event("create", Some(who), None, format!("{name} sets out to make {text}"), Some(me.pos), json!({ "text": text, "id": id }));
+        Ok(Outcome { ok: true, msg: format!("{name} starts making {text}"), pending: Some(id), thing: None })
+    }
+
+    /// Where `who` stands and looks right now.
+    pub(super) fn aim_of(&self, who: ActorId) -> super::interp::Aim {
+        let (pos, eye, yaw) = self.actor(who).map(|a| (a.pos, a.eye(), a.yaw)).unwrap_or_default();
+        let pitch = if who == ActorId::Player { self.look_pitch } else { -0.12 };
+        super::interp::Aim { pos, eye, yaw, pitch }
     }
 
     fn eat(&mut self, who: ActorId, id: ThingId) -> Result<Outcome, ActErr> {

@@ -87,6 +87,7 @@ struct Info {
     look: Arc<Look>,
     /// The region the traveler begins in.
     start: (i32, i32),
+    spawn: Vec3,
 }
 
 /// What every request is told the universe is: the land once genesis has
@@ -228,7 +229,7 @@ fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>) {
                 let _ = reply.send(model.history());
             }
             CMsg::Info(r, reply) => {
-                let _ = reply.send(Info { types: model.type_names(), terrain: model.terrain(), neighbours: model.region_names_near(r), look: model.look.clone(), start: crate::world::region_of(model.spawn.x, model.spawn.z) });
+                let _ = reply.send(Info { types: model.type_names(), terrain: model.terrain(), neighbours: model.region_names_near(r), look: model.look.clone(), start: crate::world::region_of(model.spawn.x, model.spawn.z), spawn: model.spawn });
             }
         }
     }
@@ -1067,8 +1068,13 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         type_list.join("\n")
     );
     let task = format!("{task}\nSpecies in this universe:\n{}\n{}", species_list(&ctx.db), folk_note(&ctx.db));
-    let task = if r == info.start && !info.look.start.is_empty() {
-        format!("{task}\n\nThe traveler begins in this region: {}\nPlan the region around it.", info.look.start)
+    let task = if r == info.start {
+        // The first thing a newcomer finds is someone to meet.
+        let (x, z) = (info.spawn.x - r.0 as f32 * crate::world::REGION, info.spawn.z - r.1 as f32 * crate::world::REGION);
+        let place = if info.look.start.is_empty() { String::new() } else { format!("The traveler begins in this region: {}\n", info.look.start) };
+        format!(
+            "{task}\n\n{place}The traveler arrives at ({x:.0}, {z:.0}). Give this region a settlement with people (however small, in keeping with the land) within about 60 m of that spot, so the first thing they find is someone to meet. Plan the region around it."
+        )
     } else if !info.look.land.is_empty() {
         format!("{task}\n\nThe traveler did not begin here: make this region its own place in the land, different from its neighbours.")
     } else {

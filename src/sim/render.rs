@@ -188,6 +188,9 @@ impl Sim {
                     if of_the_dark {
                         g.fx[FX_CHAR] = DARK_OWN;
                         g.fx[FX_GLOW] = if body.ct.marks_glow() { 1.6 } else { 0.0 };
+                    } else if body.ct.marks_glow() {
+                        // A body that marks lit parts (a phantom's eyes) always shows them.
+                        g.fx[FX_GLOW] = g.fx[FX_GLOW].max(1.6);
                     }
                     if marks.actors.contains(&ActorId::Npc(n.def.id)) {
                         g.fx[FX_HIGHLIGHT] = g.fx[FX_HIGHLIGHT].max(breath);
@@ -199,6 +202,9 @@ impl Sim {
                     if of_the_dark {
                         let p = n.a.pos + Vec3::Y * n.a.dims.eye;
                         lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(1.0, 0.08, 0.04), intensity: 0.12, reach: 1.6 }));
+                    } else if body.ct.marks_glow() && n.glow() <= 0.05 {
+                        let p = n.a.pos + Vec3::Y * n.a.dims.eye;
+                        lights.push(((p - cam).length(), PointLight { pos: p, color: Vec3::new(0.85, 0.92, 1.0), intensity: 0.1, reach: 1.4 }));
                     } else if n.glow() > 0.05 {
                         let p = n.a.pos + Vec3::Y * n.a.dims.height * 0.6;
                         let gl = n.glow().min(1.0);

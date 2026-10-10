@@ -704,7 +704,11 @@ impl Actor {
         if !has(SPREAD) && goal[SPREAD] != 0.0 && goal[NOD] == 0.0 {
             goal[NOD] = goal[SPREAD].abs() * 0.3;
         }
+        // The body's own stance holds unless something asks more of it.
         for i in 0..8 {
+            if goal[i].abs() < self.dims.rest[i].abs() {
+                goal[i] = self.dims.rest[i];
+            }
             if !has(i) {
                 goal[i] = 0.0;
             }

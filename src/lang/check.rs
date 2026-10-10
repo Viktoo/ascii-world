@@ -613,6 +613,27 @@ impl<'s> Cx<'s> {
                     Expression::StringLiteral(s) if ["biped", "quad", "slither", "hover"].contains(&s.value.as_str()) => b.gait = s.value.to_string(),
                     _ => bad(self, "meta.body.gait must be \"biped\", \"quad\", \"slither\" or \"hover\"".into()),
                 },
+                "rest" => match &p.value {
+                    Expression::ObjectExpression(ro) => {
+                        for rp in ro.properties.iter() {
+                            let js::ObjectPropertyKind::ObjectProperty(rp) = rp else { continue };
+                            let name = match &rp.key {
+                                js::PropertyKey::StaticIdentifier(id) if !rp.computed => role_alias(id.name.as_str()),
+                                js::PropertyKey::StringLiteral(s) => role_alias(s.value.as_str()),
+                                _ => {
+                                    bad(self, "meta.body.rest keys must be role names".into());
+                                    continue;
+                                }
+                            };
+                            match (ROLES.iter().position(|r| *r == name), literal_num(&rp.value)) {
+                                (Some(i), Some(v)) if v.is_finite() && v.abs() <= 1.5 => b.rest[i] = v,
+                                (None, _) => bad(self, format!("unknown role '{name}' in meta.body.rest (use {})", ROLES.join(", "))),
+                                _ => bad(self, format!("meta.body.rest.{name} must be a number in [-1.5, 1.5]")),
+                            }
+                        }
+                    }
+                    _ => bad(self, "meta.body.rest must be an object of role: amount, e.g. { lean: 0.3, reach_r: 0.5 }".into()),
+                },
                 "from" => match &p.value {
                     Expression::StringLiteral(s) if !s.value.trim().is_empty() && s.value.len() <= 64 => b.from = Some(s.value.trim().to_string()),
                     _ => bad(self, "meta.body.from must be the name of the body it was written from".into()),
@@ -653,7 +674,7 @@ impl<'s> Cx<'s> {
                     }
                     _ => bad(self, "meta.body.look must be an object of [lo, hi] ranges, e.g. { height: [1.5, 2.0] }".into()),
                 },
-                _ => bad(self, format!("unknown key meta.body.{key} (height, eye, radius, reach, grip, seat, roles, gait, flies, arms, look, from)")),
+                _ => bad(self, format!("unknown key meta.body.{key} (height, eye, radius, reach, grip, seat, roles, gait, flies, arms, look, from, rest)")),
             }
         }
         b.eye = eye.unwrap_or(b.height * 0.92).min(b.height * 1.2);

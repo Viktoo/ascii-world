@@ -175,7 +175,17 @@ fn type_entry(id: u32, ct: Arc<CompiledType>, bottom: f32, top: f32, builtin: bo
 
 /// Choose a dry, gentle spawn point near the origin.
 pub fn find_spawn(t: &Terrain) -> Vec3 {
-    let mut best = Vec3::ZERO;
+    spawn_near(t, 0.0)
+}
+
+/// For a newly made land: near the middle of the first region, so only that
+/// one region is in sight and loading waits for it alone.
+pub fn find_first_spawn(t: &Terrain) -> Vec3 {
+    spawn_near(t, crate::world::REGION / 2.0)
+}
+
+fn spawn_near(t: &Terrain, mid: f32) -> Vec3 {
+    let mut best = Vec3::new(mid, 0.0, mid);
     let mut best_score = f32::MAX;
     // Spiral outwards. Past the first ~180 m, take the first dry spot: a world
     // can open on a wide lake, and spawning on its bed leaves the player stuck.
@@ -185,10 +195,14 @@ pub fn find_spawn(t: &Terrain) -> Vec3 {
         }
         let a = i as f32 * 2.399;
         let r = (i as f32).sqrt() * 9.0;
-        let (x, z) = (a.cos() * r, a.sin() * r);
+        let (x, z) = (mid + a.cos() * r, mid + a.sin() * r);
         let h = t.height(x, z);
         let n = t.normal(x, z);
         let mut score = r * 0.02 + (1.0 - n.y) * 30.0;
+        if mid > 0.0 && r > 18.0 {
+            // Further out, more regions come into sight.
+            score += 5.0;
+        }
         if h < WATER_LEVEL + 1.5 {
             score += 100.0;
         }
@@ -861,7 +875,7 @@ impl WorldModel {
         }
 
         // A new look changes the terrain: pick a new dry spawn point.
-        let new_spawn = req.look.as_ref().map(|_| find_spawn(&terrain));
+        let new_spawn = req.look.as_ref().map(|_| find_first_spawn(&terrain));
 
         // Commit to SQLite as one new version.
         let parent = self.current;

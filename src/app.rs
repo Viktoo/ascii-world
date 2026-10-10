@@ -1016,6 +1016,11 @@ impl App {
             }
             Event::GenesisDone => {
                 self.genesis_pending = false;
+                // Nobody has moved yet: begin where the new land says, by the start region's settlement.
+                if self.loading.is_some() {
+                    self.sim.player.pos = self.snap.spawn;
+                    self.cam_y = self.sim.player.pos.y + self.sim.player.dims.eye;
+                }
             }
             Event::History(lines) => {
                 self.say(None, "World history (newest first):", DIM);
