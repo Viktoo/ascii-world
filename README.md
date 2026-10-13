@@ -1,8 +1,8 @@
 # Pocket Universe
 
-An infinite, colour 3D world in your terminal. You walk with the arrow keys, talk to
-characters who remember you, and type to create new things. An LLM writes the world
-as code while you're in it. Rendering runs on the GPU; the terminal is just one view.
+An infinite, colour 3D world in a window of its own. You walk with the keys (and look
+with the mouse), talk to characters who remember you, and type to create new things.
+An LLM writes the world as code while you're in it. Rendering runs on the GPU.
 
 The world is alive between your visits: things have properties (they burn, bounce,
 break, grow), simple rules act on those properties, objects can carry their own
@@ -29,21 +29,18 @@ an axe chops (and fells a tree), a spade digs a pit. See [docs/physics.md](docs/
 
 ```bash
 export ANTHROPIC_API_KEY=...        # or POCKET_LLM_BASE_URL for any OpenAI-compatible endpoint
+pocket                              # open the game on your last universe (or a new one, the first time)
+pocket list                         # open on your worlds: arrows choose, N a new one, D delete
+pocket new                          # open on the new-world screen, a random prompt: Enter takes
+                                    # it, Tab rolls another, typing replaces it, the arrows edit it
 pocket new "a rainy coastal valley where the lighthouse keeper vanished"   # check or edit it, Enter to begin
-pocket new                          # opens on a random prompt: Enter takes it, Tab rolls
-                                    # another, typing replaces it, the arrows edit it
-pocket                              # reopen your last universe (or start one, the first time)
-pocket list                         # choose a world with the arrow keys, d to delete one, or n
-                                    # for a new one (the same new-world screen)
-pocket window                       # play your last universe in a window of its own
 ```
 
-### In a window
-
-`pocket window [FILE]` plays the same game in a window: the world drawn smoothly
-instead of in blocks, the text in a sans-serif (Inter, `assets/fonts`). Click the
-view to look with the mouse (it lets go when a menu or typing opens; `Esc` as
-always). `Cmd+Q` saves and quits. New worlds are still made in the terminal.
+Everything happens in one window: your worlds, the new-world screen, loading, play.
+`Esc` → **Your worlds** goes back to the list from a game (it is saved). Click the view
+to look with the mouse (it lets go when a menu or typing opens). `Cmd+V` pastes,
+`Cmd+Q` (or closing the window) saves and quits. Titles are set in Fraunces, the rest
+in Nunito (`assets/fonts`, both OFL).
 
 The world is drawn at fewer lines than the window has and scaled up (with edge
 smoothing). `Esc` → **Window detail** sets how many: **auto** (the default) holds the
@@ -52,10 +49,12 @@ behind; or a fixed 180p…1080p, or every pixel. `F1` shows the fps, GPU time an
 size drawn. `POCKET_WINDOW_DETAIL=360` fixes it for one run; `POCKET_NO_VSYNC=1`
 lifts vsync to see the peak.
 
-For checking changes without a screen (agents, scripts): `pocket window FILE --shot
-out.png [--size 1600x1000] [--scale 2] [--after 8] [--keys esc,down]` runs the game
-unseen for a while, presses the keys a second before the end, saves the window as a
-PNG, and prints the frame stats. Work on a copy of the world: it saves like play does.
+For checking changes without a screen (agents, scripts), any of those commands takes
+`--shot out.png [--size 1600x1000] [--scale 2] [--after 8] [--keys esc,down]`: it runs
+the same screens unseen for a while, presses the keys a second before the end, saves
+the window as a PNG and what it says as `out.txt`, and (in a world) prints the frame
+stats. `pocket FILE --shot …` plays FILE; `pocket list --shot … --keys n` shows the
+new-world screen. Work on a copy of a world: it saves like play does.
 
 ## Build
 
@@ -70,7 +69,7 @@ cargo build --release      # → target/release/pocket
 
 | Mode | Enter with | Keys |
 |---|---|---|
-| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, `Tab` blocks/ASCII, `F1` stats, `F2` inspect; quit from the `Esc` menu (`q` there, or the Quit row) |
+| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, click the view to look with the mouse, `F1` stats, `F2` inspect; quit from the `Esc` menu (`q` there, or the Quit row) |
 | Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`; a fire or other incident is one line, updated as it goes); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
 | Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
 | Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `q` quit the game, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings, and a Quit game row. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
@@ -164,10 +163,6 @@ things sound as their properties or `meta.sound` say. `Sound` and `Volume` are i
 behaviour code and the rules that last fired on it; a character's needs, plan, goal,
 relationships, recent decisions and memories.
 
-- Terminals with the kitty keyboard protocol (Kitty, Ghostty, WezTerm, foot, …) report
-  key releases, so holding `W` walks at constant speed and stops the moment you let go.
-  Elsewhere every press/repeat event takes one short step.
-- Truecolor is used when `COLORTERM` says so; otherwise 256 colours.
 - The world saves continuously into one `.pocket` file (SQLite), including what characters
   are in the middle of (plans, missions, favours), which carries on when you come back.
   Copy it to fork a world.
@@ -218,7 +213,7 @@ switched off with a one-line notice.
 ## How it works
 
 ```
-main thread ── input, sim tick, culling, compositing, terminal output (one write/frame)
+main thread ── window events, sim tick, culling, compositing, presenting (one draw/frame)
 render thread ─ wgpu device: raymarch compute pass → storage buffer → 3 readback buffers
 tokio runtime ─ LLM calls (SSE streaming), job orchestration
 worker pool ── parse, allowlist, translate, probe (spawn_blocking)
@@ -236,12 +231,13 @@ used near the camera and on rock faces within 80 m. Shading: sun/moon with soft 
 sky gradient with stars, and water with Fresnel reflections. One in-game day lasts 20
 real minutes.
 
-**Terminal** (`src/term.rs`). Quadrant cells (`▘▀▚▌`…, 2×2 pixels each: the split into
-two colours that best fits the four pixels, with half-blocks winning ties and near-flat
-cells drawn plain) or coloured ASCII. Each frame is diffed against what is already on screen; only
-changed cells are sent, colour codes only when they change, inside a synchronized-update
-block, in one write. Never clears. Raw mode, alternate screen and keyboard flags are
-restored on quit, Ctrl-C, SIGTERM/SIGHUP or a panic.
+**Screen and window** (`src/term.rs`, `src/window/`). Every screen draws into a grid of
+text cells, plus soft shapes (panels, pills, keycaps) and free text (titles) over it.
+The window draws the world frame scaled up (Catmull-Rom with edge smoothing) where
+cells let it through, the cells' backgrounds and block/box characters as exact shapes,
+the shapes, then the words: runs of cells set in Nunito, each starting at its cell.
+Without a window (tests, `pocket snapshot`) the same grid is written out as terminal
+text in quadrant cells (`▘▀▚▌`…, 2×2 pixels each).
 
 **The world** (`src/world/`). 64 m chunks, 4×4-chunk regions. Terrain, biomes and scatter
 (trees, rocks, bushes, grass, flowers, tall grass) are pure functions of the seed and are
@@ -563,7 +559,7 @@ How the acceptance criteria are covered:
 | `/a lighthouse on that hill` while walking | `app::tests::talk_create_undo_via_keys`, `e2e_tests` |
 | Character remembers after a restart | `e2e_tests` (reopens the file, checks the prompt and the reply) |
 | Can't walk through solids or up rock faces; sliding | `world::collide::tests` |
-| Terminal restored after quit / Ctrl-C / panic | verified in a pty: raw mode off, echo on, alternate screen left, cursor shown |
+| Quit, Ctrl-C or SIGTERM from any screen saves and exits cleanly | `pocket list` / `pocket FILE` in a window, signalled |
 | Copy a `.pocket` file → identical world that diverges independently | `e2e_tests` |
 | Constant-speed held keys with keyboard enhancement | `app::tests::held_key_moves_at_constant_speed_and_stops_on_release` |
 | Same seed, same history | `sim::tests::same_seed_same_history`, `pocket sim --verify` |
@@ -611,7 +607,7 @@ The LLM-dependent tests use a scripted model in-process (no network).
 - Bodies are one shape each with eight pose roles and five look sliders; gestures
   are stylised. Every body moves the same way over the ground (gait only sets how its
   walk animation runs): nothing burrows or climbs yet. Nothing smaller than a cat: at
-  terminal resolution it would be a pixel.
+  low window detail it would be a pixel.
 - Layers can't change what a body can do (wings on a saddle); see the plan's parking lot.
 - The LLM paths (plans, interpretation, overheard talk, new types on demand, universe
   rules at genesis) are tested with a scripted model; tune the prompts in

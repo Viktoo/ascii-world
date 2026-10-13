@@ -492,6 +492,7 @@ pub struct FrameRequest {
     pub look: Arc<crate::world::Look>,
 }
 
+#[derive(Clone)]
 pub struct Frame {
     pub id: u64,
     pub width: u32,

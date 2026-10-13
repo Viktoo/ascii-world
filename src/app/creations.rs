@@ -294,5 +294,6 @@ impl App {
             let s = format!("{}{t:<width$} ", if sel { "› " } else { "  " }, width = pw - 3);
             self.screen.text(x0, y, &s, fg, if sel { SEL_BG } else { BG }, sel);
         }
+        self.dress_panel(x0, y0, pw as u16, vh, 3);
     }
 }

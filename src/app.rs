@@ -14,7 +14,7 @@ use crate::world::characters::TALK_RANGE;
 use crate::world::collide::{Obstacles, PLAYER_RADIUS};
 use crate::world::describe::describe;
 use crate::world::{WorldSnapshot, cull, region_center, region_of};
-use crossterm::event::{self, Event as TEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -98,26 +98,13 @@ pub trait Frontend {
     fn wait(&mut self, d: Duration);
 }
 
-/// The terminal (or, without input, a sink for tests and scripts).
-pub struct TermFront<'a> {
-    pub input: bool,
+/// No window: the screen goes to a writer as terminal text (tests, scripts, benches).
+pub struct Headless<'a> {
     pub out: &'a mut dyn Write,
 }
 
-impl Frontend for TermFront<'_> {
-    fn input(&mut self, app: &mut App) -> std::io::Result<()> {
-        if !self.input {
-            return Ok(());
-        }
-        while event::poll(Duration::ZERO)? {
-            match event::read()? {
-                TEvent::Key(k) => app.on_key(k),
-                TEvent::Resize(w, h) => app.resize(w, h),
-                TEvent::Paste(s) => app.paste(&s),
-                TEvent::FocusLost => app.focus_lost(),
-                _ => {}
-            }
-        }
+impl Frontend for Headless<'_> {
+    fn input(&mut self, _: &mut App) -> std::io::Result<()> {
         Ok(())
     }
 
@@ -126,11 +113,7 @@ impl Frontend for TermFront<'_> {
     }
 
     fn wait(&mut self, d: Duration) {
-        if self.input {
-            let _ = event::poll(d);
-        } else {
-            std::thread::sleep(d.min(Duration::from_millis(2)));
-        }
+        std::thread::sleep(d.min(Duration::from_millis(2)));
     }
 }
 
@@ -174,7 +157,6 @@ pub struct App {
     log: VecDeque<LogLine>,
     keys: Keys,
     pub enhanced: bool,
-    ascii: bool,
     debug: bool,
     pub screen: Screen,
     last_frame: Option<Frame>,
@@ -248,6 +230,8 @@ pub struct App {
     sound_cmds: Vec<crate::audio::mix::Cmd>,
     /// Shown in a window rather than a terminal.
     pub win: Option<WinGeom>,
+    /// Left for the list of worlds (not quit).
+    pub to_worlds: bool,
     /// Window detail on auto: the lines drawn now, and when they last changed.
     auto_lines: f32,
     auto_at: Instant,
@@ -296,7 +280,6 @@ impl App {
             log: VecDeque::new(),
             keys: Keys::default(),
             enhanced: s.enhanced,
-            ascii: false,
             debug: false,
             screen: Screen::new(s.size.0, s.size.1, s.truecolor),
             last_frame: None,
@@ -347,6 +330,7 @@ impl App {
             foley: Default::default(),
             sound_cmds: Vec::new(),
             win: None,
+            to_worlds: false,
             auto_lines: 240.0,
             auto_at: Instant::now(),
         };
@@ -474,7 +458,7 @@ impl App {
             }
             return (pw.max(8), ph.max(8), 1.0);
         }
-        let (mut pw, mut ph, aspect) = if self.ascii { (w as u32, vh as u32, 0.5) } else { (w as u32 * 2, vh as u32 * 2, 0.5) };
+        let (mut pw, mut ph, aspect) = (w as u32 * 2, vh as u32 * 2, 0.5);
         if self.render.cpu_fallback {
             pw = pw.div_ceil(2);
             ph = ph.div_ceil(2);
@@ -579,12 +563,6 @@ impl App {
             KeyCode::Tab if self.log_view > 0 => {
                 self.journal_filter = self.journal_filter.next();
                 self.log_scroll = 0;
-                self.dirty = true;
-            }
-            KeyCode::Tab if self.win.is_none() => {
-                self.ascii = !self.ascii;
-                self.screen.resize(self.screen.w, self.screen.h);
-                self.last_frame = None;
                 self.dirty = true;
             }
             KeyCode::Char('/') => {
@@ -1457,11 +1435,12 @@ impl App {
 
     fn compose(&mut self) {
         let (w, vh, log_rows) = self.layout();
+        self.screen.clear_decor();
         // Viewport.
         if self.win.is_some() {
             self.screen.fill_world(vh);
         } else if let Some(f) = &self.last_frame {
-            frame_to_cells(f, &mut self.screen, w, vh, self.ascii);
+            frame_to_cells(f, &mut self.screen, w, vh, false);
         } else {
             for y in 0..vh {
                 self.screen.fill_row(y, Cell { bg: [0, 0, 0], ..Cell::BLANK });
@@ -1533,7 +1512,11 @@ impl App {
                     (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings/quit".into(),
                 };
                 let hint = if self.sim.fallen() { "You lie where you fell.   Enter wake   Esc settings/quit".to_string() } else { hint };
-                self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
+                if self.win.is_some() {
+                    self.screen.hints(1, iy, &hint, DIM, PANEL_BG);
+                } else {
+                    self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
+                }
             }
             _ => {
                 let prompt = match self.mode {
@@ -1548,7 +1531,14 @@ impl App {
                 };
                 let x = self.screen.text(1, iy, &shown, TEXT, PANEL_BG, false);
                 let blink = (self.start.elapsed().as_millis() / 500) % 2 == 0;
-                self.screen.set(x, iy, Cell { ch: if blink { '▏' } else { ' ' }, fg: ACCENT, bg: PANEL_BG, bold: false });
+                if self.win.is_some() {
+                    // A caret where the words end (they are narrower than their cells).
+                    if blink {
+                        self.screen.caret = Some((x, iy, ACCENT));
+                    }
+                } else {
+                    self.screen.set(x, iy, Cell { ch: if blink { '▏' } else { ' ' }, fg: ACCENT, bg: PANEL_BG, bold: false });
+                }
                 if self.replying.is_some() {
                     self.screen.text(w.saturating_sub(12), iy, "(listening)", DIM, PANEL_BG, false);
                 }
@@ -1667,6 +1657,23 @@ impl App {
         let red = [236, 62, 50];
         let shadow = [40, 0, 0];
         let title = "YOU DIED";
+        if self.win.is_some() {
+            // In a window: the words themselves, large.
+            let mut y = (vh as f32 / 2.0 - 3.0).max(2.0);
+            self.screen.labels.push(crate::term::Label { x: w as f32 / 2.0 + 0.15, y: y + 0.2, text: "You died".into(), size: 5.0, color: shadow, face: crate::term::Face::Title, center: true });
+            self.screen.title(w as f32 / 2.0, y, "You died", 5.0, red);
+            y += 4.0;
+            let by = self.sim.night.fallen.clone().unwrap_or_default();
+            let line = format!("{}.", crate::sim::physics::cap(&by));
+            self.text_over(w.saturating_sub(line.chars().count() as u16) / 2, y as u16, &line, TEXT, false);
+            if s > FALL_SECS {
+                let pulse = 0.6 + 0.4 * (s * 2.5).sin().abs();
+                let c = [(255.0 * pulse) as u8, (220.0 * pulse) as u8, (200.0 * pulse) as u8];
+                let hint = "Press Enter to wake where you began, in the morning";
+                self.text_over(w.saturating_sub(hint.chars().count() as u16) / 2, y as u16 + 2, hint, c, false);
+            }
+            return;
+        }
         let big: Vec<String> = (0..5).map(|row| title.chars().map(|ch| glyph(ch)[row]).collect::<Vec<_>>().join(" ")).collect();
         let bw = big[0].chars().count() as u16;
         let mut y = (vh as i32 / 2 - 5).max(1) as u16;
@@ -1993,8 +2000,9 @@ impl App {
 
     // ------------------------------------------------------------------ loop
 
-    pub fn run(&mut self, input: bool, out: &mut dyn Write, stop: &AtomicBool, script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
-        self.run_on(&mut TermFront { input, out }, stop, script)
+    /// Run without a window, the screen written to `out`.
+    pub fn run(&mut self, out: &mut dyn Write, stop: &AtomicBool, script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
+        self.run_on(&mut Headless { out }, stop, script)
     }
 
     pub fn run_on(&mut self, front: &mut dyn Frontend, stop: &AtomicBool, mut script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
@@ -2521,7 +2529,7 @@ mod tests {
             t += dt;
             t < secs && steps(a, t)
         };
-        app.run(false, &mut sink, &stop, Some(&mut f)).unwrap();
+        app.run(&mut sink, &stop, Some(&mut f)).unwrap();
         assert!(!sink.is_empty(), "something was drawn");
     }
 
@@ -2869,7 +2877,6 @@ mod tests {
         app.compose();
         let far = screen_text(&app);
         assert!(far.contains("drying rack") && !far.contains("felt saddle") && !far.contains("snort"), "{far}");
-        assert!(!app.ascii, "Tab picks a filter in the journal, not the look");
         // An incident is one line, rewritten as it goes, however much happens.
         for k in 1..=30 {
             app.tell(Note::Incident { id: 7, text: format!("Wildfire from the root kiln: {k} burnt."), at: [0.0, 0.0, 0.0], near: true });

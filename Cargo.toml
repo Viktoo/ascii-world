@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+arboard = { version = "3", default-features = false }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cpal = "0.18.2"
 crossbeam-channel = "0.5.17"

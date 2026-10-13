@@ -1,85 +1,13 @@
-//! Terminal setup/restore and the compositor: a cell grid diffed against what
-//! is already on screen, emitted as one write per frame. Never clears.
+//! The screen as a grid of text cells: what every screen of the game draws
+//! into. The window sets it over the world (`window`); without one it can be
+//! written out as terminal text, diffed against what was sent last.
 
-use crossterm::event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-use crossterm::{cursor, execute, terminal};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static ACTIVE: AtomicBool = AtomicBool::new(false);
-static ENHANCED: AtomicBool = AtomicBool::new(false);
-
-pub struct TermInfo {
-    pub enhanced: bool,
-    pub truecolor: bool,
-}
+use std::sync::atomic::AtomicBool;
 
 pub fn truecolor() -> bool {
     let ct = std::env::var("COLORTERM").unwrap_or_default().to_lowercase();
     ct.contains("truecolor") || ct.contains("24bit")
-}
-
-pub fn enter() -> std::io::Result<TermInfo> {
-    let mut out = std::io::stdout();
-    terminal::enable_raw_mode()?;
-    ACTIVE.store(true, Ordering::SeqCst);
-    install_panic_hook();
-    execute!(out, terminal::EnterAlternateScreen, cursor::Hide, terminal::DisableLineWrap, crossterm::event::EnableFocusChange)?;
-    let enhanced = std::env::var("POCKET_NO_KEYBOARD_ENHANCEMENT").is_err() && terminal::supports_keyboard_enhancement().unwrap_or(false);
-    if enhanced {
-        execute!(
-            out,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-            )
-        )?;
-        ENHANCED.store(true, Ordering::SeqCst);
-    }
-    Ok(TermInfo { enhanced, truecolor: truecolor() })
-}
-
-/// Restore the terminal. Safe to call more than once and from a panic hook.
-pub fn restore() {
-    if !ACTIVE.swap(false, Ordering::SeqCst) {
-        return;
-    }
-    let mut out = std::io::stdout();
-    // End any synchronized update and reset attributes first.
-    let _ = out.write_all(b"\x1b[?2026l\x1b[0m");
-    if ENHANCED.swap(false, Ordering::SeqCst) {
-        let _ = execute!(out, PopKeyboardEnhancementFlags);
-        let _ = out.flush();
-        drain_input();
-    }
-    let _ = execute!(out, crossterm::event::DisableFocusChange, terminal::EnableLineWrap, cursor::Show, terminal::LeaveAlternateScreen);
-    let _ = terminal::disable_raw_mode();
-    let _ = out.flush();
-}
-
-/// Swallow input still in flight, such as the release of the key that quit.
-/// Otherwise its kitty-protocol escape lands in the shell as `113;1:3u` junk.
-fn drain_input() {
-    use crossterm::event;
-    use std::time::{Duration, Instant};
-    let end = Instant::now() + Duration::from_millis(150);
-    while Instant::now() < end && event::poll(Duration::from_millis(30)).unwrap_or(false) {
-        let _ = event::read();
-    }
-}
-
-fn install_panic_hook() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            restore();
-            crate::log::error(format!("panic: {info}"));
-            prev(info);
-        }));
-    });
 }
 
 /// Set by SIGTERM / SIGHUP / SIGINT; the main loop exits cleanly when it flips.
@@ -103,6 +31,17 @@ impl Cell {
     pub const BLANK: Cell = Cell { ch: ' ', fg: [200, 200, 200], bg: [0, 0, 0], bold: false };
 }
 
+/// Whether a hint's first word names a key ("Enter", "F2", "W/S", "e"), not a thing.
+pub fn is_key(k: &str) -> bool {
+    const NAMED: &[&str] = &["Enter", "Esc", "Tab", "Space", "Shift", "PgUp", "PgDn", "Home", "End", "Backspace"];
+    let n = k.chars().count();
+    n > 0 && (n <= 2 || NAMED.contains(&k) || k.contains('/') || k.contains('+') || (k.starts_with('F') && k[1..].chars().all(|c| c.is_ascii_digit())))
+}
+
+pub const KEYCAP: [u8; 3] = [52, 56, 76];
+pub const KEYCAP_EDGE: [u8; 3] = [92, 98, 130];
+pub const KEYCAP_TEXT: [u8; 3] = [236, 232, 220];
+
 /// Colours within this distance of what is on screen are not re-sent.
 const TOLERANCE: i32 = 3;
 
@@ -110,6 +49,58 @@ fn close(a: [u8; 3], b: [u8; 3]) -> bool {
     (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= TOLERANCE)
 }
 
+/// A soft shape drawn under the text (positions in cells, fractions allowed):
+/// panels, pills, keycaps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Deco {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub fill: [u8; 3],
+    pub alpha: f32,
+    /// Corner radius, in rows.
+    pub radius: f32,
+    pub shadow: bool,
+    pub border: Option<[u8; 3]>,
+}
+
+impl Deco {
+    pub fn panel(x: f32, y: f32, w: f32, h: f32, fill: [u8; 3]) -> Deco {
+        Deco { x, y, w, h, fill, alpha: 1.0, radius: 0.6, shadow: true, border: None }
+    }
+
+    pub fn pill(x: f32, y: f32, w: f32, h: f32, fill: [u8; 3]) -> Deco {
+        Deco { x, y, w, h, fill, alpha: 1.0, radius: h * 0.5, shadow: false, border: None }
+    }
+
+    pub fn border(self, c: [u8; 3]) -> Deco {
+        Deco { border: Some(c), ..self }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// The display face, for titles.
+    Title,
+    Body,
+    Bold,
+}
+
+/// Text set freely, not in cells: titles, keycaps. `x`, `y` in cells (top
+/// left, or the centre of the line when `center`); `size` in rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Label {
+    pub x: f32,
+    pub y: f32,
+    pub text: String,
+    pub size: f32,
+    pub color: [u8; 3],
+    pub face: Face,
+    pub center: bool,
+}
+
+#[derive(Clone)]
 pub struct Screen {
     pub w: u16,
     pub h: u16,
@@ -120,12 +111,18 @@ pub struct Screen {
     /// Cells that show the world beneath them (window mode only): the world's
     /// own pixels, multiplied by the cell's background (white leaves it as is).
     pub see: Vec<bool>,
+    /// A text cursor (in a window): before the letter in this cell, in this
+    /// colour, wherever the words set it.
+    pub caret: Option<(u16, u16, [u8; 3])>,
+    /// Shapes and free text over the cells (each screen draws them anew).
+    pub decor: Vec<Deco>,
+    pub labels: Vec<Label>,
 }
 
 impl Screen {
     pub fn new(w: u16, h: u16, truecolor: bool) -> Screen {
         let n = w as usize * h as usize;
-        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n] }
+        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, decor: Vec::new(), labels: Vec::new() }
     }
 
     pub fn resize(&mut self, w: u16, h: u16) {
@@ -177,6 +174,89 @@ impl Screen {
         for x in 0..self.w {
             self.set(x, y, c);
         }
+    }
+
+    /// Forget the shapes and free text (at the start of each screen drawn).
+    pub fn clear_decor(&mut self) {
+        self.decor.clear();
+        self.labels.clear();
+        self.caret = None;
+    }
+
+    /// Text centred on column `cx`, set freely (not in cells).
+    pub fn center_text(&mut self, cx: f32, y: u16, text: &str, color: [u8; 3]) {
+        self.labels.push(Label { x: cx, y: y as f32 + 0.5, text: text.to_string(), size: 1.0, color, face: Face::Body, center: true });
+    }
+
+    pub fn deco(&mut self, d: Deco) {
+        self.decor.push(d);
+    }
+
+    /// A title in the display face, `rows` tall, centred on column `cx`.
+    pub fn title(&mut self, cx: f32, y: f32, text: &str, rows: f32, color: [u8; 3]) {
+        self.labels.push(Label { x: cx, y, text: text.to_string(), size: rows, color, face: Face::Title, center: true });
+    }
+
+    /// A key drawn as a keycap; returns the column after it. The cells under
+    /// it are left blank (the cap and its letters are drawn over them).
+    pub fn keycap(&mut self, x: u16, y: u16, key: &str, bg: [u8; 3]) -> u16 {
+        let n = key.chars().count().max(1) as u16 + 1;
+        for i in 0..n {
+            self.set(x + i, y, Cell { ch: ' ', fg: KEYCAP_TEXT, bg, bold: false });
+        }
+        self.decor.push(Deco { x: x as f32 + 0.05, y: y as f32 + 0.1, w: n as f32 - 0.1, h: 0.8, fill: KEYCAP, alpha: 1.0, radius: 0.22, shadow: false, border: Some(KEYCAP_EDGE) });
+        // Arrows are small in the face: larger, so they read.
+        let size = if key.chars().any(|c| c.is_alphanumeric()) { 0.74 } else { 1.0 };
+        self.labels.push(Label { x: x as f32 + n as f32 * 0.5, y: y as f32 + 0.5, text: key.to_string(), size, color: KEYCAP_TEXT, face: Face::Bold, center: true });
+        x + n
+    }
+
+    /// A line of hints, "KEY what   KEY what": each key as a keycap, the rest as text.
+    /// Returns the column after it.
+    pub fn hints(&mut self, x: u16, y: u16, s: &str, fg: [u8; 3], bg: [u8; 3]) -> u16 {
+        let mut cx = x;
+        for (i, part) in s.split("  ").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
+            if cx >= self.w {
+                break;
+            }
+            if i > 0 {
+                cx += 3;
+            }
+            // "the axe: e pick up": the name as words, then the key.
+            let part = match part.split_once(": ") {
+                Some((name, rest)) if !is_key(name) && rest.split_once(' ').is_some_and(|(k, _)| is_key(k)) => {
+                    cx = self.text(cx, y, &format!("{name}: "), fg, bg, false);
+                    rest
+                }
+                _ => part,
+            };
+            match part.split_once(' ') {
+                Some((k, rest)) if is_key(k.trim_end_matches(':')) => {
+                    cx = self.keycap(cx, y, k.trim_end_matches(':'), bg);
+                    cx = self.text(cx + 1, y, rest, fg, bg, false);
+                }
+                _ => cx = self.text(cx, y, part, fg, bg, false),
+            }
+        }
+        cx
+    }
+
+    /// What the screen says, cells and free text together (for tests and agents).
+    pub fn plain_text(&self) -> String {
+        let mut rows: Vec<Vec<char>> = (0..self.h).map(|y| (0..self.w).map(|x| self.get(x, y).map_or(' ', |c| c.ch)).collect()).collect();
+        for l in &self.labels {
+            let n = l.text.chars().count() as f32;
+            let x0 = if l.center { l.x - n * 0.5 } else { l.x }.max(0.0) as usize;
+            let y = l.y.max(0.0) as usize;
+            if let Some(row) = rows.get_mut(y) {
+                for (i, ch) in l.text.chars().enumerate() {
+                    if let Some(c) = row.get_mut(x0 + i) {
+                        *c = ch;
+                    }
+                }
+            }
+        }
+        rows.into_iter().map(|r| r.into_iter().collect::<String>()).collect::<Vec<_>>().join("\n")
     }
 
     /// Emit only what changed, as a single buffer.
@@ -327,6 +407,16 @@ mod tests {
         let t = String::from_utf8_lossy(&out);
         assert!(t.contains("\x1b[2;4H") && t.contains('x'));
         assert!(out.len() < first);
+    }
+
+    #[test]
+    fn hints_draw_keys_as_caps() {
+        let mut s = Screen::new(60, 2, true);
+        s.hints(0, 0, "Enter begin   Rusty axe: e pick up  F2 inspect", [200, 200, 200], [0, 0, 0]);
+        let t = s.plain_text();
+        assert!(t.contains("Enter") && t.contains("begin") && t.contains("Rusty axe:") && t.contains("F2"), "{t}");
+        assert_eq!(s.decor.len(), 3, "Enter, e and F2 are keys; 'Rusty' is not");
+        assert!(is_key("W/S") && is_key("e") && is_key("Ctrl+U") && is_key("F10") && !is_key("Rusty"));
     }
 
     #[test]

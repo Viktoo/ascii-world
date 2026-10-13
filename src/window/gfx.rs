@@ -2,6 +2,16 @@
 //! texture: a window's surface, or an offscreen one read back for a PNG.
 
 use super::text::{ATLAS, Quad, Text, shape};
+
+/// A soft shape for the GPU, in window pixels.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DecoGpu {
+    rect: [f32; 4],
+    fill: [f32; 4],
+    params: [f32; 4],
+    border: [f32; 4],
+}
 use crate::render::Frame;
 use crate::term::Screen;
 
@@ -21,6 +31,9 @@ pub struct Compositor {
     pub format: wgpu::TextureFormat,
     grid_pipe: wgpu::RenderPipeline,
     text_pipe: wgpu::RenderPipeline,
+    deco_pipe: wgpu::RenderPipeline,
+    decos: wgpu::Buffer,
+    deco_list: Vec<DecoGpu>,
     bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniforms: wgpu::Buffer,
@@ -116,6 +129,24 @@ impl Compositor {
             multiview_mask: None,
             cache: None,
         });
+        let deco_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+        let deco_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("deco"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_deco"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<DecoGpu>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &deco_attrs })],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_deco"), compilation_options: Default::default(), targets: &blended }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let decos = device.create_buffer(&wgpu::BufferDescriptor { label: Some("decos"), size: 64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("world"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -136,6 +167,9 @@ impl Compositor {
             format,
             grid_pipe,
             text_pipe,
+            deco_pipe,
+            decos,
+            deco_list: Vec::new(),
             bgl,
             sampler,
             uniforms,
@@ -199,6 +233,27 @@ impl Compositor {
         if !self.quad_list.is_empty() {
             self.queue.write_buffer(&self.quads, 0, bytemuck::cast_slice(&self.quad_list));
         }
+        // Soft shapes: each shadow first, then its shape.
+        self.deco_list.clear();
+        let (cw, ch) = cell;
+        let col = |c: [u8; 3], a: f32| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, a];
+        for d in &screen.decor {
+            let rect = [d.x * cw, d.y * ch, d.w * cw, d.h * ch];
+            let r = d.radius * ch;
+            if d.shadow {
+                let blur = ch * 0.45;
+                self.deco_list.push(DecoGpu { rect: [rect[0], rect[1] + ch * 0.25, rect[2], rect[3]], fill: [0.0, 0.0, 0.0, 0.45], params: [r, blur, 0.0, 0.0], border: [0.0; 4] });
+            }
+            let bw = if d.border.is_some() { (ch * 0.07).max(1.0) } else { 0.0 };
+            self.deco_list.push(DecoGpu { rect, fill: col(d.fill, d.alpha), params: [r, 0.0, bw, 0.0], border: col(d.border.unwrap_or(d.fill), 1.0) });
+        }
+        let need = (self.deco_list.len().max(1) * std::mem::size_of::<DecoGpu>()) as u64;
+        if self.decos.size() < need {
+            self.decos = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("decos"), size: need.next_power_of_two(), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        }
+        if !self.deco_list.is_empty() {
+            self.queue.write_buffer(&self.decos, 0, bytemuck::cast_slice(&self.deco_list));
+        }
         let u = Uniforms {
             screen: [size.0 as f32, size.1 as f32],
             cell: [cell.0, cell.1],
@@ -241,6 +296,11 @@ impl Compositor {
             pass.set_bind_group(0, self.bind.as_ref(), &[]);
             pass.set_pipeline(&self.grid_pipe);
             pass.draw(0..3, 0..1);
+            if !self.deco_list.is_empty() {
+                pass.set_pipeline(&self.deco_pipe);
+                pass.set_vertex_buffer(0, self.decos.slice(..));
+                pass.draw(0..6, 0..self.deco_list.len() as u32);
+            }
             if !self.quad_list.is_empty() {
                 pass.set_pipeline(&self.text_pipe);
                 pass.set_vertex_buffer(0, self.quads.slice(..));

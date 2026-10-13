@@ -1,12 +1,17 @@
-//! `pocket window`: the game in a window of its own. The world is drawn at the
-//! window detail setting and scaled up smoothly; the same screen of cells the
-//! terminal shows is laid over it, its words set in a sans-serif. Everything
-//! else (the sim, the menus, the keys) is the terminal game's own.
+//! The game's window. One window lives for the whole session and shows every
+//! screen: your worlds, the new-world screen, loading, and play. The world is
+//! drawn at the window detail setting and scaled up smoothly; a screen of text
+//! cells is laid over it, its words set in a sans-serif.
+//!
+//! `--shot` runs the same screens offscreen and saves a PNG, for checking
+//! changes without a display.
 
 mod gfx;
 mod text;
 
 use crate::app::{App, Frontend, WinGeom};
+use crate::render::Frame;
+use crate::term::Screen;
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use gfx::Compositor;
@@ -24,7 +29,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 /// A text cell's height in logical pixels (its width is half that).
 const CELL_H: f64 = 22.0;
 
-/// `pocket window --shot`: run the game unseen for a while and save the window as a PNG.
+/// `--shot`: run unseen for a while and save the window as a PNG.
 pub struct Shot {
     pub out: PathBuf,
     pub size: (u32, u32),
@@ -32,6 +37,27 @@ pub struct Shot {
     pub after: f32,
     /// Keys pressed a second before the shot (`esc,down,f1` or single characters).
     pub keys: Vec<String>,
+}
+
+impl Shot {
+    /// `--shot OUT.png [--size WxH] [--scale K] [--after SECS] [--keys a,b]` from the command line.
+    pub fn from_args(args: &[String]) -> Result<Option<Shot>> {
+        let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+        let Some(out) = flag("--shot") else { return Ok(None) };
+        let size = flag("--size").unwrap_or_else(|| "1600x1000".into());
+        let (w, h) = size.split_once('x').context("--size expects WxH")?;
+        Ok(Some(Shot {
+            out: PathBuf::from(out),
+            size: (w.parse()?, h.parse()?),
+            scale: flag("--scale").and_then(|s| s.parse().ok()).unwrap_or(1.0),
+            after: flag("--after").and_then(|s| s.parse().ok()).unwrap_or(8.0),
+            keys: flag("--keys").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+        }))
+    }
+
+    fn key_codes(&self) -> Vec<KeyCode> {
+        self.keys.iter().filter_map(|k| named(k)).collect()
+    }
 }
 
 fn named(k: &str) -> Option<KeyCode> {
@@ -44,10 +70,15 @@ fn named(k: &str) -> Option<KeyCode> {
         "left" => KeyCode::Left,
         "right" => KeyCode::Right,
         "space" => KeyCode::Char(' '),
+        "backspace" => KeyCode::Backspace,
         f if f.starts_with('f') && f.len() > 1 => KeyCode::F(f[1..].parse().ok()?),
         c if c.chars().count() == 1 => KeyCode::Char(c.chars().next()?),
         _ => return None,
     })
+}
+
+fn press(k: KeyCode) -> KeyEvent {
+    KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Press)
 }
 
 fn geom(scale: f64) -> WinGeom {
@@ -62,87 +93,59 @@ fn grid(size: (u32, u32), g: WinGeom) -> (u16, u16, WinGeom) {
     (cols, rows, WinGeom { cell_w: size.0 as f32 / cols as f32, cell_h: size.1 as f32 / rows as f32 })
 }
 
-/// Play `app` in a window until it quits (or, with `shot`, render one offscreen).
-pub fn run(app: &mut App, stop: &AtomicBool, shot: Option<Shot>) -> Result<()> {
-    if let Some(s) = shot {
-        return run_shot(app, stop, s);
-    }
-    let mut builder = EventLoop::builder();
-    // No stock menu: its Quit ends the process unsaved. Cmd+Q is ours instead.
-    #[cfg(target_os = "macos")]
-    winit::platform::macos::EventLoopBuilderExtMacOS::with_default_menu(&mut builder, false);
-    let el = builder.build().context("opening a window")?;
-    let mut front = WinFront { el, h: Handler::default(), gpu: None, size: (0, 0), geom: geom(1.0), grabbed: false };
-    // The window appears on the first pump.
-    let t0 = Instant::now();
-    while front.h.window.is_none() && t0.elapsed() < Duration::from_secs(5) {
-        front.el.pump_app_events(Some(Duration::from_millis(10)), &mut front.h);
-    }
-    let window = front.h.window.clone().context("the window did not open")?;
-    front.connect(window)?;
-    front.fit(app);
-    app.run_on(&mut front, stop, None)?;
-    Ok(())
-}
-
-fn run_shot(app: &mut App, stop: &AtomicBool, s: Shot) -> Result<()> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).context("no GPU adapter")?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
-    let mut comp = Compositor::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
-    let (cols, rows, g) = grid(s.size, geom(s.scale as f64));
-    app.set_window(g);
-    app.resize(cols, rows);
-    let mut front = ShotFront;
-    let end = Instant::now() + Duration::from_secs_f32(s.after);
-    let mut keys: Vec<KeyCode> = s.keys.iter().filter_map(|k| named(k)).collect();
-    let mut script = |app: &mut App, _: f32| {
-        if !keys.is_empty() && Instant::now() + Duration::from_secs(1) >= end {
-            for k in keys.drain(..) {
-                app.on_key(KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Press));
-                app.on_key(KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Release));
-            }
-        }
-        Instant::now() < end
-    };
-    app.run_on(&mut front, stop, Some(&mut script))?;
-    let rgb = comp.snapshot(s.size, &app.screen, app.view_rows(), app.last_frame(), (g.cell_w, g.cell_h));
-    std::fs::write(&s.out, crate::png::encode(s.size.0, s.size.1, &rgb))?;
-    println!("{}", app.stats_line());
-    Ok(())
-}
-
-struct ShotFront;
-
-impl Frontend for ShotFront {
-    fn input(&mut self, _: &mut App) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn present(&mut self, _: &mut App) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn wait(&mut self, d: Duration) {
-        std::thread::sleep(d.min(Duration::from_millis(2)));
-    }
+/// What happened in the window since last asked.
+pub enum Ev {
+    Key(KeyEvent),
+    Resized,
+    Focus(bool),
+    Look(f32, f32),
+    Click,
+    Close,
+    Paste(String),
 }
 
 struct Gpu {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    comp: Compositor,
 }
 
-struct WinFront {
-    el: EventLoop<()>,
+/// Where screens are shown: the window on the desktop, or offscreen for a shot.
+pub struct Win {
+    el: Option<EventLoop<()>>,
     h: Handler,
     gpu: Option<Gpu>,
+    comp: Compositor,
     size: (u32, u32),
+    scale: f64,
     geom: WinGeom,
     grabbed: bool,
+    shot: Option<ShotState>,
+    /// Set by SIGTERM / SIGINT: every screen closes as if the window had.
+    pub stop: Arc<AtomicBool>,
 }
 
-impl WinFront {
-    fn connect(&mut self, window: Arc<Window>) -> Result<()> {
+struct ShotState {
+    shot: Shot,
+    start: Instant,
+    keys: Vec<KeyCode>,
+    /// The last screen shown (with the world under it), drawn when the time is up.
+    last: Option<(Screen, u16, Option<Frame>)>,
+}
+
+impl Win {
+    /// Open the window (it appears on the first pump).
+    pub fn open() -> Result<Win> {
+        let mut builder = EventLoop::builder();
+        // No stock menu: its Quit ends the process unsaved. Cmd+Q is ours instead.
+        #[cfg(target_os = "macos")]
+        winit::platform::macos::EventLoopBuilderExtMacOS::with_default_menu(&mut builder, false);
+        let mut el = builder.build().context("opening a window")?;
+        let mut h = Handler::default();
+        let t0 = Instant::now();
+        while h.window.is_none() && t0.elapsed() < Duration::from_secs(5) {
+            el.pump_app_events(Some(Duration::from_millis(10)), &mut h);
+        }
+        let window = h.window.clone().context("the window did not open")?;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -152,36 +155,136 @@ impl WinFront {
         }))
         .context("no GPU adapter for the window")?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
-        let size = window.inner_size();
-        let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).context("the window's surface is not supported")?;
-        // Colours as the terminal shows them: no sRGB conversion.
+        let s = window.inner_size();
+        let mut config = surface.get_default_config(&adapter, s.width.max(1), s.height.max(1)).context("the window's surface is not supported")?;
+        // Colours as the renderer made them: no sRGB conversion.
         let caps = surface.get_capabilities(&adapter);
         if let Some(f) = caps.formats.iter().find(|f| !f.is_srgb()) {
             config.format = *f;
         }
         config.present_mode = if std::env::var_os("POCKET_NO_VSYNC").is_some() { wgpu::PresentMode::AutoNoVsync } else { wgpu::PresentMode::AutoVsync };
         surface.configure(&device, &config);
-        let comp = Compositor::new(device, queue, config.format);
         crate::log::info(format!("window: {} ({:?}), {:?}", adapter.get_info().name, adapter.get_info().backend, config.format));
-        self.gpu = Some(Gpu { surface, config, comp });
-        Ok(())
+        let comp = Compositor::new(device, queue, config.format);
+        let mut win = Win { el: Some(el), h, gpu: Some(Gpu { surface, config }), comp, size: (1, 1), scale: 1.0, geom: geom(1.0), grabbed: false, shot: None, stop: crate::term::signal_flag() };
+        win.fit();
+        Ok(win)
     }
 
-    /// Size the app's screen to the window.
-    fn fit(&mut self, app: &mut App) {
+    /// No window: screens are drawn offscreen and the last one saved as `shot.out`
+    /// once `shot.after` seconds have passed (pumps then report Close).
+    pub fn offscreen(shot: Shot) -> Result<Win> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).context("no GPU adapter")?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let comp = Compositor::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
+        let size = shot.size;
+        let scale = shot.scale as f64;
+        let (_, _, g) = grid(size, geom(scale));
+        let keys = shot.key_codes();
+        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, shot: Some(ShotState { shot, start: Instant::now(), keys, last: None }), stop: crate::term::signal_flag() })
+    }
+
+    /// The screen size in cells, and each cell's size in pixels.
+    pub fn grid(&self) -> (u16, u16, WinGeom) {
+        grid(self.size, geom(self.scale))
+    }
+
+    pub fn set_title(&self, title: &str) {
+        if let Some(w) = &self.h.window {
+            w.set_title(title);
+        }
+    }
+
+    /// Follow the window's size.
+    fn fit(&mut self) {
         let Some(w) = self.h.window.clone() else { return };
         let s = w.inner_size();
         self.size = (s.width.max(1), s.height.max(1));
+        self.scale = w.scale_factor();
         if let Some(g) = self.gpu.as_mut() {
             g.config.width = self.size.0;
             g.config.height = self.size.1;
-            g.comp.text = text::Text::new();
-            g.surface.configure(&g.comp.device, &g.config);
+            g.surface.configure(&self.comp.device, &g.config);
         }
-        let (cols, rows, geom) = grid(self.size, geom(w.scale_factor()));
-        self.geom = geom;
-        app.set_window(geom);
-        app.resize(cols, rows);
+        self.comp.text = text::Text::new();
+        self.geom = self.grid().2;
+    }
+
+    /// Wait up to `d` for input; everything that happened since the last call.
+    pub fn pump(&mut self, d: Duration) -> Vec<Ev> {
+        if let Some(s) = self.shot.as_mut() {
+            let left = Duration::from_secs_f32(s.shot.after).saturating_sub(s.start.elapsed());
+            std::thread::sleep(d.min(Duration::from_millis(2)).min(left));
+            let mut out = std::mem::take(&mut self.h.events);
+            if !s.keys.is_empty() && left <= Duration::from_secs(1) {
+                for k in s.keys.drain(..) {
+                    out.push(Ev::Key(press(k)));
+                    out.push(Ev::Key(KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Release)));
+                }
+            } else if left.is_zero() {
+                out.push(Ev::Close);
+            }
+            return out;
+        }
+        if let Some(el) = self.el.as_mut() {
+            // Events kept back by an earlier wait come first; don't sleep past them.
+            let d = if self.h.events.is_empty() { d } else { Duration::ZERO };
+            el.pump_app_events(Some(d), &mut self.h);
+        }
+        let mut evs = std::mem::take(&mut self.h.events);
+        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            evs.push(Ev::Close);
+        }
+        if evs.iter().any(|e| matches!(e, Ev::Resized)) {
+            self.fit();
+        }
+        if evs.iter().any(|e| matches!(e, Ev::Focus(false))) {
+            self.grab(false);
+        }
+        evs
+    }
+
+    /// Show a screen: its top `view_rows` rows over `frame` (where its cells let the world through).
+    pub fn present(&mut self, screen: &Screen, view_rows: u16, frame: Option<&Frame>) {
+        let cell = (self.geom.cell_w, self.geom.cell_h);
+        if let Some(s) = self.shot.as_mut() {
+            // Offscreen: only the last screen matters, drawn when the shot is taken.
+            s.last = Some((screen.clone(), view_rows, frame.cloned()));
+            return;
+        }
+        let Some(g) = self.gpu.as_mut() else { return };
+        let tex = match g.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                g.surface.configure(&self.comp.device, &g.config);
+                return;
+            }
+            _ => return,
+        };
+        let view = tex.texture.create_view(&Default::default());
+        self.comp.draw(&view, self.size, screen, view_rows, frame, cell);
+        if let Some(w) = self.h.window.as_ref() {
+            w.pre_present_notify();
+        }
+        self.comp.queue.present(tex);
+    }
+
+    /// Save the shot, if this is an offscreen window.
+    pub fn finish(&mut self) -> Result<()> {
+        let cell = (self.geom.cell_w, self.geom.cell_h);
+        if let Some(s) = self.shot.as_mut() {
+            let (screen, rows, frame) = s.last.take().context("nothing was shown before the shot")?;
+            let rgb = self.comp.snapshot(self.size, &screen, rows, frame.as_ref(), cell);
+            std::fs::write(&s.shot.out, crate::png::encode(self.size.0, self.size.1, &rgb))?;
+            // What it says, beside it, for reading without looking.
+            std::fs::write(s.shot.out.with_extension("txt"), screen.plain_text())?;
+        }
+        Ok(())
+    }
+
+    pub fn is_shot(&self) -> bool {
+        self.shot.is_some()
     }
 
     fn grab(&mut self, on: bool) {
@@ -202,66 +305,68 @@ impl WinFront {
     }
 }
 
-impl Frontend for WinFront {
-    fn input(&mut self, app: &mut App) -> std::io::Result<()> {
-        self.el.pump_app_events(Some(Duration::ZERO), &mut self.h);
-        for ev in std::mem::take(&mut self.h.events) {
+/// Play `app` in the window until it quits.
+pub fn play(win: &mut Win, app: &mut App, stop: &AtomicBool) -> Result<()> {
+    let (cols, rows, g) = win.grid();
+    app.set_window(g);
+    app.resize(cols, rows);
+    let mut front = PlayFront { win };
+    app.run_on(&mut front, stop, None)?;
+    front.win.grab(false);
+    Ok(())
+}
+
+struct PlayFront<'a> {
+    win: &'a mut Win,
+}
+
+impl PlayFront<'_> {
+    fn handle(&mut self, app: &mut App, evs: Vec<Ev>) {
+        for ev in evs {
             match ev {
                 Ev::Key(k) => app.on_key(k),
-                Ev::Resized => self.fit(app),
-                Ev::Focus(false) => {
-                    app.focus_lost();
-                    self.grab(false);
+                Ev::Resized => {
+                    let (cols, rows, g) = self.win.grid();
+                    app.set_window(g);
+                    app.resize(cols, rows);
                 }
+                Ev::Focus(false) => app.focus_lost(),
                 Ev::Focus(true) => {}
-                Ev::Look(dx, dy) if self.grabbed => app.mouse_look(dx, dy),
+                Ev::Look(dx, dy) if self.win.grabbed => app.mouse_look(dx, dy),
                 Ev::Look(..) => {}
                 Ev::Click => {
                     if app.wants_mouse() {
-                        self.grab(true);
+                        self.win.grab(true);
                     }
                 }
                 Ev::Close => app.quit_now(),
+                Ev::Paste(t) => app.paste(&t),
             }
         }
         // Mouse look only while walking: menus and typing get the pointer back.
-        if self.grabbed && !app.wants_mouse() {
-            self.grab(false);
+        if self.win.grabbed && !app.wants_mouse() {
+            self.win.grab(false);
         }
+    }
+}
+
+impl Frontend for PlayFront<'_> {
+    fn input(&mut self, app: &mut App) -> std::io::Result<()> {
+        let evs = self.win.pump(Duration::ZERO);
+        self.handle(app, evs);
         Ok(())
     }
 
     fn present(&mut self, app: &mut App) -> std::io::Result<()> {
-        let Some(g) = self.gpu.as_mut() else { return Ok(()) };
-        let tex = match g.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                g.surface.configure(&g.comp.device, &g.config);
-                return Ok(());
-            }
-            _ => return Ok(()),
-        };
-        let view = tex.texture.create_view(&Default::default());
-        g.comp.draw(&view, self.size, &app.screen, app.view_rows(), app.last_frame(), (self.geom.cell_w, self.geom.cell_h));
-        if let Some(w) = self.h.window.as_ref() {
-            w.pre_present_notify();
-        }
-        g.comp.queue.present(tex);
+        self.win.present(&app.screen, app.view_rows(), app.last_frame());
         Ok(())
     }
 
     fn wait(&mut self, d: Duration) {
-        self.el.pump_app_events(Some(d), &mut self.h);
+        // Events that arrive while waiting are kept for the next `input`.
+        let evs = self.win.pump(d);
+        self.win.h.events.extend(evs);
     }
-}
-
-enum Ev {
-    Key(KeyEvent),
-    Resized,
-    Focus(bool),
-    Look(f32, f32),
-    Click,
-    Close,
 }
 
 #[derive(Default)]
@@ -297,8 +402,16 @@ impl ApplicationHandler for Handler {
                     Key::Named(NamedKey::F4) => self.mods.alt_key(),
                     _ => false,
                 };
+                // Cmd+V (Mac) or Ctrl+V: paste.
+                let paste = matches!(&event.logical_key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("v")) && (self.mods.super_key() || self.mods.control_key());
                 if quit && event.state == ElementState::Pressed {
                     self.events.push(Ev::Close);
+                } else if paste {
+                    if event.state == ElementState::Pressed {
+                        if let Some(t) = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()) {
+                            self.events.push(Ev::Paste(t));
+                        }
+                    }
                 } else if let Some(k) = key(&event, self.mods) {
                     self.events.push(Ev::Key(k));
                 }

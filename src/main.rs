@@ -34,17 +34,18 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
+const USAGE: &str = "Pocket Universe — an infinite 3D world, made from words
 
+  pocket [FILE]                          open the game: FILE, or your last universe
+  pocket list                            start on your worlds (open one, or start a new one)
   pocket new [\"<prompt>\"] [--out FILE] [--difficulty peaceful|easy|normal(default)|hard]
-                                         create a universe: check or edit the prompt
-                                         (a random one if none given), then step in
+                                         start on the new-world screen: check or edit the
+                                         prompt (a random one if none given), then step in
   pocket prompts [--sample N]            print N random prompts (default 20)
-  pocket [FILE]                          reopen FILE, or your last universe
-  pocket list                            pick one of your worlds (or start a new one)
-  pocket window [FILE]                  play in a window of its own (Esc → Window detail sets its sharpness)
-  pocket window FILE --shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS] [--keys esc,down]
-                                         run unseen for a while and save the window as a PNG
+
+  Any of the above with --shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS] [--keys esc,down]
+  runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
+
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
@@ -69,7 +70,6 @@ fn main() {
     log::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = run(args);
-    term::restore();
     if let Err(e) = r {
         eprintln!("pocket: {e:#}");
         std::process::exit(1);
@@ -85,6 +85,8 @@ fn has(args: &[String], name: &str) -> bool {
 }
 
 fn run(args: Vec<String>) -> Result<()> {
+    // Any screen of the game can be run unseen and saved as a PNG.
+    let shot = window::Shot::from_args(&args)?;
     match args.first().map(String::as_str) {
         Some("-h") | Some("--help") | Some("help") => {
             println!("{USAGE}");
@@ -93,26 +95,12 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("new") => {
             // Every new world begins on the new-world screen: the prompt given,
             // to check, or a random one to keep or change.
-            let Some(prompt) = picker::compose(args.get(1).filter(|a| !a.starts_with("--")).map(String::as_str))? else { return Ok(()) };
-            let path = match flag(&args, "--out") {
-                Some(p) => PathBuf::from(p),
-                None => default_path(&prompt),
-            };
+            let given = args.get(1).filter(|a| !a.starts_with("--")).cloned();
             let difficulty = flag(&args, "--difficulty").unwrap_or_else(|| NEW_DIFFICULTY.into());
             let n = sim::night::LEVELS.iter().position(|l| l.name == difficulty.trim().to_lowercase()).with_context(|| format!("difficulty is one of peaceful, easy, normal, hard (not {difficulty})"))?;
-            create_universe(&path, &prompt)?;
-            db::Db::open(&path)?.kv_set("sim.difficulty", &n.to_string())?;
-            play(&path, true)
+            session(Start::New(given), Some(n), flag(&args, "--out").map(PathBuf::from), shot)
         }
-        Some("list") | Some("ls") => match picker::pick()? {
-            picker::Choice::Open(p) => play(&p, false),
-            picker::Choice::New(prompt) => {
-                let path = default_path(&prompt);
-                create_universe(&path, &prompt)?;
-                play(&path, true)
-            }
-            picker::Choice::Quit => Ok(()),
-        },
+        Some("list") | Some("ls") => session(Start::List, None, None, shot),
         Some("prompts") => {
             let n = flag(&args, "--sample").and_then(|n| n.parse().ok()).unwrap_or(20);
             for p in random_world::sample(n) {
@@ -120,8 +108,11 @@ fn run(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
-        Some("window") => window_cli(&args[1..]),
-        Some("open") => play(&PathBuf::from(args.get(1).context("usage: pocket open FILE")?), false),
+        Some("open") => session(Start::Play(PathBuf::from(args.get(1).context("usage: pocket open FILE")?), false), None, None, shot),
+        Some("window") => match args.get(1).filter(|a| !a.starts_with("--")) {
+            Some(p) => session(Start::Play(PathBuf::from(p), false), None, None, shot),
+            None => session(Start::Last, None, None, shot),
+        },
         Some("snapshot") => snapshot(&args[1..]),
         Some("describe") => describe(&args[1..]),
         Some("bench") => bench(&args[1..]),
@@ -132,23 +123,9 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("act") => sim::headless::act_cli(&args[1..]),
         Some("inspect") => sim::headless::inspect_cli(&args[1..]),
         Some("listen") => audio::listen::cli(&args[1..]),
-        Some(p) if !p.starts_with('-') => play(Path::new(p), false),
+        Some(p) if !p.starts_with('-') => session(Start::Play(PathBuf::from(p), false), None, None, shot),
+        None | Some("--shot") => session(Start::Last, None, None, shot),
         Some(other) => bail!("unknown option {other}\n\n{USAGE}"),
-        None => {
-            let last = std::fs::read_to_string(log::dir().join("last")).ok().map(|s| PathBuf::from(s.trim()));
-            match last {
-                Some(p) if p.exists() => play(&p, false),
-                // No universe yet: start one.
-                _ => match picker::compose(None)? {
-                    Some(prompt) => {
-                        let path = default_path(&prompt);
-                        create_universe(&path, &prompt)?;
-                        play(&path, true)
-                    }
-                    None => Ok(()),
-                },
-            }
-        }
     }
 }
 
@@ -214,37 +191,71 @@ fn load_with(path: &Path, quick: bool) -> Result<Loaded> {
     Ok(Loaded { db, gpu, model, snap, live, partial })
 }
 
-fn play(path: &Path, fresh: bool) -> Result<()> {
-    play_in(path, fresh, None)
+/// Where a session starts.
+enum Start {
+    /// The last world played, or the new-world screen the first time.
+    Last,
+    List,
+    New(Option<String>),
+    Create(String),
+    Play(PathBuf, bool),
 }
 
-/// `pocket window [FILE] [--shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS]]`
-fn window_cli(args: &[String]) -> Result<()> {
-    let path = match args.first().filter(|a| !a.starts_with("--")) {
-        Some(p) => PathBuf::from(p),
-        None => std::fs::read_to_string(log::dir().join("last")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()).context("no world yet: make one with `pocket new`, or name one: pocket window FILE")?,
+/// The game: one window, moving between your worlds, a new world, and play,
+/// until it is closed. With `shot`, the same unseen, saved as a PNG at the end.
+fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, shot: Option<window::Shot>) -> Result<()> {
+    let mut win = match shot {
+        Some(s) => window::Win::offscreen(s)?,
+        None => window::Win::open()?,
     };
-    let shot = match flag(args, "--shot") {
-        Some(out) => {
-            let size = flag(args, "--size").unwrap_or_else(|| "1600x1000".into());
-            let (w, h) = size.split_once('x').context("--size expects WxH")?;
-            Some(window::Shot {
-                out: PathBuf::from(out),
-                size: (w.parse()?, h.parse()?),
-                scale: flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(1.0),
-                after: flag(args, "--after").and_then(|s| s.parse().ok()).unwrap_or(8.0),
-                keys: flag(args, "--keys").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
-            })
+    let stop = win.stop.clone();
+    loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
         }
-        None => None,
-    };
-    play_in(&path, false, Some(shot))
+        next = match next {
+            Start::Last => match std::fs::read_to_string(log::dir().join("last")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()) {
+                Some(p) => Start::Play(p, false),
+                None if picker::worlds().is_empty() => Start::New(None),
+                None => Start::List,
+            },
+            Start::List => match picker::pick(&mut win) {
+                picker::Choice::Open(p) => Start::Play(p, false),
+                picker::Choice::New(prompt) => Start::Create(prompt),
+                picker::Choice::Quit => break,
+            },
+            Start::New(given) => match picker::compose(&mut win, given.as_deref()) {
+                picker::Composed::Prompt(p) => Start::Create(p),
+                picker::Composed::Back => Start::List,
+                picker::Composed::Quit => break,
+            },
+            Start::Create(prompt) => {
+                let path = out.clone().unwrap_or_else(|| default_path(&prompt));
+                create_universe(&path, &prompt)?;
+                if let Some(d) = difficulty {
+                    db::Db::open(&path)?.kv_set("sim.difficulty", &d.to_string())?;
+                }
+                Start::Play(path, true)
+            }
+            Start::Play(path, fresh) => {
+                if play(&mut win, &path, fresh, &stop)? {
+                    Start::List
+                } else {
+                    break;
+                }
+            }
+        };
+    }
+    win.finish()
 }
 
-/// Play in the terminal (`win` None) or in a window (with `Some(shot)`, unseen, saved as a PNG).
-fn play_in(path: &Path, fresh: bool, win: Option<Option<window::Shot>>) -> Result<()> {
+/// Play one world in the window; true when the player went back to their worlds.
+fn play(win: &mut window::Win, path: &Path, fresh: bool, stop: &AtomicBool) -> Result<bool> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
+    let name = picker::worlds().into_iter().find(|w| w.path == path).map(|w| w.name).unwrap_or_else(|| "a new world".into());
+    picker::notice(win, &name, "opening…");
+    win.set_title(&format!("{name} · Pocket Universe"));
     let l = load_with(&path, true)?;
     let llm = llm::Llm::from_env(l.db.clone());
     let genesis = fresh || l.db.kv_get("genesis").is_none();
@@ -254,12 +265,7 @@ fn play_in(path: &Path, fresh: bool, win: Option<Option<window::Shot>>) -> Resul
         Some(g) => render::gpu::spawn(g.clone()),
         None => render::cpu::spawn(),
     };
-    let stop = term::signal_flag();
-    let ti = match win {
-        Some(_) => term::TermInfo { enhanced: true, truecolor: true },
-        None => term::enter()?,
-    };
-    let size = if win.is_some() { (120, 40) } else { crossterm::terminal::size().unwrap_or((120, 40)) };
+    let (cols, rows, _) = win.grid();
     let mut app = app::App::new(app::Setup {
         db: l.db.clone(),
         brain,
@@ -267,22 +273,22 @@ fn play_in(path: &Path, fresh: bool, win: Option<Option<window::Shot>>) -> Resul
         render,
         snap: l.snap,
         live: l.live,
-        enhanced: ti.enhanced,
-        truecolor: ti.truecolor,
-        size,
+        enhanced: true,
+        truecolor: true,
+        size: (cols, rows),
         llm,
         genesis,
     });
     app.start_loading();
-    let r = match win {
-        Some(shot) => window::run(&mut app, &stop, shot),
-        None => app.run(true, &mut std::io::stdout(), &stop, None).map_err(Into::into),
-    };
+    let r = window::play(win, &mut app, stop);
     app.shutdown();
-    term::restore();
+    win.set_title("Pocket Universe");
+    if win.is_shot() {
+        println!("{}", app.stats_line());
+    }
     r?;
-    println!("Saved {}", path.display());
-    Ok(())
+    log::info(format!("saved {}", path.display()));
+    Ok(app.to_worlds)
 }
 
 fn parse_at(args: &[String]) -> Result<(f32, f32, f32)> {
@@ -445,7 +451,7 @@ fn bench(args: &[String]) -> Result<()> {
         walked < distance && t0.elapsed() < Duration::from_secs(600)
     };
     let mut sink = CountingSink::default();
-    app.run(false, &mut sink, &stop, Some(&mut script))?;
+    app.run(&mut sink, &stop, Some(&mut script))?;
     let secs = t0.elapsed().as_secs_f32() - 1.0;
     let frames = app.stats.shown;
     println!("backend        {backend}");

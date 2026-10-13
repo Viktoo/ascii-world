@@ -294,6 +294,7 @@ impl App {
         let Some(mut l) = self.loading.take() else { return };
         l.last_draw = Instant::now();
         let (w, h) = (self.screen.w, self.screen.h);
+        self.screen.clear_decor();
         for y in 0..h {
             self.screen.fill_row(y, Cell { bg: BG, ..Cell::BLANK });
         }
@@ -308,7 +309,12 @@ impl App {
         let title = if !look_name.is_empty() && !self.genesis_pending { look_name } else { l.title.clone().unwrap_or_else(|| "a new world".into()) };
         let title: String = title.chars().take(cw as usize).collect();
         let tx = x0 + (cw.saturating_sub(title.chars().count() as u16)) / 2;
-        self.screen.text(tx, top, &title, if done || l.title.is_some() || !self.genesis_pending { ACCENT } else { DIM }, BG, true);
+        let tcol = if done || l.title.is_some() || !self.genesis_pending { ACCENT } else { DIM };
+        if self.win.is_some() {
+            self.screen.title(w as f32 / 2.0, top as f32 + 0.5, &title, 2.2, tcol);
+        } else {
+            self.screen.text(tx, top, &title, tcol, BG, true);
+        }
 
         // What it was asked to be, under the name (at most three lines).
         let bar_y = h.saturating_sub(3);
@@ -713,7 +719,7 @@ mod tests {
             }
             t < 90.0 && a.loading.is_some()
         };
-        app.run(false, &mut sink, &stop, Some(&mut f)).unwrap();
+        app.run(&mut sink, &stop, Some(&mut f)).unwrap();
         assert!(app.loading.is_none(), "the world opened (after {t:.1} s)");
         assert!(waited, "a ready world waits for a key");
         assert_eq!(app.spent(), 0.0, "making the world is not counted in the session's spend");

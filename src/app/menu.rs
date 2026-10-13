@@ -36,10 +36,11 @@ enum Row {
     LifeSpeed,
     Hunting,
     Beings,
+    Worlds,
     Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Quit];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -198,6 +199,10 @@ impl App {
                     }
                     Row::Shadows | Row::Sound | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
                     Row::Quit => self.quit = true,
+                    Row::Worlds => {
+                        self.to_worlds = true;
+                        self.quit = true;
+                    }
                     _ => {}
                 }
             }
@@ -259,7 +264,7 @@ impl App {
             Row::LifeSpeed => self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, dir)),
             Row::Hunting => self.set_world("hunting", if self.sim.cfg.hunting { 0.0 } else { 1.0 }),
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
-            Row::Details | Row::Quit => {}
+            Row::Details | Row::Worlds | Row::Quit => {}
         }
         if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
             self.settings.save();
@@ -302,6 +307,7 @@ impl App {
             Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
             Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),
             Row::Beings => ("Actions can bring new beings", on(self.sim.cfg.create_beings)),
+            Row::Worlds => ("Your worlds", "Enter: open another or make a new one".into()),
             Row::Quit => ("Quit game", "Enter or q (the world is saved)".into()),
         };
         let value = if Self::locked(row) { format!("{value}   (set by env)") } else { value };
@@ -344,12 +350,12 @@ impl App {
                     Row::Budget => lines.push(("Spending".into(), HEAD, false)),
                     Row::Fps => lines.push(("Display".into(), HEAD, false)),
                     Row::Creatures => lines.push(("This world".into(), HEAD, false)),
-                    Row::Quit => lines.push(blank.clone()),
+                    Row::Worlds => lines.push(blank.clone()),
                     _ => {}
                 }
                 let (label, value) = self.row_text(*row);
                 let sel = i == m.sel;
-                let fg = if Self::locked(*row) { DIM } else if *row == Row::Quit { ACCENT } else { TEXT };
+                let fg = if Self::locked(*row) { DIM } else if matches!(*row, Row::Quit | Row::Worlds) { ACCENT } else { TEXT };
                 lines.push((format!("{} {label:<30} {value}", if sel { "›" } else { " " }), fg, sel));
             }
             lines.push(blank.clone());
@@ -359,7 +365,7 @@ impl App {
             lines.push(blank.clone());
             lines.push(("Keys".into(), HEAD, false));
             for l in [
-                "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · Tab blocks/ASCII",
+                "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · click: mouse look",
                 "      Enter talk · / do or make anything · e use · g grab/drop",
                 "      f throw · y/n answer · F1 stats · F2 inspect · F3 achievements",
                 "Log   1 journal (half → full → closed) · Tab filter · PgUp/PgDn scroll back",
@@ -381,6 +387,60 @@ impl App {
             let t: String = text.chars().take(pw - 3).collect();
             let s = format!("  {t:<width$} ", width = pw - 3);
             self.screen.text(x0, y, &s, fg, if sel { SEL_BG } else { BG }, sel);
+        }
+        self.dress_panel(x0, y0, pw as u16, vh, 1);
+    }
+
+    /// In a window, the panel the menu rows make gets its look: a rounded
+    /// card with a shadow, tabs as pills (`page` the open one), headings in the
+    /// title face, the chosen row as a pill.
+    pub(super) fn dress_panel(&mut self, x0: u16, y0: u16, pw: u16, vh: u16, page: u8) {
+        use crate::term::{Deco, Face, KEYCAP, KEYCAP_EDGE, Label};
+        if self.win.is_none() {
+            return;
+        }
+        let s = &mut self.screen;
+        let mut y1 = y0;
+        while y1 < vh && s.get(x0, y1).is_some_and(|c| c.bg == BG || c.bg == SEL_BG) {
+            y1 += 1;
+        }
+        s.deco(Deco::panel(x0 as f32, y0 as f32, pw as f32, (y1 - y0) as f32, BG).border([44, 48, 66]));
+        for y in y0..y1 {
+            let row: Vec<_> = (x0..x0 + pw).filter_map(|x| s.get(x, y)).collect();
+            let text: String = row.iter().map(|c| c.ch).collect();
+            if row.first().is_some_and(|c| c.bg == SEL_BG) {
+                s.deco(Deco::pill(x0 as f32 + 0.6, y as f32 + 0.06, pw as f32 - 1.2, 0.88, SEL_BG).border([90, 96, 130]));
+                if let Some(i) = text.chars().take(4).position(|c| c == '›') {
+                    s.over(x0 + i as u16, y, |c| crate::term::Cell { ch: ' ', ..c });
+                }
+            }
+            // Tabs: "[1] Settings    [2] Achievements    [3] Creations".
+            if text.contains("[1]") && text.contains("[2]") {
+                let starts: Vec<usize> = text.char_indices().filter(|(_, c)| *c == '[').map(|(i, _)| text[..i].chars().count()).collect();
+                for (k, &a) in starts.iter().enumerate() {
+                    let end = starts.get(k + 1).copied().unwrap_or(row.len());
+                    let seg: String = row[a..end].iter().map(|c| c.ch).collect();
+                    let len = seg.trim_end().chars().count();
+                    let active = k as u8 + 1 == page;
+                    let pill = Deco::pill(x0 as f32 + a as f32 - 0.6, y as f32 + 0.05, len as f32 + 1.2, 0.9, if active { ACCENT } else { KEYCAP });
+                    s.deco(if active { pill } else { pill.border(KEYCAP_EDGE) });
+                    for i in 0..len {
+                        let x = x0 + (a + i) as u16;
+                        s.over(x, y, |c| crate::term::Cell { ch: if matches!(c.ch, '[' | ']') { ' ' } else { c.ch }, fg: if active { BG } else { TEXT }, bold: true, ..c });
+                    }
+                }
+                continue;
+            }
+            // A heading: one word or two, all in the heading colour.
+            let words: Vec<&crate::term::Cell> = row.iter().filter(|c| c.ch != ' ').collect();
+            if !words.is_empty() && words.iter().all(|c| c.fg == HEAD) {
+                let first = row.iter().position(|c| c.ch != ' ').unwrap_or(0);
+                let t = text.trim().to_string();
+                for x in x0..x0 + pw {
+                    s.over(x, y, |c| crate::term::Cell { ch: ' ', ..c });
+                }
+                s.labels.push(Label { x: (x0 as usize + first) as f32, y: y as f32 - 0.05, text: t, size: 1.15, color: HEAD, face: Face::Title, center: false });
+            }
         }
     }
 
@@ -445,6 +505,7 @@ impl App {
                 self.screen.text(x0 + 2, y, &icon, c, bg, true);
             }
         }
+        self.dress_panel(x0, y0, pw as u16, vh, 2);
     }
 }
 

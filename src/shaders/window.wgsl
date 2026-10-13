@@ -170,6 +170,62 @@ fn fs_grid(f: Full) -> @location(0) vec4<f32> {
     return vec4<f32>(col, 1.0);
 }
 
+// Soft shapes: rounded rectangles, with a blurred shadow or a border.
+struct DecoIn {
+    @location(0) rect: vec4<f32>,
+    @location(1) fill: vec4<f32>,
+    // radius, shadow blur (0 = none), border width, -
+    @location(2) params: vec4<f32>,
+    @location(3) border: vec4<f32>,
+};
+
+struct DecoOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) p: vec2<f32>,
+    @location(1) half: vec2<f32>,
+    @location(2) fill: vec4<f32>,
+    @location(3) params: vec4<f32>,
+    @location(4) border: vec4<f32>,
+};
+
+@vertex
+fn vs_deco(@builtin(vertex_index) i: u32, d: DecoIn) -> DecoOut {
+    var corners = array<vec2<f32>, 6>(vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
+    let k = corners[i];
+    let grow = d.params.y * 2.0 + 1.0;
+    let lo = d.rect.xy - vec2<f32>(grow);
+    let size = d.rect.zw + vec2<f32>(grow * 2.0);
+    let px = lo + k * size;
+    var o: DecoOut;
+    o.pos = vec4<f32>(px.x / u.screen.x * 2.0 - 1.0, 1.0 - px.y / u.screen.y * 2.0, 0.0, 1.0);
+    o.half = d.rect.zw * 0.5;
+    o.p = px - (d.rect.xy + o.half);
+    o.fill = d.fill;
+    o.params = d.params;
+    o.border = d.border;
+    return o;
+}
+
+@fragment
+fn fs_deco(d: DecoOut) -> @location(0) vec4<f32> {
+    let r = min(d.params.x, min(d.half.x, d.half.y));
+    let q = abs(d.p) - d.half + vec2<f32>(r);
+    let dist = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    let blur = d.params.y;
+    if (blur > 0.0) {
+        let a = 1.0 - smoothstep(-blur, blur, dist);
+        return vec4<f32>(d.fill.rgb, d.fill.a * a);
+    }
+    let inside = clamp(0.5 - dist, 0.0, 1.0);
+    var c = d.fill.rgb;
+    let bw = d.params.z;
+    if (bw > 0.0) {
+        let edge = clamp(dist + bw + 0.5, 0.0, 1.0);
+        c = mix(c, d.border.rgb, edge);
+    }
+    return vec4<f32>(c, d.fill.a * inside);
+}
+
 struct Glyph {
     @location(0) rect: vec4<f32>,
     @location(1) uv: vec4<f32>,

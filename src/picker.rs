@@ -1,8 +1,8 @@
-//! `pocket list`: pick a world (or start a new one) with the arrow keys.
+//! Your worlds (the first screen): pick one, or start a new one, with the arrow keys.
 
-use crate::term::{self, Cell, Screen};
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::term::{Cell, Deco, Face, Label, Screen};
+use crate::window::{Ev, Win};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -108,7 +108,10 @@ const BG: [u8; 3] = [12, 13, 18];
 const TEXT: [u8; 3] = [222, 224, 230];
 const DIM: [u8; 3] = [125, 130, 148];
 const ACCENT: [u8; 3] = [255, 200, 110];
-const SEL_BG: [u8; 3] = [34, 37, 52];
+const CARD: [u8; 3] = [24, 26, 38];
+const CARD_SEL: [u8; 3] = [34, 37, 54];
+const CARD_EDGE: [u8; 3] = [60, 64, 88];
+const FRESH: [u8; 3] = [240, 214, 170];
 
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>()) }
@@ -247,96 +250,124 @@ impl Draft {
         out.push((start, self.text.len()));
         out
     }
+}
 
-    /// How many rows the box takes.
-    fn rows(&self, width: usize) -> usize {
-        self.lines(width).len().min(DRAFT_ROWS)
-    }
+/// The prompt box: its first column and width (in cells).
+fn draft_box(w: u16) -> (u16, usize) {
+    let width = (w as usize).saturating_sub(10).clamp(10, 96).min(w as usize);
+    ((w as usize - width) as u16 / 2, width)
 }
 
 /// Columns the draft wraps to (one spare for the cursor at a line's end).
 fn draft_width(w: u16) -> usize {
-    w.saturating_sub(7) as usize
+    draft_box(w).1.saturating_sub(4).max(4)
+}
+
+fn blank(scr: &mut Screen) {
+    scr.clear_decor();
+    for y in 0..scr.h {
+        scr.fill_row(y, Cell { bg: BG, ..Cell::BLANK });
+    }
 }
 
 /// The new-world screen: one place to see and change the prompt before
 /// the world begins (from `pocket new` and from the list alike).
 fn draw_new(scr: &mut Screen, d: &Draft, back: &str) {
     let (w, h) = (scr.w, scr.h);
-    for y in 0..h {
-        scr.fill_row(y, Cell { bg: BG, ..Cell::BLANK });
-    }
-    scr.text(2, 1, "Pocket Universe", ACCENT, BG, true);
-    scr.text(18, 1, " · a new world", DIM, BG, false);
-    let intro = if d.fresh { "A world picked at random. Keep it, roll another, or write your own:" } else { "The world you want, as you'll begin it:" };
-    scr.text(2, 3, &clip(intro, w.saturating_sub(4) as usize), DIM, BG, false);
+    blank(scr);
+    let cx = w as f32 / 2.0;
+    // The whole block sits a little above the middle.
+    let top = (h as f32 * 0.32 - 6.0).max(0.0) as u16;
+    scr.title(cx, top as f32 + 2.6, "A new world", 2.6, ACCENT);
+    let intro = if d.fresh { "A place picked at random. Keep it, roll another, or write your own." } else { "The world you want, as you'll begin it:" };
+    scr.center_text(cx, top + 5, &clip(intro, w.saturating_sub(4) as usize), DIM);
+    let (bx, bw) = draft_box(w);
     let lines = d.lines(draft_width(w));
     let at = lines.iter().rposition(|(s, _)| *s <= d.cursor).unwrap_or(0);
     let first = at.saturating_sub(DRAFT_ROWS - 1);
-    let y0 = 5u16;
+    let y0 = top + 8;
+    let shown = lines.len().min(DRAFT_ROWS).max(1) as f32;
+    scr.deco(Deco::panel(bx as f32, y0 as f32 - 1.0, bw as f32, shown + 2.0, CARD).border(if d.fresh { CARD_EDGE } else { ACCENT }));
+    let tx = bx + 2;
     for (row, (s, e)) in lines.iter().enumerate().skip(first).take(DRAFT_ROWS) {
         let y = y0 + (row - first) as u16;
-        scr.text(2, y, if row == 0 { ">" } else { " " }, ACCENT, BG, true);
+        // A fresh roll reads as a suggestion (warm), what you write as your own.
+        let fg = if d.fresh { FRESH } else { TEXT };
         for (i, ch) in d.text[*s..*e].iter().enumerate() {
-            let here = !d.fresh && s + i == d.cursor;
-            let (fg, bg) = if here { (BG, ACCENT) } else if d.fresh { (TEXT, SEL_BG) } else { (TEXT, BG) };
-            scr.set(4 + i as u16, y, Cell { ch: *ch, fg, bg, bold: false });
+            scr.set(tx + i as u16, y, Cell { ch: *ch, fg, bg: BG, bold: false });
         }
-        if d.cursor == d.text.len() && row == lines.len() - 1 {
-            scr.set(4 + (e - s) as u16, y, Cell { ch: '▏', fg: ACCENT, bg: BG, bold: false });
+        let last = row == lines.len() - 1;
+        if !d.fresh && d.cursor >= *s && (d.cursor < *e || (last && d.cursor == *e)) {
+            scr.caret = Some((tx + (d.cursor - s) as u16, y, ACCENT));
         }
     }
+    if lines.is_empty() || d.text.is_empty() {
+        scr.caret = Some((tx, y0, ACCENT));
+    }
     let hint = if d.fresh {
-        format!("Enter begin   Tab another   type your own   ←→ edit   Esc {back}")
+        format!("Enter begin   Tab another   Type your own   ←→ edit   Esc {back}")
     } else {
         format!("Enter begin   Tab random   Ctrl+U clear   Esc {back}")
     };
-    let y = (y0 + d.rows(draft_width(w)) as u16 + 1).min(h.saturating_sub(2));
-    scr.text(2, y, &clip(&hint, w.saturating_sub(4) as usize), DIM, BG, false);
+    let y = (y0 + shown as u16 + 2).min(h.saturating_sub(2));
+    let n = hint_width(&hint);
+    scr.hints(w.saturating_sub(n) / 2, y, &hint, DIM, BG);
 }
 
-/// Run the new-world screen until the prompt is taken (Some) or left (None).
-fn compose_on(scr: &mut Screen, mut d: Draft, back: &str) -> Result<Option<String>> {
-    let mut out = std::io::stdout();
+/// Columns a line of hints takes (each key drawn one wider, as a cap).
+fn hint_width(s: &str) -> u16 {
+    let parts: Vec<&str> = s.split("  ").map(str::trim).filter(|p| !p.is_empty()).collect();
+    let mut n = parts.len().saturating_sub(1) * 3;
+    for p in parts {
+        let keyed = p.split_once(' ').is_some_and(|(k, _)| crate::term::is_key(k.trim_end_matches(':')));
+        n += p.chars().count() + keyed as usize;
+    }
+    n as u16
+}
+
+/// The screen as big as the window.
+fn fit(win: &Win, scr: &mut Screen) {
+    let (w, h, _) = win.grid();
+    if (scr.w, scr.h) != (w, h) {
+        scr.resize(w, h);
+    }
+}
+
+/// What the new-world screen ended with.
+pub enum Composed {
+    Prompt(String),
+    Back,
+    Quit,
+}
+
+/// Run the new-world screen until the prompt is taken or left.
+fn compose_on(win: &mut Win, scr: &mut Screen, mut d: Draft, back: &str) -> Composed {
     loop {
+        fit(win, scr);
         draw_new(scr, &d, back);
-        scr.flush(&mut out)?;
-        if !event::poll(Duration::from_millis(500))? {
-            continue;
-        }
-        match event::read()? {
-            Event::Resize(w, h) => scr.resize(w, h),
-            Event::Paste(s) => d.insert(&s.replace(['\n', '\r'], " ")),
-            Event::Key(k) if k.kind != KeyEventKind::Release => {
-                if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c')) {
-                    return Ok(None);
-                }
-                match d.key(k) {
+        win.present(scr, 0, None);
+        for ev in win.pump(Duration::from_millis(500)) {
+            match ev {
+                Ev::Close => return Composed::Quit,
+                Ev::Paste(t) => d.insert(&t.replace(['\n', '\r'], " ")),
+                Ev::Key(k) if k.kind != KeyEventKind::Release => match d.key(k) {
                     Edit::Stay => {}
-                    Edit::Cancel => return Ok(None),
-                    Edit::Done(p) => return Ok(Some(p)),
-                }
+                    Edit::Cancel => return Composed::Back,
+                    Edit::Done(p) => return Composed::Prompt(p),
+                },
+                _ => {}
             }
-            _ => {}
         }
     }
 }
 
-/// `pocket new`: the new-world screen on its own, on the prompt given (to
-/// check before it begins) or a random one. Without a terminal (scripts)
-/// a given prompt is taken as it is.
-pub fn compose(given: Option<&str>) -> Result<Option<String>> {
-    use std::io::IsTerminal;
+/// The new-world screen on its own, on the prompt given (to check before it
+/// begins) or a random one.
+pub fn compose(win: &mut Win, given: Option<&str>) -> Composed {
     let given = given.map(str::trim).filter(|p| !p.is_empty());
-    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        return Ok(Some(given.map(str::to_string).unwrap_or_else(crate::random_world::prompt)));
-    }
-    let _ti = term::enter()?;
-    let (w, h) = crossterm::terminal::size().unwrap_or((100, 30));
-    let mut scr = Screen::new(w, h, term::truecolor());
-    let r = compose_on(&mut scr, given.map_or_else(Draft::rolled, Draft::given), "quit");
-    term::restore();
-    r
+    let (w, h, _) = win.grid();
+    let mut scr = Screen::new(w, h, true);
+    compose_on(win, &mut scr, given.map_or_else(Draft::rolled, Draft::given), "back")
 }
 
 /// Delete a world's file and SQLite's files beside it.
@@ -350,34 +381,33 @@ fn delete_world(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Your worlds, as cards.
 fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool) {
     let (w, h) = (scr.w, scr.h);
-    for y in 0..h {
-        scr.fill_row(y, Cell { bg: BG, ..Cell::BLANK });
-    }
-    scr.text(2, 1, "Pocket Universe", ACCENT, BG, true);
-    scr.text(18, 1, " · your worlds", DIM, BG, false);
-    let width = w.saturating_sub(6) as usize;
-    let per = 4u16;
-    let visible = ((h.saturating_sub(7)) / per).max(1) as usize;
+    blank(scr);
+    let cx = w as f32 / 2.0;
+    scr.title(cx, 2.6, "Pocket Universe", 2.8, ACCENT);
+    scr.center_text(cx, 5, "your worlds", DIM);
+    let cw = (w as usize).saturating_sub(10).clamp(20, 96).min(w as usize);
+    let x0 = ((w as usize - cw) / 2) as u16;
+    let width = cw.saturating_sub(4);
+    let per = 5u16;
+    let top = 8u16;
+    let visible = ((h.saturating_sub(top + 3)) / per).max(1) as usize;
     let first = sel.saturating_sub(visible - 1).min(list.len().saturating_sub(visible));
     if list.is_empty() {
-        scr.text(4, 4, "No worlds yet. Press n to start one.", DIM, BG, false);
+        scr.center_text(cx, top + 1, "No worlds yet. Press N to start one.", DIM);
     }
     for (row, (i, wd)) in list.iter().enumerate().skip(first).take(visible).enumerate() {
-        let y = 3 + row as u16 * per;
+        let y = top + row as u16 * per;
         let selected = i == sel;
-        let bg = if selected { SEL_BG } else { BG };
-        for dy in 0..3 {
-            for x in 2..w.saturating_sub(2) {
-                scr.set(x, y + dy, Cell { bg, ..Cell::BLANK });
-            }
-        }
-        scr.text(2, y, if selected { "▸" } else { " " }, ACCENT, bg, true);
+        let card = Deco::panel(x0 as f32, y as f32 - 0.6, cw as f32, 4.2, if selected { CARD_SEL } else { CARD });
+        scr.deco(if selected { card.border(ACCENT) } else { card });
         let when = ago(wd.modified);
-        scr.text(4, y, &clip(&wd.name, width.saturating_sub(when.len() + 2)), if selected { ACCENT } else { TEXT }, bg, true);
-        scr.text(w.saturating_sub(when.len() as u16 + 3), y, &when, DIM, bg, false);
-        scr.text(4, y + 1, &clip(&format!("“{}”", wd.prompt), width), TEXT, bg, false);
+        let name = clip(&wd.name, width.saturating_sub(when.len() + 2));
+        scr.labels.push(Label { x: x0 as f32 + 2.0, y: y as f32 - 0.25, text: name, size: 1.45, color: if selected { ACCENT } else { TEXT }, face: Face::Title, center: false });
+        scr.text(x0 + cw as u16 - when.len() as u16 - 2, y, &when, DIM, BG, false);
+        scr.text(x0 + 2, y + 1, &clip(&format!("“{}”", wd.prompt), width), TEXT, BG, false);
         let stats = [
             plural(wd.regions, "place", "places"),
             plural(wd.people, "person", "people"),
@@ -387,67 +417,73 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool) {
             plural(wd.built, "thing you made", "things you made"),
         ]
         .join(" · ");
-        scr.text(4, y + 2, &clip(&stats, width), DIM, bg, false);
+        scr.text(x0 + 2, y + 2, &clip(&stats, width), DIM, BG, false);
     }
+    let fy = h.saturating_sub(2);
     if deleting && sel < list.len() {
-        let x = scr.text(2, h.saturating_sub(2), &clip(&format!("Delete “{}” for good? ", list[sel].name), w.saturating_sub(40) as usize), ACCENT, BG, true);
-        scr.text(x, h.saturating_sub(2), "y delete   any other key keep", DIM, BG, false);
+        let q = clip(&format!("Delete “{}” for good?", list[sel].name), w.saturating_sub(40) as usize);
+        let n = q.chars().count() as u16 + 3 + hint_width("Y delete   Any other key keep");
+        let x = scr.text(w.saturating_sub(n) / 2, fy, &q, ACCENT, BG, true);
+        scr.hints(x + 3, fy, "Y delete   Any other key keep", DIM, BG);
     } else {
-        let keys = if list.is_empty() { "n new world   q quit" } else { "↑↓ choose   Enter open   n new world   d delete   q quit" };
-        scr.text(2, h.saturating_sub(2), keys, DIM, BG, false);
+        let keys = if list.is_empty() { "N new world   Q quit" } else { "↑↓ choose   Enter open   N new world   D delete   Q quit" };
+        scr.hints(w.saturating_sub(hint_width(keys)) / 2, fy, keys, DIM, BG);
     }
 }
 
-pub fn pick() -> Result<Choice> {
+/// Your worlds: open one, start a new one, or delete one.
+pub fn pick(win: &mut Win) -> Choice {
     let mut list = worlds();
-    let _ti = term::enter()?;
-    let (w, h) = crossterm::terminal::size().unwrap_or((100, 30));
-    let mut scr = Screen::new(w, h, term::truecolor());
-    let mut out = std::io::stdout();
+    let (w, h, _) = win.grid();
+    let mut scr = Screen::new(w, h, true);
     let mut sel = 0usize;
     let mut deleting = false;
-    let choice = loop {
+    loop {
+        fit(win, &mut scr);
         draw(&mut scr, &list, sel, deleting);
-        scr.flush(&mut out)?;
-        if !event::poll(Duration::from_millis(500))? {
-            continue;
-        }
-        match event::read()? {
-            Event::Resize(w, h) => scr.resize(w, h),
-            Event::Key(k) if k.kind != KeyEventKind::Release => {
-                if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c')) {
-                    break Choice::Quit;
-                }
-                if deleting {
-                    deleting = false;
-                    if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) && sel < list.len() {
-                        if let Err(e) = delete_world(&list[sel].path) {
-                            crate::log::error(format!("delete {}: {e}", list[sel].path.display()));
-                        }
-                        list = worlds();
-                        sel = sel.min(list.len().saturating_sub(1));
+        win.present(&scr, 0, None);
+        for ev in win.pump(Duration::from_millis(500)) {
+            let k = match ev {
+                Ev::Close => return Choice::Quit,
+                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
+                _ => continue,
+            };
+            if deleting {
+                deleting = false;
+                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) && sel < list.len() {
+                    if let Err(e) = delete_world(&list[sel].path) {
+                        crate::log::error(format!("delete {}: {e}", list[sel].path.display()));
                     }
-                    continue;
+                    list = worlds();
+                    sel = sel.min(list.len().saturating_sub(1));
                 }
-                match k.code {
-                    KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if !list.is_empty() => deleting = true,
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(list.len().saturating_sub(1)),
-                    KeyCode::Enter if !list.is_empty() => break Choice::Open(list[sel].path.clone()),
-                    KeyCode::Char('n') | KeyCode::Char('N') => {
-                        if let Some(p) = compose_on(&mut scr, Draft::rolled(), "back")? {
-                            break Choice::New(p);
-                        }
-                    }
-                    KeyCode::Char('q') | KeyCode::Esc => break Choice::Quit,
-                    _ => {}
-                }
+                continue;
             }
-            _ => {}
+            match k.code {
+                KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if !list.is_empty() => deleting = true,
+                KeyCode::Up => sel = sel.saturating_sub(1),
+                KeyCode::Down => sel = (sel + 1).min(list.len().saturating_sub(1)),
+                KeyCode::Enter if !list.is_empty() => return Choice::Open(list[sel].path.clone()),
+                KeyCode::Char('n') | KeyCode::Char('N') => match compose_on(win, &mut scr, Draft::rolled(), "back") {
+                    Composed::Prompt(p) => return Choice::New(p),
+                    Composed::Quit => return Choice::Quit,
+                    Composed::Back => {}
+                },
+                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => return Choice::Quit,
+                _ => {}
+            }
         }
-    };
-    term::restore();
-    Ok(choice)
+    }
+}
+
+/// A title and a line in the middle (while a world opens).
+pub fn notice(win: &mut Win, title: &str, line: &str) {
+    let (w, h, _) = win.grid();
+    let mut scr = Screen::new(w, h, true);
+    blank(&mut scr);
+    scr.title(w as f32 / 2.0, h as f32 / 2.0 - 1.5, title, 2.4, ACCENT);
+    scr.center_text(w as f32 / 2.0, h / 2 + 1, &clip(line, w.saturating_sub(4) as usize), DIM);
+    win.present(&scr, 0, None);
 }
 
 #[cfg(test)]
@@ -463,7 +499,7 @@ mod tests {
     }
 
     fn screen_text(scr: &Screen) -> String {
-        (0..scr.h).map(|y| (0..scr.w).map(|x| scr.get(x, y).map_or(' ', |c| c.ch)).collect::<String>()).collect::<Vec<_>>().join("\n")
+        scr.plain_text()
     }
 
     #[test]
@@ -522,7 +558,8 @@ mod tests {
             let mut scr = Screen::new(w, h, true);
             let mut d = Draft::rolled();
             draw_new(&mut scr, &d, "back");
-            assert!(screen_text(&scr).contains("Enter begin") || w < 20);
+            let shown = screen_text(&scr);
+            assert!((shown.contains("Enter") && shown.contains("begin")) || w < 20, "{shown}");
             d.key(key(KeyCode::Home));
             draw_new(&mut scr, &d, "back");
             draw(&mut scr, &[], 0, false);
@@ -530,7 +567,7 @@ mod tests {
         let mut scr = Screen::new(100, 30, true);
         draw_new(&mut scr, &Draft::rolled(), "quit");
         let shown = screen_text(&scr);
-        assert!(shown.contains("a new world") && shown.contains("Esc quit"), "{shown}");
+        assert!(shown.contains("A new world") && shown.contains("Esc") && shown.contains("quit"), "{shown}");
     }
 
     #[test]
