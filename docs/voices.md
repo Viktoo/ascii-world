@@ -61,9 +61,44 @@ On an M5 Pro with 4 threads (a quarter of the cores, at most 4), a 4-second
 line takes about 1 second to make: the model 0.8 s, the body 0.15 s. Frame
 rate is the same with voices on and off.
 
+## Speaking to talk
+
+Built 2026-10-13 (`src/ears`, `src/app/ears.rs`). Press `/`, or Enter with
+someone, and the mic opens: the words show in the input line as they are made
+out, and at a pause (1 s) the line is sent like typed text. Typing takes over
+(the mic closes and the words stay to edit; Enter sends), Enter sends at
+once, Esc forgets what was heard. With someone, Enter on an empty line
+listens again. The mic is open only while listening.
+
+- **Recogniser**: whisper.cpp (`whisper-rs`, MIT / Unlicense; the model
+  weights are OpenAI's, MIT), `ggml-base.en.bin` (148 MB), fetched once into
+  the voice folder. On the CPU with the voices' share of threads: words
+  every 0.4 s take 30-80 ms (only as much audio as was said), the whole line
+  at the pause about 0.3 s. The names of who you're with, what you point at
+  and what you hold are given as a prompt, so they come out spelled right.
+  Metal works too (`POCKET_EARS_GPU=1`, 65 ms for the line) but the GPU is
+  the world's; frame rate is the same with the CPU recogniser running.
+  `small.en` (q8, 265 MB) gets live words right sooner but takes 1 s for the
+  line on the CPU.
+- **Why not the cloud**: OpenAI's or Deepgram's streaming recognisers are
+  more accurate on odd words and cost little (under a cent a minute), but
+  need a key, send the player's voice away, and add the network to every
+  line. On the machine fits how voices are made.
+- **Pause** (`pause.rs`): loudness against the room's noise (the quietest
+  frame of the last 1.5 s), so a fan or rain doesn't keep it open. Nothing
+  said for 8 s closes it; one go is at most 28 s.
+- `cmake` is needed to build (whisper.cpp): `brew install cmake`.
+- Settings: **Speak to talk** on/off. `POCKET_NO_MIC` turns it off.
+- `pocket listen --hear F.wav [--model PATH] [--gpu]`: a recording heard as
+  in the game, each pass timed. `pocket listen --mic`: one go through the
+  microphone. `POCKET_MIC_WAV=F.wav`: the game hears that file as the mic
+  (for `--shot` runs: `--keys / --keys-at 8`).
+- On a Mac the system asks once for the microphone, for the app the game was
+  started from (the terminal); until it is allowed, the line says it is
+  waiting for the microphone.
+
 ## Not done yet
 
-- Speaking to characters by voice (dictation on `/` or Enter).
 - Mood in the voice (calm, scared, angry), from the sim's state.
 - Lines the player can't hear yet could be made ahead of time.
 - Smaller binary: load the pronunciation dictionaries from the voice pack.

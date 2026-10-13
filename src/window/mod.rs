@@ -41,6 +41,8 @@ pub struct Shot {
     /// Keys pressed a second before the shot (`esc,down,f1` or single
     /// characters); with a `+` (`+w,+right`), held down from the start.
     pub keys: Vec<String>,
+    /// `--keys-at SECS`: press them this long before the shot instead.
+    pub keys_at: f32,
 }
 
 impl Shot {
@@ -55,6 +57,7 @@ impl Shot {
             size: (w.parse()?, h.parse()?),
             scale: flag("--scale").and_then(|s| s.parse().ok()).unwrap_or(1.0),
             after: flag("--after").and_then(|s| s.parse().ok()).unwrap_or(8.0),
+            keys_at: flag("--keys-at").and_then(|s| s.parse().ok()).unwrap_or(1.0),
             keys: flag("--keys").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
         }))
     }
@@ -232,7 +235,7 @@ impl Win {
             std::thread::sleep(d.min(Duration::from_millis(2)).min(left));
             let mut out = std::mem::take(&mut self.h.events);
             out.extend(s.held.drain(..).map(|k| Ev::Key(press(k))));
-            if !s.keys.is_empty() && left <= Duration::from_secs(1) {
+            if !s.keys.is_empty() && left <= Duration::from_secs_f32(s.shot.keys_at) {
                 for k in s.keys.drain(..) {
                     out.push(Ev::Key(press(k)));
                     out.push(Ev::Key(KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Release)));

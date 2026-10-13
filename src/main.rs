@@ -24,6 +24,7 @@ mod sim;
 mod term;
 mod terrain;
 mod voice;
+mod ears;
 mod window;
 mod world;
 
@@ -44,7 +45,7 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world, made from words
                                          prompt (a random one if none given), then step in
   pocket prompts [--sample N]            print N random prompts (default 20)
 
-  Any of the above with --shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS] [--keys esc,down]
+  Any of the above with --shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS] [--keys esc,down] [--keys-at SECS]
   runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
 
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]

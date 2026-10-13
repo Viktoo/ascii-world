@@ -16,6 +16,8 @@ const SR: f32 = 48000.0;
 pub const USAGE: &str = "  pocket listen --play                   a dog walks round you, through the speakers (checks the device)
   pocket listen --demo [--out DIR]       built-in scenes as WAVs (approach, materials, voices, night, contacts, fire)
   pocket listen --voices [FILE] [--say TEXT] [--fetch] [--out DIR]   characters speaking in their own voices (a built-in cast, or a world's people)
+  pocket listen --hear F.wav [--model PATH] [--gpu] [--prompt TEXT]   speech heard as in the game (live words, then the line at the pause), timed
+  pocket listen --mic [--prompt TEXT]    one go through the microphone
   pocket listen FILE --species NAME [--out F.wav]          each of a species' sounds, 6 m ahead
   pocket listen FILE [--at x,z,yawDeg] [--hour H] [--secs S] [--walk] [--calls] [--verbose] [--out F.wav]
                                          stand (or walk) somewhere in a world and listen";
@@ -38,6 +40,9 @@ pub fn cli(args: &[String]) -> Result<()> {
     }
     if has(args, "--voices") {
         return voices_cli(args);
+    }
+    if has(args, "--hear") || has(args, "--mic") {
+        return crate::ears::bench::cli(args);
     }
     if has(args, "--demo") {
         let dir = out_dir(args);
