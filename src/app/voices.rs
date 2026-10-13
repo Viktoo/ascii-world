@@ -127,7 +127,7 @@ impl App {
             let delay = busy.map(|b| (b - now).as_secs_f32() + GAP).unwrap_or(0.0);
             let secs = c.samples.len() as f32 / SAMPLE_RATE as f32;
             self.voice_busy.insert(c.who, now + Duration::from_secs_f32(delay + secs));
-            crate::log::info(&format!("voice: {} speaks {secs:.1}s (after {delay:.1}s), {:.0} m off", self.sim.actor_name(who), self.sim.dist_to_player(a.pos)));
+            crate::log::info(&format!("voice: {} ({:.0} m off, in {delay:.1}s for {secs:.1}s): {}", self.sim.actor_name(who), self.sim.dist_to_player(a.pos), c.text));
             out.send(Cmd::Speech { at: At::Follow(actor_key(who), at), samples: c.samples, rate: SAMPLE_RATE as f32, gain: 1.0, delay });
         }
     }

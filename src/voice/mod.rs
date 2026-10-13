@@ -109,6 +109,8 @@ pub struct Job {
 
 pub struct Clip {
     pub who: i64,
+    /// The words (for the log).
+    pub text: String,
     pub samples: Arc<Vec<f32>>,
 }
 
@@ -208,7 +210,7 @@ fn run(jobs: Receiver<Job>, done: Sender<Clip>, state: Arc<Mutex<State>>, stop: 
                 }
                 match engine.speak(&part, &j.recipe) {
                     Ok(s) if !s.is_empty() => {
-                        let _ = done.send(Clip { who: j.who, samples: Arc::new(s) });
+                        let _ = done.send(Clip { who: j.who, text: part.clone(), samples: Arc::new(s) });
                     }
                     Ok(_) => {}
                     Err(e) => crate::log::info(&format!("voice line: {e:#}")),

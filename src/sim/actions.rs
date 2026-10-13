@@ -1228,6 +1228,14 @@ impl Sim {
                 self.speak_as_animal(c, text);
                 return;
             }
+            // Nearly the same words again within moments: once is enough.
+            let t = self.t;
+            if let Some(n) = self.cast.get_mut(c) {
+                if t - n.last_said.0 < REPEAT_SECS && same_words(&n.last_said.1, text) {
+                    return;
+                }
+                n.last_said = (t, text.to_string());
+            }
         }
         if who != ActorId::Player {
             self.note_near(at, 22.0, Note::Line { id: Some(who), who: name.clone(), text: text.to_string() });
@@ -1614,4 +1622,20 @@ fn verb_s(k: GestureKind) -> &'static str {
         GestureKind::Sit => "sit",
         _ => "gesture",
     }
+}
+
+/// How soon the same words again count as repeating oneself.
+const REPEAT_SECS: f64 = 30.0;
+
+/// Two lines with mostly the same words (two thirds of the longer one's).
+/// Short calls ("Catch!", "Heads up!") are meant to come again.
+pub fn same_words(a: &str, b: &str) -> bool {
+    let w = |s: &str| -> std::collections::BTreeSet<String> { s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|x| !x.is_empty()).map(String::from).collect() };
+    let (x, y) = (w(a), w(b));
+    let most = x.len().max(y.len());
+    if most < 4 {
+        return false;
+    }
+    let common = x.intersection(&y).count();
+    common * 3 >= most * 2
 }

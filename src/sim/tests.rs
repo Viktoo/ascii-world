@@ -4972,3 +4972,30 @@ fn what_stands_in_a_dug_hole_goes_down_with_it() {
     let bp = s.sim.things.get(bid).unwrap().pos;
     assert!(bp.y < t.height(bp.x, bp.z) + 0.4, "the ball fell in: {} above", bp.y - t.height(bp.x, bp.z));
 }
+
+/// Nearly the same words twice in a row are said once; short calls (a game
+/// of catch) and the same words much later still come again.
+#[test]
+fn a_character_does_not_repeat_themself() {
+    let w = world("repeat", 5);
+    let id = add_char(&w, "Aune", "stern", &[], w.spawn + Vec3::new(2.0, 0.0, 0.0));
+    let mut s = session(&w, 5, None);
+    let a = ActorId::Npc(id);
+    let said = |s: &Session| events(&s.sim, "said").iter().filter(|e| e.actor == Some(a)).count();
+    s.sim.say(a, "You smell of the road, child. Come, have you eaten?", None);
+    s.run(1.5, 0.1);
+    s.sim.say(a, "You smell of the road, child. Have you eaten today?", Some(Target::Actor(ActorId::Player)));
+    assert_eq!(said(&s), 1, "the second, nearly the same, is let go");
+    s.sim.say(a, "Catch!", None);
+    s.sim.say(a, "Catch!", None);
+    assert_eq!(said(&s), 3, "short calls come again");
+    s.sim.say(a, "The pit is dead. I saw the fire myself.", None);
+    let t0 = s.sim.t;
+    while s.sim.t - t0 < 31.0 {
+        s.run(2.0, 0.5);
+    }
+    s.sim.say(a, "The pit is dead. I saw the fire myself.", None);
+    let pit = events(&s.sim, "said").iter().filter(|e| e.actor == Some(a) && e.text.contains("The pit is dead")).count();
+    assert_eq!(pit, 2, "much later, the same words are news again");
+    assert!(!super::actions::same_words("The pit is dead.", "Berries! Are they ripe today?"));
+}

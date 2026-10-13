@@ -156,6 +156,9 @@ pub struct Npc {
     pub decisions: VecDeque<(f64, String)>,
     pub bored_since: f64,
     pub last_line: f64,
+    /// What they last said aloud and when: the same words again soon after
+    /// are let go.
+    pub last_said: (f64, String),
     pub last_work: f64,
     /// When an animal last greeted its person.
     pub last_greet: f64,
@@ -348,6 +351,7 @@ impl Cast {
             decisions: VecDeque::new(),
             bored_since: f64::MAX,
             last_line: f64::MIN,
+            last_said: (f64::MIN, String::new()),
             last_work: f64::MIN,
             last_greet: f64::MIN,
             deliver: None,
@@ -1650,7 +1654,11 @@ impl Sim {
                 _ => {}
             }
         } else if let Some(l) = &line {
-            self.say(me, l, None);
+            // A plan with its own line (often the same words, said on
+            // arrival) says it then, not twice.
+            if !steps.iter().any(|a| matches!(a, Action::Say { .. })) {
+                self.say(me, l, None);
+            }
         }
         if !steps.is_empty() {
             let goal = d.goal.clone().unwrap_or_else(|| d.action.clone());
