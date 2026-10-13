@@ -117,12 +117,15 @@ pub struct Screen {
     /// Shapes and free text over the cells (each screen draws them anew).
     pub decor: Vec<Deco>,
     pub labels: Vec<Label>,
+    /// Areas (x, y, w, h in cells) drawn as a grid in a window: each glyph
+    /// centred in its own cell, as a map needs, not set as flowing words.
+    pub grids: Vec<[u16; 4]>,
 }
 
 impl Screen {
     pub fn new(w: u16, h: u16, truecolor: bool) -> Screen {
         let n = w as usize * h as usize;
-        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, decor: Vec::new(), labels: Vec::new() }
+        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, decor: Vec::new(), labels: Vec::new(), grids: Vec::new() }
     }
 
     pub fn resize(&mut self, w: u16, h: u16) {
@@ -180,6 +183,7 @@ impl Screen {
     pub fn clear_decor(&mut self) {
         self.decor.clear();
         self.labels.clear();
+        self.grids.clear();
         self.caret = None;
     }
 

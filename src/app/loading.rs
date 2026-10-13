@@ -25,7 +25,7 @@ const BG: [u8; 3] = [10, 11, 15];
 const FOG: [u8; 3] = [40, 43, 56];
 const FAINT: [u8; 3] = [64, 68, 84];
 /// Seconds the countdown starts from: about how long a whole new world takes.
-const ETA_FULL: f32 = 14.0 * 60.0;
+const ETA_FULL: f32 = 9.0 * 60.0;
 /// While the builder thinks and nothing has come back, the bar creeps towards this.
 const CREEP: f32 = 0.09;
 
@@ -330,13 +330,21 @@ impl App {
                 *last = format!("{}…", keep.trim_end());
             }
         }
+        // In a window the name is taller than a row: the words go under it,
+        // set freely so they centre on the same middle.
+        let under = if self.win.is_some() { 2 } else { 1 };
         for (i, line) in lines.iter().enumerate() {
-            let lx = x0 + (cw.saturating_sub(line.chars().count() as u16)) / 2;
-            self.screen.text(lx, top + 1 + i as u16, line, TEXT, BG, false);
+            let ly = top + under + i as u16;
+            if self.win.is_some() {
+                self.screen.center_text(w as f32 / 2.0, ly, line, TEXT);
+            } else {
+                let lx = x0 + (cw.saturating_sub(line.chars().count() as u16)) / 2;
+                self.screen.text(lx, ly, line, TEXT, BG, false);
+            }
         }
 
         // Map and log between the title and the bar.
-        let mid_top = top + 2 + if lines.is_empty() { 0 } else { lines.len() as u16 + 1 };
+        let mid_top = top + 1 + under + if lines.is_empty() { 0 } else { lines.len() as u16 + 1 };
         let mid_h = bar_y.saturating_sub(1).saturating_sub(mid_top);
         if cw >= 72 && mid_h >= 6 {
             let map_w = cw * 58 / 100;
@@ -443,8 +451,9 @@ impl App {
     /// The land seen from above, your view direction up, forming outward from you.
     fn draw_map(&mut self, l: &mut Loading, bx: u16, by: u16, bw: u16, bh: u16, t: f32) {
         // Cells are about twice as tall as wide: twice the columns for a square.
-        let mh = bh.min(bw / 2).max(3);
-        let mw = (mh * 2).min(bw);
+        // Odd both ways, so you sit in the middle cell, where the rings start.
+        let mh = (bh.min(bw / 2).max(3) - 1) | 1;
+        let mw = ((mh * 2).min(bw) - 1) | 1;
         let mx0 = bx + (bw - mw) / 2;
         let my0 = by + (bh - mh) / 2;
         let p = self.pos();
@@ -481,6 +490,7 @@ impl App {
         }
         let water = self.snap.look.palette.water;
         let cells = &l.map.as_ref().unwrap().cells;
+        self.screen.grids.push([mx0, my0, mw, mh]);
         // The land forms out to `reach` (in map radii), with a ragged edge.
         let reach = 0.05 + 1.6 * l.shown;
         let frame = (t * 10.0) as u32;

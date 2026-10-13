@@ -169,10 +169,18 @@ impl Text {
             // The caret, if on this row: where the words put its cell.
             let caret = screen.caret.filter(|c| c.1 as usize == y);
             let mut caret_x = caret.map(|c| c.0 as f32 * cell_w);
+            let in_grid = |x: usize| screen.grids.iter().any(|g| (g[0] as usize..(g[0] + g[2]) as usize).contains(&x) && (g[1] as usize..(g[1] + g[3]) as usize).contains(&y));
             let mut x = 0;
             while x < w {
                 let c = row[x];
                 if !is_text(c) {
+                    x += 1;
+                    continue;
+                }
+                // On a grid: the glyph alone, in the middle of its cell.
+                if in_grid(x) {
+                    let adv = self.glyph(c.ch, face(c), px).advance;
+                    self.run(&row[x..x + 1], x as f32 * cell_w + (cell_w - adv) * 0.5, y as f32 * cell_h + base, cell_w.max(adv), px, None, out);
                     x += 1;
                     continue;
                 }
@@ -182,7 +190,7 @@ impl Text {
                 while end < w {
                     let n = row[end];
                     let gap = n.ch == ' ' && row.get(end + 1).is_none_or(|m| m.ch == ' ');
-                    if gap || (n.ch != ' ' && (!is_text(n) || n.fg != c.fg || n.bold != c.bold)) {
+                    if gap || in_grid(end) || (n.ch != ' ' && (!is_text(n) || n.fg != c.fg || n.bold != c.bold)) {
                         break;
                     }
                     end += 1;
