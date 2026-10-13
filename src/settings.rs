@@ -22,6 +22,8 @@ pub struct Settings {
     pub volume: f32,
     /// Characters heard speaking in their own voices (needs sound).
     pub voices: bool,
+    /// 0..1: how loud voices are against the world's other sounds.
+    pub voice_volume: f32,
     /// In a window: lines of the world drawn, scaled up to fill it; 0 = every
     /// pixel of the window, `AUTO` = as many as keep the frame rate. The
     /// terminal ignores it.
@@ -39,7 +41,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, window_detail: AUTO, blend_frames: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, window_detail: AUTO, blend_frames: true }
     }
 }
 
@@ -131,6 +133,7 @@ impl Settings {
             s.blend_frames = false;
         }
         s.volume = if s.volume.is_finite() { s.volume.clamp(0.0, 1.0) } else { 0.8 };
+        s.voice_volume = if s.voice_volume.is_finite() { s.voice_volume.clamp(0.0, 1.0) } else { 0.5 };
         s.fps = s.fps.clamp(5.0, 240.0);
         s.region_radius = s.region_radius.clamp(0, 4);
         s
@@ -172,6 +175,7 @@ impl Settings {
             out.sound = self.sound;
         }
         out.volume = self.volume;
+        out.voice_volume = self.voice_volume;
         if !env_voices() {
             out.voices = self.voices;
         }

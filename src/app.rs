@@ -3109,6 +3109,10 @@ mod tests {
         assert!(!app.settings.voices, "Enter turns voices off");
         app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
         assert!(app.settings.voices && app.voice.is_none());
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        assert_eq!(app.settings.voice_volume, 0.5, "voices sit below the world by default");
+        app.on_key(key(KeyCode::Left, KeyEventKind::Press));
+        assert!(app.settings.voice_volume < 0.5);
         // A world setting changes the running sim and is kept with the world.
         for _ in 0..3 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));

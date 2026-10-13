@@ -31,6 +31,7 @@ enum Row {
     Sound,
     Volume,
     Voices,
+    VoiceVolume,
     Difficulty,
     Radius,
     ShowWork,
@@ -42,7 +43,7 @@ enum Row {
     Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -260,6 +261,7 @@ impl App {
             Row::Sound => s.sound = !s.sound,
             Row::Voices => s.voices = !s.voices,
             Row::Volume => s.volume = step(VOLUMES, s.volume as f64, dir) as f32,
+            Row::VoiceVolume => s.voice_volume = step(VOLUMES, s.voice_volume as f64, dir) as f32,
             Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
             Row::ShowWork => s.show_work = s.show_work.next(dir),
             Row::Difficulty => {
@@ -272,7 +274,7 @@ impl App {
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
             Row::Details | Row::Worlds | Row::Quit => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::Radius | Row::ShowWork) {
+        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::VoiceVolume | Row::Radius | Row::ShowWork) {
             self.settings.save();
         }
         if matches!(row, Row::Sound | Row::Volume | Row::Voices) {
@@ -308,6 +310,7 @@ impl App {
             Row::Sound => ("Sound", if s.sound && self.sound.is_none() && !cfg!(test) { "on (no output device)".into() } else { on(s.sound) }),
             Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
             Row::Voices => ("Voices", self.voice_status()),
+            Row::VoiceVolume => ("Voice volume", format!("{:.0}%", s.voice_volume * 100.0)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
             Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
             Row::Difficulty => ("Difficulty", self.sim.level().name.to_string()),
