@@ -117,12 +117,15 @@ pub struct Screen {
     shown: Vec<Option<Cell>>,
     pub truecolor: bool,
     pub bytes_last: usize,
+    /// Cells that show the world beneath them (window mode only): the world's
+    /// own pixels, multiplied by the cell's background (white leaves it as is).
+    pub see: Vec<bool>,
 }
 
 impl Screen {
     pub fn new(w: u16, h: u16, truecolor: bool) -> Screen {
         let n = w as usize * h as usize;
-        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0 }
+        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n] }
     }
 
     pub fn resize(&mut self, w: u16, h: u16) {
@@ -131,8 +134,26 @@ impl Screen {
 
     pub fn set(&mut self, x: u16, y: u16, c: Cell) {
         if x < self.w && y < self.h {
-            self.cells[y as usize * self.w as usize + x as usize] = c;
+            let i = y as usize * self.w as usize + x as usize;
+            self.cells[i] = c;
+            self.see[i] = false;
         }
+    }
+
+    /// Change a cell in place, keeping whatever shows through it: tints and
+    /// marks drawn over the world stay over the world in a window.
+    pub fn over(&mut self, x: u16, y: u16, f: impl FnOnce(Cell) -> Cell) {
+        if x < self.w && y < self.h {
+            let i = y as usize * self.w as usize + x as usize;
+            self.cells[i] = f(self.cells[i]);
+        }
+    }
+
+    /// The top `rows` rows show the world itself (window mode).
+    pub fn fill_world(&mut self, rows: u16) {
+        let n = rows.min(self.h) as usize * self.w as usize;
+        self.cells[..n].fill(Cell { ch: ' ', fg: [255, 255, 255], bg: [255, 255, 255], bold: false });
+        self.see[..n].fill(true);
     }
 
     pub fn get(&self, x: u16, y: u16) -> Option<Cell> {

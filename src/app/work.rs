@@ -305,10 +305,7 @@ impl App {
                 // Brightest in the middle of its rise.
                 let glow = 1.0 - (life * 2.0 - 1.0).abs() * 0.6;
                 let fg = color.map(|c| (c as f32 * glow) as u8);
-                if let Some(c) = self.screen.get(x as u16, y as u16) {
-                    let bg = c.bg;
-                    self.screen.set(x as u16, y as u16, Cell { ch, fg, bg, bold: conjure });
-                }
+                self.screen.over(x as u16, y as u16, |c| Cell { ch, fg, bold: conjure, ..c });
             }
         }
     }

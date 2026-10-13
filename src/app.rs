@@ -81,6 +81,59 @@ fn key_char(code: KeyCode) -> Option<char> {
     }
 }
 
+/// Window mode: one text cell's size in the window's own pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WinGeom {
+    pub cell_w: f32,
+    pub cell_h: f32,
+}
+
+/// Where the app shows itself and hears its keys: a terminal or a window.
+pub trait Frontend {
+    /// Hand the app whatever input arrived (never blocks).
+    fn input(&mut self, app: &mut App) -> std::io::Result<()>;
+    /// Show the screen (and in a window, the world beneath it).
+    fn present(&mut self, app: &mut App) -> std::io::Result<()>;
+    /// Wait up to `d` for input or the next frame slot.
+    fn wait(&mut self, d: Duration);
+}
+
+/// The terminal (or, without input, a sink for tests and scripts).
+pub struct TermFront<'a> {
+    pub input: bool,
+    pub out: &'a mut dyn Write,
+}
+
+impl Frontend for TermFront<'_> {
+    fn input(&mut self, app: &mut App) -> std::io::Result<()> {
+        if !self.input {
+            return Ok(());
+        }
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                TEvent::Key(k) => app.on_key(k),
+                TEvent::Resize(w, h) => app.resize(w, h),
+                TEvent::Paste(s) => app.paste(&s),
+                TEvent::FocusLost => app.focus_lost(),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn present(&mut self, app: &mut App) -> std::io::Result<()> {
+        app.screen.flush(self.out)
+    }
+
+    fn wait(&mut self, d: Duration) {
+        if self.input {
+            let _ = event::poll(d);
+        } else {
+            std::thread::sleep(d.min(Duration::from_millis(2)));
+        }
+    }
+}
+
 pub struct Stats {
     frames: VecDeque<Instant>,
     pub max_loop_ms: f32,
@@ -193,6 +246,11 @@ pub struct App {
     /// What the world sounds like, read off the sim each frame.
     foley: crate::audio::foley::Foley,
     sound_cmds: Vec<crate::audio::mix::Cmd>,
+    /// Shown in a window rather than a terminal.
+    pub win: Option<WinGeom>,
+    /// Window detail on auto: the lines drawn now, and when they last changed.
+    auto_lines: f32,
+    auto_at: Instant,
 }
 
 pub struct Setup {
@@ -288,6 +346,9 @@ impl App {
             sound: None,
             foley: Default::default(),
             sound_cmds: Vec::new(),
+            win: None,
+            auto_lines: 240.0,
+            auto_at: Instant::now(),
         };
         app.sync_sound();
         app.unstick();
@@ -397,6 +458,22 @@ impl App {
 
     fn pixel_size(&self) -> (u32, u32, f32) {
         let (w, vh, _) = self.layout();
+        if let Some(g) = self.win {
+            // A window: square pixels, as many lines as the detail setting allows.
+            let (fw, fh) = (w as f32 * g.cell_w, vh as f32 * g.cell_h);
+            let lines = match self.settings.window_detail {
+                0 => fh,
+                crate::settings::AUTO => self.auto_lines.min(fh),
+                l => (l as f32).min(fh),
+            };
+            let k = lines / fh.max(1.0);
+            let (mut pw, mut ph) = ((fw * k).round() as u32, (fh * k).round() as u32);
+            if self.render.cpu_fallback {
+                pw = pw.div_ceil(4);
+                ph = ph.div_ceil(4);
+            }
+            return (pw.max(8), ph.max(8), 1.0);
+        }
         let (mut pw, mut ph, aspect) = if self.ascii { (w as u32, vh as u32, 0.5) } else { (w as u32 * 2, vh as u32 * 2, 0.5) };
         if self.render.cpu_fallback {
             pw = pw.div_ceil(2);
@@ -407,7 +484,7 @@ impl App {
 
     // ------------------------------------------------------------------ input
 
-    fn on_key(&mut self, k: KeyEvent) {
+    pub fn on_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C')) {
             if k.kind != KeyEventKind::Release {
@@ -504,7 +581,7 @@ impl App {
                 self.log_scroll = 0;
                 self.dirty = true;
             }
-            KeyCode::Tab => {
+            KeyCode::Tab if self.win.is_none() => {
                 self.ascii = !self.ascii;
                 self.screen.resize(self.screen.w, self.screen.h);
                 self.last_frame = None;
@@ -1381,7 +1458,9 @@ impl App {
     fn compose(&mut self) {
         let (w, vh, log_rows) = self.layout();
         // Viewport.
-        if let Some(f) = &self.last_frame {
+        if self.win.is_some() {
+            self.screen.fill_world(vh);
+        } else if let Some(f) = &self.last_frame {
             frame_to_cells(f, &mut self.screen, w, vh, self.ascii);
         } else {
             for y in 0..vh {
@@ -1575,10 +1654,11 @@ impl App {
         let tint = |v: [u8; 3]| [0, 1, 2].map(|i| (v[i] as f32 + (BLOOD[i] - v[i] as f32) * k) as u8);
         for y in 0..vh {
             for x in 0..w {
-                let Some(mut c) = self.screen.get(x, y) else { continue };
-                c.bg = tint(c.bg);
-                c.fg = tint(c.fg);
-                self.screen.set(x, y, c);
+                self.screen.over(x, y, |mut c| {
+                    c.bg = tint(c.bg);
+                    c.fg = tint(c.fg);
+                    c
+                });
             }
         }
         if s < FALL_SECS * 0.7 {
@@ -1599,16 +1679,8 @@ impl App {
                     }
                     let (x, yy) = (x0 + i as u16, y + r as u16);
                     // A drop shadow, down and to the right.
-                    if let Some(mut c) = self.screen.get(x + 1, yy + 1) {
-                        c.bg = shadow;
-                        c.ch = ' ';
-                        self.screen.set(x + 1, yy + 1, c);
-                    }
-                    if let Some(mut c) = self.screen.get(x, yy) {
-                        c.ch = '█';
-                        c.fg = red;
-                        self.screen.set(x, yy, c);
-                    }
+                    self.screen.over(x + 1, yy + 1, |c| Cell { ch: ' ', bg: shadow, ..c });
+                    self.screen.over(x, yy, |c| Cell { ch: '█', fg: red, ..c });
                 }
             }
             y += 7;
@@ -1631,13 +1703,7 @@ impl App {
     /// Text over the view, keeping what is behind it as its background.
     fn text_over(&mut self, x: u16, y: u16, s: &str, fg: [u8; 3], bold: bool) {
         for (i, ch) in s.chars().enumerate() {
-            if let Some(mut c) = self.screen.get(x + i as u16, y) {
-                c.ch = crate::term::narrow(ch);
-                c.fg = fg;
-                c.bold = bold;
-                c.bg = c.bg.map(|v| (v as f32 * 0.55) as u8);
-                self.screen.set(x + i as u16, y, c);
-            }
+            self.screen.over(x + i as u16, y, |c| Cell { ch: crate::term::narrow(ch), fg, bold, bg: c.bg.map(|v| (v as f32 * 0.55) as u8) });
         }
     }
 
@@ -1664,11 +1730,8 @@ impl App {
                     continue;
                 }
                 let k = (1.0 - d / depth).powi(2) * fade * 0.75;
-                let Some(mut c) = self.screen.get(x, y) else { continue };
                 let red = |v: [u8; 3]| [(v[0] as f32 + (200.0 - v[0] as f32) * k) as u8, (v[1] as f32 * (1.0 - k)) as u8, (v[2] as f32 * (1.0 - k)) as u8];
-                c.bg = red(c.bg);
-                c.fg = red(c.fg);
-                self.screen.set(x, y, c);
+                self.screen.over(x, y, |c| Cell { bg: red(c.bg), fg: red(c.fg), ..c });
             }
         }
     }
@@ -1855,10 +1918,7 @@ impl App {
             let nx = (col - len / 2).clamp(0, (w as i32 - len).max(0));
             for (i, ch) in name.chars().enumerate() {
                 let x = nx as u16 + i as u16;
-                if let Some(c) = self.screen.get(x, top as u16) {
-                    let bg = [(c.bg[0] as u16 / 3) as u8, (c.bg[1] as u16 / 3) as u8, (c.bg[2] as u16 / 3) as u8];
-                    self.screen.set(x, top as u16, Cell { ch: term::narrow(ch), fg: [255, 255, 255], bg, bold: true });
-                }
+                self.screen.over(x, top as u16, |c| Cell { ch: term::narrow(ch), fg: [255, 255, 255], bg: c.bg.map(|v| v / 3), bold: true });
             }
         }
     }
@@ -1884,9 +1944,7 @@ impl App {
     fn draw_pointer(&mut self, w: u16, vh: u16) {
         let (cx, cy) = (w / 2, vh / 2);
         if self.mode == Mode::Walk {
-            if let Some(c) = self.screen.get(cx, cy) {
-                self.screen.set(cx, cy, Cell { ch: '+', fg: [255, 255, 255], bg: c.bg, bold: true });
-            }
+            self.screen.over(cx, cy, |c| Cell { ch: '+', fg: [255, 255, 255], bold: true, ..c });
         }
         if let Some(p) = &self.pointed {
             if p.dist < 12.0 && !matches!(p.target, Target::Point(_)) {
@@ -1920,7 +1978,7 @@ impl App {
     fn draw_debug(&mut self) {
         let lines = vec![
             format!("fps {:5.1}   worst loop {:4.1} ms   worst gap {:4.1} ms", self.stats.fps(), self.stats.worst(), self.stats.max_gap_ms),
-            format!("gpu {:5.2} ms   {}", self.stats.gpu_ms, self.render.backend),
+            format!("gpu {:5.2} ms   {}   world {}x{}", self.stats.gpu_ms, self.render.backend, self.pixel_size().0, self.pixel_size().1),
             format!("instances {}   out {} KB/frame", self.stats.insts, self.screen.bytes_last / 1024),
             format!("pos {:.0}, {:.0}  yaw {:.0}°  v{}", self.pos().x, self.pos().z, self.yaw().to_degrees().rem_euclid(360.0), self.snap.version),
             format!("live {} things ({} moving)  {} burning cells  {} people", self.sim.things.len(), self.sim.things.live().filter(|t| !t.asleep).count(), self.sim.field.cells.values().filter(|c| c.props[crate::sim::props::P_FIRE] > 0.0).count(), self.sim.cast.npcs.len()),
@@ -1935,7 +1993,11 @@ impl App {
 
     // ------------------------------------------------------------------ loop
 
-    pub fn run(&mut self, input: bool, out: &mut dyn Write, stop: &AtomicBool, mut script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
+    pub fn run(&mut self, input: bool, out: &mut dyn Write, stop: &AtomicBool, script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
+        self.run_on(&mut TermFront { input, out }, stop, script)
+    }
+
+    pub fn run_on(&mut self, front: &mut dyn Frontend, stop: &AtomicBool, mut script: Option<&mut dyn FnMut(&mut App, f32) -> bool>) -> std::io::Result<()> {
         let mut last = Instant::now();
         // Test hook: prove the terminal survives a panic.
         let panic_at = std::env::var("POCKET_TEST_PANIC_MS").ok().and_then(|v| v.parse::<u64>().ok()).map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -1949,28 +2011,7 @@ impl App {
                 self.quit = true;
             }
             // Input (non-blocking).
-            if input {
-                while event::poll(Duration::ZERO)? {
-                    match event::read()? {
-                        TEvent::Key(k) => self.on_key(k),
-                        TEvent::Resize(w, h) => {
-                            self.screen.resize(w, h);
-                            self.last_frame = None;
-                            self.dirty = true;
-                        }
-                        TEvent::Paste(s) => {
-                            if self.mode != Mode::Walk {
-                                self.input.push_str(&s.replace(['\n', '\r'], " "));
-                                self.dirty = true;
-                            }
-                        }
-                        TEvent::FocusLost => {
-                            self.keys.down.clear();
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            front.input(self)?;
             if self.quit {
                 break;
             }
@@ -2011,6 +2052,9 @@ impl App {
                 self.last_frame = Some(f);
                 got = true;
             }
+            if got {
+                self.auto_detail();
+            }
             // While loading, a slow trickle of frames keeps the renderer warm for the world flipping in.
             let interval = if self.loading.is_some() { Duration::from_millis(500) } else { frame_interval.mul_f32(0.9) };
             if self.outstanding < 2 && now.duration_since(self.last_request) >= interval {
@@ -2019,12 +2063,12 @@ impl App {
             if self.loading.is_some() {
                 if self.dirty {
                     self.compose_loading();
-                    self.screen.flush(out)?;
+                    front.present(self)?;
                     self.dirty = false;
                 }
             } else if got || self.dirty {
                 self.compose();
-                self.screen.flush(out)?;
+                front.present(self)?;
                 self.dirty = false;
                 if got {
                     self.stats.shown += 1;
@@ -2046,13 +2090,92 @@ impl App {
             // Wait for input or the next frame slot (whichever first).
             let spent = loop_start.elapsed();
             let budget = Duration::from_millis(4).max(frame_interval.saturating_sub(spent) / 2);
-            if input {
-                let _ = event::poll(budget);
-            } else {
-                std::thread::sleep(budget.min(Duration::from_millis(2)));
-            }
+            front.wait(budget);
         }
         Ok(())
+    }
+
+    /// Window detail on auto: more lines while the GPU keeps up with the frame
+    /// rate cap, fewer when it falls behind. Steps rarely, so it holds still.
+    fn auto_detail(&mut self) {
+        const MIN: f32 = 144.0;
+        if self.win.is_none() || self.settings.window_detail != crate::settings::AUTO || self.loading.is_some() || self.stats.gpu_ms <= 0.0 {
+            return;
+        }
+        if self.auto_at.elapsed() < Duration::from_millis(1500) {
+            return;
+        }
+        let budget = 1000.0 / self.settings.fps * 0.8;
+        // Render time grows with the pixels, so with the square of the lines.
+        let want = (self.auto_lines * (budget / self.stats.gpu_ms).sqrt()).clamp(MIN, 2160.0);
+        let (_, vh, _) = self.layout();
+        let full = self.win.map(|g| vh as f32 * g.cell_h).unwrap_or(want);
+        let want = want.min(full);
+        let k = want / self.auto_lines;
+        // Down at once when slow; up gently, and only for a clear gain.
+        if k < 0.92 || k > 1.12 {
+            self.auto_lines = if k > 1.0 { self.auto_lines * k.min(1.25) } else { want };
+            self.auto_at = Instant::now();
+        }
+    }
+
+    pub fn resize(&mut self, w: u16, h: u16) {
+        self.screen.resize(w, h);
+        self.last_frame = None;
+        self.dirty = true;
+    }
+
+    pub fn paste(&mut self, s: &str) {
+        if self.mode != Mode::Walk {
+            self.input.push_str(&s.replace(['\n', '\r'], " "));
+            self.dirty = true;
+        }
+    }
+
+    pub fn focus_lost(&mut self) {
+        self.keys.down.clear();
+    }
+
+    /// Mouse look (window): `dx`, `dy` in the window's pixels.
+    pub fn mouse_look(&mut self, dx: f32, dy: f32) {
+        if self.mode != Mode::Walk || self.menu.is_some() || self.loading.is_some() || self.sim.fallen() {
+            return;
+        }
+        const RAD_PER_PX: f32 = 0.0022;
+        if self.sim.player.aboard.is_none() || self.noclip {
+            self.sim.player.yaw += dx * RAD_PER_PX;
+        }
+        self.pitch = (self.pitch - dy * RAD_PER_PX).clamp(PITCH_MIN, PITCH_MAX);
+        self.dirty = true;
+    }
+
+    /// Whether mouse look applies now (walking, nothing open).
+    pub fn wants_mouse(&self) -> bool {
+        self.mode == Mode::Walk && self.menu.is_none() && self.loading.is_none()
+    }
+
+    pub fn last_frame(&self) -> Option<&Frame> {
+        self.last_frame.as_ref()
+    }
+
+    pub fn view_rows(&self) -> u16 {
+        self.layout().1
+    }
+
+    pub fn set_window(&mut self, g: WinGeom) {
+        self.win = Some(g);
+        self.last_frame = None;
+        self.dirty = true;
+    }
+
+    /// One line on how fast it ran: frames shown, render time, frame size.
+    pub fn stats_line(&self) -> String {
+        let (pw, ph, _) = self.pixel_size();
+        format!("{} frames, fps {:.1}, gpu {:.2} ms, world {pw}x{ph}, worst gap {:.0} ms", self.stats.shown, self.stats.fps(), self.stats.gpu_ms, self.stats.max_gap_ms)
+    }
+
+    pub fn quit_now(&mut self) {
+        self.quit = true;
     }
 
     pub fn shutdown(&mut self) {

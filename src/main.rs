@@ -23,6 +23,7 @@ mod settings;
 mod sim;
 mod term;
 mod terrain;
+mod window;
 mod world;
 
 use anyhow::{Context, Result, bail};
@@ -41,6 +42,9 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world in your terminal
   pocket prompts [--sample N]            print N random prompts (default 20)
   pocket [FILE]                          reopen FILE, or your last universe
   pocket list                            pick one of your worlds (or start a new one)
+  pocket window [FILE]                  play in a window of its own (Esc → Window detail sets its sharpness)
+  pocket window FILE --shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS] [--keys esc,down]
+                                         run unseen for a while and save the window as a PNG
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
@@ -116,6 +120,7 @@ fn run(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
+        Some("window") => window_cli(&args[1..]),
         Some("open") => play(&PathBuf::from(args.get(1).context("usage: pocket open FILE")?), false),
         Some("snapshot") => snapshot(&args[1..]),
         Some("describe") => describe(&args[1..]),
@@ -210,6 +215,34 @@ fn load_with(path: &Path, quick: bool) -> Result<Loaded> {
 }
 
 fn play(path: &Path, fresh: bool) -> Result<()> {
+    play_in(path, fresh, None)
+}
+
+/// `pocket window [FILE] [--shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS]]`
+fn window_cli(args: &[String]) -> Result<()> {
+    let path = match args.first().filter(|a| !a.starts_with("--")) {
+        Some(p) => PathBuf::from(p),
+        None => std::fs::read_to_string(log::dir().join("last")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()).context("no world yet: make one with `pocket new`, or name one: pocket window FILE")?,
+    };
+    let shot = match flag(args, "--shot") {
+        Some(out) => {
+            let size = flag(args, "--size").unwrap_or_else(|| "1600x1000".into());
+            let (w, h) = size.split_once('x').context("--size expects WxH")?;
+            Some(window::Shot {
+                out: PathBuf::from(out),
+                size: (w.parse()?, h.parse()?),
+                scale: flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(1.0),
+                after: flag(args, "--after").and_then(|s| s.parse().ok()).unwrap_or(8.0),
+                keys: flag(args, "--keys").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+            })
+        }
+        None => None,
+    };
+    play_in(&path, false, Some(shot))
+}
+
+/// Play in the terminal (`win` None) or in a window (with `Some(shot)`, unseen, saved as a PNG).
+fn play_in(path: &Path, fresh: bool, win: Option<Option<window::Shot>>) -> Result<()> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
     let l = load_with(&path, true)?;
@@ -222,8 +255,11 @@ fn play(path: &Path, fresh: bool) -> Result<()> {
         None => render::cpu::spawn(),
     };
     let stop = term::signal_flag();
-    let ti = term::enter()?;
-    let size = crossterm::terminal::size().unwrap_or((120, 40));
+    let ti = match win {
+        Some(_) => term::TermInfo { enhanced: true, truecolor: true },
+        None => term::enter()?,
+    };
+    let size = if win.is_some() { (120, 40) } else { crossterm::terminal::size().unwrap_or((120, 40)) };
     let mut app = app::App::new(app::Setup {
         db: l.db.clone(),
         brain,
@@ -238,8 +274,10 @@ fn play(path: &Path, fresh: bool) -> Result<()> {
         genesis,
     });
     app.start_loading();
-    let mut out = std::io::stdout();
-    let r = app.run(true, &mut out, &stop, None);
+    let r = match win {
+        Some(shot) => window::run(&mut app, &stop, shot),
+        None => app.run(true, &mut std::io::stdout(), &stop, None).map_err(Into::into),
+    };
     app.shutdown();
     term::restore();
     r?;

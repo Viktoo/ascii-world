@@ -26,6 +26,7 @@ enum Row {
     Details,
     Fps,
     Shadows,
+    Detail,
     Sound,
     Volume,
     Difficulty,
@@ -38,7 +39,7 @@ enum Row {
     Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Quit];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -177,11 +178,13 @@ impl App {
             }
             return;
         }
-        let row = ROWS[m.sel];
+        let rows = self.rows();
+        let Some(m) = self.menu.as_mut() else { return };
+        let row = rows[m.sel.min(rows.len() - 1)];
         match k.code {
             KeyCode::Esc | KeyCode::F(10) => self.menu = None,
-            KeyCode::Up => m.sel = (m.sel + ROWS.len() - 1) % ROWS.len(),
-            KeyCode::Down | KeyCode::Tab => m.sel = (m.sel + 1) % ROWS.len(),
+            KeyCode::Up => m.sel = (m.sel + rows.len() - 1) % rows.len(),
+            KeyCode::Down | KeyCode::Tab => m.sel = (m.sel + 1) % rows.len(),
             KeyCode::Left => self.change(row, -1),
             KeyCode::Right => self.change(row, 1),
             KeyCode::Enter | KeyCode::Char(' ') => {
@@ -200,6 +203,11 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The rows shown: window detail only in a window.
+    fn rows(&self) -> Vec<Row> {
+        ROWS.iter().copied().filter(|r| *r != Row::Detail || self.win.is_some()).collect()
     }
 
     /// Whether an environment variable fixes this row for the run.
@@ -235,6 +243,10 @@ impl App {
             }
             Row::Fps => s.fps = step(FPS, s.fps as f64, dir) as f32,
             Row::Shadows => s.shadows = !s.shadows,
+            Row::Detail => {
+                let i = settings::DETAILS.iter().position(|d| *d == s.window_detail).unwrap_or(1) as i32;
+                s.window_detail = settings::DETAILS[(i + dir).clamp(0, settings::DETAILS.len() as i32 - 1) as usize];
+            }
             Row::Sound => s.sound = !s.sound,
             Row::Volume => s.volume = step(VOLUMES, s.volume as f64, dir) as f32,
             Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
@@ -249,7 +261,7 @@ impl App {
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
             Row::Details | Row::Quit => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
+        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
             self.settings.save();
         }
         if matches!(row, Row::Sound | Row::Volume) {
@@ -279,6 +291,8 @@ impl App {
             Row::Details => ("Spend details", "Enter →".into()),
             Row::Fps => ("Frame rate cap", format!("{:.0} fps", s.fps)),
             Row::Shadows => ("Shadows", on(s.shadows)),
+            Row::Detail if s.window_detail == settings::AUTO => ("Window detail", format!("auto (now {}p, keeps the frame rate)", self.pixel_size().1)),
+            Row::Detail => ("Window detail", s.window_detail_name()),
             Row::Sound => ("Sound", if s.sound && self.sound.is_none() && !cfg!(test) { "on (no output device)".into() } else { on(s.sound) }),
             Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
@@ -325,7 +339,7 @@ impl App {
             lines.push(("Esc back".into(), DIM, false));
         } else {
             lines.push((tabs, ACCENT, false));
-            for (i, row) in ROWS.iter().enumerate() {
+            for (i, row) in self.rows().iter().enumerate() {
                 match row {
                     Row::Budget => lines.push(("Spending".into(), HEAD, false)),
                     Row::Fps => lines.push(("Display".into(), HEAD, false)),

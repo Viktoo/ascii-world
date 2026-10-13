@@ -35,7 +35,27 @@ pocket new                          # opens on a random prompt: Enter takes it, 
 pocket                              # reopen your last universe (or start one, the first time)
 pocket list                         # choose a world with the arrow keys, d to delete one, or n
                                     # for a new one (the same new-world screen)
+pocket window                       # play your last universe in a window of its own
 ```
+
+### In a window
+
+`pocket window [FILE]` plays the same game in a window: the world drawn smoothly
+instead of in blocks, the text in a sans-serif (Inter, `assets/fonts`). Click the
+view to look with the mouse (it lets go when a menu or typing opens; `Esc` as
+always). `Cmd+Q` saves and quits. New worlds are still made in the terminal.
+
+The world is drawn at fewer lines than the window has and scaled up (with edge
+smoothing). `Esc` → **Window detail** sets how many: **auto** (the default) holds the
+frame-rate cap, raising detail while the GPU keeps up and lowering it when it falls
+behind; or a fixed 180p…1080p, or every pixel. `F1` shows the fps, GPU time and the
+size drawn. `POCKET_WINDOW_DETAIL=360` fixes it for one run; `POCKET_NO_VSYNC=1`
+lifts vsync to see the peak.
+
+For checking changes without a screen (agents, scripts): `pocket window FILE --shot
+out.png [--size 1600x1000] [--scale 2] [--after 8] [--keys esc,down]` runs the game
+unseen for a while, presses the keys a second before the end, saves the window as a
+PNG, and prints the frame stats. Work on a copy of the world: it saves like play does.
 
 ## Build
 

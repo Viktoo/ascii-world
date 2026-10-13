@@ -20,11 +20,21 @@ pub struct Settings {
     pub sound: bool,
     /// 0..1.
     pub volume: f32,
+    /// In a window: lines of the world drawn, scaled up to fill it; 0 = every
+    /// pixel of the window, `AUTO` = as many as keep the frame rate. The
+    /// terminal ignores it.
+    pub window_detail: u32,
 }
+
+/// Window detail that follows the frame rate.
+pub const AUTO: u32 = 1;
+
+/// The window detail steps, in lines (0 = the window's own resolution).
+pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8 }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, window_detail: AUTO }
     }
 }
 
@@ -100,10 +110,21 @@ impl Settings {
         if env_sound() {
             s.sound = false;
         }
+        if let Some(d) = env("POCKET_WINDOW_DETAIL").and_then(|v| v.trim().parse::<u32>().ok()) {
+            s.window_detail = d;
+        }
         s.volume = if s.volume.is_finite() { s.volume.clamp(0.0, 1.0) } else { 0.8 };
         s.fps = s.fps.clamp(5.0, 240.0);
         s.region_radius = s.region_radius.clamp(0, 4);
         s
+    }
+
+    pub fn window_detail_name(&self) -> String {
+        match self.window_detail {
+            AUTO => "auto (keeps the frame rate)".into(),
+            0 => "full (every pixel)".into(),
+            l => format!("{l}p"),
+        }
     }
 
     pub fn budget(&self) -> Option<f64> {
@@ -134,6 +155,9 @@ impl Settings {
             out.sound = self.sound;
         }
         out.volume = self.volume;
+        if env("POCKET_WINDOW_DETAIL").is_none() {
+            out.window_detail = self.window_detail;
+        }
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {
             let _ = std::fs::write(path(), t);

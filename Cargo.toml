@@ -10,6 +10,7 @@ cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 crossterm = "0.29.0"
 dirs = "7.0.0"
+fontdue = "0.9"
 futures-util = "0.3.34"
 glam = "0.33.11"
 naga = { version = "30.0.1", features = ["wgsl-in"] }
@@ -27,6 +28,7 @@ serde_json = "1.0.151"
 signal-hook = "0.4.4"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 wgpu = "30.0.1"
+winit = "0.30.13"
 
 [profile.release]
 opt-level = 3
