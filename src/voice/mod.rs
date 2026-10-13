@@ -17,6 +17,7 @@ pub mod kokoro;
 pub mod names;
 pub mod pack;
 pub mod recipe;
+pub mod speakable;
 
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -91,8 +92,8 @@ impl Engine {
     /// The line in the blended model voice, before the body.
     pub fn plain(&mut self, text: &str, r: &Recipe) -> Result<Vec<f32>> {
         let g2p = if r.british { &self.gb } else { &self.us };
-        let (ph, _) = g2p.g2p(text).map_err(|e| anyhow!("{e}"))?;
-        let ph = ph.replace('❓', "");
+        let (ph, _) = g2p.g2p(&speakable::text(text)).map_err(|e| anyhow!("{e}"))?;
+        let ph = speakable::phonemes(&ph.replace('❓', ""), r.british);
         self.kokoro.speak(&ph, &r.blend, r.speed)
     }
 }
@@ -239,3 +240,4 @@ mod tests {
         assert!((2.0..3.5).contains(&s), "{s}");
     }
 }
+
