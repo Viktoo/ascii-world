@@ -235,6 +235,8 @@ pub struct App {
     /// Window detail on auto: the lines drawn now, and when they last changed.
     auto_lines: f32,
     auto_at: Instant,
+    /// Where auto detail last fell behind: it stays below that a while.
+    auto_ceiling: Option<(f32, Instant)>,
 }
 
 pub struct Setup {
@@ -333,6 +335,7 @@ impl App {
             to_worlds: false,
             auto_lines: 240.0,
             auto_at: Instant::now(),
+            auto_ceiling: None,
         };
         app.sync_sound();
         app.unstick();
@@ -2119,17 +2122,36 @@ impl App {
         if self.auto_at.elapsed() < Duration::from_millis(1500) {
             return;
         }
-        let budget = 1000.0 / self.settings.fps * 0.8;
-        // Render time grows with the pixels, so with the square of the lines.
-        let want = (self.auto_lines * (budget / self.stats.gpu_ms).sqrt()).clamp(MIN, 2160.0);
+        // Judged by the frames that arrive, not the GPU's own time: a GPU
+        // with room to spare clocks itself down, so its time alone says
+        // "busy" when it isn't.
+        let cap = self.settings.fps;
+        let fps = self.stats.fps();
+        let interval = 1000.0 / cap;
         let (_, vh, _) = self.layout();
-        let full = self.win.map(|g| vh as f32 * g.cell_h).unwrap_or(want);
-        let want = want.min(full);
-        let k = want / self.auto_lines;
-        // Down at once when slow; up gently, and only for a clear gain.
-        if k < 0.92 || k > 1.12 {
-            self.auto_lines = if k > 1.0 { self.auto_lines * k.min(1.25) } else { want };
-            self.auto_at = Instant::now();
+        let full = self.win.map(|g| vh as f32 * g.cell_h).unwrap_or(2160.0);
+        let now = Instant::now();
+        let lines = self.auto_lines;
+        // Behind with the GPU near full (not the world loading, say, holding frames up).
+        let next = if fps < cap * 0.93 && self.stats.gpu_ms > interval * 0.75 {
+            // Behind: down, by about what it lacks (time grows with the pixels,
+            // so with the square of the lines), and don't come back up here soon.
+            self.auto_ceiling = Some((lines * 0.95, now + Duration::from_secs(30)));
+            lines * ((fps / cap).sqrt() * 0.97).max(0.7)
+        } else if fps >= cap * 0.97 && self.stats.gpu_ms < interval * 0.8 {
+            let ceiling = self.auto_ceiling.filter(|c| c.1 > now).map(|c| c.0).unwrap_or(f32::MAX);
+            (lines * 1.1).min(ceiling)
+        } else {
+            lines
+        };
+        let next = next.clamp(MIN, 2160.0).min(full.max(MIN));
+        if std::env::var_os("POCKET_AUTO_DEBUG").is_some() {
+            eprintln!("auto: fps {fps:.1} gpu {:.2} lines {lines:.0} -> {next:.0} loop {:.1} gap {:.1}", self.stats.gpu_ms, self.stats.worst(), self.stats.max_gap_ms);
+        }
+        // Only clear changes: each one starts the blended picture over.
+        if (next / lines - 1.0).abs() > 0.04 {
+            self.auto_lines = next;
+            self.auto_at = now;
         }
     }
 
