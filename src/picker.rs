@@ -74,14 +74,23 @@ fn beings(c: &Connection) -> (i64, i64, i64) {
     (people, creatures, kinds.len() as i64)
 }
 
+/// The world last played, if it is still there. One in a temporary folder
+/// (a test's or a tool's scratch copy) is never offered.
+pub fn last() -> Option<PathBuf> {
+    let p = PathBuf::from(std::fs::read_to_string(crate::log::dir().join("last")).ok()?.trim());
+    let tmp = std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir());
+    let full = p.canonicalize().ok()?;
+    let scratch = full.starts_with(&tmp) || ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"].iter().any(|d| full.starts_with(d));
+    (!scratch).then_some(p)
+}
+
 /// All worlds in ~/.pocket/universes plus the last one opened, newest first.
 pub fn worlds() -> Vec<World> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(crate::log::dir().join("universes"))
         .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "pocket")).collect())
         .unwrap_or_default();
-    if let Ok(last) = std::fs::read_to_string(crate::log::dir().join("last")) {
-        let p = PathBuf::from(last.trim());
-        if p.exists() && !paths.iter().any(|q| q.canonicalize().ok() == p.canonicalize().ok()) {
+    if let Some(p) = last() {
+        if !paths.iter().any(|q| q.canonicalize().ok() == p.canonicalize().ok()) {
             paths.push(p);
         }
     }

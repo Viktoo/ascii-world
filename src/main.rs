@@ -206,6 +206,8 @@ enum Start {
 /// The game: one window, moving between your worlds, a new world, and play,
 /// until it is closed. With `shot`, the same unseen, saved as a PNG at the end.
 fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, shot: Option<window::Shot>) -> Result<()> {
+    // An unseen run (a check, a screenshot) leaves the player's last world be.
+    let remember = shot.is_none();
     let mut win = match shot {
         Some(s) => window::Win::offscreen(s)?,
         None => window::Win::open()?,
@@ -216,10 +218,10 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
             break;
         }
         next = match next {
-            Start::Last => match std::fs::read_to_string(log::dir().join("last")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()) {
+            // The last world played, else the one most lately changed.
+            Start::Last => match picker::last().or_else(|| picker::worlds().into_iter().next().map(|w| w.path)) {
                 Some(p) => Start::Play(p, false),
-                None if picker::worlds().is_empty() => Start::New(None),
-                None => Start::List,
+                None => Start::New(None),
             },
             Start::List => match picker::pick(&mut win) {
                 picker::Choice::Open(p) => Start::Play(p, false),
@@ -240,7 +242,7 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                 Start::Play(path, true)
             }
             Start::Play(path, fresh) => {
-                if play(&mut win, &path, fresh, &stop)? {
+                if play(&mut win, &path, fresh, remember, &stop)? {
                     Start::List
                 } else {
                     break;
@@ -252,9 +254,11 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
 }
 
 /// Play one world in the window; true when the player went back to their worlds.
-fn play(win: &mut window::Win, path: &Path, fresh: bool, stop: &AtomicBool) -> Result<bool> {
+fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, stop: &AtomicBool) -> Result<bool> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
+    if remember {
+        let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
+    }
     let name = picker::worlds().into_iter().find(|w| w.path == path).map(|w| w.name).unwrap_or_else(|| "a new world".into());
     picker::notice(win, &name, "opening…");
     win.set_title(&format!("{name} · Pocket Universe"));
