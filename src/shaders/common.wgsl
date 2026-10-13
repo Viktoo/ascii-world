@@ -33,6 +33,7 @@ struct Globals {
   // daylight), 7 (dusk sky rgb, -)
   wx: array<vec4f, 8>,
   hmap2: vec4f,       // fine heightmap near the camera: origin x, origin z, cell size, cells per side (0 = none)
+  jitter: vec4f,      // sub-pixel offset of every ray (x, y pixels), for blending frames
 }
 
 struct Inst {

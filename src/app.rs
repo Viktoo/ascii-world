@@ -1414,7 +1414,13 @@ impl App {
             lights: &drawn.lights,
             weather: render::WeatherView::of(&self.sim.wx, self.sim.weather.flash(self.sim.t, self.sim.wx.storm), !self.sim.open_sky(cam.pos)),
         };
-        let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+        let mut globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+        // In a window, each frame's rays shift a little: blended, they add up to more detail.
+        if self.blending() {
+            let j = crate::window::jitter(self.next_frame_id);
+            // z = 1: blend this frame into the window's history.
+            globals.jitter = [j[0], j[1], 1.0, 0.0];
+        }
         let req = FrameRequest {
             id: self.next_frame_id,
             width: pw,
@@ -2168,6 +2174,19 @@ impl App {
 
     pub fn view_rows(&self) -> u16 {
         self.layout().1
+    }
+
+    /// Frames are drawn apart and blended (a window, the GPU, the setting on).
+    fn blending(&self) -> bool {
+        self.win.is_some() && !self.render.cpu_fallback && self.settings.blend_frames
+    }
+
+    /// The detail drawn now, for the settings screen: "321p", "321p, blended to 642p".
+    fn detail_now(&self) -> String {
+        let (_, h, _) = self.pixel_size();
+        let (_, vh, _) = self.layout();
+        let view = self.win.map(|g| (vh as f32 * g.cell_h) as u32).unwrap_or(h);
+        if self.blending() && h * 2 > h.min(view) { format!("{h}p, blended to {}p", (h * 2).min(view)) } else { format!("{h}p") }
     }
 
     pub fn set_window(&mut self, g: WinGeom) {

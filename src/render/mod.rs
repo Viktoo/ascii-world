@@ -51,6 +51,9 @@ pub struct Globals {
     pub wx: [[f32; 4]; 8],
     /// The fine heightmap near the camera (set by the renderer).
     pub hmap2: [f32; 4],
+    /// Sub-pixel offset of every ray this frame (x, y in pixels), for a
+    /// window that blends frames together; 0 otherwise.
+    pub jitter: [f32; 4],
 }
 
 pub const MAX_LIGHTS: usize = 8;
@@ -486,6 +489,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
             v4(rgbv(pal.sky_dusk), 0.0),
         ],
         hmap2: [0.0; 4],
+        jitter: [0.0; 4],
     }
 }
 
@@ -504,7 +508,7 @@ pub struct FrameRequest {
     pub look: Arc<crate::world::Look>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Frame {
     pub id: u64,
     pub width: u32,
@@ -512,6 +516,12 @@ pub struct Frame {
     /// RGBA8 packed little-endian (r in the low byte).
     pub pixels: Vec<u32>,
     pub gpu_ms: Option<f32>,
+    /// Distance along each pixel's ray to what it shows (sky: 1e9); empty
+    /// when the renderer gives none (the CPU one).
+    pub depth: Vec<f32>,
+    /// The camera it was seen from: position, forward, right and up (as in
+    /// `Globals`: right and up scaled to the view's edges), and the jitter.
+    pub view: [[f32; 4]; 5],
 }
 
 pub enum RenderMsg {

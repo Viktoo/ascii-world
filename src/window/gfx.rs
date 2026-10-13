@@ -23,6 +23,9 @@ struct Uniforms {
     grid: [u32; 2],
     view_rows: u32,
     has_world: u32,
+    /// 1: the world comes blended over time (no edge smoothing needed).
+    taa: u32,
+    _pad: [u32; 3],
 }
 
 pub struct Compositor {
@@ -40,6 +43,9 @@ pub struct Compositor {
     world: wgpu::Texture,
     /// Which frame the world texture holds.
     world_id: u64,
+    /// Frames blended over time, when the frames come with depth.
+    taa: Option<super::taa::Taa>,
+    taa_on: bool,
     cell_bg: wgpu::Texture,
     cell_fg: wgpu::Texture,
     atlas: wgpu::Texture,
@@ -161,6 +167,7 @@ impl Compositor {
         let cell_fg = tex(&device, "cell fg", 1, 1, wgpu::TextureFormat::Rgba8Unorm);
         let atlas = tex(&device, "atlas", ATLAS, ATLAS, wgpu::TextureFormat::R8Unorm);
         let quads = device.create_buffer(&wgpu::BufferDescriptor { label: Some("glyphs"), size: 64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let taa = Some(super::taa::Taa::new(&device));
         Compositor {
             device,
             queue,
@@ -175,6 +182,8 @@ impl Compositor {
             uniforms,
             world,
             world_id: u64::MAX,
+            taa,
+            taa_on: false,
             cell_bg,
             cell_fg,
             atlas,
@@ -198,6 +207,21 @@ impl Compositor {
             }
             write(&self.queue, &self.world, 0, 0, f.width, f.height, 4, bytemuck::cast_slice(&f.pixels));
             self.world_id = f.id;
+            // Blend it into the history, at up to twice its size (no more than the view has).
+            let can = f.depth.len() == f.pixels.len() && f.view[4][2] > 0.5;
+            if !can && let Some(t) = self.taa.as_mut() {
+                t.forget();
+            }
+            match self.taa.as_mut().filter(|_| can) {
+                Some(taa) => {
+                    let (vw, vh) = ((screen.w as f32 * cell.0).round() as u32, (view_rows as f32 * cell.1).round() as u32);
+                    let out = ((f.width * 2).min(vw).max(1), (f.height * 2).min(vh).max(1));
+                    taa.resolve(&self.device, &self.queue, &self.sampler, f, &self.world, out);
+                    self.taa_on = true;
+                }
+                None => self.taa_on = false,
+            }
+            self.bind = None;
         }
         // Cells.
         let s = self.cell_bg.size();
@@ -260,11 +284,17 @@ impl Compositor {
             grid: [gw, gh],
             view_rows: view_rows as u32,
             has_world: (self.world_id != u64::MAX) as u32,
+            taa: self.taa_on as u32,
+            _pad: [0; 3],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         if self.bind.is_none() {
             let view = |t: &wgpu::Texture| t.create_view(&Default::default());
-            let (w, b, f, a) = (view(&self.world), view(&self.cell_bg), view(&self.cell_fg), view(&self.atlas));
+            let shown = match (&self.taa, self.taa_on) {
+                (Some(t), true) => t.output(),
+                _ => &self.world,
+            };
+            let (w, b, f, a) = (view(shown), view(&self.cell_bg), view(&self.cell_fg), view(&self.atlas));
             self.bind = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("window"),
                 layout: &self.bgl,
@@ -310,20 +340,23 @@ impl Compositor {
         self.queue.submit([enc.finish()]);
     }
 
-    /// Draw offscreen and read the pixels back (RGB), for `pocket window --shot`.
-    pub fn snapshot(&mut self, size: (u32, u32), screen: &Screen, view_rows: u16, frame: Option<&Frame>, cell: (f32, f32)) -> Vec<u8> {
-        let (w, h) = size;
-        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+    /// An offscreen target to draw into (for `--shot`), read back with `read_back`.
+    pub fn offscreen(&self, size: (u32, u32)) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shot"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
-        });
-        self.draw(&target.create_view(&Default::default()), size, screen, view_rows, frame, cell);
+        })
+    }
+
+    /// The pixels of an offscreen target (RGB).
+    pub fn read_back(&mut self, target: &wgpu::Texture) -> Vec<u8> {
+        let (w, h) = (target.width(), target.height());
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shot"), size: (row * h) as u64, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let mut enc = self.device.create_command_encoder(&Default::default());

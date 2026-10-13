@@ -248,7 +248,7 @@ pub fn spawn() -> RenderHandle {
                     match m {
                         RenderMsg::Quit => return,
                         RenderMsg::Frame(f) => {
-                            let _ = ftx.send(Frame { id: req.id, width: 0, height: 0, pixels: vec![], gpu_ms: None });
+                            let _ = ftx.send(Frame { id: req.id, ..Default::default() });
                             req = f;
                         }
                     }
@@ -256,7 +256,7 @@ pub fn spawn() -> RenderHandle {
                 let t0 = std::time::Instant::now();
                 let pixels = render(&req, &req.terrain, &req.look.palette, &req.scene);
                 let ms = t0.elapsed().as_secs_f32() * 1000.0;
-                if ftx.send(Frame { id: req.id, width: req.width, height: req.height, pixels, gpu_ms: Some(ms) }).is_err() {
+                if ftx.send(Frame { id: req.id, width: req.width, height: req.height, pixels, gpu_ms: Some(ms), ..Default::default() }).is_err() {
                     break;
                 }
             }

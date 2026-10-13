@@ -479,7 +479,6 @@ impl std::io::Write for CountingSink {
     }
 }
 
-/// Render one view repeatedly at full GPU load; report GPU time per frame.
 thread_local! {
     static SETTLED: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
 }
@@ -519,7 +518,7 @@ fn gpubench(args: &[String]) -> Result<()> {
         let mut last = None;
         // Two frames in flight, as in the game: the GPU never waits on the
         // CPU, so its clock stays where play would put it.
-        let mut send = |id: &mut u64| -> Result<()> {
+        let send = |id: &mut u64| -> Result<()> {
             *id += 1;
             let req = render::FrameRequest { id: *id, width: pw, height: ph, globals: g, instances: culled.insts.clone(), grid: culled.grid.clone(), scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
             handle.tx.send(render::RenderMsg::Frame(Box::new(req)))?;

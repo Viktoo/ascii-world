@@ -7,7 +7,10 @@
 //! changes without a display.
 
 mod gfx;
+mod taa;
 mod text;
+
+pub use taa::jitter;
 
 use crate::app::{App, Frontend, WinGeom};
 use crate::render::Frame;
@@ -35,7 +38,8 @@ pub struct Shot {
     pub size: (u32, u32),
     pub scale: f32,
     pub after: f32,
-    /// Keys pressed a second before the shot (`esc,down,f1` or single characters).
+    /// Keys pressed a second before the shot (`esc,down,f1` or single
+    /// characters); with a `+` (`+w,+right`), held down from the start.
     pub keys: Vec<String>,
 }
 
@@ -56,7 +60,11 @@ impl Shot {
     }
 
     fn key_codes(&self) -> Vec<KeyCode> {
-        self.keys.iter().filter_map(|k| named(k)).collect()
+        self.keys.iter().filter(|k| !k.starts_with('+')).filter_map(|k| named(k)).collect()
+    }
+
+    fn held(&self) -> Vec<KeyCode> {
+        self.keys.iter().filter_map(|k| k.strip_prefix('+')).filter_map(named).collect()
     }
 }
 
@@ -128,8 +136,12 @@ struct ShotState {
     shot: Shot,
     start: Instant,
     keys: Vec<KeyCode>,
-    /// The last screen shown (with the world under it), drawn when the time is up.
-    last: Option<(Screen, u16, Option<Frame>)>,
+    /// Keys to press at the start and hold.
+    held: Vec<KeyCode>,
+    /// Drawn into every time a screen is shown, as a window would be; read at the end.
+    target: wgpu::Texture,
+    /// What the last screen said.
+    text: Option<String>,
 }
 
 impl Win {
@@ -182,7 +194,9 @@ impl Win {
         let scale = shot.scale as f64;
         let (_, _, g) = grid(size, geom(scale));
         let keys = shot.key_codes();
-        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, shot: Some(ShotState { shot, start: Instant::now(), keys, last: None }), stop: crate::term::signal_flag() })
+        let held = shot.held();
+        let target = comp.offscreen(size);
+        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, shot: Some(ShotState { shot, start: Instant::now(), keys, held, target, text: None }), stop: crate::term::signal_flag() })
     }
 
     /// The screen size in cells, and each cell's size in pixels.
@@ -217,6 +231,7 @@ impl Win {
             let left = Duration::from_secs_f32(s.shot.after).saturating_sub(s.start.elapsed());
             std::thread::sleep(d.min(Duration::from_millis(2)).min(left));
             let mut out = std::mem::take(&mut self.h.events);
+            out.extend(s.held.drain(..).map(|k| Ev::Key(press(k))));
             if !s.keys.is_empty() && left <= Duration::from_secs(1) {
                 for k in s.keys.drain(..) {
                     out.push(Ev::Key(press(k)));
@@ -249,8 +264,10 @@ impl Win {
     pub fn present(&mut self, screen: &Screen, view_rows: u16, frame: Option<&Frame>) {
         let cell = (self.geom.cell_w, self.geom.cell_h);
         if let Some(s) = self.shot.as_mut() {
-            // Offscreen: only the last screen matters, drawn when the shot is taken.
-            s.last = Some((screen.clone(), view_rows, frame.cloned()));
+            // Offscreen: drawn like a window, read back at the end.
+            s.text = Some(screen.plain_text());
+            let view = s.target.create_view(&Default::default());
+            self.comp.draw(&view, self.size, screen, view_rows, frame, cell);
             return;
         }
         let Some(g) = self.gpu.as_mut() else { return };
@@ -272,13 +289,12 @@ impl Win {
 
     /// Save the shot, if this is an offscreen window.
     pub fn finish(&mut self) -> Result<()> {
-        let cell = (self.geom.cell_w, self.geom.cell_h);
         if let Some(s) = self.shot.as_mut() {
-            let (screen, rows, frame) = s.last.take().context("nothing was shown before the shot")?;
-            let rgb = self.comp.snapshot(self.size, &screen, rows, frame.as_ref(), cell);
+            let text = s.text.take().context("nothing was shown before the shot")?;
+            let rgb = self.comp.read_back(&s.target);
             std::fs::write(&s.shot.out, crate::png::encode(self.size.0, self.size.1, &rgb))?;
             // What it says, beside it, for reading without looking.
-            std::fs::write(s.shot.out.with_extension("txt"), screen.plain_text())?;
+            std::fs::write(s.shot.out.with_extension("txt"), text)?;
         }
         Ok(())
     }

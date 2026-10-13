@@ -7,6 +7,7 @@ struct U {
     grid: vec2<u32>,
     view_rows: u32,
     has_world: u32,
+    taa: u32,
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -162,7 +163,11 @@ fn fs_grid(f: Full) -> @location(0) vec4<f32> {
         let view = vec2<f32>(f32(u.grid.x) * u.cell.x, f32(u.view_rows) * u.cell.y);
         var w = vec3<f32>(0.0);
         if (u.has_world == 1u) {
-            w = world_smooth(f.pos.xy / view);
+            if (u.taa == 1u) {
+                w = world_at(f.pos.xy / view);
+            } else {
+                w = world_smooth(f.pos.xy / view);
+            }
         }
         col = w * b.rgb;
     }

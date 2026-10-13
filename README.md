@@ -42,12 +42,22 @@ to look with the mouse (it lets go when a menu or typing opens). `Cmd+V` pastes,
 `Cmd+Q` (or closing the window) saves and quits. Titles are set in Fraunces, the rest
 in Nunito (`assets/fonts`, both OFL).
 
-The world is drawn at fewer lines than the window has and scaled up (with edge
-smoothing). `Esc` → **Window detail** sets how many: **auto** (the default) holds the
-frame-rate cap, raising detail while the GPU keeps up and lowering it when it falls
-behind; or a fixed 180p…1080p, or every pixel. `F1` shows the fps, GPU time and the
-size drawn. `POCKET_WINDOW_DETAIL=360` fixes it for one run; `POCKET_NO_VSYNC=1`
-lifts vsync to see the peak.
+The world is drawn at fewer lines than the window has and scaled up. `Esc` →
+**Window detail** sets how many: **auto** (the default) holds the frame-rate cap,
+raising detail while the GPU keeps up and lowering it when it falls behind; or a
+fixed 180p…1080p, or every pixel. **Blend frames for detail** (on by default) draws
+each frame's rays a fraction of a pixel apart and blends them into a picture of up
+to twice the lines: standing still, detail builds up over a few frames; moving, the
+blend follows the camera and is held to what the newest frame shows, so nothing
+smears. Off, frames are scaled up with edge smoothing instead. `F1` shows the fps,
+GPU time and the size drawn. `POCKET_WINDOW_DETAIL=360` fixes the detail for one run,
+`POCKET_NO_TAA=1` turns blending off, `POCKET_NO_VSYNC=1` lifts vsync to see the peak.
+
+On an M5 Pro (1600×800 view), a frame of 360 lines takes 6–12 ms and one of 480 lines
+10–16 ms, standing in a village or a forest; walking into the thick of a village is
+heavier (360 lines ~40 fps there), which auto detail absorbs. Near the camera the
+terrain is read from a fine heightmap (12.5 cm cells, ±24 m, rebuilt as you move)
+rather than worked out at every step.
 
 For checking changes without a screen (agents, scripts), any of those commands takes
 `--shot out.png [--size 1600x1000] [--scale 2] [--after 8] [--keys esc,down]`: it runs
@@ -508,7 +518,8 @@ Opening an older world adds the new tables and built-in types.
 pocket snapshot FILE --at 0,0,90 --size 120x40 [--ascii] [--mono] [--time 21] [--weather storm]   # one frame as text
 pocket describe FILE --at 0,0,90                                                # visible things as JSON
 pocket bench FILE --distance 2000 --size 250x70                                 # scripted walk, frame stats
-pocket gpubench FILE --at 0,0,90 --size 250x61                                  # GPU time for one view
+pocket gpubench FILE --at 0,0,90 --px 640x360 [--breakdown]                       # GPU time for one view, and by part
+pocket gpubench FILE --at 0,0,90 --px 640x360 --ab 32 --shots DIR               # A/B two flag sets in one run: speed and picture
 pocket check my_type.js                                                         # validate an object type
 pocket selftest                                                                 # GPU/CPU parity + validator
 pocket sim FILE --hours 24 --seed 5 --events out.jsonl                          # run the world headless, fast; report what emerged

@@ -552,7 +552,8 @@ fn bayer4(x: u32, y: u32) -> f32 {
   return (m[(y & 3u) * 4u + (x & 3u)] + 0.5) / 16.0;
 }
 
-fn render(ro: vec3f, rd: vec3f) -> vec3f {
+// Colour, and the distance to what is seen (1e9: the sky).
+fn render(ro: vec3f, rd: vec3f) -> vec4f {
   let tmax = G.cam_fwd.w;
   gather(ro, rd, tmax);
   let h = march(ro, rd, tmax);
@@ -560,10 +561,10 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
   var t_hit = h.t;
   if ((G.dims.w & 8u) != 0u) {
     // debug: step heatmap
-    return vec3f(h.steps / 200.0, f32(ncand) / 24.0, 0.0);
+    return vec4f(h.steps / 200.0, f32(ncand) / 24.0, 0.0, h.t);
   }
   if ((G.dims.w & 16u) != 0u) {
-    return vec3f(select(clamp(h.t / 200.0, 0.0, 1.0), 1.0, h.id < -1.5));
+    return vec4f(vec3f(select(clamp(h.t / 200.0, 0.0, 1.0), 1.0, h.id < -1.5)), h.t);
   }
   let no_ao = (G.dims.w & 32u) != 0u;
   if (h.id < -1.5) {
@@ -596,8 +597,8 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       let gc = select(base, vec3f(1.0, 0.07, 0.03), i.fx.x > 1.5);
       glow = gc * clamp(i.fx.z, 0.0, 2.0) * lit;
       if (!no_ao) {
-        let o1 = map_scene(p + n * 0.15).z;
-        let o2 = map_scene(p + n * 0.5).z;
+        let o1 = map_scene_lod(p + n * 0.15, h.t, -1.0).z;
+        let o2 = map_scene_lod(p + n * 0.5, h.t, -1.0).z;
         ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);
       }
     }
@@ -633,7 +634,7 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
     col = col + vec3f(0.5, 0.55, 0.7) * G.wx[1].w * 0.3;
   }
   col = precip(col, rd, t_hit);
-  return clamp(col, vec3f(0.0), vec3f(1.0));
+  return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), t_hit);
 }
 
 @compute @workgroup_size(8, 8)
@@ -641,11 +642,13 @@ fn render_main(@builtin(global_invocation_id) gid: vec3u) {
   let w = G.dims.x; let hgt = G.dims.y;
   if (gid.x >= w || gid.y >= hgt) { return; }
   dither = bayer4(gid.x, gid.y);
-  let u = (2.0 * (f32(gid.x) + 0.5) / f32(w)) - 1.0;
-  let v = 1.0 - (2.0 * (f32(gid.y) + 0.5) / f32(hgt));
+  let u = (2.0 * (f32(gid.x) + 0.5 + G.jitter.x) / f32(w)) - 1.0;
+  let v = 1.0 - (2.0 * (f32(gid.y) + 0.5 + G.jitter.y) / f32(hgt));
   let rd = normalize(G.cam_fwd.xyz + G.cam_right.xyz * u + G.cam_up.xyz * v);
-  let col = render(G.cam_pos.xyz, rd);
-  outp[gid.y * w + gid.x] = pack4x8unorm(vec4f(col, 1.0));
+  let c = render(G.cam_pos.xyz, rd);
+  outp[gid.y * w + gid.x] = pack4x8unorm(vec4f(c.rgb, 1.0));
+  // After the colours: how far each pixel's surface is.
+  outp[w * hgt + gid.y * w + gid.x] = bitcast<u32>(c.w);
 }
 
 @compute @workgroup_size(8, 8)

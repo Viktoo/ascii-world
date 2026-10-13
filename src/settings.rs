@@ -24,6 +24,9 @@ pub struct Settings {
     /// pixel of the window, `AUTO` = as many as keep the frame rate. The
     /// terminal ignores it.
     pub window_detail: u32,
+    /// In a window: frames blended over time, each drawn a fraction of a
+    /// pixel apart, for about twice the detail standing still.
+    pub blend_frames: bool,
 }
 
 /// Window detail that follows the frame rate.
@@ -34,7 +37,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, window_detail: AUTO }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, window_detail: AUTO, blend_frames: true }
     }
 }
 
@@ -85,6 +88,9 @@ pub fn env_shadows() -> bool {
 pub fn env_region_radius() -> bool {
     env("POCKET_REGION_RADIUS").is_some()
 }
+pub fn env_blend() -> bool {
+    std::env::var_os("POCKET_NO_TAA").is_some()
+}
 pub fn env_sound() -> bool {
     std::env::var_os("POCKET_NO_SOUND").is_some()
 }
@@ -112,6 +118,9 @@ impl Settings {
         }
         if let Some(d) = env("POCKET_WINDOW_DETAIL").and_then(|v| v.trim().parse::<u32>().ok()) {
             s.window_detail = d;
+        }
+        if env_blend() {
+            s.blend_frames = false;
         }
         s.volume = if s.volume.is_finite() { s.volume.clamp(0.0, 1.0) } else { 0.8 };
         s.fps = s.fps.clamp(5.0, 240.0);
@@ -157,6 +166,9 @@ impl Settings {
         out.volume = self.volume;
         if env("POCKET_WINDOW_DETAIL").is_none() {
             out.window_detail = self.window_detail;
+        }
+        if !env_blend() {
+            out.blend_frames = self.blend_frames;
         }
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {

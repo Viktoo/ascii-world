@@ -27,6 +27,7 @@ enum Row {
     Fps,
     Shadows,
     Detail,
+    Blend,
     Sound,
     Volume,
     Difficulty,
@@ -40,7 +41,7 @@ enum Row {
     Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -197,7 +198,7 @@ impl App {
                             m.details = Some(d);
                         }
                     }
-                    Row::Shadows | Row::Sound | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
+                    Row::Shadows | Row::Blend | Row::Sound | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
                     Row::Quit => self.quit = true,
                     Row::Worlds => {
                         self.to_worlds = true;
@@ -212,7 +213,7 @@ impl App {
 
     /// The rows shown: window detail only in a window.
     fn rows(&self) -> Vec<Row> {
-        ROWS.iter().copied().filter(|r| *r != Row::Detail || self.win.is_some()).collect()
+        ROWS.iter().copied().filter(|r| !matches!(r, Row::Detail | Row::Blend) || self.win.is_some()).collect()
     }
 
     /// Whether an environment variable fixes this row for the run.
@@ -222,6 +223,7 @@ impl App {
             Row::Fps => settings::env_fps(),
             Row::Shadows => settings::env_shadows(),
             Row::Sound => settings::env_sound(),
+            Row::Blend => settings::env_blend(),
             Row::Radius => settings::env_region_radius(),
             _ => false,
         }
@@ -248,6 +250,7 @@ impl App {
             }
             Row::Fps => s.fps = step(FPS, s.fps as f64, dir) as f32,
             Row::Shadows => s.shadows = !s.shadows,
+            Row::Blend => s.blend_frames = !s.blend_frames,
             Row::Detail => {
                 let i = settings::DETAILS.iter().position(|d| *d == s.window_detail).unwrap_or(1) as i32;
                 s.window_detail = settings::DETAILS[(i + dir).clamp(0, settings::DETAILS.len() as i32 - 1) as usize];
@@ -266,7 +269,7 @@ impl App {
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
             Row::Details | Row::Worlds | Row::Quit => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
+        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Radius | Row::ShowWork) {
             self.settings.save();
         }
         if matches!(row, Row::Sound | Row::Volume) {
@@ -296,8 +299,9 @@ impl App {
             Row::Details => ("Spend details", "Enter →".into()),
             Row::Fps => ("Frame rate cap", format!("{:.0} fps", s.fps)),
             Row::Shadows => ("Shadows", on(s.shadows)),
-            Row::Detail if s.window_detail == settings::AUTO => ("Window detail", format!("auto (now {}p, keeps the frame rate)", self.pixel_size().1)),
-            Row::Detail => ("Window detail", s.window_detail_name()),
+            Row::Detail if s.window_detail == settings::AUTO => ("Window detail", format!("auto: {}", self.detail_now())),
+            Row::Detail => ("Window detail", format!("{}: {}", s.window_detail_name(), self.detail_now())),
+            Row::Blend => ("Blend frames for detail", on(s.blend_frames)),
             Row::Sound => ("Sound", if s.sound && self.sound.is_none() && !cfg!(test) { "on (no output device)".into() } else { on(s.sound) }),
             Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),

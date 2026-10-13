@@ -197,6 +197,7 @@ struct Slot {
     w: u32,
     h: u32,
     ts_offset: u64,
+    view: [[f32; 4]; 5],
 }
 
 struct Renderer {
@@ -252,7 +253,7 @@ impl Renderer {
         });
         let ts_period = gpu.queue.get_timestamp_period();
         let slots = (0..SLOTS)
-            .map(|_| Slot { buf: None, cap: 0, state: Arc::new(AtomicU8::new(0)), busy: false, id: 0, w: 0, h: 0, ts_offset: 0 })
+            .map(|_| Slot { buf: None, cap: 0, state: Arc::new(AtomicU8::new(0)), busy: false, id: 0, w: 0, h: 0, ts_offset: 0, view: [[0.0; 4]; 5] })
             .collect();
         Renderer {
             gpu,
@@ -305,11 +306,12 @@ impl Renderer {
         dirty |= Self::ensure(&gpu, &mut self.inst, &mut self.inst_cap, insts.len() as u64 * INST_BYTES, "inst", U::STORAGE | U::COPY_DST);
         dirty |= Self::ensure(&gpu, &mut self.cells, &mut self.cells_cap, (cells.len() * 8) as u64, "cells", U::STORAGE | U::COPY_DST);
         dirty |= Self::ensure(&gpu, &mut self.items, &mut self.items_cap, (items.len() * 4) as u64, "items", U::STORAGE | U::COPY_DST);
-        dirty |= Self::ensure(&gpu, &mut self.out, &mut self.out_cap, npx * 4, "out", U::STORAGE | U::COPY_SRC);
+        // Colours, then distances.
+        dirty |= Self::ensure(&gpu, &mut self.out, &mut self.out_cap, npx * 8, "out", U::STORAGE | U::COPY_SRC);
         if dirty {
             self.bind = Some(gpu.bind_group(&self.globals, &self.inst, &self.cells, &self.items, &self.out, &self.probe_dummy, &self.hmap));
         }
-        let ts_offset = (npx * 4).div_ceil(256) * 256;
+        let ts_offset = (npx * 8).div_ceil(256) * 256;
         let need = ts_offset + 16;
         let slot = &mut self.slots[si];
         if slot.cap < need || slot.buf.is_none() {
@@ -376,7 +378,7 @@ impl Renderer {
             pass.dispatch_workgroups(req.width.div_ceil(8), req.height.div_ceil(8), 1);
         }
         let rb = slot.buf.as_ref().expect("readback");
-        enc.copy_buffer_to_buffer(&self.out, 0, rb, 0, Some(npx * 4));
+        enc.copy_buffer_to_buffer(&self.out, 0, rb, 0, Some(npx * 8));
         if let Some((qs, resolve)) = &self.queries {
             let base = (si * 2) as u32;
             enc.resolve_query_set(qs, base..base + 2, resolve, (si * 256) as u64);
@@ -390,6 +392,8 @@ impl Renderer {
         slot.id = req.id;
         slot.w = req.width;
         slot.h = req.height;
+        let gl = &req.globals;
+        slot.view = [gl.cam_pos, gl.cam_fwd, gl.cam_right, gl.cam_up, gl.jitter];
         self.order.push_back(si);
         true
     }
@@ -415,9 +419,10 @@ impl Renderer {
             return None;
         }
         let npx = (slot.w * slot.h) as usize;
-        let (pixels, gpu_ms) = {
+        let (pixels, depth, gpu_ms) = {
             let view = rb.slice(..slot.ts_offset + 16).get_mapped_range().ok()?;
             let px: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&view[..npx * 4]).to_vec();
+            let depth: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&view[npx * 4..npx * 8]).to_vec();
             let ts = if self.queries.is_some() {
                 let t: &[u64] = bytemuck::cast_slice(&view[slot.ts_offset as usize..slot.ts_offset as usize + 16]);
                 let dt = t[1].wrapping_sub(t[0]) as f64 * self.ts_period as f64 / 1e6;
@@ -425,10 +430,10 @@ impl Renderer {
             } else {
                 None
             };
-            (px, ts)
+            (px, depth, ts)
         };
         rb.unmap();
-        Some(Frame { id: slot.id, width: slot.w, height: slot.h, pixels, gpu_ms })
+        Some(Frame { id: slot.id, width: slot.w, height: slot.h, pixels, gpu_ms, depth, view: slot.view })
     }
 }
 
@@ -470,7 +475,7 @@ pub fn spawn(gpu: Arc<Gpu>) -> RenderHandle {
                     let f = pending.pop_front().expect("pending");
                     if r.submit(&f) {
                         submitted_at.insert(f.id, std::time::Instant::now());
-                    } else if ftx.send(Frame { id: f.id, width: 0, height: 0, pixels: Vec::new(), gpu_ms: None }).is_err() {
+                    } else if ftx.send(Frame { id: f.id, ..Default::default() }).is_err() {
                         break;
                     }
                     continue;
