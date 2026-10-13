@@ -545,6 +545,50 @@ fn gpubench(args: &[String]) -> Result<()> {
         Ok((times[times.len() / 20], t0.elapsed().as_secs_f64() * 1000.0 / (n + 20) as f64, last.expect("a frame")))
     };
     let base = globals.dims[3];
+    // A/B: frames alternate between the usual flags and these added, so both
+    // see the same GPU clock; the ratio is what the change is worth.
+    if let Some(ab) = flag(args, "--ab").and_then(|v| v.parse::<u32>().ok()) {
+        let (mut ta, mut tb) = (Vec::new(), Vec::new());
+        let (mut fa, mut fb) = (None, None);
+        for i in 0..600 {
+            let (f, out) = if i % 2 == 0 { (base, &mut ta) } else { (base | ab, &mut tb) };
+            let mut g = globals;
+            g.dims[3] = f;
+            let req = render::FrameRequest { id: 10_000 + i, width: pw, height: ph, globals: g, instances: culled.insts.clone(), grid: culled.grid.clone(), scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+            handle.tx.send(render::RenderMsg::Frame(Box::new(req)))?;
+            let f = handle.rx.recv_timeout(Duration::from_secs(10))?;
+            if i >= 40 {
+                out.push(f.gpu_ms.unwrap_or(0.0));
+            }
+            if i % 2 == 0 { fa = Some(f) } else { fb = Some(f) }
+        }
+        // How far the pictures differ (0-255 per channel).
+        if let (Some(a), Some(b)) = (&fa, &fb) {
+            let (mut sum, mut max, mut over) = (0u64, 0u8, 0usize);
+            for (p, q) in a.pixels.iter().zip(&b.pixels) {
+                let (p, q) = (render::unpack(*p), render::unpack(*q));
+                let d = (0..3).map(|k| p[k].abs_diff(q[k])).max().unwrap_or(0);
+                sum += d as u64;
+                max = max.max(d);
+                over += (d > 24) as usize;
+            }
+            println!("  picture: mean difference {:.2}, max {max}, {:.2}% of pixels differ by more than 24", sum as f64 / a.pixels.len() as f64, over as f64 * 100.0 / a.pixels.len() as f64);
+            if let Some(dir) = flag(args, "--shots") {
+                for (name, f) in [("a", a), ("b", b)] {
+                    let rgb: Vec<u8> = f.pixels.iter().flat_map(|p| render::unpack(*p)).collect();
+                    std::fs::write(PathBuf::from(&dir).join(format!("{name}.png")), png::encode(f.width, f.height, &rgb))?;
+                }
+            }
+        }
+        let med = |v: &mut Vec<f32>| {
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[v.len() / 2]
+        };
+        let (a, b) = (med(&mut ta), med(&mut tb));
+        println!("{pw}x{ph} px: A (as is) {a:.2} ms, B (+{ab}) {b:.2} ms: B/A = {:.2}", b / a);
+        handle.shutdown();
+        return Ok(());
+    }
     let (full, wall, _) = run(base, 300)?;
     println!("{pw}x{ph} px, {} instances: pass {full:.2} ms at full clock, {:.2} ms settled; throughput {wall:.2} ms/frame", culled.insts.len(), SETTLED.with(|c| c.get()));
     if has(args, "--breakdown") {

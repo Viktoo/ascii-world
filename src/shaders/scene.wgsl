@@ -177,6 +177,24 @@ fn map_scene_lod(p: vec3f, t: f32, ray_t: f32) -> vec3f {
 
 fn map_scene(p: vec3f) -> vec3f { return map_scene_lod(p, 0.0, -1.0); }
 
+// Distance to the gathered instances only (no terrain): straight up from a
+// point the land can't cover it, being a height field.
+fn map_insts(p: vec3f) -> f32 {
+  var d = 1e9;
+  for (var j = 0u; j < ncand; j = j + 1u) {
+    let sph = cand_s[j];
+    let ds = length(p - sph.xyz) - sph.w;
+    if (ds >= d) { continue; }
+    if (ds < 0.25) {
+      let i = insts[cand[j]];
+      d = min(d, shape_sdf(i, to_local(i, p)) * i.pos_scale.w);
+    } else {
+      d = ds;
+    }
+  }
+  return d;
+}
+
 // Along a ray: only spheres the ray is inside right now are evaluated, and the
 // step never jumps past the next sphere's entry. x = step, y = slot, z = true distance.
 fn map_ray(p: vec3f, t: f32, lod_t: f32, relax: f32) -> vec3f {
@@ -481,7 +499,7 @@ fn sky_open(p: vec3f) -> f32 {
   var res = 1.0;
   var t = 0.15;
   for (var i = 0; i < 10; i = i + 1) {
-    let d = map_scene(p + vec3f(0.0, t, 0.0)).z;
+    let d = map_insts(p + vec3f(0.0, t, 0.0));
     res = min(res, 8.0 * d / t);
     if (res < 0.05) { break; }
     t = t + clamp(d, 0.1, 1.5);
@@ -562,7 +580,7 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       albedo = ground_color(p.x, p.z, p.y, n.y);
       // contact darkening from nearby objects
       if (!no_ao) {
-        let o = map_scene(p + n * 0.6).z;
+        let o = map_scene_lod(p + n * 0.6, h.t, -1.0).z;
         ao = clamp(0.45 + o * 0.9, 0.0, 1.0);
       }
     } else {
