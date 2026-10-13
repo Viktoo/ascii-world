@@ -92,6 +92,8 @@ pub enum Cmd {
     /// it is heard at all (things underfoot are the quietest sounds there are).
     Texture { key: u64, at: At, mat: Material, size: f32, drive: f32, roar: f32, gain: f32 },
     Ambience(Box<Ambience>),
+    /// A spoken line (mono, at `rate`), heard from where the speaker is.
+    Speech { at: At, samples: std::sync::Arc<Vec<f32>>, rate: f32, gain: f32, delay: f32 },
     Volume(f32),
     /// Fade everything out (a world closing).
     Clear,
@@ -164,6 +166,30 @@ pub fn place(lis: Vec3, yaw: f32, src: Vec3, gain: f32, sr: f32) -> Placed {
 enum Gen {
     Note(Note),
     Texture(Texture),
+    Clip(Clip),
+}
+
+/// Recorded samples played once (a spoken line), resampled to the device.
+struct Clip {
+    samples: std::sync::Arc<Vec<f32>>,
+    pos: f64,
+    step: f64,
+}
+
+impl Clip {
+    #[inline]
+    fn next(&mut self) -> f32 {
+        let i = self.pos as usize;
+        let f = (self.pos - i as f64) as f32;
+        let a = self.samples.get(i).copied().unwrap_or(0.0);
+        let b = self.samples.get(i + 1).copied().unwrap_or(0.0);
+        self.pos += self.step;
+        a + (b - a) * f
+    }
+
+    fn done(&self) -> bool {
+        self.pos as usize >= self.samples.len()
+    }
 }
 
 struct Voice {
@@ -334,6 +360,14 @@ impl Mixer {
                 self.texture(RAIN_KEY, At::Listener, mat, size, a.rain.clamp(0.0, 1.0).sqrt() * k, 0.0, 0.8);
                 self.amb = *a;
             }
+            Cmd::Speech { at, samples, rate, gain, delay } => {
+                let pos = match at {
+                    At::Point(v) | At::Follow(_, v) => v,
+                    At::Listener => self.lis,
+                };
+                let step = rate as f64 / self.sr as f64;
+                self.voices.push(Voice { src: Gen::Clip(Clip { samples, pos: 0.0, step }), at, pos, gain, wait: (delay.max(0.0) * self.sr) as u32, space: Space::new(self.sr), key: None, level: 0.0 });
+            }
             Cmd::Volume(v) => self.volume = v.clamp(0.0, 1.5),
             Cmd::Clear => {
                 self.voices.clear();
@@ -483,6 +517,8 @@ impl Mixer {
             } * match &v.src {
                 Gen::Note(nt) => nt.level,
                 Gen::Texture(t) => t.drive.max(t.target) + 0.01,
+                // Words matter more than the world's other sounds.
+                Gen::Clip(_) => 4.0,
             };
         }
         let mut order: Vec<usize> = (0..self.voices.len()).collect();
@@ -521,6 +557,15 @@ impl Mixer {
                     }
                     for s in tmp[..n].iter_mut() {
                         *s = t.next();
+                    }
+                }
+                Gen::Clip(c) => {
+                    for s in tmp[..n].iter_mut() {
+                        let x = c.next();
+                        *s = (x, x);
+                    }
+                    if !audible {
+                        continue;
                     }
                 }
             }
@@ -577,6 +622,7 @@ impl Mixer {
         self.voices.retain(|v| match &v.src {
             Gen::Note(nt) => !nt.done(),
             Gen::Texture(t) => !t.silent(),
+            Gen::Clip(c) => !c.done(),
         });
         // Beds, the room, the master.
         let b = &mut self.beds;

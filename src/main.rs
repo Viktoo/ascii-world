@@ -23,6 +23,7 @@ mod settings;
 mod sim;
 mod term;
 mod terrain;
+mod voice;
 mod window;
 mod world;
 

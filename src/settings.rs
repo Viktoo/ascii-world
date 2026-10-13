@@ -20,6 +20,8 @@ pub struct Settings {
     pub sound: bool,
     /// 0..1.
     pub volume: f32,
+    /// Characters heard speaking in their own voices (needs sound).
+    pub voices: bool,
     /// In a window: lines of the world drawn, scaled up to fill it; 0 = every
     /// pixel of the window, `AUTO` = as many as keep the frame rate. The
     /// terminal ignores it.
@@ -37,7 +39,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, window_detail: AUTO, blend_frames: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, window_detail: AUTO, blend_frames: true }
     }
 }
 
@@ -94,6 +96,9 @@ pub fn env_blend() -> bool {
 pub fn env_sound() -> bool {
     std::env::var_os("POCKET_NO_SOUND").is_some()
 }
+pub fn env_voices() -> bool {
+    std::env::var_os("POCKET_NO_VOICE").is_some()
+}
 
 impl Settings {
     /// The saved settings, with environment variables on top.
@@ -115,6 +120,9 @@ impl Settings {
         }
         if env_sound() {
             s.sound = false;
+        }
+        if env_voices() {
+            s.voices = false;
         }
         if let Some(d) = env("POCKET_WINDOW_DETAIL").and_then(|v| v.trim().parse::<u32>().ok()) {
             s.window_detail = d;
@@ -164,6 +172,9 @@ impl Settings {
             out.sound = self.sound;
         }
         out.volume = self.volume;
+        if !env_voices() {
+            out.voices = self.voices;
+        }
         if env("POCKET_WINDOW_DETAIL").is_none() {
             out.window_detail = self.window_detail;
         }

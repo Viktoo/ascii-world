@@ -15,6 +15,7 @@ const SR: f32 = 48000.0;
 
 pub const USAGE: &str = "  pocket listen --play                   a dog walks round you, through the speakers (checks the device)
   pocket listen --demo [--out DIR]       built-in scenes as WAVs (approach, materials, voices, night, contacts, fire)
+  pocket listen --voices [FILE] [--say TEXT] [--fetch] [--out DIR]   characters speaking in their own voices (a built-in cast, or a world's people)
   pocket listen FILE --species NAME [--out F.wav]          each of a species' sounds, 6 m ahead
   pocket listen FILE [--at x,z,yawDeg] [--hour H] [--secs S] [--walk] [--calls] [--verbose] [--out F.wav]
                                          stand (or walk) somewhere in a world and listen";
@@ -34,6 +35,9 @@ fn out_dir(args: &[String]) -> PathBuf {
 pub fn cli(args: &[String]) -> Result<()> {
     if has(args, "--play") {
         return play_live();
+    }
+    if has(args, "--voices") {
+        return voices_cli(args);
     }
     if has(args, "--demo") {
         let dir = out_dir(args);
@@ -330,4 +334,77 @@ fn fire() -> Vec<f32> {
         let drive = if t < 8.0 { (t / 3.0).min(1.0) * 1.1 } else { (1.0 - (t - 8.0) / 4.0).max(0.0) * 1.1 };
         m.apply(Cmd::Texture { key: 99, at: At::Point(Vec3::new(-3.0, 0.8, 5.0)), mat: Material::FIRE, size: 0.3, drive, roar: 0.8, gain: 1.0 });
     })
+}
+
+/// A built-in cast, or a world's speaking people, each saying a line in
+/// their own voice: one WAV each (mono, as made), and all of them standing
+/// round the listener (stereo, through the mixer).
+fn voices_cli(args: &[String]) -> Result<()> {
+    use crate::voice::{Engine, kokoro::SAMPLE_RATE, recipe::Recipe};
+    use crate::world::Persona;
+    let line = flag(args, "--say").unwrap_or_else(|| "Morning! Did you see the fox down by the old mill? It took two of my hens, the cheeky thing.".into());
+    let file = args.iter().skip_while(|a| *a != "--voices").nth(1).filter(|a| !a.starts_with("--")).cloned();
+    let mut cast: Vec<(i64, Persona)> = Vec::new();
+    if let Some(f) = file {
+        let db = crate::db::Db::open(Path::new(&f))?;
+        let s = crate::sim::headless::Session::with_db(db, Some(1), None)?;
+        for c in s.sim.cast.npcs.iter() {
+            if s.sim.speaks(crate::sim::ActorId::Npc(c.def.id)) {
+                cast.push((c.def.id, c.def.persona.clone()));
+            }
+        }
+        cast.truncate(10);
+    } else {
+        let mk = |name: &str, age: u32, appearance: &str, voice: &str, h: f32| {
+            let mut p = Persona { name: name.into(), age, appearance: appearance.into(), voice: voice.into(), ..Default::default() };
+            p.look.insert("height".into(), h);
+            p
+        };
+        cast = vec![
+            (1, mk("Tam", 68, "Weathered old fisherman, grey stubble", "Hoarse and slow, long pauses", 1.75)),
+            (2, mk("Pip", 9, "Small girl with muddy knees", "Quick and bright, asks everything", 1.3)),
+            (3, mk("Bram", 42, "Huge blacksmith, bearded", "Deep, slow and gravelly", 1.97)),
+            (4, mk("Ada", 38, "Calm healer woman", "Soft and gentle", 1.66)),
+            (5, mk("Wick", 27, "Thin clerk, ink on his fingers", "Fast and nervous, stammers", 1.8)),
+            (6, mk("Nan", 84, "Tiny old woman, a shawl", "Shaky and thin", 1.5)),
+        ];
+    }
+    if !crate::voice::pack::ready() && has(args, "--fetch") {
+        crate::voice::pack::fetch(&|p| eprint!("\rfetching the voices: {:.0}%", p * 100.0))?;
+        eprintln!();
+    }
+    anyhow::ensure!(crate::voice::pack::ready(), "the voice pack isn't in {} (add --fetch, or turn voices on in the game)", crate::voice::pack::dir().display());
+    let dir = out_dir(args).join("voices");
+    std::fs::create_dir_all(&dir)?;
+    let threads = flag(args, "--threads").and_then(|t| t.parse().ok()).unwrap_or(2);
+    let t0 = std::time::Instant::now();
+    let mut engine = Engine::new(threads)?;
+    println!("loaded in {:.2}s", t0.elapsed().as_secs_f32());
+    let mut m = Mixer::new(SR);
+    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+    let mut t = 0.3f32;
+    let n = cast.len().max(1);
+    for (i, (id, p)) in cast.iter().enumerate() {
+        let r = Recipe::of(p, *id);
+        let t1 = std::time::Instant::now();
+        let plain = engine.plain(&line, &r)?;
+        let model = t1.elapsed().as_secs_f32();
+        let y = crate::voice::body::reshape(&plain, SAMPLE_RATE, &r);
+        let made = t1.elapsed().as_secs_f32();
+        print!("model {model:.2}s body {:.2}s  ", made - model);
+        let secs = y.len() as f32 / SAMPLE_RATE as f32;
+        println!("{:<18} {:>4.1}s said, made in {:.2}s  {} f0 {:.0} throat {:.2} speed {:.2} rasp {:.2} breath {:.2} tremor {:.2}  {:?}", p.name, secs, made, if r.female { "F" } else { "M" }, r.f0, r.throat, r.speed, r.rasp, r.breath, r.tremor, r.blend);
+        let mono: Vec<f32> = y.iter().flat_map(|x| [*x, *x]).collect();
+        write_wav(&dir.join(format!("{}.wav", p.name.replace(' ', "_"))), SAMPLE_RATE, &mono)?;
+        // Round the listener, each from their own side.
+        let a = std::f32::consts::TAU * i as f32 / n as f32;
+        let at = Vec3::new(a.sin() * 3.0, 1.5, a.cos() * 3.0);
+        m.apply(Cmd::Speech { at: At::Point(at), samples: std::sync::Arc::new(y), rate: SAMPLE_RATE as f32, gain: 1.0, delay: t });
+        t += secs + 0.6;
+    }
+    let st = m.render(t + 0.5);
+    let p = dir.join("_all_round_you.wav");
+    write_wav(&p, SR as u32, &st)?;
+    println!("{}", p.display());
+    Ok(())
 }

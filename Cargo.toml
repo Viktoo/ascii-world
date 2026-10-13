@@ -14,7 +14,9 @@ dirs = "7.0.0"
 fontdue = "0.9"
 futures-util = "0.3.34"
 glam = "0.33.11"
+misaki-rs = { version = "0.6.0", default-features = false }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
+ort = "2.0.0-rc.14"
 oxc_allocator = "0.152.0"
 oxc_ast = "0.152.0"
 oxc_parser = "0.152.0"
@@ -23,6 +25,8 @@ oxc_syntax = "0.152.0"
 parking_lot = "0.12.5"
 pollster = "1.0.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json", "http2"] }
+rsworld = "0.1.0"
+rsworld-sys = "0.1.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

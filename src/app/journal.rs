@@ -199,6 +199,7 @@ impl App {
                 };
                 if let Some(c) = c {
                     self.conv.entry(c).or_default().push((false, text.clone()));
+                    self.voice_line(c, &text, false);
                 }
                 LogLine { who: c, ..LogLine::new(Kind::Talk, Some(who), text, TEXT) }
             }

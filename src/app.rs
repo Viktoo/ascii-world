@@ -26,6 +26,7 @@ mod creations;
 mod journal;
 mod loading;
 mod menu;
+mod voices;
 mod work;
 
 pub const WALK_SPEED: f32 = 5.0;
@@ -228,6 +229,15 @@ pub struct App {
     /// What the world sounds like, read off the sim each frame.
     foley: crate::audio::foley::Foley,
     sound_cmds: Vec<crate::audio::mix::Cmd>,
+    /// Characters' spoken voices (with sound, when on).
+    voice: Option<crate::voice::Speaker>,
+    voice_recipes: HashMap<i64, std::sync::Arc<crate::voice::recipe::Recipe>>,
+    /// When each speaker's queued words end.
+    voice_busy: HashMap<i64, Instant>,
+    /// A streaming reply's words not yet spoken.
+    voice_said: HashMap<i64, String>,
+    /// The voice thread's last state told in the log.
+    voice_told: Option<u8>,
     /// Shown in a window rather than a terminal.
     pub win: Option<WinGeom>,
     /// Left for the list of worlds (not quit).
@@ -331,6 +341,11 @@ impl App {
             sound: None,
             foley: Default::default(),
             sound_cmds: Vec::new(),
+            voice: None,
+            voice_recipes: HashMap::new(),
+            voice_busy: HashMap::new(),
+            voice_said: HashMap::new(),
+            voice_told: None,
             win: None,
             to_worlds: false,
             auto_lines: 240.0,
@@ -1042,9 +1057,11 @@ impl App {
                     _ => self.log.push_back(LogLine { streaming: Some(cid), who: Some(cid), ..LogLine::new(journal::Kind::Talk, Some(name), text.trim_start().to_string(), TEXT) }),
                 }
                 self.sim_talk.entry(cid).or_default().push_str(&text);
+                self.voice_token(cid, &text);
                 self.dirty = true;
             }
             Event::ReplyDone { cid, ok } => {
+                self.voice_reply_done(cid, ok);
                 if let Some(l) = self.log.iter_mut().rev().find(|l| l.streaming == Some(cid)) {
                     l.streaming = None;
                     if ok {
@@ -1287,6 +1304,7 @@ impl App {
         for c in self.sound_cmds.drain(..) {
             out.send(c);
         }
+        self.voice_frame();
     }
 
     /// Sound on or off and its volume, as the settings say.
@@ -1301,6 +1319,7 @@ impl App {
             (Some(o), true) => o.send(crate::audio::mix::Cmd::Volume(self.settings.volume)),
             (None, false) => {}
         }
+        self.sync_voice();
     }
 
     /// Point at whatever is in the middle of the view.
@@ -3084,6 +3103,12 @@ mod tests {
         let vol = app.settings.volume;
         app.on_key(key(KeyCode::Left, KeyEventKind::Press));
         assert!(app.settings.volume < vol);
+        // Voices (no sound device in tests: never started).
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(!app.settings.voices, "Enter turns voices off");
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(app.settings.voices && app.voice.is_none());
         // A world setting changes the running sim and is kept with the world.
         for _ in 0..3 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));

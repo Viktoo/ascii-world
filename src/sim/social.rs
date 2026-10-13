@@ -168,6 +168,9 @@ impl Joint {
     }
 }
 
+/// A breath between one speaker's line and the next's.
+const LINE_GAP: f64 = 0.4;
+
 #[derive(Clone, Debug)]
 pub struct ChatLine {
     pub at: f64,
@@ -1039,9 +1042,12 @@ impl Sim {
             self.request(Request::Chat { a, b, context: ctx_a }, pa);
         } else {
             let lines = self.small_talk(a, b);
-            for (i, (who, text)) in lines.into_iter().enumerate() {
+            let mut at = t + 0.2;
+            for (who, text) in lines {
                 let to = if who == a { b } else { a };
-                self.social.chats.push_back(ChatLine { at: t + 0.2 + i as f64 * 2.4, who, to, text });
+                let secs = self.line_secs(who, &text);
+                self.social.chats.push_back(ChatLine { at, who, to, text });
+                at += secs + LINE_GAP;
             }
         }
         // Gossip: the most important recent thing one remembers, the other now knows.
@@ -1112,14 +1118,23 @@ impl Sim {
 
     /// Lines of an overheard conversation arrived.
     pub fn on_chat(&mut self, a: i64, b: i64, lines: Vec<(i64, String)>) {
-        let t = self.t;
-        for (i, (who, text)) in lines.into_iter().take(6).enumerate() {
+        let mut at = self.t + 0.3;
+        for (who, text) in lines.into_iter().take(6) {
             let to = if who == a { b } else { a };
             if who != a && who != b {
                 continue;
             }
-            self.social.chats.push_back(ChatLine { at: t + 0.3 + i as f64 * 2.8, who, to, text });
+            let secs = self.line_secs(who, &text);
+            self.social.chats.push_back(ChatLine { at, who, to, text });
+            at += secs + LINE_GAP;
         }
+    }
+
+    /// How long a character takes to say a line, at their own pace: the
+    /// next line waits for it (heard or not, the talk keeps this rhythm).
+    fn line_secs(&self, who: i64, text: &str) -> f64 {
+        let pace = self.cast.get(who).map(|n| crate::voice::recipe::Recipe::pace(&n.def.persona)).unwrap_or(1.0);
+        crate::voice::secs(text, pace)
     }
 }
 
