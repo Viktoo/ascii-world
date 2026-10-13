@@ -49,6 +49,7 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world, made from words
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
+  pocket gpubench FILE --at x,z,yawDeg [--px 640x360] [--breakdown]   GPU time for one view, by part
   pocket sim FILE [--hours H] [--seed S] [--events out.jsonl] [--save] [--no-llm] [--verify]
                                          run the world headless, fast, and report what emerged
   pocket sim --replay out.jsonl [--from T] [--kinds ignited,caught]
@@ -479,46 +480,97 @@ impl std::io::Write for CountingSink {
 }
 
 /// Render one view repeatedly at full GPU load; report GPU time per frame.
+thread_local! {
+    static SETTLED: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// `pocket gpubench FILE --at x,z,yawDeg [--px 640x360 | --size COLSxROWS] [--breakdown]`:
+/// GPU time for one view; with `--breakdown`, what each part of a frame costs.
 fn gpubench(args: &[String]) -> Result<()> {
     let path = PathBuf::from(args.first().context("usage: pocket gpubench FILE --at x,z,yawDeg")?);
     let (x, z, yaw) = parse_at(args)?;
-    let (w, h) = parse_size(args)?;
+    let (pw, ph) = match flag(args, "--px") {
+        Some(p) => {
+            let (w, h) = p.split_once('x').context("--px expects WxH")?;
+            (w.parse::<u32>()?, h.parse::<u32>()?)
+        }
+        None => {
+            let (w, h) = parse_size(args)?;
+            (w as u32, h as u32 * 2)
+        }
+    };
     let l = load(&path)?;
     let gpu = l.gpu.clone().context("no GPU")?;
     let snap = &l.snap;
     let cam = camera_at(snap, x, z, yaw);
-    let (pw, ph) = (w as u32, h as u32 * 2);
     let mut cache = world::scatter::ScatterCache::default();
     let culled = world::cull::cull(snap, &mut cache, &cam, pw as f32 / ph as f32, &[], &Default::default());
     let light = render::sky::lighting(400.0, &snap.look.palette);
     let sp = render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 0.0, frame: 0, shadows: std::env::var("POCKET_NO_SHADOWS").is_err(), lights: &[], weather: Default::default() };
     let globals = render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
     let mut handle = render::gpu::spawn(gpu);
-    let mut times = Vec::new();
-    let mut t_start = Instant::now();
-    let mut best = f64::MAX;
-    for i in 0..900u64 {
-        if i % 200 == 100 {
-            if i > 100 {
-                best = best.min(t_start.elapsed().as_secs_f64() * 1000.0 / 200.0);
+    let mut id = 0u64;
+    // Median pass time over `n` frames with these flags (and the last frame).
+    let mut run = |flags: u32, n: usize| -> Result<(f32, f64, render::Frame)> {
+        let mut g = globals;
+        g.dims[3] = flags;
+        let mut times = Vec::new();
+        let t0 = Instant::now();
+        let mut last = None;
+        for i in 0..n + 20 {
+            if i == 20 {
+                times.clear();
             }
-            t_start = Instant::now();
-        }
-        let req = render::FrameRequest { id: i, width: pw, height: ph, globals, instances: culled.insts.clone(), grid: culled.grid.clone(), scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
-        handle.tx.send(render::RenderMsg::Frame(Box::new(req)))?;
-        // Strictly one frame in flight, so pass timestamps never overlap.
-        let f = handle.rx.recv_timeout(Duration::from_secs(10))?;
-        if i > 50 {
+            id += 1;
+            let req = render::FrameRequest { id, width: pw, height: ph, globals: g, instances: culled.insts.clone(), grid: culled.grid.clone(), scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+            handle.tx.send(render::RenderMsg::Frame(Box::new(req)))?;
+            // Strictly one frame in flight, so pass timestamps never overlap.
+            let f = handle.rx.recv_timeout(Duration::from_secs(10))?;
             times.push(f.gpu_ms.unwrap_or(0.0));
+            last = Some(f);
         }
+        if std::env::var_os("POCKET_BENCH_DUMP").is_some() {
+            eprintln!("{:?}", times.iter().map(|t| (t * 10.0).round() / 10.0).collect::<Vec<_>>());
+        }
+        // The GPU clocks itself down after a second or so of this: the fastest
+        // frames measure the work itself (compare changes by these), the
+        // later ones what it settles to.
+        let settled = {
+            let mut late = times[times.len() / 2..].to_vec();
+            late.sort_by(|a, b| a.total_cmp(b));
+            late[late.len() / 2]
+        };
+        times.sort_by(|a, b| a.total_cmp(b));
+        SETTLED.with(|c| c.set(settled));
+        Ok((times[times.len() / 20], t0.elapsed().as_secs_f64() * 1000.0 / (n + 20) as f64, last.expect("a frame")))
+    };
+    let base = globals.dims[3];
+    let (full, wall, _) = run(base, 300)?;
+    println!("{pw}x{ph} px, {} instances: pass {full:.2} ms at full clock, {:.2} ms settled; throughput {wall:.2} ms/frame", culled.insts.len(), SETTLED.with(|c| c.get()));
+    if has(args, "--breakdown") {
+        use render::{FLAG_HEATMAP, FLAG_MARCH_ONLY, FLAG_NO_AO, FLAG_NO_INSTANCES, FLAG_SHADOWS};
+        let rows = [
+            ("no shadows", base & !FLAG_SHADOWS),
+            ("no shadows, AO, open sky", (base & !FLAG_SHADOWS) | FLAG_NO_AO),
+            ("view ray march only", base | FLAG_MARCH_ONLY),
+            ("march only, no instances", base | FLAG_MARCH_ONLY | FLAG_NO_INSTANCES),
+        ];
+        for (name, f) in rows {
+            let (ms, _, _) = run(f, 200)?;
+            println!("  {name:<28} {ms:6.2} ms  ({:+.0}%)", (ms / full - 1.0) * 100.0);
+        }
+        let (_, _, heat) = run(base | FLAG_HEATMAP, 3)?;
+        let n = heat.pixels.len() as f64;
+        let (mut steps, mut cand, mut capped) = (0.0, 0.0, 0usize);
+        for p in &heat.pixels {
+            let c = render::unpack(*p);
+            steps += c[0] as f64 / 255.0 * 200.0;
+            cand += c[1] as f64 / 255.0 * 24.0;
+            capped += (c[0] as f64 / 255.0 * 200.0 >= 159.0) as usize;
+        }
+        println!("  view ray: {:.1} steps and {:.1} candidates per pixel on average; {:.1}% of pixels use all 160 steps", steps / n, cand / n, capped as f64 / n * 100.0);
     }
-    let wall = best;
     handle.shutdown();
-    times.sort_by(|a, b| a.total_cmp(b));
-    println!(
-        "{}x{} px, {} instances: throughput {:.2} ms/frame; pass time min {:.2}, median {:.2}, p90 {:.2} ms",
-        pw, ph, culled.insts.len(), wall, times[0], times[times.len() / 2], times[times.len() * 9 / 10]
-    );
     Ok(())
 }
 

@@ -66,6 +66,15 @@ pub struct PointLight {
 
 pub const FLAG_GRID: u32 = 1;
 pub const FLAG_SHADOWS: u32 = 2;
+/// Debug (for `pocket gpubench --breakdown`): no instances at all.
+pub const FLAG_NO_INSTANCES: u32 = 4;
+/// Debug: march steps and candidates as colour (r = steps / 200, g = candidates / 24).
+pub const FLAG_HEATMAP: u32 = 8;
+/// Debug: stop after the view ray's march (distance as grey): what finding
+/// the surface alone costs.
+pub const FLAG_MARCH_ONLY: u32 = 16;
+/// Debug: no ambient occlusion or open-sky test.
+pub const FLAG_NO_AO: u32 = 32;
 
 /// One instance as the shader sees it (192 bytes).
 #[repr(C)]

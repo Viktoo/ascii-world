@@ -493,7 +493,8 @@ fn sky_open(p: vec3f) -> f32 {
 fn shade(p: vec3f, n: vec3f, albedo: vec3f, rd: vec3f, ao: f32) -> vec3f {
   let sun = G.sun_dir.xyz;
   // Indoors the sky's blue doesn't reach; daylight spills in warm instead.
-  let open = sky_open(p + n * 0.25);
+  var open = 1.0;
+  if ((G.dims.w & 32u) == 0u) { open = sky_open(p + n * 0.25); }
   let ndl = dot(n, sun);
   var shadow = 1.0;
   if (ndl > 0.0 && (G.dims.w & 2u) != 0u && sun.y > 0.0) {
@@ -543,6 +544,10 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
     // debug: step heatmap
     return vec3f(h.steps / 200.0, f32(ncand) / 24.0, 0.0);
   }
+  if ((G.dims.w & 16u) != 0u) {
+    return vec3f(select(clamp(h.t / 200.0, 0.0, 1.0), 1.0, h.id < -1.5));
+  }
+  let no_ao = (G.dims.w & 32u) != 0u;
   if (h.id < -1.5) {
     col = sky(rd);
     t_hit = 1e9;
@@ -556,8 +561,10 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       n = terrain_normal(p, h.t);
       albedo = ground_color(p.x, p.z, p.y, n.y);
       // contact darkening from nearby objects
-      let o = map_scene(p + n * 0.6).z;
-      ao = clamp(0.45 + o * 0.9, 0.0, 1.0);
+      if (!no_ao) {
+        let o = map_scene(p + n * 0.6).z;
+        ao = clamp(0.45 + o * 0.9, 0.0, 1.0);
+      }
     } else {
       let idx = cand[u32(h.id)];
       n = inst_normal(idx, p, h.t);
@@ -570,9 +577,11 @@ fn render(ro: vec3f, rd: vec3f) -> vec3f {
       // The dark's own (charred past 1): whatever glows on it glows red.
       let gc = select(base, vec3f(1.0, 0.07, 0.03), i.fx.x > 1.5);
       glow = gc * clamp(i.fx.z, 0.0, 2.0) * lit;
-      let o1 = map_scene(p + n * 0.15).z;
-      let o2 = map_scene(p + n * 0.5).z;
-      ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);
+      if (!no_ao) {
+        let o1 = map_scene(p + n * 0.15).z;
+        let o2 = map_scene(p + n * 0.5).z;
+        ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);
+      }
     }
     col = shade(p, n, albedo, rd, ao) + glow;
   }
