@@ -23,6 +23,7 @@ pub struct ScenePipeline {
     pub render: wgpu::ComputePipeline,
     pub probe: wgpu::ComputePipeline,
     pub heightmap: wgpu::ComputePipeline,
+    pub heightmap_fine: wgpu::ComputePipeline,
 }
 
 impl std::fmt::Debug for ScenePipeline {
@@ -105,16 +106,17 @@ impl Gpu {
             })
         };
         // The three entry points compile independently: do it in parallel.
-        let (render, probe, heightmap) = std::thread::scope(|s| {
+        let (render, probe, heightmap, heightmap_fine) = std::thread::scope(|s| {
             let a = s.spawn(|| mk("render_main"));
             let b = s.spawn(|| mk("probe_main"));
+            let d = s.spawn(|| mk("heightmap_fine_main"));
             let c = mk("heightmap_main");
-            (a.join().expect("compile thread"), b.join().expect("compile thread"), c)
+            (a.join().expect("compile thread"), b.join().expect("compile thread"), c, d.join().expect("compile thread"))
         });
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("pipeline creation failed: {e}"));
         }
-        Ok(Arc::new(ScenePipeline { key, render, probe, heightmap }))
+        Ok(Arc::new(ScenePipeline { key, render, probe, heightmap, heightmap_fine }))
     }
 
     fn buf(&self, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
@@ -212,6 +214,8 @@ struct Renderer {
     hmap: wgpu::Buffer,
     /// (origin x, origin z, terrain epoch) of the heightmap contents.
     hmap_state: Option<(f32, f32, u32)>,
+    /// The same for the fine heightmap.
+    fine_state: Option<(f32, f32, u32)>,
     bind: Option<wgpu::BindGroup>,
     slots: Vec<Slot>,
     order: std::collections::VecDeque<usize>,
@@ -225,6 +229,11 @@ const INST_BYTES: u64 = std::mem::size_of::<GpuInst>() as u64;
 const HMAP_N: usize = 512;
 const HMAP_CELL: f32 = 0.75;
 const HMAP_RECENTER: f32 = 24.0;
+/// Fine heightmap: 384² cells of 12.5 cm (±24 m), recentred every 6 m (the
+/// shader reads it within 16 m, so it always covers what it serves).
+const FINE_N: usize = 384;
+const FINE_CELL: f32 = 0.125;
+const FINE_RECENTER: f32 = 6.0;
 
 impl Renderer {
     fn new(gpu: Arc<Gpu>) -> Renderer {
@@ -235,7 +244,7 @@ impl Renderer {
         let items = gpu.buf("items", 4 * 4096, U::STORAGE | U::COPY_DST);
         let out = gpu.buf("out", 4 * 64 * 64, U::STORAGE | U::COPY_SRC);
         let probe_dummy = gpu.buf("probe-dummy", 16, U::STORAGE);
-        let hmap = gpu.buf("heightmap", (HMAP_N * HMAP_N * 4) as u64, U::STORAGE);
+        let hmap = gpu.buf("heightmap", ((HMAP_N * HMAP_N + FINE_N * FINE_N) * 4) as u64, U::STORAGE);
         let queries = gpu.timestamps.then(|| {
             let qs = gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("ts"), ty: wgpu::QueryType::Timestamp, count: (SLOTS * 2) as u32 });
             let rb = gpu.buf("ts-resolve", 256 * SLOTS as u64, U::QUERY_RESOLVE | U::COPY_SRC);
@@ -259,6 +268,7 @@ impl Renderer {
             probe_dummy,
             hmap,
             hmap_state: None,
+            fine_state: None,
             bind: None,
             slots,
             order: Default::default(),
@@ -324,6 +334,18 @@ impl Renderer {
         }
         let (ox, oz, _) = self.hmap_state.expect("heightmap state");
         globals.hmap = [ox, oz, HMAP_CELL, HMAP_N as f32];
+        let fhalf = FINE_CELL * FINE_N as f32 * 0.5;
+        let fine_rebuild = match self.fine_state {
+            None => true,
+            Some((ox, oz, ep)) => ep != epoch || (cx - (ox + fhalf)).abs() > FINE_RECENTER || (cz - (oz + fhalf)).abs() > FINE_RECENTER,
+        };
+        if fine_rebuild {
+            let ox = ((cx - fhalf) / FINE_CELL).floor() * FINE_CELL;
+            let oz = ((cz - fhalf) / FINE_CELL).floor() * FINE_CELL;
+            self.fine_state = Some((ox, oz, epoch));
+        }
+        let (fx, fz, _) = self.fine_state.expect("fine heightmap state");
+        globals.hmap2 = [fx, fz, FINE_CELL, FINE_N as f32];
         let q = &gpu.queue;
         q.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         q.write_buffer(&self.inst, 0, bytemuck::cast_slice(insts));
@@ -335,6 +357,12 @@ impl Renderer {
             pass.set_pipeline(&pipe.heightmap);
             pass.set_bind_group(0, self.bind.as_ref(), &[]);
             pass.dispatch_workgroups((HMAP_N as u32).div_ceil(8), (HMAP_N as u32).div_ceil(8), 1);
+        }
+        if fine_rebuild {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("heightmap fine"), timestamp_writes: None });
+            pass.set_pipeline(&pipe.heightmap_fine);
+            pass.set_bind_group(0, self.bind.as_ref(), &[]);
+            pass.dispatch_workgroups((FINE_N as u32).div_ceil(8), (FINE_N as u32).div_ceil(8), 1);
         }
         {
             let tw = self.queries.as_ref().map(|(qs, _)| wgpu::ComputePassTimestampWrites {

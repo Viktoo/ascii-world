@@ -32,6 +32,7 @@ struct Globals {
   // sheltered, gloom), 5 (the sun itself xyz, its height), 6 (sunset glow rgb,
   // daylight), 7 (dusk sky rgb, -)
   wx: array<vec4f, 8>,
+  hmap2: vec4f,       // fine heightmap near the camera: origin x, origin z, cell size, cells per side (0 = none)
 }
 
 struct Inst {
@@ -253,7 +254,41 @@ fn hmap_height(x: f32, z: f32, ok: ptr<function, bool>, steep: ptr<function, boo
 const HMAP_STEEP: f32 = 1.2;
 const HMAP_EXACT: f32 = 80.0;
 
+// The fine heightmap, stored after the coarse one: 12.5 cm cells round the
+// camera, so steps near it read a height instead of working one out.
+fn hmap_fine(x: f32, z: f32, ok: ptr<function, bool>) -> f32 {
+  let n = G.hmap2.w;
+  let gx = (x - G.hmap2.x) / G.hmap2.z;
+  let gz = (z - G.hmap2.y) / G.hmap2.z;
+  if (n < 2.0 || gx < 0.0 || gz < 0.0 || gx >= n - 1.0 || gz >= n - 1.0) { *ok = false; return 0.0; }
+  let ix = u32(gx); let iz = u32(gz);
+  let fx = gx - f32(ix); let fz = gz - f32(iz);
+  let ni = u32(n);
+  let i0 = u32(G.hmap.w) * u32(G.hmap.w) + iz * ni + ix;
+  let a = hmap[i0]; let b = hmap[i0 + 1u];
+  let c = hmap[i0 + ni]; let d = hmap[i0 + ni + 1u];
+  // A cell this steep (a rock face) is drawn from the exact height instead.
+  *ok = max(max(a, b), max(c, d)) - min(min(a, b), min(c, d)) <= HMAP_FINE_STEEP;
+  return mix(mix(a, b, fx), mix(c, d, fx), fz);
+}
+
+// Rise across one fine cell beyond which the exact height is used.
+const HMAP_FINE_STEEP: f32 = 0.2;
+// The fine map serves steps this close (it reaches further, recentred as the camera moves).
+const HMAP_FINE_NEAR: f32 = 16.0;
+
 fn terrain_height_lod(x: f32, z: f32, t: f32) -> f32 {
+  if (t < HMAP_FINE_NEAR) {
+    var ok = false;
+    let h = hmap_fine(x, z, &ok);
+    if (ok) { return h; }
+  }
+  return terrain_height_lod_exact(x, z, t);
+}
+
+// As terrain_height_lod, but never from the fine map (normals: a bilinear
+// map would light each cell flat).
+fn terrain_height_lod_exact(x: f32, z: f32, t: f32) -> f32 {
   let h = terrain_height_lod_raw(x, z, t);
   if (G.extra.x == 0u) { return h; }
   return carve(x, z, h).x;

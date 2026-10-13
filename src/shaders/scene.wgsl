@@ -258,8 +258,8 @@ fn march(ro: vec3f, rd: vec3f, tmax: f32) -> Hit {
 
 fn terrain_normal(p: vec3f, t: f32) -> vec3f {
   let e = 0.04 + 0.0025 * t;
-  let hx = terrain_height_lod(p.x + e, p.z, t) - terrain_height_lod(p.x - e, p.z, t);
-  let hz = terrain_height_lod(p.x, p.z + e, t) - terrain_height_lod(p.x, p.z - e, t);
+  let hx = terrain_height_lod_exact(p.x + e, p.z, t) - terrain_height_lod_exact(p.x - e, p.z, t);
+  let hz = terrain_height_lod_exact(p.x, p.z + e, t) - terrain_height_lod_exact(p.x, p.z - e, t);
   return normalize(vec3f(-hx, 2.0 * e, -hz));
 }
 
@@ -646,6 +646,15 @@ fn render_main(@builtin(global_invocation_id) gid: vec3u) {
   let rd = normalize(G.cam_fwd.xyz + G.cam_right.xyz * u + G.cam_up.xyz * v);
   let col = render(G.cam_pos.xyz, rd);
   outp[gid.y * w + gid.x] = pack4x8unorm(vec4f(col, 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn heightmap_fine_main(@builtin(global_invocation_id) gid: vec3u) {
+  let n = u32(G.hmap2.w);
+  if (gid.x >= n || gid.y >= n) { return; }
+  let x = G.hmap2.x + f32(gid.x) * G.hmap2.z;
+  let z = G.hmap2.y + f32(gid.y) * G.hmap2.z;
+  hmap[u32(G.hmap.w) * u32(G.hmap.w) + gid.y * n + gid.x] = terrain_height(x, z);
 }
 
 @compute @workgroup_size(8, 8)

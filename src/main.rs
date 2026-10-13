@@ -517,15 +517,27 @@ fn gpubench(args: &[String]) -> Result<()> {
         let mut times = Vec::new();
         let t0 = Instant::now();
         let mut last = None;
+        // Two frames in flight, as in the game: the GPU never waits on the
+        // CPU, so its clock stays where play would put it.
+        let mut send = |id: &mut u64| -> Result<()> {
+            *id += 1;
+            let req = render::FrameRequest { id: *id, width: pw, height: ph, globals: g, instances: culled.insts.clone(), grid: culled.grid.clone(), scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+            handle.tx.send(render::RenderMsg::Frame(Box::new(req)))?;
+            Ok(())
+        };
+        send(&mut id)?;
+        std::thread::sleep(Duration::from_millis(2));
+        send(&mut id)?;
+        let mut sent = 2;
         for i in 0..n + 20 {
             if i == 20 {
                 times.clear();
             }
-            id += 1;
-            let req = render::FrameRequest { id, width: pw, height: ph, globals: g, instances: culled.insts.clone(), grid: culled.grid.clone(), scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
-            handle.tx.send(render::RenderMsg::Frame(Box::new(req)))?;
-            // Strictly one frame in flight, so pass timestamps never overlap.
             let f = handle.rx.recv_timeout(Duration::from_secs(10))?;
+            if sent < n + 20 {
+                send(&mut id)?;
+                sent += 1;
+            }
             times.push(f.gpu_ms.unwrap_or(0.0));
             last = Some(f);
         }
@@ -577,6 +589,7 @@ fn gpubench(args: &[String]) -> Result<()> {
                 for (name, f) in [("a", a), ("b", b)] {
                     let rgb: Vec<u8> = f.pixels.iter().flat_map(|p| render::unpack(*p)).collect();
                     std::fs::write(PathBuf::from(&dir).join(format!("{name}.png")), png::encode(f.width, f.height, &rgb))?;
+                    std::fs::write(PathBuf::from(&dir).join(format!("{name}.rgb")), &rgb)?;
                 }
             }
         }

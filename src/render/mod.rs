@@ -49,6 +49,8 @@ pub struct Globals {
     pub roads: [[f32; 4]; MAX_ROADS * 2],
     /// Weather and the sun's own place (see `WeatherView`; layout in common.wgsl).
     pub wx: [[f32; 4]; 8],
+    /// The fine heightmap near the camera (set by the renderer).
+    pub hmap2: [f32; 4],
 }
 
 pub const MAX_LIGHTS: usize = 8;
@@ -483,6 +485,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
             v4(sunset_glow(pal) * w.tint, l.daylight),
             v4(rgbv(pal.sky_dusk), 0.0),
         ],
+        hmap2: [0.0; 4],
     }
 }
 
