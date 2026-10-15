@@ -23,8 +23,8 @@ fn vowel_formants(c: char) -> [f32; 4] {
     }
 }
 
-const FORMANT_GAIN: [f32; 4] = [1.0, 0.55, 0.3, 0.12];
-const FORMANT_Q: [f32; 4] = [5.0, 7.0, 9.0, 10.0];
+/// Formant bandwidths (Hz) of a grown person; scaled with the formants.
+const FORMANT_BW: [f32; 4] = [70.0, 95.0, 150.0, 220.0];
 
 /// What the body adds to a part: its mass (register) and how far this one
 /// individual sits from its kind (bigger: lower).
@@ -209,9 +209,16 @@ struct Knobs {
     nasal: f32,
     wobble: f32,
     swell: f32,
+    loud: f32,
     dry: f32,
     hard: f32,
     ring: f32,
+}
+
+/// A repeat's length in seconds.
+#[inline]
+fn p_len(rep_len: u32, sr: f32) -> f32 {
+    rep_len as f32 / sr
 }
 
 /// Plays one part (all its repeats) for one listener-side voice.
@@ -234,13 +241,25 @@ pub struct Note {
     cyc: u32,
     jitter: f32,
     drift: f32,
+    /// Vibrato: its own speed per note (no two throats quaver alike), a
+    /// phase and a slow wander of the speed.
+    vib_hz: f32,
+    vib_ph: f32,
+    /// This cycle's loudness (shimmer: no two cycles quite alike).
+    shimmer: f32,
+    /// Source brightness: quiet edges of a sound are darker than its middle.
+    tilt: OnePole,
     // Throat
     formants: [Svf; 4],
     vowels: Vec<[f32; 4]>,
+    vowels_start: char,
     fscale: f32,
     body_lp: Svf,
     tube: Delay,
     tube_d: f32,
+    /// The nose: a low murmur resonance and a dip in the mids.
+    nose: Svf,
+    nose_dip: Svf,
     breath_bp: Svf,
     // Noise / knock
     grains: Option<Grains>,
@@ -293,6 +312,7 @@ impl Note {
             _ => None,
         };
         let tube_d = sr / (fscale * 520.0).clamp(60.0, 4000.0);
+        let vib_hz = rng.range(4.5, 7.0);
         let mut n = Note {
             sr,
             rng,
@@ -308,12 +328,19 @@ impl Note {
             cyc: 0,
             jitter: 1.0,
             drift: 0.0,
+            vib_hz,
+            vib_ph: 0.0,
+            shimmer: 1.0,
+            tilt: OnePole::new(sr, base[0].max(60.0) * 12.0),
             formants: [Svf::default(); 4],
             vowels,
+            vowels_start: p.vowel.chars().next().unwrap_or('_'),
             fscale,
             body_lp: Svf::new(sr, (base[0] * 4.0).max(120.0), 0.7),
             tube: Delay::new(tube_d as usize + 4),
             tube_d,
+            nose: Svf::new(sr, 270.0 * fscale, 3.0),
+            nose_dip: Svf::new(sr, 1000.0 * fscale, 1.5),
             breath_bp: Svf::new(sr, base[0].max(200.0), 4.0),
             grains,
             modes: [Mode::default(); MODES],
@@ -325,9 +352,9 @@ impl Note {
             tail,
             // Loudness spans about 30 dB: a purr is truly quiet, a roar is not.
             level: 0.05 + 1.6 * p.loud.powf(1.5),
-            part: Knobs { kind: p.kind, times: p.times as u32, gap: (p.gap * sr) as u32, rough: p.rough, breath: p.breath, nasal: p.nasal, wobble: p.wobble, swell: p.swell, dry: p.dry, hard: p.hard, ring: p.ring },
+            part: Knobs { kind: p.kind, times: p.times as u32, gap: (p.gap * sr) as u32, rough: p.rough, breath: p.breath, nasal: p.nasal, wobble: p.wobble, swell: p.swell, loud: p.loud, dry: p.dry, hard: p.hard, ring: p.ring },
         };
-        n.set_formants(0.0);
+        n.set_formants(0.0, 0.0);
         n.trigger();
         n
     }
@@ -336,7 +363,9 @@ impl Note {
         self.t >= self.total
     }
 
-    fn set_formants(&mut self, u: f32) {
+    /// `shut` 0..1: how closed the lips still are (closed lips pull every
+    /// formant down, the first most: the b/m of a baa, a moo, a meow).
+    fn set_formants(&mut self, u: f32, shut: f32) {
         let n = self.vowels.len();
         let f = if n == 1 {
             self.vowels[0]
@@ -348,7 +377,10 @@ impl Note {
             [0, 1, 2, 3].map(|j| a[j] + (b[j] - a[j]) * k)
         };
         for (j, svf) in self.formants.iter_mut().enumerate() {
-            svf.set(self.sr, f[j] * self.fscale, FORMANT_Q[j]);
+            let lip = 1.0 - shut * [0.55, 0.3, 0.1, 0.0][j];
+            // An open throat (breathy voice) damps the first formant.
+            let bw = FORMANT_BW[j] * if j == 0 { 1.0 + 1.5 * self.part.breath } else { 1.0 };
+            svf.set(self.sr, f[j] * self.fscale * lip, (f[j] * lip / bw).clamp(1.5, 20.0));
         }
     }
 
@@ -377,6 +409,16 @@ impl Note {
             self.click_left = ((0.0005 + 0.006 * (1.0 - hard)) * self.sr) as u32;
             self.thud_env = (1.0 - 0.6 * hard) * self.rep_amp;
         }
+    }
+
+    /// Vibrato -1..1: grows in over the first fifth of a second (a held
+    /// note starts steady), at the note's own wandering speed.
+    #[inline]
+    fn vibrato(&mut self, local: u32) -> f32 {
+        let hz = self.vib_hz * (1.0 + 0.15 * self.drift.clamp(-1.0, 1.0));
+        self.vib_ph = (self.vib_ph + hz / self.sr).fract();
+        let grow = 0.35 + 0.65 * smooth(local as f32 / (0.2 * self.sr));
+        (TAU * self.vib_ph).sin() * grow
     }
 
     #[inline]
@@ -428,7 +470,7 @@ impl Note {
                     return 0.0;
                 }
                 let tt = self.t as f32 / sr;
-                let mut f = self.pitch(u) * (1.0 + p.wobble * 0.04 * (TAU * 6.0 * tt).sin());
+                let mut f = self.pitch(u) * (1.0 + p.wobble * 0.04 * self.vibrato(local));
                 // Rough whistles buzz (a fast flutter, like a bird's buzzy note).
                 f *= 1.0 + p.rough * 0.22 * (TAU * (70.0 + 50.0 * p.rough) * tt).sin();
                 self.phase = (self.phase + f / sr).fract();
@@ -443,39 +485,72 @@ impl Note {
                 if u >= 1.0 + self.tail as f32 / self.rep_len as f32 {
                     return 0.0;
                 }
-                let tt = self.t as f32 / sr;
+                // A call starts from a closed mouth that opens fast (baa, not
+                // aaa): a short murmur, then the vowel. Sounds that swell in
+                // slowly, pure breaths and m/n starts need little or none.
+                let secs = local as f32 / sr;
+                let lips = (1.0 - p.swell).powi(2) * (1.0 - p.breath) * if matches!(self.vowels_start, 'm' | 'n') { 0.0 } else { 1.0 };
+                let shut = lips * (1.0 - smooth(secs / 0.05));
+                let atk = 0.03 + 0.45 * p.swell;
+                let atk = atk + ((0.012 / p_len(self.rep_len, sr)).min(atk) - atk) * lips;
+                let env = ar(u, atk, 0.3) * self.rep_amp * (1.0 - 0.6 * shut);
+                // How hard the throat is pushed now: quiet edges are darker
+                // and breathier than the middle, as in any real voice.
+                let push = env.min(1.0) * (0.4 + 0.6 * p.loud);
                 if local % 32 == 0 {
-                    self.set_formants(u);
+                    self.set_formants(u, shut);
+                    self.tilt.set(sr, (self.pitch(u.min(1.0)) * (3.0 + 20.0 * push)).min(sr * 0.45));
                 }
-                // Pitch: the contour, vibrato, a slow wander and per-cycle jitter.
+                // Pitch: the contour, vibrato, a slow wander and per-cycle
+                // jitter; a little scoop up into the sound and a sag out of it.
                 self.drift = (self.drift + self.rng.bi() * 0.02) * 0.995;
-                let f = self.pitch(u.min(1.0)) * (1.0 + p.wobble * 0.05 * (TAU * 5.5 * tt).sin()) * (1.0 + p.rough * 0.04 * self.drift) * self.jitter;
+                let edge = 1.0 - 0.03 * (1.0 - smooth(secs / 0.06)) - 0.04 * smooth((u - 0.75) * 4.0);
+                let vib = self.vibrato(local);
+                let f = self.pitch(u.min(1.0)) * edge * (1.0 + p.wobble * 0.05 * vib) * (1.0 + p.rough * 0.04 * self.drift) * self.jitter;
                 let dt = (f / sr).min(0.5);
                 self.phase += dt;
                 if self.phase >= 1.0 {
                     self.phase -= 1.0;
                     self.cyc += 1;
-                    self.jitter = 1.0 + self.rng.gauss(0.012 + 0.03 * p.rough);
+                    self.jitter = 1.0 + self.rng.gauss(0.008 + 0.03 * p.rough);
+                    self.shimmer = (1.0 + self.rng.gauss(0.04 + 0.12 * p.rough)).clamp(0.5, 1.5);
                 }
                 let saw = 2.0 * self.phase - 1.0 - blep(self.phase, dt);
+                let saw = self.tilt.run(saw) * 0.55 + saw * 0.45 * push;
                 // Roughness: every other cycle weaker (period doubling).
-                let src = saw * if self.cyc & 1 == 1 { 1.0 - 0.6 * p.rough } else { 1.0 };
-                let noise = self.rng.bi();
-                let exc = src * (1.0 - p.breath) + noise * p.breath * 2.2 * (1.0 + 0.5 * p.rough * src.abs());
-                let mut y = 0.0;
-                for (j, svf) in self.formants.iter_mut().enumerate() {
-                    y += svf.bp(exc) * FORMANT_GAIN[j];
+                let src = saw * self.shimmer * if self.cyc & 1 == 1 { 1.0 - 0.6 * p.rough } else { 1.0 };
+                // Breath: more of it at the quiet edges; while voiced it puffs
+                // with each opening of the throat, so it fuses with the tone
+                // instead of hissing beside it.
+                let breath = p.breath + (1.0 - p.breath) * 0.25 * (1.0 - push);
+                let open = (std::f32::consts::PI * (self.phase / 0.6).min(1.0)).sin();
+                let puff = 1.0 - (1.0 - breath) * (1.0 - 1.6 * open).max(-0.6);
+                let noise = self.rng.bi() * puff;
+                let exc = src * (1.0 - breath) + noise * breath * 2.2 * (1.0 + 0.5 * p.rough * src.abs());
+                // The tract: resonances one after another (as air passes
+                // through a throat), which keeps the smooth shape of a real
+                // voice between them instead of a few thin peaks.
+                let mut y = exc;
+                for svf in self.formants.iter_mut() {
+                    y = svf.lp(y);
                 }
-                // Long tracts (horns, trunks, whines): a tube resonance.
+                // Nasal: sound through the nose, a low murmur and a dip in the mids.
                 if p.nasal > 0.0 {
+                    y += self.nose.bp(exc) * p.nasal * 0.6;
+                    y -= self.nose_dip.bp(y) * p.nasal * 0.7;
+                }
+                // Only very long tracts (trunks, horns) ring like a tube.
+                let horn = smooth((p.nasal - 0.5) * 2.0);
+                if horn > 0.0 {
                     let fb = self.tube.read(self.tube_d);
-                    self.tube.push(y + fb * 0.55 * p.nasal);
-                    y += fb * p.nasal * 0.8;
+                    self.tube.push(y + fb * 0.55 * horn);
+                    y += fb * horn * 0.8;
                 }
                 // Very low voices keep their body (a rumble felt more than heard).
                 let body = self.body_lp.lp(src) * (1.0 - p.breath) * 0.5;
-                let env = ar(u, 0.03 + 0.45 * p.swell, 0.3) * self.rep_amp;
-                ((y * 1.6 + body) * env) * self.level * 0.6
+                // The quaver also moves loudness a little (the voice leans into it).
+                let env = env * (1.0 + 0.12 * p.wobble * vib);
+                ((y * 0.15 + body) * env) * self.level * 0.72
             }
         };
         if out.is_finite() { out } else { 0.0 }
