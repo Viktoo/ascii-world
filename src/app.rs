@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 mod creations;
 mod journal;
 mod loading;
+mod ears;
 mod menu;
 mod voices;
 mod work;
@@ -238,6 +239,13 @@ pub struct App {
     voice_said: HashMap<i64, String>,
     /// The voice thread's last state told in the log.
     voice_told: Option<u8>,
+    /// Speak to talk: the recogniser (while the setting is on), the go of
+    /// listening now, and the last trouble told.
+    ears: Option<crate::ears::Ears>,
+    hearing: Option<ears::Hearing>,
+    hear_id: u64,
+    ears_told: Option<u8>,
+    ears_trouble: Option<String>,
     /// Shown in a window rather than a terminal.
     pub win: Option<WinGeom>,
     /// Left for the list of worlds (not quit).
@@ -346,6 +354,11 @@ impl App {
             voice_busy: HashMap::new(),
             voice_said: HashMap::new(),
             voice_told: None,
+            ears: None,
+            hearing: None,
+            hear_id: 0,
+            ears_told: None,
+            ears_trouble: None,
             win: None,
             to_worlds: false,
             auto_lines: 240.0,
@@ -353,6 +366,7 @@ impl App {
             auto_ceiling: None,
         };
         app.sync_sound();
+        app.sync_ears();
         app.unstick();
         let name = app.snap.look.name.clone();
         app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use or pick up, g grab/drop, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
@@ -586,6 +600,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.set_mode(Mode::Command);
                 self.input = "/".into();
+                self.start_hearing();
             }
             KeyCode::Char(' ') => {
                 if !self.sim.player.seated() {
@@ -620,6 +635,7 @@ impl App {
                     self.set_mode(Mode::Talk(id));
                     self.sim.talking_to = Some(id);
                     self.say(None, &format!("You approach {name}. (Esc to leave)"), DIM);
+                    self.start_hearing();
                 }
             }
             KeyCode::Char('1') => self.set_log_view((self.log_view + 1) % 3),
@@ -781,6 +797,7 @@ impl App {
     }
 
     fn set_mode(&mut self, m: Mode) {
+        self.stop_hearing();
         if !matches!(m, Mode::Talk(_)) {
             self.sim.talking_to = None;
         }
@@ -792,19 +809,18 @@ impl App {
     }
 
     fn text_key(&mut self, k: KeyEvent) {
+        if self.hearing.is_some() && k.kind == KeyEventKind::Repeat {
+            return;
+        }
+        if self.hearing_key(k.code) {
+            self.dirty = true;
+            return;
+        }
         match k.code {
             KeyCode::Esc => self.set_mode(Mode::Walk),
-            KeyCode::Enter => {
-                let text = std::mem::take(&mut self.input);
-                match self.mode {
-                    Mode::Talk(cid) => self.send_talk(cid, text),
-                    Mode::Command => {
-                        self.set_mode(Mode::Walk);
-                        self.command(text.trim());
-                    }
-                    Mode::Walk => {}
-                }
-            }
+            // Enter with nothing to say, in a conversation: speak instead.
+            KeyCode::Enter if matches!(self.mode, Mode::Talk(_)) && self.input.trim().is_empty() && self.ears.is_some() => self.start_hearing(),
+            KeyCode::Enter => self.submit_input(),
             KeyCode::Backspace => {
                 self.input.pop();
                 if self.mode == Mode::Command && self.input.is_empty() {
@@ -819,6 +835,24 @@ impl App {
                 }
             }
             _ => {}
+        }
+        self.dirty = true;
+    }
+
+    /// Send the input line (typed, or heard and paused on).
+    fn submit_input(&mut self) {
+        // Mid-reply: it waits, still in the line, for the next Enter.
+        if matches!(self.mode, Mode::Talk(_)) && self.replying.is_some() {
+            return;
+        }
+        let text = std::mem::take(&mut self.input);
+        match self.mode {
+            Mode::Talk(cid) => self.send_talk(cid, text),
+            Mode::Command => {
+                self.set_mode(Mode::Walk);
+                self.command(text.trim());
+            }
+            Mode::Walk => {}
         }
         self.dirty = true;
     }
@@ -1231,6 +1265,7 @@ impl App {
             self.tell(n);
         }
         self.hear(dt);
+        self.ears_frame();
         if self.log_expiry.is_some_and(|t| Instant::now() >= t) {
             self.log_expiry = None;
             self.dirty = true;
@@ -1567,7 +1602,12 @@ impl App {
                 } else {
                     self.screen.set(x, iy, Cell { ch: if blink { '▏' } else { ' ' }, fg: ACCENT, bg: PANEL_BG, bold: false });
                 }
-                if self.replying.is_some() {
+                if let Some((mark, fg)) = self.hearing_mark() {
+                    let n = mark.chars().count() as u16;
+                    if x + 2 + n < w {
+                        self.screen.text(w - n - 1, iy, &mark, fg, PANEL_BG, false);
+                    }
+                } else if self.replying.is_some() {
                     self.screen.text(w.saturating_sub(12), iy, "(listening)", DIM, PANEL_BG, false);
                 }
             }
@@ -2182,6 +2222,7 @@ impl App {
 
     pub fn paste(&mut self, s: &str) {
         if self.mode != Mode::Walk {
+            self.stop_hearing();
             self.input.push_str(&s.replace(['\n', '\r'], " "));
             self.dirty = true;
         }
@@ -3113,6 +3154,12 @@ mod tests {
         assert_eq!(app.settings.voice_volume, 0.5, "voices sit below the world by default");
         app.on_key(key(KeyCode::Left, KeyEventKind::Press));
         assert!(app.settings.voice_volume < 0.5);
+        // Speak to talk (the recogniser never starts in tests).
+        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(app.settings.speak_to_talk, "off by default; Enter turns speaking to talk on");
+        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(!app.settings.speak_to_talk && app.ears.is_none());
         // A world setting changes the running sim and is kept with the world.
         for _ in 0..3 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));

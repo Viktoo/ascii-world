@@ -33,6 +33,7 @@ serde_json = "1.0.151"
 signal-hook = "0.4.4"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 wgpu = "30.0.1"
+whisper-rs = { version = "0.16", features = ["metal"] }
 winit = "0.30.13"
 
 [profile.release]

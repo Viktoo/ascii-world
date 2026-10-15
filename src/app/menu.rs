@@ -32,6 +32,7 @@ enum Row {
     Volume,
     Voices,
     VoiceVolume,
+    Speak,
     Difficulty,
     Radius,
     ShowWork,
@@ -43,7 +44,7 @@ enum Row {
     Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Speak, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -200,7 +201,7 @@ impl App {
                             m.details = Some(d);
                         }
                     }
-                    Row::Shadows | Row::Blend | Row::Sound | Row::Voices | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
+                    Row::Shadows | Row::Blend | Row::Sound | Row::Voices | Row::Speak | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
                     Row::Quit => self.quit = true,
                     Row::Worlds => {
                         self.to_worlds = true;
@@ -226,6 +227,7 @@ impl App {
             Row::Shadows => settings::env_shadows(),
             Row::Sound => settings::env_sound(),
             Row::Voices => settings::env_voices(),
+            Row::Speak => settings::env_mic(),
             Row::Blend => settings::env_blend(),
             Row::Radius => settings::env_region_radius(),
             _ => false,
@@ -260,6 +262,7 @@ impl App {
             }
             Row::Sound => s.sound = !s.sound,
             Row::Voices => s.voices = !s.voices,
+            Row::Speak => s.speak_to_talk = !s.speak_to_talk,
             Row::Volume => s.volume = step(VOLUMES, s.volume as f64, dir) as f32,
             Row::VoiceVolume => s.voice_volume = step(VOLUMES, s.voice_volume as f64, dir) as f32,
             Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
@@ -274,8 +277,14 @@ impl App {
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
             Row::Details | Row::Worlds | Row::Quit => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::VoiceVolume | Row::Radius | Row::ShowWork) {
+        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::VoiceVolume | Row::Speak | Row::Radius | Row::ShowWork) {
             self.settings.save();
+        }
+        if row == Row::Speak {
+            self.sync_ears();
+            if self.settings.speak_to_talk {
+                self.ask_mic();
+            }
         }
         if matches!(row, Row::Sound | Row::Volume | Row::Voices) {
             self.sync_sound();
@@ -311,6 +320,7 @@ impl App {
             Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
             Row::Voices => ("Voices", self.voice_status()),
             Row::VoiceVolume => ("Voice volume", format!("{:.0}%", s.voice_volume * 100.0)),
+            Row::Speak => ("Speak to talk", self.ears_status()),
             Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
             Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
             Row::Difficulty => ("Difficulty", self.sim.level().name.to_string()),

@@ -1,5 +1,6 @@
 //! The voice pack: the model and its voices, kept in ~/.pocket/voice and
-//! fetched once, the first time voices are on (about 350 MB).
+//! fetched once, the first time voices are on (about 350 MB). The speech
+//! recogniser's model (`crate::ears`) is fetched into the same folder.
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
@@ -26,16 +27,25 @@ pub fn path(name: &str) -> PathBuf {
 }
 
 pub fn ready() -> bool {
-    FILES.iter().all(|f| std::fs::metadata(path(f.name)).is_ok_and(|m| m.len() == f.size))
+    ready_of(FILES)
+}
+
+pub fn ready_of(files: &[File]) -> bool {
+    files.iter().all(|f| std::fs::metadata(path(f.name)).is_ok_and(|m| m.len() == f.size))
 }
 
 /// Fetch what is missing; `progress` hears the share done (0..1).
 pub fn fetch(progress: &dyn Fn(f32)) -> Result<()> {
+    fetch_of(FILES, progress)
+}
+
+/// Fetch what is missing of `files` (into the same folder).
+pub fn fetch_of(files: &[File], progress: &dyn Fn(f32)) -> Result<()> {
     std::fs::create_dir_all(dir())?;
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    let total: u64 = FILES.iter().map(|f| f.size).sum();
+    let total: u64 = files.iter().map(|f| f.size).sum();
     let mut done: u64 = 0;
-    for f in FILES {
+    for f in files {
         let dest = path(f.name);
         if std::fs::metadata(&dest).is_ok_and(|m| m.len() == f.size) {
             done += f.size;

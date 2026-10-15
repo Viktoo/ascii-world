@@ -24,6 +24,9 @@ pub struct Settings {
     pub voices: bool,
     /// 0..1: how loud voices are against the world's other sounds.
     pub voice_volume: f32,
+    /// Speak to talk (off until turned on in the menu): `/`, or Enter with
+    /// someone, listens on the mic and sends what you said when you pause.
+    pub speak_to_talk: bool,
     /// In a window: lines of the world drawn, scaled up to fill it; 0 = every
     /// pixel of the window, `AUTO` = as many as keep the frame rate. The
     /// terminal ignores it.
@@ -41,7 +44,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, window_detail: AUTO, blend_frames: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true }
     }
 }
 
@@ -101,6 +104,9 @@ pub fn env_sound() -> bool {
 pub fn env_voices() -> bool {
     std::env::var_os("POCKET_NO_VOICE").is_some()
 }
+pub fn env_mic() -> bool {
+    std::env::var_os("POCKET_NO_MIC").is_some()
+}
 
 impl Settings {
     /// The saved settings, with environment variables on top.
@@ -125,6 +131,9 @@ impl Settings {
         }
         if env_voices() {
             s.voices = false;
+        }
+        if env_mic() {
+            s.speak_to_talk = false;
         }
         if let Some(d) = env("POCKET_WINDOW_DETAIL").and_then(|v| v.trim().parse::<u32>().ok()) {
             s.window_detail = d;
@@ -178,6 +187,9 @@ impl Settings {
         out.voice_volume = self.voice_volume;
         if !env_voices() {
             out.voices = self.voices;
+        }
+        if !env_mic() {
+            out.speak_to_talk = self.speak_to_talk;
         }
         if env("POCKET_WINDOW_DETAIL").is_none() {
             out.window_detail = self.window_detail;
