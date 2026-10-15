@@ -152,10 +152,11 @@ fn tilt_and_hollows_agree_on_gpu_and_cpu() {
     assert!((glam::Vec3::new(out[0][1], out[0][2], out[0][3]) - c).length() < 1e-3, "the middle agrees");
     // A box hollow and a round pit near the origin.
     {
-        let mut cv = terrain.carve.write();
         let h = terrain.natural_height(3.0, 2.0);
+        let h2 = terrain.natural_height(-4.0, 1.0);
+        let mut cv = terrain.carve.write();
         cv.fixed.push(crate::terrain::Hollow { c: [3.0, 2.0], rot: [0.8f32.cos(), 0.8f32.sin()], half: [2.0, 1.2], floor: h - 2.0, round: false, edge: crate::terrain::HOLLOW_EDGE });
-        cv.dug.push(crate::terrain::Hollow { c: [-4.0, 1.0], rot: [1.0, 0.0], half: [0.6, 0.6], floor: terrain.natural_height(-4.0, 1.0) - 0.7, round: true, edge: 1.5 });
+        cv.dug.push(crate::terrain::Hollow { c: [-4.0, 1.0], rot: [1.0, 0.0], half: [0.6, 0.6], floor: h2 - 0.7, round: true, edge: 1.5 });
         cv.reindex();
     }
     let mut pts = Vec::new();
@@ -174,6 +175,66 @@ fn tilt_and_hollows_agree_on_gpu_and_cpu() {
     }
     assert!(dug > 10, "the hollows take ground away ({dug} points)");
     assert!(worst <= 1e-3, "terrain with hollows: worst abs error {worst}");
+}
+
+/// Ground edits (a lagoon, an island, a canal with quays, a road up a
+/// slope, a pond above the sea) agree on the GPU and the CPU: height,
+/// water and paint, read from the same tiles.
+#[test]
+fn ground_edits_agree_on_gpu_and_cpu() {
+    use crate::ground::{Edit, Height, Layer, Mode, Shape};
+    let Ok(gpu) = Gpu::new() else { return };
+    let pipe = gpu.build_pipeline(&shader::assemble(&[]), 1).unwrap();
+    let terrain = crate::terrain::Terrain::new(77, default_biomes());
+    let e = |kind: &str, shape: Shape, mode: Mode, to: Height, edge: f32| Edit { kind: kind.into(), name: String::new(), shape, mode, to, edge, color: None, rim: None, water: None };
+    let mut canal = e("canal", Shape::Line { pts: vec![[-70.0, -10.0], [10.0, 5.0], [80.0, 0.0]], half: 3.0 }, Mode::Lower, Height::At(-1.6), 0.3);
+    canal.color = Some([0.2, 0.18, 0.12]);
+    canal.rim = Some(([0.7, 0.68, 0.6], 0.9));
+    let mut road = e("road", Shape::Line { pts: vec![[-5.0, -60.0], [-5.0, 60.0]], half: 1.5 }, Mode::Level, Height::Along(vec![3.0, 9.0]), 1.5);
+    road.color = Some([0.5, 0.42, 0.3]);
+    let mut pond = e("pond", Shape::Disc { c: [140.0, -30.0], r: 7.0 }, Mode::Lower, Height::At(2.0), 3.0);
+    pond.water = Some(Height::At(3.1));
+    let edits = vec![
+        e("lagoon", Shape::Disc { c: [0.0, 0.0], r: 90.0 }, Mode::Lower, Height::At(-2.0), 10.0),
+        e("island", Shape::Area { pts: vec![[-40.0, -30.0], [45.0, -25.0], [40.0, 35.0], [-35.0, 30.0]] }, Mode::Raise, Height::At(0.9), 0.5),
+        road,
+        canal,
+        pond,
+    ];
+    terrain.set_ground(Layer::Places, edits);
+    let mut g = probe_globals(&terrain);
+    let pack = terrain.carve.read().ground.pack(0.0, 0.0);
+    g.ground = pack.globals();
+    assert!(g.ground[2] > 0.0 && g.ground[3] > 0.0, "tiles and water in the window");
+    let mut pts = Vec::new();
+    for i in 0..6000 {
+        let a = i as f32 * 2.399;
+        let r = (i as f32).sqrt() * 2.2;
+        pts.push([a.cos() * r + (i % 7) as f32 * 0.13, 0.0, a.sin() * r - 10.0, 0.0]);
+    }
+    let out = gpu.probe_ground(&pipe, &g, &pack.words, 1, 0, &GpuInst::default(), &pts).unwrap();
+    let wat = gpu.probe_ground(&pipe, &g, &pack.words, 4, 0, &GpuInst::default(), &pts).unwrap();
+    let (mut worst, mut worst_w, mut worst_c, mut moved, mut wet) = (0.0f32, 0.0f32, 0.0f32, 0, 0);
+    for ((p, o), w) in pts.iter().zip(&out).zip(&wat) {
+        let c = terrain.height(p[0], p[2]);
+        moved += ((c - terrain.raw_height(p[0], p[2])).abs() > 0.1) as usize;
+        worst = worst.max((o[0] - c).abs());
+        let at = terrain.carve.read().ground.at(p[0], p[2]);
+        let cw = at.map(|a| a.water).unwrap_or(crate::ground::NO_WATER);
+        if cw > crate::ground::NO_WATER * 0.5 {
+            wet += 1;
+            worst_w = worst_w.max((w[0] - cw).abs());
+        }
+        if let Some(a) = at.filter(|a| a.cover > 0.0) {
+            worst_c = worst_c.max((glam::Vec3::new(w[1], w[2], w[3]) * 1.0 - a.color * 1.0).abs().max_element() * a.cover);
+        }
+    }
+    eprintln!("ground parity: height {worst:e}, water {worst_w:e}, paint {worst_c:e}; {moved} moved, {wet} wet");
+    assert!(moved > 2000, "the edits moved the ground ({moved} points)");
+    assert!(wet > 5, "the pond holds water ({wet})");
+    assert!(worst <= 1e-3, "height parity {worst}");
+    assert!(worst_w <= 1e-3, "water parity {worst_w}");
+    assert!(worst_c <= 0.02, "paint parity {worst_c}");
 }
 
 #[test]

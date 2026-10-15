@@ -704,6 +704,9 @@ fn probe_main(@builtin(global_invocation_id) gid: vec3u) {
     var inst = insts[0];
     inst.info.x = G.probe.z;
     probe_io[i] = vec4f(inst_sdf_of(inst, q.xyz), inst_center(inst));
+  } else if (G.probe.y == 4u) {
+    // The ground edits' water and paint.
+    probe_io[i] = vec4f(ground_water(q.x, q.z), ground_paint(q.x, q.z).xyz);
   } else if (G.probe.y == 2u) {
     let s = G.seed.x;
     let wt = terrain_weights(q.x, q.z);

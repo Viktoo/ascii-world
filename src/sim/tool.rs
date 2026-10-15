@@ -431,11 +431,12 @@ impl Sim {
         let bite = (0.18 + 0.06 * tool_mass.min(4.0)).min(0.4);
         let depth;
         {
-            let mut c = terrain.carve.write();
+            let mut guard = terrain.carve.write();
+            let c = &mut *guard;
             // A spade's own pit (not a crater someone conjured around it).
             match c.dug.iter_mut().find(|h| h.round && h.half[0] <= 1.1 && (h.c[0] - at.x).hypot(h.c[1] - at.z) < h.half[0] * 0.8) {
                 Some(h) => {
-                    let ground = terrain.sample(h.c[0], h.c[1]).height;
+                    let ground = terrain.raw_height(h.c[0], h.c[1]) + c.ground.delta(h.c[0], h.c[1]);
                     h.floor = (h.floor - bite).max(ground - 2.2);
                     h.half[0] = (h.half[0] + 0.04).min(1.1);
                     depth = ground - h.floor;

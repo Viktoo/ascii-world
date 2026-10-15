@@ -83,6 +83,7 @@ impl Gpu {
                 storage(4, false),
                 storage(5, false),
                 storage(6, false),
+                storage(7, true),
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("scene"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -126,6 +127,14 @@ impl Gpu {
     /// Evaluate points on the GPU. mode 0: type `tid` with params of `inst`
     /// → (sdf, r, g, b). mode 1: terrain → (height, ground rgb).
     pub fn probe(&self, pipe: &ScenePipeline, globals: &Globals, mode: u32, tid: u32, inst: &GpuInst, points: &[[f32; 4]]) -> anyhow::Result<Vec<[f32; 4]>> {
+        let mut g = *globals;
+        g.ground = [0.0; 4];
+        self.probe_ground(pipe, &g, &[0], mode, tid, inst, points)
+    }
+
+    /// `probe` with the ground edits' tiles (`ground::Pack::words`, matching `globals.ground`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn probe_ground(&self, pipe: &ScenePipeline, globals: &Globals, ground: &[u32], mode: u32, tid: u32, inst: &GpuInst, points: &[[f32; 4]]) -> anyhow::Result<Vec<[f32; 4]>> {
         use wgpu::BufferUsages as U;
         let n = points.len();
         let mut g = *globals;
@@ -142,7 +151,9 @@ impl Gpu {
         self.queue.write_buffer(&pb, 0, bytemuck::cast_slice(points));
         let rb = self.buf("probe-read", size, U::MAP_READ | U::COPY_DST);
         let hb = self.buf("probe-hmap", 16, U::STORAGE);
-        let bg = self.bind_group(&ub, &ib, &cb, &tb, &ob, &pb, &hb);
+        let gb = self.buf("probe-ground", (ground.len() * 4) as u64, U::STORAGE | U::COPY_DST);
+        self.queue.write_buffer(&gb, 0, bytemuck::cast_slice(ground));
+        let bg = self.bind_group(&ub, &ib, &cb, &tb, &ob, &pb, &hb, &gb);
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("probe"), timestamp_writes: None });
@@ -175,14 +186,14 @@ impl Gpu {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn bind_group(&self, g: &wgpu::Buffer, i: &wgpu::Buffer, c: &wgpu::Buffer, t: &wgpu::Buffer, o: &wgpu::Buffer, p: &wgpu::Buffer, h: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind_group(&self, g: &wgpu::Buffer, i: &wgpu::Buffer, c: &wgpu::Buffer, t: &wgpu::Buffer, o: &wgpu::Buffer, p: &wgpu::Buffer, h: &wgpu::Buffer, gr: &wgpu::Buffer) -> wgpu::BindGroup {
         fn e(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry { binding: b, resource: buf.as_entire_binding() }
         }
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene"),
             layout: &self.bgl,
-            entries: &[e(0, g), e(1, i), e(2, c), e(3, t), e(4, o), e(5, p), e(6, h)],
+            entries: &[e(0, g), e(1, i), e(2, c), e(3, t), e(4, o), e(5, p), e(6, h), e(7, gr)],
         })
     }
 }
@@ -213,6 +224,10 @@ struct Renderer {
     out_cap: u64,
     probe_dummy: wgpu::Buffer,
     hmap: wgpu::Buffer,
+    /// The ground edits' tiles round the camera, and which (origin, version) they hold.
+    ground: wgpu::Buffer,
+    ground_cap: u64,
+    ground_state: Option<([i32; 2], u32)>,
     /// (origin x, origin z, terrain epoch) of the heightmap contents.
     hmap_state: Option<(f32, f32, u32)>,
     /// The same for the fine heightmap.
@@ -246,6 +261,7 @@ impl Renderer {
         let out = gpu.buf("out", 4 * 64 * 64, U::STORAGE | U::COPY_SRC);
         let probe_dummy = gpu.buf("probe-dummy", 16, U::STORAGE);
         let hmap = gpu.buf("heightmap", ((HMAP_N * HMAP_N + FINE_N * FINE_N) * 4) as u64, U::STORAGE);
+        let ground = gpu.buf("ground", 1 << 16, U::STORAGE | U::COPY_DST);
         let queries = gpu.timestamps.then(|| {
             let qs = gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("ts"), ty: wgpu::QueryType::Timestamp, count: (SLOTS * 2) as u32 });
             let rb = gpu.buf("ts-resolve", 256 * SLOTS as u64, U::QUERY_RESOLVE | U::COPY_SRC);
@@ -268,6 +284,9 @@ impl Renderer {
             out_cap: 4 * 64 * 64,
             probe_dummy,
             hmap,
+            ground,
+            ground_cap: 1 << 16,
+            ground_state: None,
             hmap_state: None,
             fine_state: None,
             bind: None,
@@ -308,8 +327,18 @@ impl Renderer {
         dirty |= Self::ensure(&gpu, &mut self.items, &mut self.items_cap, (items.len() * 4) as u64, "items", U::STORAGE | U::COPY_DST);
         // Colours, then distances.
         dirty |= Self::ensure(&gpu, &mut self.out, &mut self.out_cap, npx * 8, "out", U::STORAGE | U::COPY_SRC);
+        // The ground edits round the camera, when they or the window changed.
+        let pack = (req.globals.ground[2] > 0.0).then(|| req.terrain.carve.read().ground.pack(req.globals.cam_pos[0], req.globals.cam_pos[2]));
+        let ground_new = pack.as_ref().map(|p| (p.origin, p.version));
+        if let Some(p) = pack.as_ref().filter(|_| ground_new != self.ground_state) {
+            if Self::ensure(&gpu, &mut self.ground, &mut self.ground_cap, (p.words.len() * 4) as u64, "ground", U::STORAGE | U::COPY_DST) {
+                dirty = true;
+            }
+            gpu.queue.write_buffer(&self.ground, 0, bytemuck::cast_slice(&p.words));
+            self.ground_state = ground_new;
+        }
         if dirty {
-            self.bind = Some(gpu.bind_group(&self.globals, &self.inst, &self.cells, &self.items, &self.out, &self.probe_dummy, &self.hmap));
+            self.bind = Some(gpu.bind_group(&self.globals, &self.inst, &self.cells, &self.items, &self.out, &self.probe_dummy, &self.hmap, &self.ground));
         }
         let ts_offset = (npx * 8).div_ceil(256) * 256;
         let need = ts_offset + 16;

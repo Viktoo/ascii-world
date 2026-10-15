@@ -24,9 +24,8 @@ struct Globals {
   biomes: array<vec4f, 18>, // per biome: (cx, cy, base, amp), (rough, g1), (g2, cliffs)
   lights: array<vec4f, 8>,     // point lights: position, intensity
   light_cols: array<vec4f, 8>, // colour, reach (m)
-  extra: vec4u,       // hollows, roads, -, -
+  extra: vec4u,       // hollows, -, -, -
   hollows: array<vec4f, 64>,   // per hollow: (cx, cz, cos, sin), (hx, hz, floor, ±edge: + round, - box)
-  roads: array<vec4f, 32>,     // per road: (ax, az, bx, bz), (half width, r, g, b)
   // weather: 0 (cover, drift x, drift z, cloud height), 1 (cloud rgb, flash),
   // 2 (falls rgb, amount), 3 (wind dir x, z, wind, falls look), 4 (soak, dusk,
   // sheltered, gloom), 5 (the sun itself xyz, its height), 6 (sunset glow rgb,
@@ -34,6 +33,7 @@ struct Globals {
   wx: array<vec4f, 8>,
   hmap2: vec4f,       // fine heightmap near the camera: origin x, origin z, cell size, cells per side (0 = none)
   jitter: vec4f,      // sub-pixel offset of every ray (x, y pixels), for blending frames
+  ground: vec4f,      // ground tiles: first tile x, z, tiles across (0 = none), any water
 }
 
 struct Inst {
@@ -62,6 +62,7 @@ struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f
 @group(0) @binding(4) var<storage, read_write> outp: array<u32>;
 @group(0) @binding(5) var<storage, read_write> probe_io: array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> hmap: array<f32>;
+@group(0) @binding(7) var<storage, read> gtiles: array<u32>;
 
 fn pcg(v: u32) -> u32 {
   let state = v * 747796405u + 2891336453u;
@@ -225,8 +226,71 @@ fn carve(x: f32, z: f32, h: f32) -> vec2f {
   return vec2f(out, wmax);
 }
 
+// ---- ground edits (twin of ground.rs: Ground::at) ----
+
+const GCELLS: u32 = 33u;           // samples per tile row
+const GSAMPLES: u32 = 1089u;       // samples per tile
+const NO_WATER: f32 = -1.0e4;
+
+// The tile holding (x, z): the first word of its samples (0 = none), the
+// sample at the cell's corner, and the fractions across the cell.
+struct GCell { base: u32, i0: u32, ux: f32, uz: f32, }
+
+fn ground_cell(x: f32, z: f32) -> GCell {
+  var out = GCell(0u, 0u, 0.0, 0.0);
+  let n = i32(G.ground.z);
+  if (n == 0) { return out; }
+  let fx = x * 2.0;
+  let fz = z * 2.0;
+  let cx = floor(fx);
+  let cz = floor(fz);
+  let ix = i32(cx); let iz = i32(cz);
+  let tx = ix >> 5u; let tz = iz >> 5u;
+  let dx = tx - i32(G.ground.x); let dz = tz - i32(G.ground.y);
+  if (dx < 0 || dz < 0 || dx >= n || dz >= n) { return out; }
+  let e = gtiles[u32(dz * n + dx)];
+  if (e == 0u) { return out; }
+  out.base = u32(n * n) + (e - 1u) * GSAMPLES * 3u;
+  out.i0 = u32(iz - (tz << 5u)) * GCELLS + u32(ix - (tx << 5u));
+  out.ux = fx - cx;
+  out.uz = fz - cz;
+  return out;
+}
+
+fn gbl(c: GCell, off: u32) -> f32 {
+  let i = c.base + off + c.i0;
+  let a = bitcast<f32>(gtiles[i]); let b = bitcast<f32>(gtiles[i + 1u]);
+  let d = bitcast<f32>(gtiles[i + GCELLS]); let e = bitcast<f32>(gtiles[i + GCELLS + 1u]);
+  return nlerp(nlerp(a, b, c.ux), nlerp(d, e, c.ux), c.uz);
+}
+
+// How far edits moved the ground at (x, z).
+fn ground_delta(x: f32, z: f32) -> f32 {
+  let c = ground_cell(x, z);
+  if (c.base == 0u) { return 0.0; }
+  return gbl(c, 0u);
+}
+
+// The water standing over (x, z) above the sea (NO_WATER: none).
+fn ground_water(x: f32, z: f32) -> f32 {
+  if (G.ground.w == 0.0) { return NO_WATER; }
+  let c = ground_cell(x, z);
+  if (c.base == 0u) { return NO_WATER; }
+  return gbl(c, GSAMPLES * 2u);
+}
+
+// What covers the ground at (x, z): rgb, cover.
+fn ground_paint(x: f32, z: f32) -> vec4f {
+  let c = ground_cell(x, z);
+  if (c.base == 0u) { return vec4f(0.0); }
+  let i = c.base + GSAMPLES + c.i0;
+  let a = unpack4x8unorm(gtiles[i]); let b = unpack4x8unorm(gtiles[i + 1u]);
+  let d = unpack4x8unorm(gtiles[i + GCELLS]); let e = unpack4x8unorm(gtiles[i + GCELLS + 1u]);
+  return mix(mix(a, b, c.ux), mix(d, e, c.ux), c.uz);
+}
+
 fn terrain_height(x: f32, z: f32) -> f32 {
-  let h = terrain_height_w(x, z, terrain_weights(x, z));
+  let h = terrain_height_w(x, z, terrain_weights(x, z)) + ground_delta(x, z);
   if (G.extra.x == 0u) { return h; }
   return carve(x, z, h).x;
 }
@@ -305,7 +369,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
     if (ok && (!steep || t > HMAP_EXACT)) { return h; }
   }
   let fine = 1.0 - clamp((t - 35.0) / 40.0, 0.0, 1.0);
-  if (fine >= 1.0) { return terrain_height(x, z); }
+  if (fine >= 1.0) { return terrain_height_w(x, z, terrain_weights(x, z)) + ground_delta(x, z); }
   let wt = terrain_weights(x, z);
   var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
@@ -336,7 +400,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   if (rough > 0.02) {
     r = ridged2(x * 0.0032, z * 0.0032, s + 202u, select(3u, 2u, fine <= 0.0));
   }
-  return cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp);
+  return cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp) + ground_delta(x, z);
 }
 
 fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -365,17 +429,8 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
   c = mix(c, G.sand.xyz, beach);
   let snowy = sstep(46.0, 56.0, h + v * 6.0) * sstep(0.6, 0.8, ny);
   c = mix(c, G.snow.xyz, snowy);
-  let nr = min(G.extra.y, 16u);
-  for (var i = 0u; i < nr; i = i + 1u) {
-    let a = G.roads[i * 2u];
-    let b = G.roads[i * 2u + 1u];
-    let ab = a.zw - a.xy;
-    let ap = vec2f(x, z) - a.xy;
-    let tt = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
-    let d = length(ap - ab * tt);
-    let k = sstep(b.x + 0.4, b.x - 0.2, d);
-    if (k > 0.0) { c = mix(c, b.yzw * (0.9 + 0.2 * v), k); }
-  }
+  let gp = ground_paint(x, z);
+  if (gp.w > 0.0) { c = mix(c, gp.xyz * (0.9 + 0.2 * v), gp.w); }
   if (G.extra.x > 0u) {
     let dug = carve(x, z, h).y;
     c = mix(c, vec3f(0.29, 0.22, 0.16) * (0.8 + 0.3 * v), dug * 0.85);

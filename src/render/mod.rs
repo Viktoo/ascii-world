@@ -41,12 +41,10 @@ pub struct Globals {
     pub lights: [[f32; 4]; MAX_LIGHTS],
     /// Point lights: colour, reach in metres.
     pub light_cols: [[f32; 4]; MAX_LIGHTS],
-    /// Hollows in use, roads in use, -, -.
+    /// Hollows in use, -, -, -.
     pub extra: [u32; 4],
     /// Ground taken away, two per hollow: (centre x, z, cos, sin), (half x, z, floor, rim width: + round, - box).
     pub hollows: [[f32; 4]; MAX_HOLLOWS * 2],
-    /// Roads, two per stretch: (a.x, a.z, b.x, b.z), (half width, r, g, b).
-    pub roads: [[f32; 4]; MAX_ROADS * 2],
     /// Weather and the sun's own place (see `WeatherView`; layout in common.wgsl).
     pub wx: [[f32; 4]; 8],
     /// The fine heightmap near the camera (set by the renderer).
@@ -54,11 +52,13 @@ pub struct Globals {
     /// Sub-pixel offset of every ray this frame (x, y in pixels), for a
     /// window that blends frames together; 0 otherwise.
     pub jitter: [f32; 4],
+    /// The ground edits' tiles round the camera (see `ground::Pack`): first
+    /// tile x, z, tiles across (0: none), whether any holds water.
+    pub ground: [f32; 4],
 }
 
 pub const MAX_LIGHTS: usize = 8;
 pub const MAX_HOLLOWS: usize = 32;
-pub const MAX_ROADS: usize = 16;
 
 /// A light-emitting thing (lantern, fire) near the camera.
 #[derive(Clone, Copy, Debug)]
@@ -460,12 +460,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         let edge = h.edge.max(0.01);
         hollow_buf[i * 2 + 1] = [h.half[0], h.half[1], h.floor, if h.round { edge } else { -edge }];
     }
-    let roads = t.roads_near(cp.x, cp.z, VIEW_DIST * 0.6, MAX_ROADS);
-    let mut road_buf = [[0.0f32; 4]; MAX_ROADS * 2];
-    for (i, r) in roads.iter().enumerate() {
-        road_buf[i * 2] = [r.a[0], r.a[1], r.b[0], r.b[1]];
-        road_buf[i * 2 + 1] = [r.half, r.color[0], r.color[1], r.color[2]];
-    }
+    let ground = t.carve.read().ground.pack(cp.x, cp.z).globals();
     let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
     let mut light_cols = [[0.0f32; 4]; MAX_LIGHTS];
     let nl = sp.lights.len().min(MAX_LIGHTS);
@@ -497,9 +492,8 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         biomes,
         lights,
         light_cols,
-        extra: [hollows.len() as u32, roads.len() as u32, 0, 0],
+        extra: [hollows.len() as u32, 0, 0, 0],
         hollows: hollow_buf,
-        roads: road_buf,
         wx: [
             [w.clouds, w.drift.x, w.drift.y, crate::world::weather::CLOUD_HEIGHT],
             v4(w.cloud_color, w.flash),
@@ -512,6 +506,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         ],
         hmap2: [0.0; 4],
         jitter: [0.0; 4],
+        ground,
     }
 }
 

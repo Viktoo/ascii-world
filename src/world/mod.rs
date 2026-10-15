@@ -236,8 +236,11 @@ pub struct RegionInfo {
     pub name: String,
     pub mood: String,
     pub facts: Vec<String>,
-    /// Roads laid between the settlement's buildings.
+    /// Roads laid between the settlement's buildings (older worlds; now
+    /// they are ground edits like the rest).
     pub roads: Vec<crate::terrain::Road>,
+    /// How the settlement shaped the land: canals, squares, roads, lagoons.
+    pub ground: Vec<crate::ground::Edit>,
 }
 
 /// One immutable world version, everything the main thread needs.

@@ -188,6 +188,8 @@ pub struct Terrain {
     /// Shared by every copy of this terrain (the world model's and each
     /// snapshot's), so a pit dug shows everywhere at once.
     pub carve: std::sync::Arc<parking_lot::RwLock<Carve>>,
+    /// Held while ground edits are stamped (one change at a time).
+    stamping: std::sync::Arc<parking_lot::Mutex<()>>,
 }
 
 /// A box (or round pit) of ground taken away, down to `floor`.
@@ -239,8 +241,8 @@ pub struct Carve {
     pub fixed: Vec<Hollow>,
     /// Dug by someone (live, saved with the live world).
     pub dug: Vec<Hollow>,
-    /// Roads and paths worn into the ground between buildings.
-    pub roads: Vec<Road>,
+    /// The land as shaped: roads, canals, lagoons, rivers (see `ground`).
+    pub ground: crate::ground::Ground,
     /// Changes whenever any list does.
     pub version: u32,
     /// Hollows by 16 m cell (indices into `fixed` then `dug`); see `reindex`.
@@ -249,7 +251,8 @@ pub struct Carve {
 
 const CARVE_CELL: f32 = 16.0;
 
-/// A stretch of road: from a to b (x, z), half as wide as `half` × 2, in a colour.
+/// A stretch of road: from a to b (x, z), half as wide as `half` × 2, in a
+/// colour. How older worlds stored their roads; they become ground edits.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Road {
     pub a: [f32; 2],
@@ -259,19 +262,21 @@ pub struct Road {
 }
 
 impl Road {
-    /// Distance from (x, z) to the road's middle line.
-    pub fn dist(&self, x: f32, z: f32) -> f32 {
-        let (ax, az) = (self.a[0], self.a[1]);
-        let (bx, bz) = (self.b[0] - ax, self.b[1] - az);
-        let (px, pz) = (x - ax, z - az);
-        let l2 = (bx * bx + bz * bz).max(1e-6);
-        let t = ((px * bx + pz * bz) / l2).clamp(0.0, 1.0);
-        ((px - bx * t).powi(2) + (pz - bz * t).powi(2)).sqrt()
-    }
-
-    /// How much of the road shows at (x, z): 1 on it, fading at its edges.
-    pub fn cover(&self, x: f32, z: f32) -> f32 {
-        smoothstep(self.half + 0.4, self.half - 0.2, self.dist(x, z))
+    /// The road as a ground edit: its bed levelled along the land, with
+    /// shoulders, in its colour.
+    pub fn edit(&self, raw: &dyn Fn(f32, f32) -> f32) -> crate::ground::Edit {
+        let (pts, hs) = crate::ground::lay(&[self.a, self.b], 3.0, 12.0, raw);
+        crate::ground::Edit {
+            kind: "road".into(),
+            name: String::new(),
+            shape: crate::ground::Shape::Line { pts, half: self.half },
+            mode: crate::ground::Mode::Level,
+            to: crate::ground::Height::Along(hs),
+            edge: 1.5,
+            color: Some(self.color),
+            rim: None,
+            water: None,
+        }
     }
 }
 
@@ -382,7 +387,7 @@ impl Terrain {
         // Offsets stay zero: per-field seeds decorrelate the noise, and any offset
         // would cost precision (and CPU/GPU parity) far from the origin.
         let o = |_i: u32| 0.0f32;
-        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default() }
+        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default() }
     }
 
     pub fn center(i: usize) -> [f32; 2] {
@@ -479,7 +484,8 @@ impl Terrain {
         let c = self.cliff(x, z, base + amp * lerp(n, r * 2.0 - 0.6, rough), cliffs, amp);
         let h = {
             let carve = self.carve.read();
-            if carve.index.is_empty() { c.h } else { carve.apply(x, z, c.h).0 }
+            let h = c.h + carve.ground.delta(x, z);
+            if carve.index.is_empty() { h } else { carve.apply(x, z, h).0 }
         };
         // On the ledge just below a sheer face (a gully sheds nothing).
         let below = (1.0 - c.w) - c.t;
@@ -490,28 +496,58 @@ impl Terrain {
     pub fn height(&self, x: f32, z: f32) -> f32 {
         let h = self.sample(x, z).height;
         let c = self.carve.read();
+        let h = h + c.ground.delta(x, z);
         if c.index.is_empty() {
             return h;
         }
         c.apply(x, z, h).0
     }
 
-    /// The ground as the land made it, before anything was dug out of it.
+    /// The ground as the land made it and people shaped it (roads, canals,
+    /// rivers), before anything was dug out of it.
     pub fn natural_height(&self, x: f32, z: f32) -> f32 {
+        self.sample(x, z).height + self.carve.read().ground.delta(x, z)
+    }
+
+    /// The land's own height, from the seed alone (no edits, no pits).
+    pub fn raw_height(&self, x: f32, z: f32) -> f32 {
         self.sample(x, z).height
     }
 
-    /// The roads within `r` of (x, z), nearest first (at most `n`).
-    pub fn roads_near(&self, x: f32, z: f32, r: f32, n: usize) -> Vec<Road> {
+    /// The water's surface at (x, z): the sea's level, or a river's, a
+    /// pond's or a canal's where one stands higher. Water shows only where
+    /// it is above the ground.
+    pub fn water(&self, x: f32, z: f32) -> f32 {
         let c = self.carve.read();
-        let mut v: Vec<(f32, Road)> = c.roads.iter().map(|rd| (rd.dist(x, z) - rd.half, *rd)).filter(|(d, _)| *d < r).collect();
-        v.sort_by(|a, b| a.0.total_cmp(&b.0));
-        v.into_iter().take(n).map(|x| x.1).collect()
+        c.ground.at(x, z).map(|a| a.water.max(WATER_LEVEL)).unwrap_or(WATER_LEVEL)
     }
 
-    /// Whether (x, z) lies on a road (scatter keeps off it).
+    /// How deep the water is at (x, z) (0 on dry land).
+    pub fn water_depth(&self, x: f32, z: f32) -> f32 {
+        (self.water(x, z) - self.height(x, z)).max(0.0)
+    }
+
+    /// Replace one layer of ground edits (rivers, settlements', or those
+    /// made in play), restamping only the tiles that change.
+    pub fn set_ground(&self, layer: crate::ground::Layer, edits: Vec<crate::ground::Edit>) {
+        let edits: Vec<crate::ground::Edit> = edits.into_iter().filter(|e| e.sane()).collect();
+        let _one = self.stamping.lock();
+        let Some((all, keys)) = self.carve.read().ground.plan(layer, &edits) else { return };
+        let tiles = crate::ground::stamp(&all, &keys, &|x, z| self.raw_height(x, z));
+        let mut c = self.carve.write();
+        c.ground.commit(layer, edits, all, tiles);
+        c.version = c.version.wrapping_add(1);
+    }
+
+    /// The ground edits holding (x, z) (within `margin` of their shapes).
+    pub fn edits_at(&self, x: f32, z: f32, margin: f32) -> Vec<crate::ground::Edit> {
+        self.carve.read().ground.edits_at(x, z, margin).into_iter().map(|(e, _)| e.clone()).collect()
+    }
+
+    /// Whether (x, z) lies on a way laid with something (a road, a path, a
+    /// quay): scatter keeps off them.
     pub fn on_road(&self, x: f32, z: f32, margin: f32) -> bool {
-        self.carve.read().roads.iter().any(|r| r.dist(x, z) < r.half + margin)
+        self.carve.read().ground.edits_at(x, z, margin).iter().any(|(e, _)| e.color.is_some() && matches!(e.shape, crate::ground::Shape::Line { .. }) && e.mode != crate::ground::Mode::Lower)
     }
 
     /// A fingerprint of the hollows reaching into the box (x0, z0)–(x1, z1):
@@ -520,7 +556,7 @@ impl Terrain {
     pub fn carve_sig(&self, x0: f32, z0: f32, x1: f32, z1: f32) -> u64 {
         use std::hash::{Hash, Hasher};
         let c = self.carve.read();
-        if c.index.is_empty() {
+        if c.index.is_empty() && c.ground.is_empty() {
             return 0;
         }
         let mut ids: Vec<u32> = Vec::new();
@@ -532,6 +568,7 @@ impl Terrain {
         ids.sort_unstable();
         ids.dedup();
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        c.ground.sig(x0, z0, x1, z1).hash(&mut h);
         for hl in ids.into_iter().filter_map(|i| c.get(i)) {
             for v in [hl.c[0], hl.c[1], hl.half[0], hl.half[1], hl.floor, hl.edge] {
                 v.to_bits().hash(&mut h);
@@ -591,11 +628,8 @@ impl Terrain {
         let snowy = smoothstep(46.0, 56.0, h + v * 6.0) * smoothstep(0.6, 0.8, ny);
         let mut c = c.lerp(snow, snowy);
         let carve = self.carve.read();
-        for r in &carve.roads {
-            let k = r.cover(x, z);
-            if k > 0.0 {
-                c = c.lerp(glam::Vec3::from_array(r.color) * (0.9 + 0.2 * v), k);
-            }
+        if let Some(g) = carve.ground.at(x, z) {
+            c = c.lerp(g.color * (0.9 + 0.2 * v), g.cover);
         }
         let (_, dug) = carve.apply(x, z, h);
         c.lerp(EARTH * (0.8 + 0.3 * v), dug * 0.85)

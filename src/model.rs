@@ -326,6 +326,8 @@ impl WorldModel {
             let info = region_info_from_plan(&r.plan_json);
             m.regions.insert((r.rx, r.rz), Arc::new(info));
         }
+        // The shaped land first: homes stand on it.
+        m.apply_ground();
         for c in db.characters()? {
             let persona: Persona = serde_json::from_str(&c.persona_json).unwrap_or_default();
             let state: SavedState = serde_json::from_str(&c.state_json).unwrap_or_default();
@@ -504,15 +506,13 @@ impl WorldModel {
     fn make_snapshot(&self, types: &[&TypeRec], pipeline: Option<Arc<ScenePipeline>>) -> Arc<WorldSnapshot> {
         let scene = Arc::new(SceneTypes { types: types.iter().map(|t| (t.entry.id, t.entry.clone())).collect(), pipeline });
         let instances = self.active_instances();
-        // The ground taken away under placed shapes, and the roads.
+        // The ground taken away under placed shapes, and the settlements' ground.
         let hollows: Vec<crate::terrain::Hollow> = instances.iter().filter_map(|p| Some(hollow_of(p, &ground_taken(&scene.types.get(&p.type_id)?.ct.meta)?))).collect();
-        let mut roads: Vec<crate::terrain::Road> = self.regions.values().flat_map(|r| r.roads.iter().copied()).collect();
-        roads.sort_by(|a, b| a.a[0].total_cmp(&b.a[0]).then(a.a[1].total_cmp(&b.a[1])));
+        self.apply_ground();
         {
             let mut c = self.terrain.carve.write();
-            if c.fixed != hollows || c.roads != roads {
+            if c.fixed != hollows {
                 c.fixed = hollows;
-                c.roads = roads;
                 c.reindex();
             }
         }
@@ -540,6 +540,21 @@ impl WorldModel {
             species: self.species.clone(),
             spawn: self.spawn,
         })
+    }
+
+    /// Lay the settlements' ground edits (canals, squares, roads) on the
+    /// land, region by region in a fixed order.
+    fn apply_ground(&self) {
+        let mut keys: Vec<&(i32, i32)> = self.regions.keys().collect();
+        keys.sort();
+        let raw = |x: f32, z: f32| self.terrain.raw_height(x, z);
+        let mut edits = Vec::new();
+        for k in keys {
+            let r = &self.regions[k];
+            edits.extend(r.ground.iter().cloned());
+            edits.extend(r.roads.iter().map(|rd| rd.edit(&raw)));
+        }
+        self.terrain.set_ground(crate::ground::Layer::Places, edits);
     }
 
     pub fn type_names(&self) -> Vec<(u32, String, Vec<String>, [f32; 3])> {
@@ -1021,6 +1036,7 @@ pub fn region_info_from_plan(plan_json: &str) -> RegionInfo {
         mood: v.get("mood").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         facts: v.get("facts").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()).unwrap_or_default(),
         roads: v.get("roads").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default(),
+        ground: v.get("edits").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default(),
     }
 }
 
