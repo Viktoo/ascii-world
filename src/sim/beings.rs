@@ -713,6 +713,8 @@ impl Sim {
             let n = name.trim().to_lowercase();
             if let Some(id) = self.worn_by(b).into_iter().find(|id| { let tn = self.thing_name(*id).to_lowercase(); tn.contains(&n) || n.contains(&tn) }) {
                 let _ = self.take_off(actor, b, id);
+            } else if !super::dress::named(&n).is_empty() {
+                let _ = self.undress(actor, b, Some(&n));
             }
         }
         for m in fx.wear.iter().take(2) {
@@ -749,7 +751,7 @@ impl Sim {
                 self.change_persona(c, |p| {
                     for (k, v) in look {
                         if v.is_finite() {
-                            p.look.insert(k.trim().to_lowercase(), v);
+                            p.look.insert(crate::world::species::look_name(&k), v);
                         }
                     }
                     if let Some(g) = grow {

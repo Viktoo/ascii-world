@@ -46,6 +46,9 @@ pub enum Cmd {
     /// One being's body reshaped: `source` (the body `from`) changed as
     /// `change` says, as the body `name`. Answered by `Event::TypeBuilt`.
     ReshapeBody { id: u64, name: String, from: String, source: String, change: String },
+    /// Read people's look (face, hair, clothes) from their words. Answered
+    /// by `Event::Dressed`.
+    Dress { people: Vec<(i64, String)> },
 }
 
 pub enum Event {
@@ -67,6 +70,8 @@ pub enum Event {
     /// The universe's own properties and rules changed (genesis).
     RulesChanged,
     GestureBuilt { id: u64, result: Result<Value, String> },
+    /// Looks read for people (by id), to keep with them.
+    Dressed { looks: Vec<(i64, crate::world::species::LookMap)> },
     /// How far along genesis or a region is (0..1), for the loading screen.
     Progress { task: Task, frac: f32 },
     /// Something named as the world is made: ("shaping", "lighthouse").
@@ -418,6 +423,26 @@ async fn run(ctx: Ctx, cmd: Cmd) {
             };
             let _ = ctx.events.send(Event::TypeBuilt { id, type_id });
             let _ = ctx.events.send(Event::Building(-1));
+        }
+        Cmd::Dress { people } => {
+            let bible = ctx.db.universe().map(|u| u.bible).unwrap_or_default();
+            let bible: String = bible.chars().take(2500).collect();
+            let lines: Vec<&str> = people.iter().map(|p| p.1.as_str()).collect();
+            let mut req = Req::new(Role::Decider, prompts::DRESS_TASK, format!("The world:\n{bible}\n\nThe people (one JSON each):\n{}", lines.join("\n")));
+            req.max_tokens = 12000;
+            req.effort = Some("low");
+            let mut looks = Vec::new();
+            match ctx.llm.complete(&req, "dress").await.map_err(|e| e.to_string()).and_then(|r| extract_json(&r).map_err(|e| e.to_string())) {
+                Ok(v) => {
+                    for (id, _) in &people {
+                        let Some(o) = v.get(id.to_string()).and_then(|l| l.as_object()) else { continue };
+                        let look: crate::world::species::LookMap = o.iter().filter_map(|(k, v)| v.as_f64().map(|v| (k.clone(), v as f32))).collect();
+                        looks.push((*id, look));
+                    }
+                }
+                Err(e) => crate::log::error(format!("dressing people failed: {}", short(&e))),
+            }
+            let _ = ctx.events.send(Event::Dressed { looks });
         }
         Cmd::Undo | Cmd::History | Cmd::Witness { .. } => {}
     }
@@ -1209,9 +1234,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let lk = c.get("look").cloned().unwrap_or_default();
         p.look.clear();
         if let Some(o) = lk.as_object() {
-            for (k, v) in o.iter().take(8) {
+            for (k, v) in o.iter().take(32) {
                 if let Some(v) = v.as_f64().filter(|v| v.is_finite()) {
-                    p.look.insert(k.trim().to_lowercase(), v as f32);
+                    p.look.insert(crate::world::species::look_name(k), v as f32);
                 }
             }
         }
@@ -1222,23 +1247,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         p.layers.truncate(3);
         if p.species.trim().is_empty() || p.species.eq_ignore_ascii_case("human") {
             p.species.clear();
-            let hue = |x: Option<f32>| x.map(|v| v.rem_euclid(1.0));
-            let get = |n: &str| crate::world::species::look_value(&p.look, n);
-            let fixed = [
-                ("height", get("height").map(|v| v.clamp(1.3, 2.0))),
-                ("build", get("build").map(|v| v.clamp(0.7, 1.4))),
-                ("skin", get("skin").map(|v| v.clamp(0.0, 1.0))),
-                ("shirt", hue(get("shirt"))),
-                ("trousers", hue(get("trousers"))),
-            ];
-            // What the plan leaves out is chosen from the species (or
-            // variety) range for each person.
-            p.look.clear();
-            for (k, v) in fixed {
-                if let Some(v) = v {
-                    p.look.insert(k.into(), v);
-                }
-            }
+            // Names are read as the figure's (look_name); the body clamps
+            // each to its range. What the plan leaves out is chosen from the
+            // species (or variety) range for each person.
         } else {
             p.species = p.species.trim().to_lowercase();
         }

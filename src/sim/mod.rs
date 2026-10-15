@@ -14,6 +14,7 @@ pub mod beliefs;
 pub mod body;
 pub mod beings;
 pub mod carry;
+pub mod dress;
 pub mod catchup;
 pub mod config;
 pub mod env;
@@ -174,6 +175,9 @@ pub enum Request {
     /// Rewrite one being's body (`source`, the body `from`) as `change`
     /// says, as its own body `name`. Answered through `on_type_built`.
     ReshapeBody { id: u64, name: String, from: String, source: String, change: String },
+    /// People drawn before bodies had faces and clothes: their look (face,
+    /// hair, clothes) read from their words. (id, a JSON line about them).
+    Dress { people: Vec<(i64, String)> },
 }
 
 impl Request {
@@ -336,6 +340,11 @@ pub struct Sim {
     pub look_pitch: f32,
     /// The character the player is talking to (they stand still and face the player).
     pub talking_to: Option<i64>,
+    /// How open each speaking character's mouth is now (0..1), from their
+    /// voice as it plays (the app keeps it).
+    pub mouths: HashMap<i64, f32>,
+    /// Every face held at one mouth and eyes-shut (portraits for checking).
+    pub face_hold: Option<(f32, f32)>,
     pub interp: interp::Interp,
     acc_rules: f32,
     acc_behavior: f32,
@@ -415,6 +424,8 @@ impl Sim {
             has_llm: false,
             look_pitch: -0.12,
             talking_to: None,
+            mouths: HashMap::new(),
+            face_hold: None,
             interp: interp::Interp::default(),
             acc_rules: 0.0,
             acc_behavior: 0.0,
@@ -887,6 +898,7 @@ impl Sim {
             self.step_regions();
             self.step_incidents();
             self.ask_species_bodies();
+            self.ask_wardrobe();
             self.step_night();
             self.tell_weather();
             self.feel_bodies(1.0);
@@ -1004,7 +1016,8 @@ pub fn traveler_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
     let Some(body) = snap.body_type(&human.body).and_then(|t| t.ct.meta.body.clone()) else { return Default::default() };
     let h = snap.species.traveler_height.filter(|h| h.is_finite()).unwrap_or(1.75).clamp(0.3, 12.0);
     let own = h.clamp(1.3, 2.0);
-    let mut sliders = [own, 1.0, 0.3, 0.6, 0.1];
+    let mut sliders = [0.5; crate::lang::ir::MAX_SLIDERS];
+    sliders[..5].copy_from_slice(&[own, 1.0, 0.3, 0.6, 0.1]);
     if let Some(i) = body.slider("height") {
         sliders[i] = own;
     }

@@ -153,7 +153,7 @@ impl Sim {
         let sapient = na.species.mind == Mind::Sapient;
         let (an, bn) = (na.name().to_string(), nb.name().to_string());
         let mut look = crate::world::species::LookMap::new();
-        for (i, (name, lo, hi)) in body.look.iter().enumerate().take(5) {
+        for (i, (name, lo, hi)) in body.look.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS) {
             let mid = (sa[i] + sb[i]) * 0.5 + (self.rand() - 0.5) * 0.1 * (hi - lo);
             look.insert(name.clone(), mid.clamp(lo.min(*hi), hi.max(*lo)));
         }
@@ -292,7 +292,7 @@ impl Sim {
         // A variety of the species: the line's looks and temper, by name.
         let body = self.snap.type_of(first.body_ty).and_then(|t| t.ct.meta.body.clone()).unwrap_or_default();
         let mut look = std::collections::BTreeMap::new();
-        for (i, (sname, _, _)) in body.look.iter().enumerate().take(5) {
+        for (i, (sname, _, _)) in body.look.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS) {
             let vals: Vec<f32> = members.iter().filter_map(|m| self.cast.get(*m)).map(|n| n.sliders[i]).collect();
             let (lo, hi) = (vals.iter().copied().fold(f32::MAX, f32::min), vals.iter().copied().fold(f32::MIN, f32::max));
             look.insert(sname.clone(), [lo, hi]);

@@ -81,7 +81,7 @@ pub const FLAG_MARCH_ONLY: u32 = 16;
 /// Debug: no ambient occlusion or open-sky test.
 pub const FLAG_NO_AO: u32 = 32;
 
-/// One instance as the shader sees it (192 bytes).
+/// One instance as the shader sees it (288 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct GpuInst {
@@ -94,8 +94,8 @@ pub struct GpuInst {
     /// Static parameters k.seed, k.scale, k.a … k.f.
     pub k0: [f32; 4],
     pub k1: [f32; 4],
-    /// Live state k.s0 … k.s7 (behaviour code, poses), then k.s8 (a
-    /// body's grip) and three spare.
+    /// Live state k.s0 … k.s7 (behaviour code, poses), then what the engine
+    /// poses on a body: k.s8 grip, k.s9 mouth, k.s10 eyes shut, k.s11 clock.
     pub s0: [f32; 4],
     pub s1: [f32; 4],
     pub s2: [f32; 4],
@@ -105,6 +105,8 @@ pub struct GpuInst {
     /// Cuts taken out of the shape, in its local frame: centre xyz and size
     /// w (w > 0 a sphere of that radius, w < 0 a cube of half-size -w, 0 none).
     pub cuts: [[f32; 4]; MAX_CUTS],
+    /// Look sliders six onward, k.g … k.v.
+    pub look: [[f32; 4]; 4],
 }
 
 pub const MAX_CUTS: usize = 4;
@@ -139,14 +141,34 @@ pub const FX_GLOW: usize = 2;
 pub const FX_HIGHLIGHT: usize = 3;
 
 impl GpuInst {
-    pub fn k(&self) -> [f32; 17] {
-        let mut k = [0.0; 17];
+    pub fn k(&self) -> [f32; crate::lang::vm::K_LEN] {
+        let mut k = [0.0; crate::lang::vm::K_LEN];
         k[0..4].copy_from_slice(&self.k0);
         k[4..8].copy_from_slice(&self.k1);
         k[8..12].copy_from_slice(&self.s0);
         k[12..16].copy_from_slice(&self.s1);
-        k[16] = self.s2[0];
+        k[16..20].copy_from_slice(&self.s2);
+        for (i, v) in self.look.iter().enumerate() {
+            k[20 + i * 4..24 + i * 4].copy_from_slice(v);
+        }
         k
+    }
+    /// Look sliders by index (0 = k.a), as many as there are.
+    pub fn set_look(&mut self, s: &[f32]) {
+        for (i, v) in s.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS) {
+            match crate::lang::ir::look_k(i) {
+                j @ 2..=3 => self.k0[j] = *v,
+                j @ 4..=6 => self.k1[j - 4] = *v,
+                j => self.look[(j - 20) / 4][(j - 20) % 4] = *v,
+            }
+        }
+    }
+    /// The engine's live face on a body: mouth open, eyes shut (0..1), and
+    /// a clock (s) that hair and cloth stir with.
+    pub fn set_face(&mut self, mouth: f32, shut: f32, clock: f32) {
+        self.s2[1] = mouth;
+        self.s2[2] = shut;
+        self.s2[3] = clock;
     }
     /// The shape's distance at world point `p` (CPU), cuts included.
     pub fn sdf(&self, ct: &crate::lang::CompiledType, p: Vec3) -> f32 {

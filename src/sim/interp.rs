@@ -302,6 +302,8 @@ pub struct Interp {
     pub variants_asked: std::collections::HashSet<String>,
     /// Species whose own body was asked for (see `ask_species_bodies`).
     pub bodies_asked: std::collections::HashSet<String>,
+    /// People whose look has been asked for (see `dress::ask_wardrobe`).
+    pub dress_asked: std::collections::HashSet<i64>,
     /// The trip (by its deadline) for which a character last asked its mount.
     pub mount_asked: HashMap<ActorId, u64>,
     pub hits: u64,

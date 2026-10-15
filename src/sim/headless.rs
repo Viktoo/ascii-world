@@ -76,6 +76,10 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             brain.send(Cmd::ReshapeBody { id, name, from, source, change });
             true
         }
+        Request::Dress { people } => {
+            brain.send(Cmd::Dress { people });
+            true
+        }
     }
 }
 
@@ -112,6 +116,10 @@ pub fn apply(sim: &mut Sim, ev: Event, talk: &mut HashMap<i64, String>) -> bool 
         }
         Event::GestureBuilt { id, result } => {
             sim.on_gesture_built(id, result);
+            true
+        }
+        Event::Dressed { looks } => {
+            sim.on_dressed(looks);
             true
         }
         Event::Token { cid, text } => {

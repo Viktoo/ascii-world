@@ -258,7 +258,7 @@ impl std::fmt::Display for ActErr {
     }
 }
 
-fn fail<T>(s: impl Into<String>) -> Result<T, ActErr> {
+pub(super) fn fail<T>(s: impl Into<String>) -> Result<T, ActErr> {
     Err(ActErr::Fail(s.into()))
 }
 
@@ -738,12 +738,17 @@ impl Sim {
                     },
                     None => who,
                 };
+                // Clothes their own body draws, taken off before, go back on by name.
                 let id = match &target {
+                    Some(Target::Name(n)) if self.resolve(&Target::Name(n.clone()), who).is_none() && !super::dress::named(n).is_empty() => {
+                        return self.redress(who, wearer, Some(n));
+                    }
                     Some(t) => {
                         let r = self.resolve(t, who).ok_or_else(|| not_found(t))?;
                         self.reach(who, &r)?;
                         self.liven(&r.target).ok_or(ActErr::Fail(format!("the {} can't be worn", r.name)))?
                     }
+                    None if me.held.is_none() => return self.redress(who, wearer, None),
                     None => me.held.ok_or(ActErr::Fail("not holding anything to put on".into()))?,
                 };
                 self.wear(who, wearer, id)
@@ -756,12 +761,31 @@ impl Sim {
                     },
                     None => who,
                 };
+                // A worn layer by that name, else the clothes their own body draws.
+                let layer = |s: &Self, n: &str| {
+                    let n = n.to_lowercase();
+                    s.worn_by(wearer).into_iter().rev().find(|id| {
+                        let tn = s.thing_name(*id).to_lowercase();
+                        tn.contains(&n) || n.contains(&tn)
+                    })
+                };
                 let id = match &target {
+                    Some(Target::Name(n)) => match layer(self, n) {
+                        Some(id) => id,
+                        None if !super::dress::named(n).is_empty() => return self.undress(who, wearer, Some(n)),
+                        None => match self.resolve(&Target::Name(n.clone()), who).map(|r| r.target) {
+                            Some(Target::Thing(id)) => id,
+                            _ => return Err(not_found(&Target::Name(n.clone()))),
+                        },
+                    },
                     Some(t) => match self.resolve(t, who).map(|r| r.target) {
                         Some(Target::Thing(id)) => id,
                         _ => return Err(not_found(t)),
                     },
-                    None => self.worn_by(wearer).last().copied().ok_or(ActErr::Fail(format!("{} isn't wearing anything to take off", self.actor_name(wearer))))?,
+                    None => match self.worn_by(wearer).last().copied() {
+                        Some(id) => id,
+                        None => return self.undress(who, wearer, None),
+                    },
                 };
                 self.take_off(who, wearer, id)
             }

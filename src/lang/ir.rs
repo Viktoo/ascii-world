@@ -5,8 +5,17 @@ use super::api::{Api, Ty};
 
 /// Instance parameter fields readable as `k.<name>`: 8 static parameters,
 /// then the 8 live state slots (`s0`..`s7`, written by behaviour code),
-/// then `s8`, a body's grip (posed by the engine, never written by code).
-pub const K_FIELDS: [&str; 17] = ["seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+/// then what the engine poses on a body (never written by code): `s8` its
+/// grip, `s9` how open its mouth is (talking), `s10` how shut its eyes are
+/// (a blink, sleep), `s11` a clock in seconds (hair and cloth stir with it);
+/// then look sliders six onward, `g` … `v` (the first five are `a` … `e`).
+pub const K_FIELDS: [&str; 36] = [
+    "seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v",
+];
+/// Where look slider `i` (0 = the first) is in k: a … e, then g … v.
+pub const fn look_k(i: usize) -> usize {
+    if i < 5 { 2 + i } else { 20 + (i - 5) }
+}
 /// State slots writable as `s.<name>` in behaviour functions.
 pub const STATE_FIELDS: [&str; 8] = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
 /// What a behaviour function knows about its situation, read as `w.<name>`.
@@ -270,8 +279,8 @@ pub struct Hollow {
 /// hands (0 open … 1 a fist; a claw, a fin folding in).
 pub const ROLES: [&str; 9] = ["raise_l", "raise_r", "reach_l", "reach_r", "lean", "head", "crouch", "spread", "grip"];
 
-/// Look sliders a body may declare: k.a … k.e, in order.
-pub const MAX_SLIDERS: usize = 5;
+/// Look sliders a body may declare: k.a … k.e, then k.g … k.v, in order.
+pub const MAX_SLIDERS: usize = 21;
 
 /// What a body type says about itself (`meta.body`). Lengths are metres at
 /// the body's default look and scale 1; the engine scales them with size.
@@ -297,8 +306,12 @@ pub struct Body {
     /// from the figure keep its arm maths; other arms hang from above the
     /// grip, which is the right hand at rest.
     pub arms: bool,
-    /// Look sliders (name, lo, hi), read as k.a … k.e.
+    /// Look sliders (name, lo, hi), read as k.a … k.e, then k.g … k.v.
     pub look: Vec<(String, f32, f32)>,
+    /// Sliders that are one value unless something says otherwise (what is
+    /// worn: most people are dressed), by name; the rest vary per being.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usual: Vec<(String, f32)>,
     /// The body it was written from (a cat's body from the quadruped, one
     /// cat's reshaped body from the cat's): layers and kin follow the line.
     #[serde(default)]
@@ -311,13 +324,17 @@ pub struct Body {
 
 impl Default for Body {
     fn default() -> Self {
-        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), from: None, rest: [0.0; 8] }
+        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), usual: Vec::new(), from: None, rest: [0.0; 8] }
     }
 }
 
 impl Body {
     pub fn has_role(&self, r: &str) -> bool {
         self.roles.iter().any(|x| x == r)
+    }
+    /// A slider's usual value, if it has one.
+    pub fn usual(&self, name: &str) -> Option<f32> {
+        self.usual.iter().find(|u| u.0 == name).map(|u| u.1)
     }
     /// Slider index (0 = k.a) by name.
     pub fn slider(&self, name: &str) -> Option<usize> {

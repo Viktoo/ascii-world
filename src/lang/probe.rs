@@ -20,8 +20,8 @@ pub struct ProbeReport {
     pub max_fuel: u32,
 }
 
-pub fn default_k(seed: f32) -> [f32; 17] {
-    let mut k = [0.0; 17];
+pub fn default_k(seed: f32) -> [f32; crate::lang::vm::K_LEN] {
+    let mut k = [0.0; crate::lang::vm::K_LEN];
     k[..8].copy_from_slice(&[seed, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
     k
 }
@@ -61,8 +61,8 @@ fn fmt_p(p: [f32; 3]) -> String {
 pub fn probe(t: &CompiledType) -> Result<ProbeReport, Vec<Diag>> {
     let Some(body) = t.meta.body.as_ref() else { return probe_with(t, &default_k(0.37)) };
     let mut k = default_k(0.37);
-    for (i, (_, lo, hi)) in body.look.iter().enumerate().take(5) {
-        k[2 + i] = (lo + hi) * 0.5;
+    for (i, (_, lo, hi)) in body.look.iter().enumerate().take(super::ir::MAX_SLIDERS) {
+        k[super::ir::look_k(i)] = (lo + hi) * 0.5;
     }
     let rep = probe_with(t, &k)?;
     probe_body(t, body, &k)?;
@@ -71,7 +71,7 @@ pub fn probe(t: &CompiledType) -> Result<ProbeReport, Vec<Diag>> {
 
 /// A body must answer to every role it lists, and stay sound in any pose and
 /// at the ends of its look sliders.
-fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 17]) -> Result<(), Vec<Diag>> {
+fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; crate::lang::vm::K_LEN]) -> Result<(), Vec<Diag>> {
     use super::ir::ROLES;
     let pts: Vec<[f32; 3]> = sample_points(t.meta.bounds).into_iter().step_by(5).collect();
     let base: Vec<f32> = pts.iter().map(|p| t.sdf(*p, k)).collect();
@@ -107,8 +107,8 @@ fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 17]) -> Result
     let mut poses = Vec::new();
     for v in [0.0f32, 1.0] {
         let mut kk = *k;
-        for (i, (_, lo, hi)) in body.look.iter().enumerate().take(5) {
-            kk[2 + i] = if v > 0.5 { *hi } else { *lo };
+        for (i, (_, lo, hi)) in body.look.iter().enumerate().take(super::ir::MAX_SLIDERS) {
+            kk[super::ir::look_k(i)] = if v > 0.5 { *hi } else { *lo };
         }
         for (i, role) in ROLES.iter().enumerate() {
             if body.has_role(role) {
@@ -129,7 +129,7 @@ fn probe_body(t: &CompiledType, body: &super::ir::Body, k: &[f32; 17]) -> Result
     Ok(())
 }
 
-pub fn probe_with(t: &CompiledType, k: &[f32; 17]) -> Result<ProbeReport, Vec<Diag>> {
+pub fn probe_with(t: &CompiledType, k: &[f32; crate::lang::vm::K_LEN]) -> Result<ProbeReport, Vec<Diag>> {
     let b = t.meta.bounds;
     let pts = sample_points(b);
     let mut diags = Vec::new();
@@ -313,7 +313,7 @@ pub fn probe_with(t: &CompiledType, k: &[f32; 17]) -> Result<ProbeReport, Vec<Di
 
 /// Behaviour code must stay cheap and finite: run every entry point through
 /// a few typical situations (day and night, held and not, hit, used on things).
-pub fn probe_behavior(t: &CompiledType, k: &[f32; 17]) -> Result<(), Vec<Diag>> {
+pub fn probe_behavior(t: &CompiledType, k: &[f32; crate::lang::vm::K_LEN]) -> Result<(), Vec<Diag>> {
     let n = t.prop_names.len();
     for b in [Behavior::Tick, Behavior::Use, Behavior::Touch] {
         if t.behavior(b).is_none() {

@@ -61,7 +61,7 @@ impl Sim {
         if other.is_some() {
             ctx_set(&mut ctx, "on", 1.0);
         }
-        let mut k = [0.0f32; 17];
+        let mut k = [0.0f32; crate::lang::vm::K_LEN];
         k[..8].copy_from_slice(&t.params);
         k[1] = t.scale;
         k[8..16].copy_from_slice(&t.state);
