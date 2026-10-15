@@ -198,9 +198,11 @@ pub fn load(sim: &mut Sim) {
             continue;
         }
         let mut params = [0.5f32; 8];
-        for (i, x) in serde_json::from_str::<Vec<f32>>(&params_json).unwrap_or_default().iter().take(8).enumerate() {
+        let all = serde_json::from_str::<Vec<f32>>(&params_json).unwrap_or_default();
+        for (i, x) in all.iter().take(8).enumerate() {
             params[i] = *x;
         }
+        let look: Vec<f32> = all.iter().skip(8).copied().collect();
         let mut state = [0.0f32; 8];
         for (i, x) in serde_json::from_str::<Vec<f32>>(&state_json).unwrap_or_default().iter().take(8).enumerate() {
             state[i] = *x;
@@ -208,6 +210,7 @@ pub fn load(sim: &mut Sim) {
         let props = apply_diff(&sim.vocab, &scaled((*base).clone(), v[4]), &props_json);
         let mut t = Thing::new(id, &ty, Vec3::new(v[0], v[1], v[2]), v[3], v[4], params, props, born);
         t.state = state;
+        t.look = look;
         // Everything wakes at rest; physics resumes when touched.
         let _ = asleep;
         t.asleep = true;
@@ -355,7 +358,7 @@ pub fn save(sim: &mut Sim) {
             t.pos,
             t.yaw,
             t.scale,
-            serde_json::to_string(&t.params.to_vec()).unwrap_or_default(),
+            serde_json::to_string(&t.params.iter().chain(&t.look).copied().collect::<Vec<f32>>()).unwrap_or_default(),
             serde_json::to_string(&t.state.to_vec()).unwrap_or_default(),
             serde_json::Value::Object(diff(&vocab, &t.props, &base)).to_string(),
             t.worn.map(|w| format!("worn:{}", w.key())).or_else(|| actor_str(t.holder)),

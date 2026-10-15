@@ -163,7 +163,7 @@ fn vm_never_panics_on_weird_inputs() {
     let weird = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MIN, 0.0, -0.0, 1e-38, 1e30];
     for &a in &weird {
         for &b in &weird {
-            let k = [a, b, a, b, a, b, a, b, b, a, b, a, b, a, b, a, b];
+            let k: [f32; crate::lang::vm::K_LEN] = std::array::from_fn(|i| if i % 2 == 0 { a } else { b });
             let _ = t.sdf_checked([a, b, a], &k, 100_000);
             let _ = t.color_checked([b, a, b], &k, 100_000);
             let _ = t.sdf_checked([a, b, a], &k, 3);

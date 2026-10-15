@@ -49,6 +49,7 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world, made from words
   runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
 
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
+                       [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
   pocket gpubench FILE --at x,z,yawDeg [--px 640x360] [--breakdown]   GPU time for one view, by part
@@ -314,9 +315,77 @@ fn parse_size(args: &[String]) -> Result<(u16, u16)> {
 }
 
 /// One frame, rendered synchronously (shared by snapshot and tests).
-fn render_once(l: &Loaded, cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>, hands: Option<&str>) -> Result<render::Frame> {
+/// A portrait: one character stood before the camera, posed and dressed as asked.
+#[derive(Default)]
+struct Portrait {
+    id: Option<i64>,
+    dist: f32,
+    turn: f32,
+    look: Vec<(String, f32)>,
+    talk: f32,
+    blink: f32,
+    clock: Option<f64>,
+}
+
+impl Portrait {
+    fn from_args(args: &[String]) -> Result<Option<Portrait>> {
+        let Some(i) = args.iter().position(|a| a == "--face") else { return Ok(None) };
+        let id = args.get(i + 1).and_then(|s| s.parse::<i64>().ok());
+        let num = |f: &str, d: f32| flag(args, f).and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+        let mut look = Vec::new();
+        for kv in flag(args, "--look").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').context("--look expects name=value,…")?;
+            look.push((k.trim().to_string(), v.trim().parse::<f32>().context("--look value")?));
+        }
+        Ok(Some(Portrait { id, dist: num("--dist", 1.2), turn: num("--turn", 0.0).to_radians(), look, talk: num("--talk", 0.0), blink: num("--blink", 0.0), clock: flag(args, "--clock").and_then(|v| v.parse().ok()) }))
+    }
+
+    /// Put the character before `cam` and look at their face.
+    fn stage(&self, live: &mut sim::Sim, cam: &mut render::Camera) -> Result<()> {
+        let id = match self.id {
+            Some(id) => id,
+            None => live.cast.npcs.iter().filter(|n| n.here()).min_by(|a, b| (a.a.pos - cam.pos).length().total_cmp(&(b.a.pos - cam.pos).length())).map(|n| n.def.id).context("no character here to portray")?,
+        };
+        let fwd = Vec3::new(cam.yaw.sin(), 0.0, cam.yaw.cos());
+        let snap = live.snap.clone();
+        let n = live.cast.get_mut(id).with_context(|| format!("no character {id}"))?;
+        let body = n.body_ty;
+        if let Some(b) = snap.type_of(body).and_then(|t| t.ct.meta.body.clone()) {
+            for (name, v) in &self.look {
+                let i = b.slider(name).with_context(|| format!("no look slider {name}: {}", b.look.iter().map(|l| l.0.as_str()).collect::<Vec<_>>().join(", ")))?;
+                n.sliders[i] = *v;
+            }
+        }
+        let flat = cam.pos + fwd * self.dist;
+        let ground = snap.terrain.height(flat.x, flat.z);
+        n.a.pos = Vec3::new(flat.x, ground, flat.z);
+        n.a.yaw = cam.yaw + std::f32::consts::PI + self.turn;
+        n.a.pose = Default::default();
+        n.a.asleep = false;
+        // Near: the face; farther: all of them.
+        if self.dist < 2.0 {
+            cam.pos.y = n.a.pos.y + n.a.dims.eye - 0.05;
+            cam.fov_y = 0.55;
+        } else {
+            cam.pos.y = n.a.pos.y + n.a.dims.height * 0.55;
+            cam.fov_y = 2.0 * (n.a.dims.height * 0.62 / self.dist).atan();
+        }
+        cam.pitch = 0.0;
+        live.face_hold = Some((self.talk, self.blink));
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_once(l: &Loaded, mut cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>, hands: Option<&str>, face: Option<&Portrait>) -> Result<render::Frame> {
     let snap = &l.snap;
     let mut live = sim::Sim::new(l.db.clone(), snap.clone(), cam.pos, cam.yaw, t_game, 1);
+    if let Some(p) = face {
+        p.stage(&mut live, &mut cam)?;
+        if let Some(c) = p.clock {
+            live.t = c;
+        }
+    }
     if let Some(name) = weather {
         let kind = snap.look.climate.kinds.iter().find(|k| k.name == name).cloned().or_else(|| world::weather::sample(name)).with_context(|| format!("no weather called {name} (the world's own, or clear, fair, cloudy, overcast, fog, rain, storm, snow, ash, motes)"))?;
         live.weather_st.spell = Some(world::weather::Spell { kind, from: t_game - 3.0 * world::weather::HOUR, until: t_game + 3.0 * world::weather::HOUR, by: String::new() });
@@ -391,7 +460,8 @@ fn snapshot(args: &[String]) -> Result<()> {
         (false, true) => (w as u32 * 2, h as u32 * 4, 1.0),
         (false, false) => (w as u32 * 2, h as u32 * 2, 0.5),
     };
-    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref(), flag(args, "--hands").as_deref())?;
+    let face = Portrait::from_args(args)?;
+    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref(), flag(args, "--hands").as_deref(), face.as_ref())?;
     if let Some(png) = png_out {
         let s = if ascii { 4u32 } else { 2 };
         let mut rgb = Vec::with_capacity((f.width * s * f.height * s * 3) as usize);

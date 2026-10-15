@@ -495,13 +495,39 @@ fn human_fallback() -> Species {
 /// `trousers_hue`; both spellings are read.
 pub type LookMap = BTreeMap<String, f32>;
 
+/// A look slider's name as bodies spell it ("Top_Hue" → "top", "shirt" →
+/// "top", "hair colour" → "hair_color").
+pub fn look_name(k: &str) -> String {
+    let k = k.trim().to_lowercase().replace([' ', '-'], "_").replace("colour", "color");
+    match k.as_str() {
+        "shirt" | "shirt_hue" | "top_hue" | "top_color" => "top".into(),
+        "trousers" | "trousers_hue" | "bottom_hue" | "bottom_color" => "bottom".into(),
+        "trim_hue" | "trim_color" => "trim".into(),
+        "hair_hue" => "hair_color".into(),
+        "hair_length" => "hair".into(),
+        _ => k,
+    }
+}
+
 pub fn look_value(look: &LookMap, name: &str) -> Option<f32> {
-    let alias = match name {
-        "shirt" => Some("shirt_hue"),
-        "trousers" => Some("trousers_hue"),
-        _ => None,
+    // Older names for the same sliders.
+    let alias: &[&str] = match name {
+        // Bodies written from the figure before it had clothes.
+        "shirt" => &["shirt_hue", "top", "top_hue"],
+        "trousers" => &["trousers_hue", "bottom", "bottom_hue"],
+        "top" => &["top_hue", "shirt", "shirt_hue"],
+        "bottom" => &["bottom_hue", "trousers", "trousers_hue"],
+        _ => &[],
     };
-    look.get(name).or_else(|| alias.and_then(|a| look.get(a))).copied().filter(|v| v.is_finite())
+    look.get(name)
+        .or_else(|| alias.iter().find_map(|a| look.get(*a)))
+        // Any spelling of it ("trim_hue", "Hair colour").
+        .or_else(|| {
+            let want = look_name(name);
+            look.iter().find(|(k, _)| !k.starts_with("was_") && look_name(k) == want).map(|(_, v)| v)
+        })
+        .copied()
+        .filter(|v| v.is_finite())
 }
 
 /// Size numbers for one body, at one look and scale.
@@ -583,11 +609,13 @@ pub fn stride(gait: &str, height: f32, radius: f32) -> f32 {
 
 /// The k.a … k.e values of a character's body: their own sliders, else a
 /// value chosen from the species (or variety) range by `seed`.
-pub fn sliders(b: &Body, sp: &Species, variety: Option<&Variety>, look: &LookMap, seed: u32) -> [f32; 5] {
-    let mut out = [0.5f32; 5];
-    for (i, (name, lo, hi)) in b.look.iter().enumerate().take(5) {
-        let range = variety.and_then(|v| v.look.get(name)).or_else(|| sp.look.get(name)).copied().unwrap_or([*lo, *hi]);
-        let v = look_value(look, name).unwrap_or_else(|| {
+pub fn sliders(b: &Body, sp: &Species, variety: Option<&Variety>, look: &LookMap, seed: u32) -> [f32; crate::lang::ir::MAX_SLIDERS] {
+    let mut out = [0.5f32; crate::lang::ir::MAX_SLIDERS];
+    for (i, (name, lo, hi)) in b.look.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS) {
+        let range = variety.and_then(|v| v.look.get(name)).or_else(|| sp.look.get(name)).copied();
+        let usual = b.usual(name).filter(|_| range.is_none());
+        let range = range.unwrap_or([*lo, *hi]);
+        let v = look_value(look, name).or(usual).unwrap_or_else(|| {
             let h = crate::noise::u2f(crate::noise::pcg(seed ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9)));
             range[0] + (range[1] - range[0]) * h
         });

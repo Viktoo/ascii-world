@@ -82,6 +82,9 @@ pub struct Thing {
     pub params: [f32; 8],
     /// Behaviour state, visible to the shape as k.s0 … k.s7.
     pub state: [f32; 8],
+    /// Look sliders past the first five (k.g … k.v): a body's remains keep
+    /// its face, hair and clothes. Empty for most things.
+    pub look: Vec<f32>,
     pub props: Props,
     pub holder: Option<ActorId>,
     /// A second holder carrying it together with the first.
@@ -127,6 +130,7 @@ impl Thing {
             spin: 0.0,
             scale,
             params,
+            look: Vec::new(),
             state: [0.0; 8],
             props,
             holder: None,

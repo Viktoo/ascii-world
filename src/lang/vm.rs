@@ -49,7 +49,7 @@ pub struct Program {
 
 /// Inputs and outputs of one behaviour call.
 pub struct BehaviorIo<'a> {
-    pub k: &'a [f32; 17],
+    pub k: &'a [f32; crate::lang::vm::K_LEN],
     pub state: &'a mut [f32; 8],
     pub ctx: &'a [f32; CTX_LEN],
     /// The thing's own properties, in `Module::prop_names` order.
@@ -70,7 +70,7 @@ pub enum VmError {
 
 pub const REG_X: u16 = 0;
 pub const REG_K: u16 = 3;
-pub const K_LEN: usize = 17;
+pub const K_LEN: usize = super::ir::K_FIELDS.len();
 pub const CTX_LEN: usize = CTX_FIELDS.len();
 const SHAPE_FIRST_LOCAL: u16 = REG_K + K_LEN as u16;
 pub const REG_STATE: u16 = REG_K + K_LEN as u16;
@@ -338,7 +338,7 @@ impl Program {
     }
 
     /// Run with inputs. Returns (result, fuel used).
-    pub fn run(&self, regs: &mut Vec<f32>, p: [f32; 3], k: &[f32; 17], fuel: u32) -> Result<([f32; 3], u32), VmError> {
+    pub fn run(&self, regs: &mut Vec<f32>, p: [f32; 3], k: &[f32; crate::lang::vm::K_LEN], fuel: u32) -> Result<([f32; 3], u32), VmError> {
         if regs.len() < self.nregs {
             regs.resize(self.nregs, 0.0);
         }

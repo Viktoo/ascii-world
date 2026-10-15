@@ -127,8 +127,64 @@ impl App {
             let delay = busy.map(|b| (b - now).as_secs_f32() + GAP).unwrap_or(0.0);
             let secs = c.samples.len() as f32 / SAMPLE_RATE as f32;
             self.voice_busy.insert(c.who, now + Duration::from_secs_f32(delay + secs));
+            self.voice_mouth.entry(c.who).or_default().push((now + Duration::from_secs_f32(delay), loudness(&c.samples)));
             crate::log::info(&format!("voice: {} ({:.0} m off, in {delay:.1}s for {secs:.1}s): {}", self.sim.actor_name(who), self.sim.dist_to_player(a.pos), c.text));
             out.send(Cmd::Speech { at: At::Follow(actor_key(who), at), samples: c.samples, rate: SAMPLE_RATE as f32, gain: self.settings.voice_volume, delay });
+        }
+    }
+}
+
+/// How open the mouth is every `MOUTH_STEP`, from a line's samples: its
+/// loudness against the line's own loudest (a whisper still moves the lips).
+fn loudness(samples: &[f32]) -> Vec<f32> {
+    let n = (SAMPLE_RATE as f32 * MOUTH_STEP) as usize;
+    let rms: Vec<f32> = samples.chunks(n.max(1)).map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32).sqrt()).collect();
+    let top = rms.iter().copied().fold(1e-4f32, f32::max);
+    rms.iter().map(|r| ((r / top - 0.08) * 1.4).clamp(0.0, 1.0)).collect()
+}
+
+/// Mouth samples are this far apart (s).
+const MOUTH_STEP: f32 = 0.02;
+
+impl App {
+    /// How open each character's mouth is now: with their voice as it plays;
+    /// without voices, moving while their words are fresh (about as long as
+    /// saying them takes).
+    pub(super) fn mouths(&mut self) {
+        let now = Instant::now();
+        self.sim.mouths.clear();
+        self.voice_mouth.retain(|_, v| {
+            v.retain(|(at, env)| *at + Duration::from_secs_f32(env.len() as f32 * MOUTH_STEP) > now);
+            !v.is_empty()
+        });
+        for (who, lines) in &self.voice_mouth {
+            for (at, env) in lines {
+                if *at > now {
+                    continue;
+                }
+                let f = now.duration_since(*at).as_secs_f32() / MOUTH_STEP;
+                let i = f as usize;
+                let (a, b) = (env.get(i).copied().unwrap_or(0.0), env.get(i + 1).copied().unwrap_or(0.0));
+                self.sim.mouths.insert(*who, a + (b - a) * f.fract());
+            }
+        }
+        if self.voice.is_some() {
+            return;
+        }
+        for l in self.log.iter().rev() {
+            let age = now.duration_since(l.at).as_secs_f32();
+            if age > 12.0 {
+                break;
+            }
+            let (Some(who), true) = (l.who, l.kind == super::journal::Kind::Talk) else { continue };
+            let speaking = l.streaming.is_some() || age < 0.4 + l.text.chars().count() as f32 * 0.06;
+            if speaking && !self.sim.mouths.contains_key(&who) {
+                // Syllables: an open-close every fifth of a second or so, uneven.
+                let s = age * 5.3 + who as f32;
+                let open = (s * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+                let shape = crate::noise::u2f(crate::noise::pcg(s as u32 ^ who as u32));
+                self.sim.mouths.insert(who, open * (0.35 + 0.6 * shape));
+            }
         }
     }
 }

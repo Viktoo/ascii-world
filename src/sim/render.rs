@@ -30,6 +30,13 @@ pub fn thing_inst(t: &Thing, ty: &TypeEntry, fx: [f32; 4]) -> GpuInst {
         ..Default::default()
     };
     g.set_state(&t.state);
+    for (i, v) in t.look.iter().take(16).enumerate() {
+        g.look[i / 4][i % 4] = *v;
+    }
+    // The dead's eyes are shut.
+    if t.origin.remains.is_some() {
+        g.set_face(0.0, 1.0, 0.0);
+    }
     g.cuts = t.gpu_cuts();
     let q = t.hold_tilt.unwrap_or_else(|| t.tilt());
     if q != glam::Quat::IDENTITY {
@@ -37,6 +44,21 @@ pub fn thing_inst(t: &Thing, ty: &TypeEntry, fx: [f32; 4]) -> GpuInst {
     }
     super::joint::pose(&mut g, t, ty);
     g
+}
+
+/// How shut someone's eyes are at `t` (0 open … 1 shut): a blink every few
+/// seconds, each their own rhythm, now and then two together.
+pub fn blink(t: f64, id: i64) -> f32 {
+    let h = |i: u32| crate::noise::u2f(crate::noise::pcg(id as u32 ^ i.wrapping_mul(0x9E37_79B9)));
+    let period = 2.5 + 3.5 * h(1) as f64;
+    let n = ((t + h(2) as f64 * 10.0) / period).floor();
+    let into = (t + h(2) as f64 * 10.0) - n * period;
+    // Each blink comes a little early or late, so they don't tick.
+    let jit = (crate::noise::u2f(crate::noise::pcg(id as u32 ^ n as i64 as u32)) as f64 - 0.5) * period * 0.5;
+    let twice = crate::noise::u2f(crate::noise::pcg(n as i64 as u32 ^ 0xB11 ^ id as u32)) < 0.15;
+    let at = into - (period * 0.5 + jit);
+    let one = |s: f64| if (0.0..0.17).contains(&s) { (1.0 - ((s - 0.06) / if s < 0.06 { 0.06 } else { 0.11 }).abs()) as f32 } else { 0.0 };
+    one(at).max(if twice { one(at - 0.3) } else { 0.0 })
 }
 
 /// A worn layer: the wearer's instance (place, size, look sliders, pose)
@@ -175,6 +197,10 @@ impl Sim {
             {
                 if (n.a.pos - cam).length() < 200.0 {
                     let mut g = n.gpu(body);
+                    let id = n.def.id;
+                    let shut = if n.a.asleep { 1.0 } else { blink(self.t, id) };
+                    let (mouth, shut) = self.face_hold.unwrap_or((self.mouths.get(&id).copied().unwrap_or(0.0), shut));
+                    g.set_face(mouth, shut, (self.t % 3600.0) as f32 + (id % 97) as f32);
                     if let Some(q) = n.a.sway(self.t, n.hurt()) {
                         g.set_tilt(q);
                     }

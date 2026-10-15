@@ -13,7 +13,8 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator, UnaryOperator, UpdateOperator};
 
-pub const MAX_SOURCE_BYTES: usize = 16 * 1024;
+/// Room for a person written from the figure (face, hair, clothes).
+pub const MAX_SOURCE_BYTES: usize = 40 * 1024;
 pub const MAX_LOOP_ITERS: u32 = 32;
 const MAX_NESTED_ITERS: u32 = 256;
 const MAX_DEPTH: u32 = 48;
@@ -661,14 +662,17 @@ impl<'s> Cx<'s> {
                                 }
                             };
                             match literal_nums(&lp.value) {
-                                Some(v) if v.len() == 2 && v[0].is_finite() && v[1].is_finite() && v[0] <= v[1] && valid_prop_name(&name) => {
+                                Some(v) if (v.len() == 2 || v.len() == 3) && v.iter().all(|x| x.is_finite()) && v[0] <= v[1] && valid_prop_name(&name) => {
                                     if b.look.len() >= MAX_SLIDERS {
-                                        bad(self, format!("meta.body.look may hold at most {MAX_SLIDERS} sliders (they are k.a … k.e)"));
+                                        bad(self, format!("meta.body.look may hold at most {MAX_SLIDERS} sliders (they are k.a … k.e, then k.g … k.v)"));
                                         break;
+                                    }
+                                    if let Some(u) = v.get(2) {
+                                        b.usual.push((name.clone(), u.clamp(v[0], v[1])));
                                     }
                                     b.look.push((name, v[0], v[1]));
                                 }
-                                _ => bad(self, format!("meta.body.look.{name} must be [lo, hi]")),
+                                _ => bad(self, format!("meta.body.look.{name} must be [lo, hi] (or [lo, hi, usual])")),
                             }
                         }
                     }

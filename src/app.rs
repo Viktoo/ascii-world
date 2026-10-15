@@ -237,6 +237,9 @@ pub struct App {
     voice_busy: HashMap<i64, Instant>,
     /// A streaming reply's words not yet spoken.
     voice_said: HashMap<i64, String>,
+    /// Each speaker's lines as they play (start, loudness every 20 ms): their
+    /// mouth follows it.
+    voice_mouth: HashMap<i64, Vec<(Instant, Vec<f32>)>>,
     /// The voice thread's last state told in the log.
     voice_told: Option<u8>,
     /// Speak to talk: the recogniser (while the setting is on), the go of
@@ -353,6 +356,7 @@ impl App {
             voice_recipes: HashMap::new(),
             voice_busy: HashMap::new(),
             voice_said: HashMap::new(),
+            voice_mouth: HashMap::new(),
             voice_told: None,
             ears: None,
             hearing: None,
@@ -1265,6 +1269,7 @@ impl App {
             self.tell(n);
         }
         self.hear(dt);
+        self.mouths();
         self.ears_frame();
         if self.log_expiry.is_some_and(|t| Instant::now() >= t) {
             self.log_expiry = None;

@@ -44,14 +44,16 @@ struct Inst {
   k1: vec4f,          // c, d, e, f
   s0: vec4f,          // live state s0..s3
   s1: vec4f,          // live state s4..s7
-  s2: vec4f,          // s8 (a body's grip), spare
+  s2: vec4f,          // s8 grip, s9 mouth, s10 eyes shut, s11 clock (bodies)
   fx: vec4f,          // charred, wet, glow, highlight
   info: vec4u,        // type id, sphere centre y, box half-extents x/z
   cuts: array<vec4f, 4>, // local centre, size (>0 sphere radius, <0 cube half-size, 0 none)
+  look: array<vec4f, 4>, // look sliders g..v
 }
 
 struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32,
-  s0: f32, s1: f32, s2: f32, s3: f32, s4: f32, s5: f32, s6: f32, s7: f32, s8: f32, }
+  s0: f32, s1: f32, s2: f32, s3: f32, s4: f32, s5: f32, s6: f32, s7: f32, s8: f32, s9: f32, s10: f32, s11: f32,
+  g: f32, h: f32, i: f32, j: f32, k: f32, l: f32, m: f32, n: f32, o: f32, p: f32, q: f32, r: f32, s: f32, t: f32, u: f32, v: f32, }
 
 @group(0) @binding(0) var<uniform> G: Globals;
 @group(0) @binding(1) var<storage, read> insts: array<Inst>;

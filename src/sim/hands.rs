@@ -35,8 +35,10 @@ fn usual(name: &str, lo: f32, hi: f32) -> f32 {
     match name {
         "build" => 1.0,
         "skin" => 0.3,
-        "shirt" => 0.6,
-        "trousers" => 0.1,
+        "shirt" | "top" => 0.6,
+        "trousers" | "bottom" => 0.1,
+        "shape" => 0.2,
+        "hair" => 0.3,
         _ => (lo + hi) * 0.5,
     }
 }
@@ -110,15 +112,15 @@ impl Sim {
     }
 
     /// The traveler's look sliders (k.a … k.e of their body).
-    pub fn own_sliders(&self) -> [f32; 5] {
-        let mut out = [0.5f32; 5];
+    pub fn own_sliders(&self) -> [f32; crate::lang::ir::MAX_SLIDERS] {
+        let mut out = [0.5f32; crate::lang::ir::MAX_SLIDERS];
         let Some(b) = self.own_body_type().and_then(|t| t.ct.meta.body.clone()) else { return out };
         let d = &self.player.dims;
-        for (i, (name, lo, hi)) in b.look.iter().enumerate().take(5) {
+        for (i, (name, lo, hi)) in b.look.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS) {
             let v = crate::world::species::look_value(&self.own.look, name).unwrap_or_else(|| match name.as_str() {
                 // People draw their own height: the traveler's, at the world's size.
                 "height" => d.height / d.scale.max(1e-3),
-                _ => usual(name, *lo, *hi),
+                _ => b.usual(name).unwrap_or_else(|| usual(name, *lo, *hi)),
             });
             out[i] = v.clamp(lo.min(*hi), hi.max(*lo));
         }
@@ -142,7 +144,7 @@ impl Sim {
     pub(super) fn own_look_sliders(&self) -> serde_json::Value {
         let now = self.own_sliders();
         let Some(b) = self.own_body_type().and_then(|t| t.ct.meta.body.clone()) else { return serde_json::Value::Null };
-        let m: serde_json::Map<String, serde_json::Value> = b.look.iter().enumerate().take(5).map(|(i, (name, lo, hi))| (name.clone(), serde_json::json!({ "now": now[i], "range": [lo, hi] }))).collect();
+        let m: serde_json::Map<String, serde_json::Value> = b.look.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS).map(|(i, (name, lo, hi))| (name.clone(), serde_json::json!({ "now": now[i], "range": [lo, hi] }))).collect();
         serde_json::Value::Object(m)
     }
 

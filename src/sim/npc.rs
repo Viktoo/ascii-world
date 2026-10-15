@@ -132,7 +132,7 @@ pub struct Npc {
     /// The body type it is drawn with.
     pub body_ty: u32,
     /// Look sliders (k.a … k.e).
-    pub sliders: [f32; 5],
+    pub sliders: [f32; crate::lang::ir::MAX_SLIDERS],
     pub a: Actor,
     pub needs: Needs,
     pub traits: Traits,
@@ -331,7 +331,7 @@ impl Cast {
             species: snap.species.of(""),
             temper: Default::default(),
             body_ty: 0,
-            sliders: [0.5; 5],
+            sliders: [0.5; crate::lang::ir::MAX_SLIDERS],
             a,
             needs,
             traits,
@@ -399,7 +399,7 @@ impl Cast {
 }
 
 /// A body's instance: where it stands, its look sliders and its pose.
-pub fn body_inst(a: &super::actor::Actor, body: &TypeEntry, sliders: &[f32; 5], seed: f32) -> GpuInst {
+pub fn body_inst(a: &super::actor::Actor, body: &TypeEntry, sliders: &[f32; crate::lang::ir::MAX_SLIDERS], seed: f32) -> GpuInst {
     let rot = a.yaw;
     let d = &a.dims;
     // Bodies that draw their own height (people) are scaled only by the
@@ -409,11 +409,12 @@ pub fn body_inst(a: &super::actor::Actor, body: &TypeEntry, sliders: &[f32; 5], 
     let mut g = GpuInst {
         pos_scale: [a.pos.x, a.pos.y, a.pos.z, d.scale],
         rot: [rot.cos(), rot.sin(), body.sphere_r * r.max(d.scale), 1.0],
-        k0: [seed, d.scale, sliders[0], sliders[1]],
-        k1: [sliders[2], sliders[3], sliders[4], a.phase],
+        k0: [seed, d.scale, 0.0, 0.0],
+        k1: [0.0, 0.0, 0.0, a.phase],
         info: body.gpu_info(),
         ..Default::default()
     };
+    g.set_look(sliders);
     g.set_pose(&a.pose);
     g
 }
@@ -426,7 +427,13 @@ pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {
     let bmeta = body.and_then(|b| b.ct.meta.body.clone()).unwrap_or_default();
     let variety = species.varieties.iter().find(|v| v.name == n.def.persona.variety);
     let rng = crate::noise::pcg(n.def.id as u32 ^ 0xC0FFEE ^ seed as u32);
-    n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &n.def.persona.look, rng);
+    // Before their look says how they are dressed, a guess from their words.
+    let mut look = n.def.persona.look.clone();
+    if bmeta.slider("shape").is_some() && !look.contains_key("shape") {
+        let guess = super::dress::guess(&n.def.persona);
+        look.extend(guess.into_iter().filter(|(k, _)| variety.is_none_or(|v| !v.look.contains_key(k))));
+    }
+    n.sliders = crate::world::species::sliders(&bmeta, &species, variety, &look, rng);
     // The young are smaller, all over.
     n.a.dims = body_dims(&bmeta, &species, &n.sliders, snap.species.size_of(&species.name) * n.def.persona.size_mul() * n.growth.clamp(0.2, 1.0));
     n.a.dims.human_arms = n.a.dims.arms && body.is_some_and(|b| snap.body_root(b.name()) == "figure");
@@ -450,7 +457,7 @@ pub fn body_for<'a>(p: &crate::world::Persona, species: &Species, snap: &'a Worl
 /// Size numbers for a character: people draw their own height (a slider);
 /// other bodies are scaled by their species' size. `world` is the universe's
 /// size multiplier for the species.
-pub fn body_dims(b: &crate::lang::ir::Body, sp: &Species, sliders: &[f32; 5], world: f32) -> Dims {
+pub fn body_dims(b: &crate::lang::ir::Body, sp: &Species, sliders: &[f32; crate::lang::ir::MAX_SLIDERS], world: f32) -> Dims {
     let (height, scale) = match b.slider("height") {
         Some(i) => (sliders[i], world),
         None => (b.height, sp.size * world),

@@ -61,6 +61,7 @@ impl Sim {
         let id = self.things.alloc();
         let mut th = Thing::new(id, &ty, pos, yaw, scale, params, props, self.t);
         th.state = state;
+        th.look = g.look.iter().flatten().copied().collect();
         th.origin = Origin { remains: Some(cid), ..Default::default() };
         th.set_tilt(tilt);
         th.asleep = true;
