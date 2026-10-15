@@ -178,21 +178,33 @@ fn map_scene_lod(p: vec3f, t: f32, ray_t: f32) -> vec3f {
 fn map_scene(p: vec3f) -> vec3f { return map_scene_lod(p, 0.0, -1.0); }
 
 // Distance to the gathered instances only (no terrain): straight up from a
-// point the land can't cover it, being a height field.
-fn map_insts(p: vec3f) -> f32 {
+// point the land can't cover it, being a height field. x = safe step (to
+// bounding spheres too), y = distance to real surfaces only (for penumbra
+// and AO: a bounding sphere counted as solid shades rings round each thing).
+fn map_insts(p: vec3f) -> vec2f {
   var d = 1e9;
+  var real = 1e9;
   for (var j = 0u; j < ncand; j = j + 1u) {
     let sph = cand_s[j];
     let ds = length(p - sph.xyz) - sph.w;
     if (ds >= d) { continue; }
     if (ds < 0.25) {
       let i = insts[cand[j]];
-      d = min(d, shape_sdf(i, to_local(i, p)) * i.pos_scale.w);
+      let dj = shape_sdf(i, to_local(i, p)) * i.pos_scale.w;
+      d = min(d, dj);
+      real = min(real, dj);
     } else {
       d = ds;
     }
   }
-  return d;
+  return vec2f(d, real);
+}
+
+// Distance for ambient occlusion: the exact ground (the fine heightmap is
+// centimetres off, which AO turns into contour lines across the land) and
+// the gathered things.
+fn ao_dist(p: vec3f, t: f32) -> f32 {
+  return min((p.y - terrain_height_lod_exact(p.x, p.z, t)) * 0.6, map_insts(p).y);
 }
 
 // Along a ray: only spheres the ray is inside right now are evaluated, and the
@@ -244,12 +256,15 @@ fn march(ro: vec3f, rd: vec3f, tmax: f32) -> Hit {
     if (t > tmax) { break; }
   }
   if (h.id == -1.0) {
-    // Refine terrain hits by bisection (the height bound can overshoot).
-    var a = tp; var b = h.t;
-    for (var k = 0; k < 6; k = k + 1) {
+    // Refine terrain hits by bisection (the height bound can overshoot),
+    // onto the exact ground: the fine heightmap only speeds the steps, and
+    // a hit left on its cells (a few cm off) shades in contour lines.
+    var a = tp;
+    var b = h.t + 0.05 + 0.002 * h.t;
+    for (var k = 0; k < 8; k = k + 1) {
       let m = (a + b) * 0.5;
       let p = ro + rd * m;
-      if (p.y - terrain_height_lod(p.x, p.z, m) > 0.0) { a = m; } else { b = m; }
+      if (p.y - terrain_height_lod_exact(p.x, p.z, m) > 0.0) { a = m; } else { b = m; }
     }
     h.t = b;
   }
@@ -499,10 +514,10 @@ fn sky_open(p: vec3f) -> f32 {
   var res = 1.0;
   var t = 0.15;
   for (var i = 0; i < 10; i = i + 1) {
-    let d = map_insts(p + vec3f(0.0, t, 0.0));
-    res = min(res, 8.0 * d / t);
+    let m = map_insts(p + vec3f(0.0, t, 0.0));
+    res = min(res, 8.0 * m.y / t);
     if (res < 0.05) { break; }
-    t = t + clamp(d, 0.1, 1.5);
+    t = t + clamp(m.x, 0.1, 1.5);
     if (t > 8.0) { break; }
   }
   return clamp(res, 0.0, 1.0);
@@ -581,7 +596,7 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
       albedo = ground_color(p.x, p.z, p.y, n.y);
       // contact darkening from nearby objects
       if (!no_ao) {
-        let o = map_scene_lod(p + n * 0.6, h.t, -1.0).z;
+        let o = ao_dist(p + n * 0.6, h.t);
         ao = clamp(0.45 + o * 0.9, 0.0, 1.0);
       }
     } else {
@@ -597,8 +612,8 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
       let gc = select(base, vec3f(1.0, 0.07, 0.03), i.fx.x > 1.5);
       glow = gc * clamp(i.fx.z, 0.0, 2.0) * lit;
       if (!no_ao) {
-        let o1 = map_scene_lod(p + n * 0.15, h.t, -1.0).z;
-        let o2 = map_scene_lod(p + n * 0.5, h.t, -1.0).z;
+        let o1 = ao_dist(p + n * 0.15, h.t);
+        let o2 = ao_dist(p + n * 0.5, h.t);
         ao = clamp(0.35 + (o1 / 0.15) * 0.3 + (o2 / 0.5) * 0.35, 0.0, 1.0);
       }
     }
