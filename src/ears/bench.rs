@@ -78,6 +78,7 @@ fn mic_once(prompt: &str) -> Result<()> {
                     return Ok(());
                 }
                 Heard::Trouble { why, .. } => bail!(why),
+                Heard::MicCheck(_) => {}
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(20));

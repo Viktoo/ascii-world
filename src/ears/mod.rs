@@ -125,6 +125,8 @@ pub enum Heard {
     Done { id: u64, text: String },
     /// Couldn't listen.
     Trouble { id: u64, why: String },
+    /// What asking for the mic came to: it hears, or why not.
+    MicCheck(Result<(), String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +148,7 @@ pub struct Ears {
     level: Arc<AtomicU32>,
     /// The mic is open (it may wait on the system asking the player first).
     open: Arc<AtomicBool>,
+    heard: Sender<Heard>,
 }
 
 impl Ears {
@@ -158,8 +161,18 @@ impl Ears {
         let level = Arc::new(AtomicU32::new(0));
         let open = Arc::new(AtomicBool::new(false));
         let (st, sp, lv, op) = (state.clone(), stop.clone(), level.clone(), open.clone());
-        let _ = std::thread::Builder::new().name("ears".into()).spawn(move || run(cmds, heard, st, sp, lv, op));
-        Ears { tx: Some(tx), rx, state, stop, level, open }
+        let h = heard.clone();
+        let _ = std::thread::Builder::new().name("ears".into()).spawn(move || run(cmds, h, st, sp, lv, op));
+        Ears { tx: Some(tx), rx, state, stop, level, open, heard }
+    }
+
+    /// Open the mic once, so the system asks the player for it now rather
+    /// than on the first word; `Heard::MicCheck` says how it went.
+    pub fn ask_mic(&self) {
+        let heard = self.heard.clone();
+        let _ = std::thread::Builder::new().name("mic check".into()).spawn(move || {
+            let _ = heard.send(Heard::MicCheck(mic::check()));
+        });
     }
 
     pub fn state(&self) -> State {

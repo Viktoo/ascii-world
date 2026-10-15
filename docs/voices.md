@@ -88,7 +88,7 @@ listens again. The mic is open only while listening.
   frame of the last 1.5 s), so a fan or rain doesn't keep it open. Nothing
   said for 8 s closes it; one go is at most 28 s.
 - `cmake` is needed to build (whisper.cpp): `brew install cmake`.
-- Settings: **Speak to talk** on/off. `POCKET_NO_MIC` turns it off.
+- Settings: **Speak to talk**, off by default (`/` is then just the command line). Turning it on opens the mic once so the system asks for it right away, and says whether it hears. `POCKET_NO_MIC` turns it off.
 - `pocket listen --hear F.wav [--model PATH] [--gpu]`: a recording heard as
   in the game, each pass timed. `pocket listen --mic`: one go through the
   microphone. `POCKET_MIC_WAV=F.wav`: the game hears that file as the mic

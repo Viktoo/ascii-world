@@ -33,6 +33,14 @@ impl App {
         }
     }
 
+    /// Turned on in the menu: ask for the mic now.
+    pub(super) fn ask_mic(&mut self) {
+        if let Some(e) = &self.ears {
+            e.ask_mic();
+            self.say(None, "Asking for the microphone (allow it if the system asks)…", DIM);
+        }
+    }
+
     pub(super) fn ears_status(&self) -> String {
         if !self.settings.speak_to_talk {
             return "off".into();
@@ -142,6 +150,19 @@ impl App {
         }
         let Some(e) = &self.ears else { return };
         for h in e.poll() {
+            if let Heard::MicCheck(r) = h {
+                match r {
+                    Ok(()) => {
+                        self.ears_trouble = None;
+                        self.say(None, "The microphone hears you. Press / or Enter with someone, and speak.", DIM);
+                    }
+                    Err(why) => {
+                        self.say(None, &format!("Can't listen: {why}."), DIM);
+                        self.ears_trouble = Some(why);
+                    }
+                }
+                continue;
+            }
             let Some(cur) = &self.hearing else { continue };
             match h {
                 Heard::Words { id, text } if id == cur.id => {

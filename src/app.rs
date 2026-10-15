@@ -3153,9 +3153,9 @@ mod tests {
         // Speak to talk (the recogniser never starts in tests).
         app.on_key(key(KeyCode::Down, KeyEventKind::Press));
         app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
-        assert!(!app.settings.speak_to_talk, "Enter turns speaking to talk off");
+        assert!(app.settings.speak_to_talk, "off by default; Enter turns speaking to talk on");
         app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
-        assert!(app.settings.speak_to_talk && app.ears.is_none());
+        assert!(!app.settings.speak_to_talk && app.ears.is_none());
         // A world setting changes the running sim and is kept with the world.
         for _ in 0..3 {
             app.on_key(key(KeyCode::Down, KeyEventKind::Press));

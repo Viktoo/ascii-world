@@ -108,6 +108,23 @@ pub fn open(tx: Sender<Vec<f32>>) -> Result<(Mic, u32)> {
     Ok((Mic::Device(stream), rate))
 }
 
+/// Open the mic until it hears anything at all (a mic the system keeps
+/// closed reads as pure zeros), giving the player time to answer the
+/// system's question.
+pub fn check() -> Result<(), String> {
+    let (tx, rx) = crossbeam_channel::unbounded::<Vec<f32>>();
+    let (_mic, _) = open(tx).map_err(|e| format!("{e}"))?;
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < until {
+        if let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            if b.iter().any(|x| *x != 0.0) {
+                return Ok(());
+            }
+        }
+    }
+    Err("the microphone hears nothing at all (on a Mac: System Settings → Privacy & Security → Microphone, allow the app you started the game from)".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

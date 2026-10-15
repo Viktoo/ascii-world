@@ -280,6 +280,9 @@ impl App {
         }
         if row == Row::Speak {
             self.sync_ears();
+            if self.settings.speak_to_talk {
+                self.ask_mic();
+            }
         }
         if matches!(row, Row::Sound | Row::Volume | Row::Voices) {
             self.sync_sound();

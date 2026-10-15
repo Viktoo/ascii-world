@@ -22,8 +22,8 @@ pub struct Settings {
     pub volume: f32,
     /// Characters heard speaking in their own voices (needs sound).
     pub voices: bool,
-    /// Speak to talk: `/`, or Enter with someone, listens on the mic and
-    /// sends what you said when you pause.
+    /// Speak to talk (off until turned on in the menu): `/`, or Enter with
+    /// someone, listens on the mic and sends what you said when you pause.
     pub speak_to_talk: bool,
     /// In a window: lines of the world drawn, scaled up to fill it; 0 = every
     /// pixel of the window, `AUTO` = as many as keep the frame rate. The
@@ -42,7 +42,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, speak_to_talk: true, window_detail: AUTO, blend_frames: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, speak_to_talk: false, window_detail: AUTO, blend_frames: true }
     }
 }
 
