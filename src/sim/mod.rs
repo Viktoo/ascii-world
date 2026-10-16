@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod actor;
 pub mod behavior;
+pub mod burst;
 pub mod beliefs;
 pub mod body;
 pub mod beings;
@@ -29,6 +30,7 @@ pub mod inspect;
 pub mod interp;
 pub mod joint;
 pub mod life;
+pub mod missile;
 pub mod motion;
 pub mod needs;
 pub mod night;
@@ -354,6 +356,10 @@ pub struct Sim {
     pub hover: Option<Target>,
     /// Where new things just appeared, and when: a flash of light (see `render`).
     pub flashes: Vec<(Vec3, f64)>,
+    /// Who lit what is lit (it goes off by their hand).
+    pub lit_by: HashMap<things::ThingId, ActorId>,
+    /// When things that go off were last looked over for fire.
+    pub burst_check: f64,
     pub region_seen: HashMap<(i32, i32), f64>,
     next_req: u64,
     /// The things the player recently did (for dialogue context).
@@ -439,6 +445,8 @@ impl Sim {
             acc_life: 0.0,
             hover: None,
             flashes: Vec::new(),
+            lit_by: HashMap::new(),
+            burst_check: 0.0,
             region_seen: HashMap::new(),
             next_req: 1,
             recent_player: VecDeque::new(),
@@ -877,6 +885,7 @@ impl Sim {
         self.step_social(dt);
         self.step_physics(dt);
         self.step_motions(dt);
+        self.step_bursts();
         self.step_joints(dt);
         self.acc_behavior += dt;
         let bstep = 1.0 / self.cfg.behavior_hz;

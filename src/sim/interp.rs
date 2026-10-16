@@ -1059,6 +1059,17 @@ impl Sim {
             round: long.is_none(),
             edge,
         };
+        self.open_hollow(at, hollow);
+        Ok(())
+    }
+
+    /// Take the ground away in `hollow` (a pit, a crater): what is placed
+    /// there settles with it, what lies there drops in. Dug again where a
+    /// hollow was dug before, that one grows to take it in.
+    pub(super) fn open_hollow(&mut self, at: glam::Vec3, hollow: crate::terrain::Hollow) {
+        let edge = hollow.edge;
+        let floor = hollow.floor;
+        let terrain = self.snap.terrain.clone();
         // What stands there, and the ground under it before: placed things
         // (buildings, made things) never look at the ground again by
         // themselves, so they are brought live to settle with it.
@@ -1108,7 +1119,6 @@ impl Sim {
                 t.rest_t = 0.0;
             }
         }
-        Ok(())
     }
 
     fn apply_make_props(&mut self, id: ThingId, m: &Make) {
@@ -1242,7 +1252,7 @@ impl Sim {
     }
 
     /// Something new appeared here: a flash of light.
-    fn flash(&mut self, at: glam::Vec3) {
+    pub(super) fn flash(&mut self, at: glam::Vec3) {
         let now = self.t;
         self.flashes.retain(|f| now - f.1 < FLASH_FOR);
         self.flashes.push((at, now));

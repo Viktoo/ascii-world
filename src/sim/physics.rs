@@ -67,7 +67,7 @@ impl Sim {
         let mut ids: Vec<(f32, ThingId)> = self
             .things
             .live()
-            .filter(|t| !t.asleep && !t.anchored && t.holder.is_none() && t.worn.is_none())
+            .filter(|t| !t.asleep && !t.anchored && t.holder.is_none() && t.worn.is_none() && t.stuck_in.is_none())
             .map(|t| (self.dist_to_player(t.pos), t.id))
             .collect();
         if ids.is_empty() {
@@ -79,8 +79,16 @@ impl Sim {
         let sub = ((dt * 90.0).ceil() as usize).clamp(1, 8);
         let h = dt / sub as f32;
         for (i, (d, id)) in ids.into_iter().enumerate() {
-            if i >= max || d > medium {
-                // Too many in motion, or too far: freeze where it is.
+            // Something sent flying (a spear, an arrow, a shell) is followed
+            // further out than things that only roll about.
+            let flying = self.things.get(id).is_some_and(|t| t.thrown_by.is_some() && t.vel.length() > 6.0);
+            if i >= max || d > if flying { medium * 3.0 } else { medium } {
+                // Too many in motion, or too far: freeze where it is; a shot
+                // gone that far is gone.
+                if self.things.get(id).is_some_and(|t| t.shot) {
+                    self.things.remove(id);
+                    continue;
+                }
                 if let Some(t) = self.things.get_mut(id) {
                     t.asleep = true;
                     t.vel = Vec3::ZERO;
@@ -122,6 +130,7 @@ impl Sim {
     /// Held things follow their holders' hands.
     fn update_held(&mut self) {
         self.update_worn();
+        self.update_stuck();
         let held: Vec<(ThingId, ActorId, Option<ActorId>)> = self.things.live().filter_map(|t| t.holder.map(|h| (t.id, h, t.co_holder))).collect();
         for (id, h, co) in held {
             let Some(t) = self.things.get(id) else { continue };
@@ -156,7 +165,7 @@ impl Sim {
             let hold = match (&ty.ct.meta.tool, co) {
                 (Some(tool), None) => {
                     let fr = match self.actor(h).and_then(|a| a.motion.as_ref()) {
-                        Some(m) if m.tool == id => super::tool::frame(m.name, m.progress(self.t)),
+                        Some(m) if m.tool == id => m.frame(self.t),
                         _ => super::tool::REST,
                     };
                     Some((super::tool::tool_turn(tool, &fr), Vec3::from_array(tool.grip)))
@@ -208,7 +217,10 @@ impl Sim {
     fn integrate(&mut self, id: ThingId, h: f32) -> bool {
         let Some(t) = self.things.get(id) else { return false };
         let Some(ty) = self.snap.type_of(t.type_id).cloned() else { return false };
-        let (c, r) = t.proxy(&ty);
+        // Flying point first, it is its tip that meets things.
+        let pointed = t.point_first && ty.ct.meta.tool.is_some();
+        let (c, r) = if pointed { self.flight_tip(id).unwrap_or_else(|| t.proxy(&ty)) } else { t.proxy(&ty) };
+        let Some(t) = self.things.get(id) else { return false };
         let off = c - t.pos;
         let mut v = t.vel;
         let mass = t.mass();
@@ -216,6 +228,8 @@ impl Sim {
         let friction = t.props[P_FRICTION];
         let thrown = t.thrown_by;
         let old_pos = t.pos;
+        // Not something anyone catches: a point, a shot, a thing that goes off.
+        let missile = pointed || t.shot || ty.ct.meta.burst.is_some();
         v.y -= GRAVITY * h;
         // Water: float if lighter than water, drag either way.
         // Inside a cave the sea doesn't reach.
@@ -228,9 +242,17 @@ impl Sim {
             v *= 1.0 - (2.5 * h).min(0.5);
         }
         let mut p = c + v * h;
+        // Fast and small, it could pass through a wall or a body between
+        // one step and the next: it stops where it first meets one.
+        if (p - c).length() > r {
+            p = self.sweep(id, c, p, r, ty.id, old_pos, thrown);
+        }
+        let v_in = v;
         let mut contact = false;
         let mut impact = 0.0f32;
         let mut hit_name: Option<String> = None;
+        // What it struck hardest: the surface's outward normal, and the body if one.
+        let mut struck: Option<(Vec3, Option<ActorId>)> = None;
         // Terrain.
         let ground = self.snap.terrain.floor(p.x, p.y + r * 0.5, p.z);
         let mut grip = false;
@@ -247,6 +269,9 @@ impl Sim {
                     p += n * (dv + r + 1e-3);
                     let vn = v.dot(n);
                     if vn < 0.0 {
+                        if -vn > impact {
+                            struck = Some((n, None));
+                        }
                         impact = impact.max(-vn);
                         v -= (1.0 + if -vn < 1.0 { 0.0 } else { bounce }) * vn * n;
                     }
@@ -260,6 +285,9 @@ impl Sim {
             p.y = ground + r;
             let vn = v.dot(n);
             if vn < 0.0 {
+                if -vn > impact {
+                    struck = Some((n, None));
+                }
                 impact = impact.max(-vn);
                 // Slow landings don't bounce (no endless jitter).
                 let e = if -vn < 1.0 { 0.0 } else { bounce };
@@ -287,6 +315,7 @@ impl Sim {
                     if -vn > impact {
                         impact = -vn;
                         hit_name = Some(s.ty.name().to_string());
+                        struck = Some((n, None));
                     }
                     // Slow landings don't bounce: a ball comes to rest on a
                     // shelf, a floor, a bush, as it does on the ground.
@@ -334,7 +363,7 @@ impl Sim {
             }
             let height = self.actor_height(a);
             let (d, n) = body_dist(p, body.0, height);
-            if d < r + 0.25 && body.1 > self.t && v.length() > 0.5 && self.actor(a).is_some_and(|x| x.held.is_none()) && mass <= self.strength(a) {
+            if d < r + 0.25 && body.1 > self.t && !missile && v.length() > 0.5 && self.actor(a).is_some_and(|x| x.held.is_none()) && mass <= self.strength(a) {
                 // Caught.
                 let thrower = thrown.map(|x| x.0);
                 if let Some(t) = self.things.get_mut(id) {
@@ -361,12 +390,20 @@ impl Sim {
                     if -vn > impact {
                         impact = -vn;
                         hit_name = Some(self.actor_name(a));
+                        struck = Some((n, Some(a)));
                     }
-                    // Something heavy and fast rocks the body it hits.
+                    // Something heavy and fast rocks the body it hits, and
+                    // what someone sent flying hurts it.
                     let body = self.actor(a).map(|x| x.dims.mass.max(1.0)).unwrap_or(70.0);
                     let give = mass * -vn / body * 0.25;
                     if -vn > 2.0 && give > 0.03 {
                         self.jolt(a, -n, give.min(0.35));
+                    }
+                    // A point goes in with all its speed; anything else
+                    // strikes with what of it meets the body.
+                    let into = if pointed { v.length() } else { -vn };
+                    if into > IMPACT_SAFE {
+                        self.flying_hit(id, a, into, -n);
                     }
                     v -= (1.0 + bounce * 0.5) * vn * n;
                 }
@@ -388,7 +425,8 @@ impl Sim {
             t.pos = p - off;
             t.vel = v;
             t.in_contact = contact;
-            if contact {
+            // Rolling turns it (not one flying point first: that keeps its line).
+            if contact && !pointed {
                 t.spin = Vec3::new(v.x, 0.0, v.z).length() / r.max(0.05) * 0.3;
             }
             t.yaw += t.spin * h;
@@ -411,14 +449,99 @@ impl Sim {
                 t.rest_t = 0.0;
             }
         }
+        // Flying point first: it sticks where it strikes keen and fast
+        // enough along its point; else it glances off and falls flat.
+        if pointed {
+            match struck {
+                Some((n, who)) => {
+                    let along = self.point_dir(id).map(|d| v_in.dot(d)).unwrap_or(0.0);
+                    let keen = self.keen_of(id);
+                    let alive = who.is_none_or(|a| self.actor(a).is_some());
+                    if keen >= super::missile::STICK_KEEN && along > super::missile::STICK_SPEED && v_in.dot(n) < 0.0 && alive {
+                        let len = ty.ct.meta.tool.as_ref().map(|t| (Vec3::from_array(t.tip) - Vec3::from_array(t.grip)).length()).unwrap_or(0.3) * self.things.get(id).map(|t| t.scale).unwrap_or(1.0);
+                        let depth = ((0.02 + 0.006 * along) * keen).min(len * 0.35);
+                        if impact > IMPACT_SAFE {
+                            self.impact(id, impact, hit_name.clone());
+                        }
+                        if self.things.get(id).is_none() {
+                            return false;
+                        }
+                        match who {
+                            Some(a) => self.stick_in(id, a, depth),
+                            None => self.stick_fast(id, depth, hit_name.as_deref().unwrap_or("the ground")),
+                        }
+                        if self.things.get(id).is_some_and(|t| t.shot) && ty.radius() * self.things.get(id).map(|t| t.scale).unwrap_or(1.0) < super::missile::UNSEEN {
+                            self.things.remove(id);
+                        }
+                        return false;
+                    }
+                    self.lay_flat(id, v);
+                }
+                None if contact => self.lay_flat(id, v),
+                None if v.length() > 1.0 => self.point_along(id, v, Some(p)),
+                None => {}
+            }
+        }
         if sleep {
             self.rest_tilted(id);
+            // A spent shot too small to see is cleared away.
+            if self.things.get(id).is_some_and(|t| t.shot) && ty.radius() * self.things.get(id).map(|t| t.scale).unwrap_or(1.0) < super::missile::UNSEEN {
+                self.things.remove(id);
+                return false;
+            }
         }
         if impact > IMPACT_SAFE {
             self.impact(id, impact, hit_name.clone());
+            if self.things.get(id).is_none() {
+                return false;
+            }
         }
         self.push_neighbours(id, p, r, v);
         !sleep
+    }
+
+    /// The first point on the way from `from` to `to` where a sphere of
+    /// radius `r` meets the ground, a solid or a body (or `to`).
+    #[allow(clippy::too_many_arguments)]
+    fn sweep(&mut self, id: ThingId, from: Vec3, to: Vec3, r: f32, type_id: u32, old_pos: Vec3, thrown: Option<(ActorId, f64)>) -> Vec3 {
+        let d = to - from;
+        let len = d.length();
+        let Some(dir) = d.try_normalize() else { return to };
+        let solids: Vec<Solid> = self.solids_near((from + to) * 0.5, len * 0.5 + r + 0.6).into_iter().filter(|s| !((s.inst.pos() - old_pos).length() < 1e-3 && s.ty.id == type_id)).collect();
+        let holder = self.things.get(id).and_then(|t| t.holder);
+        let bodies: Vec<(Vec3, f32)> = self
+            .actor_ids()
+            .into_iter()
+            .filter(|a| Some(*a) != holder && !thrown.is_some_and(|(by, at)| by == *a && self.t - at < 0.4))
+            .filter_map(|a| self.actor(a).map(|x| (x.pos, self.actor_height(a))))
+            .filter(|(p, hgt)| {
+                // Only those near the way.
+                let q = *p + Vec3::Y * hgt * 0.5 - from;
+                let s = q.dot(dir).clamp(0.0, len);
+                (q - dir * s).length() < hgt + r + 1.0
+            })
+            .collect();
+        let terrain = &self.snap.terrain;
+        let mut s = 0.0f32;
+        for _ in 0..160 {
+            let q = from + dir * s;
+            // The ground: how far above it, taken short (it slopes).
+            let mut gap = (q.y - r - terrain.floor(q.x, q.y + r * 0.5, q.z)) * 0.6;
+            for so in &solids {
+                gap = gap.min(so.sdf(q) - r);
+            }
+            for (feet, hgt) in &bodies {
+                gap = gap.min(body_dist(q, *feet, *hgt).0 - r);
+            }
+            if gap <= 0.0 {
+                return q;
+            }
+            s += gap.max(0.01);
+            if s >= len {
+                return to;
+            }
+        }
+        from + dir * s.min(len)
     }
 
     /// Small things in the way get knocked.
@@ -466,6 +589,9 @@ impl Sim {
 
     /// Something hit something at `speed` m/s.
     pub fn impact(&mut self, id: ThingId, speed: f32, with: Option<String>) {
+        if self.burst_on_impact(id, speed) {
+            return;
+        }
         let Some(t) = self.things.get(id) else { return };
         let fragile = t.props[P_FRAGILE];
         let pos = t.pos;

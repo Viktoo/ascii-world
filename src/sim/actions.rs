@@ -904,13 +904,24 @@ impl Sim {
             if Some(h) == self.liven_peek(&r.target) {
                 return Ok(Outcome::ok(format!("{name} is already holding the {}", r.name)).thing(h));
             }
+            // Ammunition taken up with its launcher in hand goes into it.
+            if let (Some(l), Some(id)) = (self.launch_of(h), self.liven(&r.target)) {
+                if self.is_ammo_for(&l, id) {
+                    return self.load(who, h, id);
+                }
+            }
             return fail(format!("hands are full: drop the {} first", self.thing_name(h)));
         }
         self.reach(who, &r)?;
         let id = self.liven(&r.target).ok_or(ActErr::Fail(format!("the {} can't be picked up", r.name)))?;
         let t = self.things.get(id).cloned().ok_or(ActErr::Fail("it's gone".into()))?;
-        if t.anchored {
+        if t.anchored && !t.shape.stuck {
             return fail(format!("the {} won't budge", r.name));
+        }
+        // Stuck fast (an arrow in a tree, a spear in the ground, a dart in
+        // someone): pulled out.
+        if t.stuck() {
+            self.unstick(id);
         }
         let mass = t.mass();
         let strength = self.strength(who);
@@ -982,7 +993,12 @@ impl Sim {
     }
 
     /// The thing id a target already has, without promoting it.
-    fn liven_peek(&self, t: &Target) -> Option<ThingId> {
+    /// The live thing a target already is, if it is one (nothing is promoted).
+    pub fn liven_peek_pub(&self, t: &Target) -> Option<ThingId> {
+        self.liven_peek(t)
+    }
+
+    pub(super) fn liven_peek(&self, t: &Target) -> Option<ThingId> {
         match t {
             Target::Thing(id) => Some(*id),
             Target::Instance(i) => self.things.by_instance.get(i).copied(),
@@ -1032,7 +1048,9 @@ impl Sim {
                 if v.length() > vmax {
                     v = v.normalize_or_zero() * vmax;
                 }
-                if let Some(o) = target_actor {
+                // Thrown to them, they get ready to catch it; thrown at
+                // them (a spear, a lit grenade), not.
+                if let Some(o) = target_actor.filter(|_| !self.is_missile(id)) {
                     if let Some(x) = self.actor_mut(o) {
                         x.catching = 0.0;
                     }
@@ -1052,10 +1070,16 @@ impl Sim {
             }
         }
         self.drop_thing(id, v);
+        // Something keen flies point first (a spear, a knife, a dart).
+        let points = self.keen_of(id) >= 0.3;
         if let Some(t) = self.things.get_mut(id) {
             t.thrown_by = Some((who, self.t));
-            t.spin = 4.0;
+            t.spin = if points { 0.0 } else { 4.0 };
             t.through = None;
+            t.point_first = points;
+        }
+        if points {
+            self.point_along(id, v, None);
         }
         let msg = if target_name.is_empty() { format!("{name} throws the {tname}") } else { format!("{name} throws the {tname} at {}", the(&target_name)) };
         self.event("threw", Some(who), Some(format!("thing:{id}")), msg.clone(), Some(me.pos), json!({ "at": target_name, "speed": (v.length() as f64 * 10.0).round() / 10.0, "to": target_actor }));
@@ -1140,6 +1164,10 @@ impl Sim {
         // 1. Food.
         if object.is_none() && self.things.get(a).is_some_and(|t| t.props[P_EDIBLE] > 0.0) {
             return self.eat(who, a);
+        }
+        // Something that goes off, used by itself: lit (a fuse, a pin pulled).
+        if object.is_none() && self.burst_of(a).is_some() && self.things.get(a).is_some_and(|t| t.shape.fuse_at.is_none()) {
+            return self.light_held(who, a);
         }
         // 2. Its own code.
         if self.run_use(a, b, who) {

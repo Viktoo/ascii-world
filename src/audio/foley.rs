@@ -36,6 +36,8 @@ pub struct Foley {
     since_fire: f32,
     /// Fires crackling last time (texture keys).
     fires: HashSet<u64>,
+    /// Things whooshing by and fuses fizzing last time (texture keys).
+    flying: HashSet<u64>,
     n: u64,
     /// The world time thunder was last listened for.
     thunder_t: f64,
@@ -91,6 +93,7 @@ impl Foley {
             }
         }
         self.walkers(sim, dt, seed, out);
+        self.flight(sim, out);
         self.since_fire += dt;
         if self.since_fire >= 0.25 {
             self.since_fire = 0.0;
@@ -251,6 +254,46 @@ impl Foley {
             out.push(Cmd::Texture { key: *key, at: At::Point(me), mat: Material::FIRE, size: 0.3, drive: 0.0, roar: 0.0, gain: 1.0 });
         }
         self.fires = now;
+    }
+
+    /// What flies fast whooshes by (a spear, an arrow, a stone hurled; a
+    /// bullet only whips past), louder the faster and the bigger; a lit
+    /// fuse fizzes until it goes off.
+    fn flight(&mut self, sim: &mut Sim, out: &mut Vec<Cmd>) {
+        const R: f32 = 45.0;
+        let me = sim.player.pos;
+        let air = Material { hard: 0.05, dry: 1.0, ring: 0.0, leafy: 0.0 };
+        let mut now = HashSet::new();
+        let mut list: Vec<(f32, u64, Vec3, Material, f32, f32, f32)> = Vec::new();
+        for id in sim.things.near(me, R) {
+            let Some(t) = sim.things.get(id) else { continue };
+            if t.held() {
+                if t.shape.fuse_at.is_none() {
+                    continue;
+                }
+            }
+            let d = (t.pos - me).length();
+            if t.shape.fuse_at.is_some() {
+                // Fizzing: small sharp grains, no roar.
+                list.push((d, (6 << 48) | id as u64, t.pos, Material::FIRE, 0.12, 0.7, 0.5));
+            }
+            let speed = t.vel.length();
+            if t.thrown_by.is_some() && !t.in_contact && !t.asleep && speed > 8.0 {
+                let size = sim.snap.type_of(t.type_id).map(|ty| ty.radius() * t.scale).unwrap_or(0.2);
+                // Bigger things sound lower and fuller; a tiny fast one, a thin whip.
+                let drive = ((speed / 40.0).sqrt() * (0.4 + size.min(1.0))).min(1.3);
+                list.push((d, (5 << 48) | id as u64, t.pos, air, (0.15 + size * 0.6).min(0.9), drive, 0.45));
+            }
+        }
+        list.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, key, at, mat, size, drive, gain) in list.into_iter().take(4) {
+            out.push(Cmd::Texture { key, at: At::Point(at), mat, size, drive, roar: 0.0, gain });
+            now.insert(key);
+        }
+        for key in self.flying.difference(&now) {
+            out.push(Cmd::Texture { key: *key, at: At::Point(me), mat: air, size: 0.3, drive: 0.0, roar: 0.0, gain: 0.4 });
+        }
+        self.flying = now;
     }
 
     /// Lightning heard: a crack when it is near, then the long roll, late

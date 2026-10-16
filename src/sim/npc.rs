@@ -504,6 +504,11 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "run_away" | "run_from" | "escape" | "get_away" | "flee_from" => "flee",
         "close" | "shut" | "unlatch" | "open_door" => "open",
         "swing" | "strike" | "hit" | "attack" | "chop" | "dig" | "stab" | "thrust" | "pour" | "swing_at" => "use",
+        // A launcher in hand: shoot at what is named; load it with what is named.
+        "shoot" | "shoot_at" | "fire" | "fire_at" | "loose" | "aim" | "load" | "reload" => "use",
+        // Light, set off, pull the pin: the thing named itself is used.
+        "light" | "ignite" | "set_off" | "pull_pin" | "detonate" | "arm" => "use",
+        "throw_at" | "hurl" | "lob" | "fling" => "throw",
         "duck" | "kneel_down" => "crouch",
         "hop" | "leap" => "jump",
         v => v,
@@ -519,7 +524,8 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         obj.insert("close".into(), Value::Bool(true));
     }
     // "swing at the wolf", "dig here": the held tool is worked on the target.
-    if verb == "use" && raw != "use" {
+    let lights = matches!(raw.as_str(), "light" | "ignite" | "set_off" | "pull_pin" | "detonate" | "arm");
+    if verb == "use" && raw != "use" && !lights {
         if let Some(t) = obj.remove("at").or_else(|| obj.remove("target")) {
             obj.entry("on").or_insert(t);
         }
@@ -1564,7 +1570,7 @@ impl Sim {
         let Some(n) = self.cast.get(cid) else { return what.to_string() };
         let me = ActorId::Npc(cid);
         let pos = n.a.pos;
-        let held = n.a.held.map(|h| self.thing_name(h));
+        let held = n.a.held.map(|h| format!("{}{}", self.thing_name(h), self.arms_note(h).map(|w| format!(" ({w})")).unwrap_or_default()));
         let needs = n.needs;
         let goal = n.goal.clone();
         let mut things = Vec::new();

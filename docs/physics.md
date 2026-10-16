@@ -154,6 +154,58 @@ Nothing here is drawn per weapon or per kind of body; the body itself shows it.
 - In a world where things die (`hunting`), a body whose health the world's
   rules wear to nothing dies of it.
 
+## Things that fly and things that go off (`sim/missile.rs`, `sim/burst.rs`)
+
+Nothing here is per weapon: a bow, a musket, a sling, a cannon and a wand are
+one `launch` with different numbers; a grenade, dynamite, a powder keg, a
+shell and a firework are one `burst`.
+
+- **Keen** (`meta.tool.sharp`, 0..1; judged from the motions when not said):
+  thrown, a keen thing flies point first (it turns to face its flight and its
+  tip is what meets things). Striking fast enough along its point (7 m/s),
+  and keen enough (0.45), it sticks: in the ground, a tree, a wall (anchored,
+  `Shape::stuck`, saved), or a body (`Thing::stuck_in`, it goes where they go
+  and works loose after 45 s). A hand pulls it out (`g`, `hold`).
+- **Hurt from flying things**: anything someone threw or shot hurts a body it
+  hits by its energy, more if keen, against the body's size
+  (`missile::flight_hurt`): a ball tossed in play nothing, a stone a bruise, an
+  arrow a wound, a musket ball near death. What is worn softens it. It goes
+  through the same `take_blow` as a sword's blow and a blast (fear, flight,
+  memories, death).
+- **Fast things don't tunnel**: a step longer than the thing's size is swept
+  (sphere-traced against the ground, solids and bodies), so a musket ball
+  stops at the wall it hits. Flying things are followed out to three times the
+  usual distance; a shot gone further is dropped, and spent shots too small to
+  see are cleared when they come to rest.
+- **Launchers** (`meta.tool.launch { ammo, speed, spread, holds, per_shot,
+  ready }`): the `shoot` motion raises it to the aim and, after `ready`
+  seconds, sends `per_shot` of its ammunition (a type by name) from its tip,
+  aimed to drop onto the mark (`missile::aim`, the flatter arc). It holds
+  `holds` shots (`Shape::spent`, saved; 0: never runs out); ammunition lying
+  about loads it (`e` at it, or `hold` it, with the launcher in hand).
+  Ammunition nobody has written is asked for by name, and the built-in `shot`
+  flies until it comes. A keen shot sticks like a thrown spear.
+- **Bursts** (`meta.burst { radius, hurt, push, crater, fire, fuse, impact }`):
+  lit by `e`/`use` in hand, by fire or heat over 250 °C, or by another burst;
+  launched shells are lit as they leave. After the fuse, or on a hard hit when
+  `impact`, it goes off: bodies within the radius are hurt (fading with
+  distance) and thrown, loose things thrown, the ground blown into a crater
+  (`crater` m deep, a sloped bowl), holes torn in walls, trees and carts close
+  by, things heated (`fire`), other bursts set off a moment later. Everyone
+  within earshot startles; the hurt fear whoever lit it.
+- **Characters** do it all through the shared actions: plan steps `shoot`,
+  `load`, `light`, `throw at`; the planner is told what their held thing can
+  do ("it shoots arrows, 7 left"); someone holding a loaded launcher or a
+  burst is armed (feared). Phantoms take up launchers first, shoot from up to
+  45 m, and light and throw what goes off.
+- **Sound**: a gun cracks and a bow snaps when loosed; what flies fast whooshes
+  (lower and fuller the bigger); a lit fuse fizzes; a blast booms by its size;
+  hits and sticking thud by material.
+
+Not yet: aiming help (a crosshair for long shots), merging many small
+craters. A lit fuse and stuck things are saved; something stuck in a body is
+not (it falls out on a restart).
+
 ## Exposure (`sim/exposure.rs`)
 
 `Sim::exposure(p)` says how open a spot is to the sky, 0..1: how far it rises

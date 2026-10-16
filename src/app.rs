@@ -738,6 +738,11 @@ impl App {
         let target = self.pointed_thing();
         let held = self.sim.player.held;
         let at = self.pointed_at();
+        // Something that goes off, in hand: e lights it, whatever is in view.
+        if let Some(h) = held.filter(|h| self.sim.burst_of(*h).is_some() && self.sim.things.get(*h).is_some_and(|t| t.shape.fuse_at.is_none())) {
+            self.player_act(Action::Use { target: Some(Target::Thing(h)), on: None, at: None });
+            return;
+        }
         let a = match (held, target) {
             (Some(_), Some(t)) => Action::Use { target: None, on: Some(t), at },
             (Some(_), None) => {
@@ -933,7 +938,7 @@ impl App {
                     "/ <anything> — do or make anything, at what the middle of the view points at:",
                     "  /a lighthouse on that hill · /punch a hole here · /add the stick to this wall (stick in hand) · /rub the stone on the lantern",
                     "/undo — undo the last thing you created   /history — list world versions",
-                    "e use (opens doors; swings, chops or digs with a held tool; pets, rides, greets or feeds who is in front; gets into a cart or car) · e also picks up a loose thing when your hands are empty · g pick up / put down (small animals too, if they let you) · f throw · y/n answer",
+                    "e use (opens doors; swings, chops or digs with a held tool; shoots a bow or a gun where you look, and loads it with ammunition you point at; lights something that goes off; pets, rides, greets or feeds who is in front; gets into a cart or car) · e also picks up a loose thing when your hands are empty · g pick up / put down (small animals too, if they let you; pulls out what is stuck fast) · f throw (keen things fly point first) · y/n answer",
                     "/wave /bow /nod /cheer /dance /sit /hug NAME /kiss NAME /handshake NAME /highfive NAME · /gesture ANY [NAME]",
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/ride NAME · /drive (the vehicle in view) · /dismount · /pet NAME · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
@@ -1581,6 +1586,19 @@ impl App {
                     (None, Some(p), None) if self.sim.target_seats(&p.target) => format!("{}: e sit   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
+                    (None, _, Some(h)) if self.sim.burst_of(h).is_some() => match self.sim.things.get(h).and_then(|t| t.shape.fuse_at) {
+                        Some(at) => format!("the {} is LIT ({:.0} s): f throw it!", self.sim.thing_name(h), (at - self.sim.t).max(0.0)),
+                        None => format!("holding the {}: e light   f throw   g put down   / do", self.sim.thing_name(h)),
+                    },
+                    (None, p, Some(h)) if self.sim.launch_of(h).is_some() => {
+                        let l = self.sim.launch_of(h);
+                        let left = self.sim.shots_left(h).map(|n| format!(" ({n} left)")).unwrap_or_default();
+                        match p {
+                            Some(p) if self.sim.liven_peek_pub(&p.target).is_some_and(|id| l.as_ref().is_some_and(|l| self.sim.is_ammo_for(l, id))) => format!("{}: e load it into the {}{left}   g put down", p.name, self.sim.thing_name(h)),
+                            Some(p) => format!("e shoot the {} at the {}{left}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
+                            None => format!("holding the {}: e shoot{left}   f throw   g put down   / do", self.sim.thing_name(h)),
+                        }
+                    }
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
                     (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings/quit".into(),

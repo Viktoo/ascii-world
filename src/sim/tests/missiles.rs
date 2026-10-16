@@ -1,0 +1,254 @@
+//! Things that fly and strike, and things that go off: a spear thrown point
+//! first sticks in the ground, a bow shoots someone and is loaded again, a
+//! musket ball stops at a wall instead of passing through it between two
+//! steps, a grenade lit and thrown blows out a crater and hurts who is
+//! near, a shell goes off where it lands, fire sets off what lies in it,
+//! and characters do all of it through the same actions.
+
+use super::*;
+
+/// The thing of a type nearest `p`.
+fn nearest_of(s: &Session, tid: u32, p: Vec3) -> Option<super::super::things::ThingId> {
+    s.sim.things.live().filter(|t| t.type_id == tid).min_by(|a, b| (a.pos - p).length().total_cmp(&(b.pos - p).length())).map(|t| t.id)
+}
+
+#[test]
+fn a_spear_flies_point_first_sticks_and_pulls_out() {
+    let w = world_with("spear", 71, bare());
+    let spear = add_type(&w, &fixture("physics/spear.js"));
+    let p = flat_spot(&w, 30.0);
+    let si = place(&w, spear, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let mut s = session(&w, 71, None);
+    s.sim.player.pos = p;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(si) }, 0.5);
+    let id = s.sim.player.held.expect("holding the spear");
+    let d = Vec3::new(0.0, -0.3, 1.0).normalize();
+    let r = act_once(&mut s, ActorId::Player, Action::Throw { at: None, dir: Some(d.to_array()), force: Some(12.0) }, 0.05);
+    assert_eq!(r["ok"].as_bool(), Some(true), "thrown: {r}");
+    // In flight it points the way it goes.
+    let mut pointed = false;
+    for _ in 0..8 {
+        s.run(0.05, 0.05);
+        let t = s.sim.things.get(id).unwrap();
+        if t.point_first {
+            let along = s.sim.point_dir(id).unwrap().dot(t.vel.normalize());
+            assert!(along > 0.95, "it flies point first: {along:.2}");
+            pointed = true;
+        }
+    }
+    assert!(pointed, "it flew point first");
+    s.run(3.0, 0.05);
+    let t = s.sim.things.get(id).unwrap().clone();
+    assert!(t.shape.stuck && t.anchored, "it stuck where it landed");
+    assert!(!events(&s.sim, "stuck").is_empty(), "told");
+    let (tip, _) = s.sim.flight_tip(id).unwrap();
+    assert!(tip.y < s.sim.snap.terrain.height(tip.x, tip.z), "its point is in the ground: {:.2} under", s.sim.snap.terrain.height(tip.x, tip.z) - tip.y);
+    assert!(s.sim.point_dir(id).unwrap().y < -0.15, "it stands slanting into the ground");
+    // Pulled out.
+    s.sim.player.pos = ground(&w, t.pos.x, t.pos.z - 0.8);
+    let r = act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(id) }, 0.5);
+    assert_eq!(r["ok"].as_bool(), Some(true), "pulled out: {r}");
+    let t = s.sim.things.get(id).unwrap();
+    assert!(!t.shape.stuck && !t.anchored && t.holder == Some(ActorId::Player), "in hand again");
+    sound(&s);
+}
+
+#[test]
+fn a_bow_shoots_hurts_runs_out_and_is_loaded_again() {
+    let w = world_with("bow", 72, bare());
+    let bow = add_type(&w, &fixture("physics/bow.js"));
+    let arrow = add_type(&w, &fixture("physics/arrow.js"));
+    let p = flat_spot(&w, 30.0);
+    let bi = place(&w, bow, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let cid = add_char(&w, "Bo", "brave", &[], p + Vec3::new(0.0, 0.0, 14.0));
+    let mut s = session(&w, 72, None);
+    s.sim.player.pos = p;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(bi) }, 0.5);
+    let bow_id = s.sim.player.held.unwrap();
+    assert_eq!(s.sim.shots_left(bow_id), Some(2), "a full quiver of two");
+    let bo = ActorId::Npc(cid);
+    s.sim.cast.get_mut(cid).unwrap().a.pos = ground(&w, p.x, p.z + 14.0);
+    let health = |s: &Session| s.sim.cast.get(cid).unwrap().props[P_HEALTH];
+    let before = health(&s);
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Actor(bo)), at: None }, 2.0);
+    assert_eq!(r["ok"].as_bool(), Some(true), "aimed: {r}");
+    assert!(!events(&s.sim, "shot").is_empty(), "loosed");
+    assert!(health(&s) < before - 0.15, "the arrow wounded Bo: {before:.2} → {:.2}", health(&s));
+    assert!(s.sim.log.recent.iter().any(|e| e.kind == "struck" && e.actor == Some(ActorId::Player) && e.data["motion"] == "shot"), "a shot, told as one");
+    assert!(s.sim.social.fear(bo, ActorId::Player) > 0.0, "Bo fears the archer");
+    // The shot is an arrow of the world's own (it has one by that name).
+    assert!(s.sim.things.live().any(|t| t.type_id == arrow && t.origin.made_from.iter().any(|m| m == "test bow")), "an arrow flew");
+    assert_eq!(s.sim.shots_left(bow_id), Some(1));
+    // Into the air ahead, and then it is empty.
+    let far = ground(&w, p.x + 20.0, p.z - 20.0);
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(far.to_array())), at: Some(far.to_array()) }, 4.0);
+    assert_eq!(r["ok"].as_bool(), Some(true), "shot at the ground: {r}");
+    assert_eq!(s.sim.shots_left(bow_id), Some(0));
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(far.to_array())), at: Some(far.to_array()) }, 0.5);
+    assert_eq!(r["ok"].as_bool(), Some(false), "nothing left: {r}");
+    assert!(r["msg"].as_str().unwrap_or("").contains("nothing left"), "{r}");
+    // An arrow lying by: loaded.
+    let lying = s.sim.spawn_thing(arrow, s.sim.player.pos + Vec3::new(0.6, 0.0, 0.3), 0.0, 1.0, Default::default(), true).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(lying)), at: None }, 0.3);
+    assert_eq!(r["ok"].as_bool(), Some(true), "loaded: {r}");
+    assert_eq!(s.sim.shots_left(bow_id), Some(1));
+    assert!(s.sim.things.get(lying).is_none(), "the arrow went into the quiver");
+    sound(&s);
+}
+
+#[test]
+fn a_musket_ball_stops_at_the_wall() {
+    let w = world_with("musket", 73, bare());
+    let musket = add_type(&w, &fixture("physics/musket.js"));
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    let h = flat_spot(&w, 50.0);
+    place(&w, hut, h, 0.0);
+    let p = ground(&w, h.x - 16.0, h.z);
+    let mi = place(&w, musket, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let mut s = session(&w, 73, None);
+    s.sim.player.pos = p;
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(mi) }, 0.5);
+    let wall = Vec3::new(h.x - 3.2, h.y + 1.4, h.z);
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(wall.to_array())), at: Some(wall.to_array()) }, 1.5);
+    assert_eq!(r["ok"].as_bool(), Some(true), "fired: {r}");
+    // No lead ball is written yet (no LLM): the built-in shot flies for it.
+    let shot = builtin_id(&w, "shot");
+    let id = nearest_of(&s, shot, wall).expect("a shot was fired");
+    let t = s.sim.things.get(id).unwrap();
+    assert!(t.pos.x < h.x - 2.0, "it stayed this side of the wall: {:.2} m from the hut's middle", t.pos.x - h.x);
+    assert!(t.shape.stuck, "and stuck in it");
+    sound(&s);
+}
+
+#[test]
+fn a_grenade_lit_and_thrown_blows_out_a_crater() {
+    let w = world_with("grenade", 74, bare());
+    let grenade = add_type(&w, &fixture("physics/grenade.js"));
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let p = flat_spot(&w, 30.0);
+    let gi = place(&w, grenade, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let spot = ground(&w, p.x, p.z + 9.0);
+    let cid = add_char(&w, "Bo", "brave", &[], spot + Vec3::new(1.5, 0.0, 0.0));
+    let bi = place(&w, ball, spot + Vec3::new(-1.2, 0.0, 0.0), 0.0);
+    let mut s = session(&w, 74, None);
+    s.sim.player.pos = p;
+    s.sim.cast.get_mut(cid).unwrap().a.pos = ground(&w, spot.x + 1.5, spot.z);
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Instance(gi) }, 0.3);
+    let id = s.sim.player.held.unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: Some(Target::Thing(id)), on: None, at: None }, 0.05);
+    assert_eq!(r["ok"].as_bool(), Some(true), "lit: {r}");
+    assert!(s.sim.things.get(id).unwrap().shape.fuse_at.is_some());
+    let ball_id = s.sim.liven(&Target::Instance(bi)).unwrap();
+    let ball_at = s.sim.things.get(ball_id).unwrap().pos;
+    let health = |s: &Session| s.sim.cast.get(cid).unwrap().props[P_HEALTH];
+    let before = health(&s);
+    // Heard: the fuse fizzing, the whoosh as it flies, the blast.
+    let mut foley = crate::audio::foley::Foley::default();
+    let mut cmds = Vec::new();
+    let (mut fizz, mut whoosh, mut boom) = (false, false, 0.0f32);
+    let r = s.sim.act(ActorId::Player, Action::Throw { at: Some(Target::Point(spot.to_array())), dir: None, force: None });
+    assert!(r.is_ok_and(|o| o.ok), "thrown");
+    for _ in 0..180 {
+        s.sim.step(1.0 / 60.0);
+        for c in &s.sim.sounds {
+            if let crate::audio::Heard::Hit { mass, .. } = c.what {
+                boom = boom.max(mass);
+            }
+        }
+        foley.frame(&mut s.sim, 1.0 / 60.0, &mut cmds);
+        for c in cmds.drain(..) {
+            if let crate::audio::mix::Cmd::Texture { key, drive, .. } = c {
+                fizz |= key >> 48 == 6 && drive > 0.0;
+                whoosh |= key >> 48 == 5 && drive > 0.0;
+            }
+        }
+    }
+    assert!(fizz && whoosh, "fizz {fizz}, whoosh {whoosh}");
+    assert!(boom > 500.0, "a great bang: {boom}");
+    let burst = events(&s.sim, "burst");
+    assert_eq!(burst.len(), 1, "it went off");
+    assert_eq!(burst[0].actor, Some(ActorId::Player), "by the one who lit it");
+    assert!(s.sim.things.get(id).is_none(), "and is gone");
+    let at = Vec3::from_array(burst[0].pos.unwrap());
+    let dug = s.sim.snap.terrain.natural_height(at.x, at.z) - s.sim.snap.terrain.height(at.x, at.z);
+    assert!(dug > 0.4, "a crater {dug:.2} m deep");
+    assert!(health(&s) < before - 0.1, "Bo was hurt: {before:.2} → {:.2}", health(&s));
+    assert!(s.sim.things.get(ball_id).is_some_and(|t| (t.pos - ball_at).length() > 1.0), "the ball was thrown");
+    sound(&s);
+}
+
+#[test]
+fn a_shell_goes_off_where_it_lands_and_fire_sets_off_a_fuse() {
+    let w = world_with("shell", 75, bare());
+    let shell = add_type(&w, &fixture("physics/shell.js"));
+    let grenade = add_type(&w, &fixture("physics/grenade.js"));
+    let p = flat_spot(&w, 30.0);
+    let mut s = session(&w, 75, None);
+    s.sim.player.pos = p;
+    let at = p + Vec3::new(10.0, 6.0, 0.0);
+    let id = s.sim.spawn_thing(shell, at, 0.0, 1.0, Default::default(), false).unwrap();
+    if let Some(t) = s.sim.things.get_mut(id) {
+        t.vel = Vec3::new(0.0, -12.0, 0.0);
+        t.asleep = false;
+        t.thrown_by = Some((ActorId::Player, s.sim.t));
+    }
+    s.run(1.5, 0.05);
+    assert_eq!(events(&s.sim, "burst").len(), 1, "it went off on landing");
+    assert!(s.sim.things.get(id).is_none());
+    // A grenade in a fire: it lights, and goes off after its fuse.
+    let g = s.sim.spawn_thing(grenade, p + Vec3::new(-12.0, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.things.get_mut(g).unwrap().props[P_TEMP] = 400.0;
+    s.run(0.5, 0.05);
+    assert!(s.sim.things.get(g).is_some_and(|t| t.shape.fuse_at.is_some()), "the heat lit it");
+    assert_eq!(events(&s.sim, "burst").len(), 1, "not yet");
+    s.run(2.5, 0.05);
+    assert_eq!(events(&s.sim, "burst").len(), 2, "then it went off");
+    sound(&s);
+}
+
+#[test]
+fn characters_shoot_light_and_load_through_their_plans() {
+    let steps = |v: serde_json::Value| super::super::npc::parse_step(&v).unwrap();
+    assert!(matches!(steps(serde_json::json!({ "do": "shoot", "at": "Bo" })), Action::Use { target: None, on: Some(_), .. }));
+    assert!(matches!(steps(serde_json::json!({ "do": "load", "target": "arrow" })), Action::Use { target: None, on: Some(_), .. }));
+    assert!(matches!(steps(serde_json::json!({ "do": "light", "target": "dynamite" })), Action::Use { target: Some(_), on: None, .. }));
+    assert!(matches!(steps(serde_json::json!({ "do": "hurl", "at": "wolf" })), Action::Throw { at: Some(_), .. }));
+
+    let w = world_with("archer", 76, bare());
+    let bow = add_type(&w, &fixture("physics/bow.js"));
+    add_type(&w, &fixture("physics/arrow.js"));
+    let p = flat_spot(&w, 30.0);
+    let ola = add_char(&w, "Ola", "a hunter", &[], p);
+    let bo = add_char(&w, "Bo", "brave", &[], p + Vec3::new(0.0, 0.0, 12.0));
+    let mut s = session(&w, 76, None);
+    s.sim.player.pos = p + Vec3::new(-30.0, 0.0, 0.0);
+    s.sim.cast.get_mut(ola).unwrap().a.pos = p;
+    s.sim.cast.get_mut(bo).unwrap().a.pos = ground(&w, p.x, p.z + 12.0);
+    let b = s.sim.spawn_thing(bow, p, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.hand_to(ActorId::Npc(ola), b);
+    assert_eq!(s.sim.cast.get(ola).unwrap().a.held, Some(b), "Ola holds the bow");
+    assert!(s.sim.armed(ActorId::Npc(ola)).is_some(), "a bow with arrows in it is a weapon");
+    assert!(s.sim.arms_note(b).unwrap().contains("shoots test arrows"), "{:?}", s.sim.arms_note(b));
+    let before = s.sim.cast.get(bo).unwrap().props[P_HEALTH];
+    s.sim.plan(ActorId::Npc(ola), vec![steps(serde_json::json!({ "do": "shoot", "at": "Bo" }))], "shoot Bo", false);
+    s.run(3.0, 0.05);
+    assert!(s.sim.log.recent.iter().any(|e| e.kind == "shot" && e.actor == Some(ActorId::Npc(ola))), "Ola shot");
+    assert!(s.sim.cast.get(bo).unwrap().props[P_HEALTH] < before - 0.1, "and hit Bo");
+    sound(&s);
+}
+
+#[test]
+fn shapes_say_how_they_shoot_and_go_off() {
+    let ok = crate::lang::compile(&fixture("physics/bow.js")).unwrap();
+    let tool = ok.meta.tool.unwrap();
+    assert!(tool.motions.iter().any(|m| m == "shoot"), "a launcher shoots: {:?}", tool.motions);
+    assert_eq!(tool.launch.unwrap().holds, 2);
+    let g = crate::lang::compile(&fixture("physics/grenade.js")).unwrap().meta.burst.unwrap();
+    assert_eq!(g.push, 18.0);
+    let s = crate::lang::compile(&fixture("physics/shell.js")).unwrap().meta.burst.unwrap();
+    assert!(s.impact && (s.push - 12.0).abs() < 1e-4, "push defaults to 3 × radius");
+    let bad = r#"export const meta = { name: "gun", bounds: [0.1, 0.1, 0.5], tool: { grip: [0, 0, 0], tip: [0, 0, 0.4], motions: ["shoot"] } };
+export function sdf(x, y, z, k) { return box(x, y, z, 0.05, 0.05, 0.4); }"#;
+    let e = crate::lang::compile(bad).unwrap_err();
+    assert!(crate::lang::format_diags(&e).contains("launch"), "{}", crate::lang::format_diags(&e));
+}

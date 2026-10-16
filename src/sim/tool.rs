@@ -5,9 +5,12 @@
 //! motion's key poses; at its moment of impact the tip meets what was aimed
 //! at, at the tip's own speed, and the world's physics and rules decide what
 //! that does: a fragile thing breaks, a being is hurt and reacts, a tree
-//! takes a notch and in time falls, the ground gives a pit.
+//! takes a notch and in time falls, the ground gives a pit. A launcher
+//! (`meta.tool.launch`: a bow, a sling, a gun) shoots: it is raised and
+//! made ready, and at the end of it what it holds leaves its tip (see
+//! `missile`).
 
-use super::actions::{ActErr, Outcome};
+use super::actions::{ActErr, Outcome, fail};
 use super::actor::{LEAN, R_FWD, R_RAISE};
 use super::props::*;
 use super::things::ThingId;
@@ -43,7 +46,7 @@ pub struct MotionDef {
     pub keys: &'static [(f32, Frame)],
 }
 
-pub const MOTION_DEFS: [MotionDef; 5] = [
+pub const MOTION_DEFS: [MotionDef; 6] = [
     MotionDef {
         name: "swing",
         dur: 0.7,
@@ -74,6 +77,14 @@ pub const MOTION_DEFS: [MotionDef; 5] = [
         impact: 0.55,
         keys: &[(0.0, REST), (0.3, f(0.3, 0.85, 0.05, 0.2, 0.0, 0.0)), (0.6, f(0.3, 0.9, 0.1, 0.1, 0.0, 1.9)), (0.8, f(0.3, 0.85, 0.05, 0.2, 0.0, 0.3)), (1.0, REST)],
     },
+    // Raised level before the eye, held while it is made ready, loosed at
+    // the end (its length is the launcher's own `ready`).
+    MotionDef {
+        name: "shoot",
+        dur: 0.8,
+        impact: 0.86,
+        keys: &[(0.0, REST), (0.3, f(0.28, 0.98, 0.02, 0.0, 0.0, 0.0)), (0.86, f(0.3, 1.0, 0.0, 0.0, 0.0, 0.0)), (0.92, f(0.34, 0.92, -0.04, 0.08, 0.0, 0.0)), (1.0, f(0.3, 0.9, 0.0, 0.02, 0.0, 0.0))],
+    },
 ];
 
 pub fn motion_def(name: &str) -> Option<&'static MotionDef> {
@@ -92,12 +103,26 @@ pub struct MotionRun {
     /// The tool's tip at the last step (world), for its speed.
     pub tip: Option<Vec3>,
     pub speed: f32,
+    /// How long it takes (s): the motion's own, or a launcher's `ready`.
+    pub dur: f32,
+    /// How far up it is aimed (radians; a shot at something high or far).
+    pub aim_pitch: f32,
 }
 
 impl MotionRun {
     pub fn progress(&self, now: f64) -> f32 {
-        let d = motion_def(self.name).map(|m| m.dur).unwrap_or(1.0);
-        ((now - self.t0) as f32 / d).clamp(0.0, 1.0)
+        ((now - self.t0) as f32 / self.dur.max(0.05)).clamp(0.0, 1.0)
+    }
+
+    /// The pose now: the motion's, tipped up to its aim while aiming.
+    pub fn frame(&self, now: f64) -> Frame {
+        let mut fr = frame(self.name, self.progress(now));
+        if self.name == "shoot" {
+            let up = ((fr.reach - REST.reach) / (0.98 - REST.reach)).clamp(0.0, 1.0);
+            fr.pitch += self.aim_pitch * up;
+            fr.raise += self.aim_pitch.max(0.0) * 0.3 * up;
+        }
+        fr
     }
 }
 
@@ -123,16 +148,20 @@ pub fn tool_turn(tool: &Tool, fr: &Frame) -> Quat {
 }
 
 /// The motion a tool makes against a target: digging into ground, chopping
-/// what grows, swinging at beings.
-fn choose(tool: &Tool, target: Option<&Target>) -> &'static str {
+/// what grows, swinging at beings; a launcher shoots at what is beyond its
+/// reach as a blade (or a bayonet) would strike, or has nothing else.
+fn choose(tool: &Tool, target: Option<&Target>, beyond_reach: bool) -> &'static str {
     let has = |m: &str| tool.motions.iter().any(|x| x == m);
+    if has("shoot") && (beyond_reach || target.is_none() || tool.motions.len() == 1 || matches!(target, Some(Target::Point(_)) if !has("dig"))) {
+        return "shoot";
+    }
     let order: &[&str] = match target {
         Some(Target::Point(_)) => &["dig", "chop", "pour", "swing", "thrust"],
         Some(Target::Actor(_)) => &["swing", "thrust", "chop", "dig", "pour"],
         Some(_) => &["chop", "swing", "thrust", "pour", "dig"],
         None => &["swing", "chop", "thrust", "pour", "dig"],
     };
-    let name = order.iter().find(|m| has(m)).copied().unwrap_or("swing");
+    let name = order.iter().find(|m| has(m)).copied().unwrap_or(if has("shoot") { "shoot" } else { "swing" });
     // Digging at something that is not the ground is a swing of the spade.
     if name == "dig" && !matches!(target, Some(Target::Point(_)) | None) { "swing" } else { name }
 }
@@ -160,32 +189,62 @@ impl Sim {
         let len = (Vec3::from_array(tool.tip) - Vec3::from_array(tool.grip)).length() * scale;
         let reach = self.reach_of(who) + len * 0.8;
         // Where it lands, and whether that is within reach.
+        let mut beyond = false;
         let (target, spot, tgt_name) = match &on {
             Some(t) => {
                 let r = self.resolve(t, who).ok_or_else(|| ActErr::Fail("there is nothing like that here".into()))?;
+                // What a launcher shoots, offered to it: it is loaded.
+                if let (Some(l), false) = (&tool.launch, matches!(r.target, Target::Actor(_) | Target::Point(_))) {
+                    if let Some(id) = self.liven_peek(&r.target).filter(|id| self.is_ammo_for(l, *id)) {
+                        return self.load(who, tool_id, id).map(Some);
+                    }
+                }
                 let p = match (&r.target, at) {
                     (Target::Point(_), _) => r.pos,
                     (_, Some(a)) => a,
                     _ => r.nearest(me.pos + Vec3::Y * me.dims.height * 0.6),
                 };
                 let flat = Vec3::new(p.x - me.pos.x, 0.0, p.z - me.pos.z).length();
-                if flat > reach || p.y > me.pos.y + me.dims.height + len || p.y < me.pos.y - len - 0.5 {
+                beyond = flat > reach || p.y > me.pos.y + me.dims.height + len || p.y < me.pos.y - len - 0.5;
+                if beyond && tool.launch.is_none() {
                     return Err(ActErr::TooFar { at: r.pos, dist: flat });
                 }
                 (Some(r.target.clone()), Some(p), Some(r.name.clone()))
             }
             None => (None, None, None),
         };
-        let motion = choose(&tool, target.as_ref());
+        let motion = choose(&tool, target.as_ref(), beyond);
+        let mut dur = motion_def(motion).map(|m| m.dur).unwrap_or(1.0);
+        let mut aim_pitch = 0.0;
+        if motion == "shoot" {
+            let l = tool.launch.clone().ok_or(ActErr::Fail("it shoots nothing".into()))?;
+            if let Some(p) = spot {
+                let range = (l.speed * l.speed / super::physics::GRAVITY).min(600.0);
+                let flat = Vec3::new(p.x - me.pos.x, 0.0, p.z - me.pos.z).length();
+                if flat > range {
+                    return fail(format!("{} is out of range of the {tname}", tgt_name.as_deref().map(super::actions::the).unwrap_or_else(|| "that".into())));
+                }
+                let from = me.pos + Vec3::Y * me.eye_height();
+                let d = super::missile::aim(from, p, l.speed);
+                aim_pitch = d.y.clamp(-1.0, 1.0).asin();
+            } else if who == ActorId::Player {
+                aim_pitch = self.look_pitch;
+            }
+            if self.shots_left(tool_id) == Some(0) {
+                return fail(format!("the {tname} has nothing left to shoot: load it with {} (point at them with it in hand)", super::missile::plural(&l.ammo)));
+            }
+            dur = l.ready.max(0.3);
+        }
         if let (Some(p), Some(a)) = (spot, self.actor_mut(who)) {
             a.face(p - a.pos, 1.0);
         }
         let now = self.t;
         if let Some(a) = self.actor_mut(who) {
-            a.motion = Some(MotionRun { name: motion, t0: now, tool: tool_id, target: target.clone(), at: spot, struck: false, tip: None, speed: 0.0 });
+            a.motion = Some(MotionRun { name: motion, t0: now, tool: tool_id, target: target.clone(), at: spot, struck: false, tip: None, speed: 0.0, dur, aim_pitch });
             a.gesture = None;
         }
         let verb = match motion {
+            "shoot" => "aims",
             "chop" => "chops",
             "thrust" => "thrusts",
             "dig" => "digs",
@@ -199,6 +258,8 @@ impl Sim {
             }
             (Some(n), "chop") => format!("{name} chops at {} with the {tname}", super::actions::the(n)),
             (Some(n), "pour") => format!("{name} pours the {tname} over {}", super::actions::the(n)),
+            (Some(n), "shoot") if !matches!(target, Some(Target::Point(_))) => format!("{name} aims the {tname} at {}", super::actions::the(n)),
+            (_, "shoot") => format!("{name} raises the {tname}"),
             (Some(n), _) => format!("{name} {verb} the {tname} at {}", super::actions::the(n)),
             (None, _) => format!("{name} {verb} the {tname}"),
         };
@@ -226,6 +287,14 @@ impl Sim {
             };
             let impact = motion_def(run.name).map(|m| m.impact).unwrap_or(0.5);
             let strike_now = !run.struck && u >= impact;
+            // A launcher looses at the end of making ready.
+            if strike_now && run.name == "shoot" {
+                if let Some(m) = self.actor_mut(who).and_then(|a| a.motion.as_mut()) {
+                    m.struck = true;
+                }
+                self.loose(who, &run);
+                continue;
+            }
             if let Some(a) = self.actor_mut(who) {
                 if let Some(m) = a.motion.as_mut() {
                     m.tip = tip;
@@ -245,7 +314,7 @@ impl Sim {
     }
 
     /// Where a tool's tip is (world).
-    fn tool_tip(&self, id: ThingId) -> Option<Vec3> {
+    pub(super) fn tool_tip(&self, id: ThingId) -> Option<Vec3> {
         let t = self.things.get(id)?;
         let ty = self.snap.type_of(t.type_id)?;
         let tool = ty.ct.meta.tool.as_ref()?;
@@ -369,55 +438,88 @@ impl Sim {
         let tname = self.thing_name(run.tool);
         let Some((opos, omass)) = self.actor(o).map(|a| (a.pos, a.dims.mass.max(1.0))) else { return };
         let hurt = (0.012 * tool_mass.min(20.0).sqrt() * speed * speed / 10.0 / (omass / 70.0).sqrt()).clamp(0.02, 0.9);
-        // What they wear softens it.
-        let hurt = hurt * (1.0 - self.protection(o));
-        let how = format!("struck by {name} with the {tname}");
-        let died = self.wound(o, hurt, who, &how);
-        if let ActorId::Npc(c) = o {
-            self.phantom_hurt(c, who, Some(tname.clone()), died);
+        let me = self.actor(who).map(|a| a.pos).unwrap_or(opos);
+        let push = Vec3::new(opos.x - me.x, 0.0, opos.z - me.z).normalize_or_zero() * (0.15 + 0.03 * speed) * (70.0 / omass).sqrt().min(2.0);
+        self.take_blow(Blow {
+            by: Some(who),
+            to: o,
+            hurt,
+            push,
+            how: format!("struck by {name} with the {tname}"),
+            told: format!("{name} struck {oname} with the {tname}"),
+            felt: format!("{name} just struck you with a {tname}. It hurt."),
+            weapon: Some(tname),
+            mass: tool_mass,
+            speed,
+            motion: run.name,
+        });
+    }
+
+    /// A blow lands on a being, from a hand, something flying or a blast:
+    /// what they wear softens it; it hurts, rocks them, may kill them; the
+    /// struck one and those who saw it remember, fear and react. True when
+    /// it killed.
+    pub(super) fn take_blow(&mut self, b: Blow) -> bool {
+        let o = b.to;
+        if b.by == Some(o) && b.motion != "burst" {
+            return false;
         }
-        if let ActorId::Npc(c) = who {
+        let Some((opos, omass)) = self.actor(o).map(|a| (a.pos, a.dims.mass.max(1.0))) else { return false };
+        let hurt = b.hurt * (1.0 - self.protection(o));
+        // Whoever dealt it (a blast nobody set off is the world's doing).
+        let by = b.by.unwrap_or(o);
+        let died = self.wound(o, hurt, by, &b.how);
+        if let (ActorId::Npc(c), Some(w)) = (o, b.by.filter(|w| *w != o)) {
+            self.phantom_hurt(c, w, b.weapon.clone(), died);
+        }
+        if let (Some(ActorId::Npc(c)), true) = (b.by, b.by != Some(o)) {
             self.phantom_struck(c, o, died);
         }
         // Knocked back a little.
-        let me = self.actor(who).map(|a| a.pos).unwrap_or(opos);
-        let push = Vec3::new(opos.x - me.x, 0.0, opos.z - me.z).normalize_or_zero() * (0.15 + 0.03 * speed) * (70.0 / omass).sqrt().min(2.0);
-        self.walk(o, push);
+        if b.push.length() > 1e-3 {
+            self.walk(o, b.push);
+        }
         // The body gives with the blow (a bigger blow, a bigger give), and
         // whoever took or saw it fears the one who dealt it.
         if !died {
-            self.jolt(o, push, (0.1 + hurt * 0.9).min(0.4));
-            self.hurt_by(o, who, hurt, false);
+            let dir = if b.push.length() > 1e-3 { b.push } else { Vec3::Y };
+            self.jolt(o, dir, (0.1 + hurt * 0.9).min(0.4));
+            if let Some(w) = b.by.filter(|w| *w != o) {
+                self.hurt_by(o, w, hurt, false);
+            }
         }
-        let msg = format!("{name} struck {oname} with the {tname}");
-        self.event("struck", Some(who), Some(o.key()), msg.clone(), Some(opos), json!({ "hurt": (hurt * 100.0).round() / 100.0, "motion": run.name }));
-        let by = Some((crate::audio::call::Material::FLESH, tool_mass));
-        self.cue(opos + Vec3::Y, Some(o), crate::audio::Heard::Hit { mat: crate::audio::call::Material::FLESH, mass: omass.min(400.0), speed, by });
-        self.note_near(opos, 30.0, Note::seen(format!("{}!", super::physics::cap(&msg)), o == ActorId::Player || who == ActorId::Player));
-        self.witness(opos, 25.0, &msg, 0.7, &[who]);
-        {
-            let r = self.social.rel_mut(o, who);
+        self.event("struck", b.by, Some(o.key()), b.told.clone(), Some(opos), json!({ "hurt": (hurt * 100.0).round() / 100.0, "motion": b.motion }));
+        let with = Some((crate::audio::call::Material::FLESH, b.mass));
+        self.cue(opos + Vec3::Y, Some(o), crate::audio::Heard::Hit { mat: crate::audio::call::Material::FLESH, mass: omass.min(400.0), speed: b.speed.min(30.0), by: with });
+        let mine = o == ActorId::Player || b.by == Some(ActorId::Player);
+        self.note_near(opos, 30.0, Note::seen(format!("{}!", super::physics::cap(&b.told)), mine));
+        self.witness(opos, 25.0, &b.told, 0.7, &b.by.into_iter().collect::<Vec<_>>());
+        if let Some(w) = b.by.filter(|w| *w != o) {
+            let r = self.social.rel_mut(o, w);
             r.trust = (r.trust - 0.4).max(-1.0);
             r.affection = (r.affection - 0.3).max(-1.0);
         }
         if died {
             if let ActorId::Npc(c) = o {
-                self.kill(c, &format!("{how}, and died"), Some(who));
+                self.kill(c, &format!("{}, and died", b.how), b.by.filter(|w| *w != o));
             }
-            return;
+            return true;
         }
         if let ActorId::Npc(c) = o {
             let speaks = self.speaks(o);
             // The dark's own don't run.
-            if !self.of_the_dark(o) && (!speaks || self.cast.get(c).is_some_and(|n| n.traits.brave < 0.5)) {
-                self.flee(c, who, me);
+            if let Some(w) = b.by.filter(|w| *w != o) {
+                let from = self.actor(w).map(|a| a.pos).unwrap_or(opos);
+                if !self.of_the_dark(o) && (!speaks || self.cast.get(c).is_some_and(|n| n.traits.brave < 0.5)) {
+                    self.flee(c, w, from);
+                }
             }
             if self.has_llm && speaks {
-                let ctx = format!("{name} just struck you with a {tname}. It hurt.");
-                let context = self.decide_context(c, &ctx);
+                let context = self.decide_context(c, &b.felt);
                 self.request_weighted(super::Request::Decide { cid: c, event: "struck".into(), context }, opos, 1.0);
             }
         }
+        false
     }
 
     /// Dig at the ground: a pit opens there, or the pit there deepens.
@@ -467,9 +569,32 @@ impl Sim {
     }
 }
 
+/// A blow to a being (see `Sim::take_blow`).
+pub struct Blow {
+    /// Who dealt it (None: nobody, a blast that went off by itself).
+    pub by: Option<ActorId>,
+    pub to: ActorId,
+    /// How much of their health it takes before what they wear softens it.
+    pub hurt: f32,
+    /// How far it shoves them (m, world).
+    pub push: Vec3,
+    /// What happened to them, as it ends "they were …".
+    pub how: String,
+    /// The deed, told ("Oda struck Mara with the axe").
+    pub told: String,
+    /// What the struck one's planner hears.
+    pub felt: String,
+    pub weapon: Option<String>,
+    /// What struck (kg) and how fast (m/s), for the sound.
+    pub mass: f32,
+    pub speed: f32,
+    /// "swing", "shot", "thrown", "burst"…
+    pub motion: &'static str,
+}
+
 /// The arm's pose during a motion, laid over a body's pose.
 pub fn arm_pose(run: &MotionRun, now: f64, pose: &mut super::actor::Pose) {
-    let fr = frame(run.name, run.progress(now));
+    let fr = run.frame(now);
     pose[super::actor::GRIP] = 0.9;
     pose[R_RAISE] = fr.raise;
     pose[R_FWD] = fr.reach;

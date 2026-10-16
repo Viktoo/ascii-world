@@ -206,6 +206,11 @@ pub struct Meta {
     /// first `seat` anchor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive: Option<Drive>,
+    /// It goes off: a blast that hurts and throws what is near, blows out
+    /// the ground and holes in what stands close, maybe sets things alight
+    /// (a grenade, a stick of dynamite, a powder keg, a shell, a firework).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst: Option<Burst>,
 }
 
 /// What a vehicle goes on.
@@ -264,7 +269,7 @@ pub struct Joint {
 }
 
 /// Motions a held tool can make.
-pub const MOTIONS: [&str; 5] = ["swing", "chop", "thrust", "dig", "pour"];
+pub const MOTIONS: [&str; 6] = ["swing", "chop", "thrust", "dig", "pour", "shoot"];
 
 /// A tool: hand position, striking point (local), motions it knows.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -272,6 +277,82 @@ pub struct Tool {
     pub grip: [f32; 3],
     pub tip: [f32; 3],
     pub motions: Vec<String>,
+    /// How keen its tip or edge is, 0..1 (a club 0, an axe 0.6, a spear or
+    /// an arrowhead 0.9). A keen thing hurts more, and one that flies point
+    /// first sticks where it lands hard. None: judged from its motions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharp: Option<f32>,
+    /// It sends something flying from its tip (a bow, a sling, a gun, a
+    /// cannon, a blowpipe): the "shoot" motion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<Launch>,
+}
+
+impl Tool {
+    /// How keen it is: as said, or as its motions suggest.
+    pub fn keen(&self) -> f32 {
+        let has = |m: &str| self.motions.iter().any(|x| x == m);
+        self.sharp.unwrap_or(if has("thrust") { 0.8 } else if has("chop") { 0.6 } else if has("swing") { 0.4 } else { 0.0 }).clamp(0.0, 1.0)
+    }
+}
+
+/// What a launcher sends flying, and how.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Launch {
+    /// The type name of what it shoots ("arrow", "musket ball", "stone").
+    pub ammo: String,
+    /// How fast it leaves, m/s (a sling 30, a bow 55, a musket 400).
+    pub speed: f32,
+    /// How far shots stray, degrees.
+    #[serde(default)]
+    pub spread: f32,
+    /// How many shots it holds when full (a quiver's worth, a magazine);
+    /// 0: it never runs out (a wand that shoots sparks).
+    #[serde(default = "twelve")]
+    pub holds: u32,
+    /// How many go at once (a blunderbuss's shot: 8).
+    #[serde(default = "one_u")]
+    pub per_shot: u32,
+    /// Seconds to make ready between shots (draw a bow 0.8, ram a musket 6).
+    #[serde(default = "ready_secs")]
+    pub ready: f32,
+}
+
+fn twelve() -> u32 {
+    12
+}
+fn one_u() -> u32 {
+    1
+}
+fn ready_secs() -> f32 {
+    0.8
+}
+
+/// What happens when a thing goes off.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Burst {
+    /// How far it reaches, metres.
+    pub radius: f32,
+    /// How badly it hurts a body at its heart, 0..1 (it fades to nothing at
+    /// `radius`; what is worn softens it).
+    #[serde(default)]
+    pub hurt: f32,
+    /// How hard it throws what is near, m/s at its heart.
+    #[serde(default)]
+    pub push: f32,
+    /// How deep it blows out the ground, metres, and the size of the holes
+    /// it tears in what stands close (0: none).
+    #[serde(default)]
+    pub crater: f32,
+    /// How hot it sets what is near, 0..1 (1: things that burn catch).
+    #[serde(default)]
+    pub fire: f32,
+    /// Seconds from being lit (used, or caught by fire) to going off.
+    #[serde(default)]
+    pub fuse: f32,
+    /// It goes off when it hits something hard.
+    #[serde(default)]
+    pub impact: bool,
 }
 
 /// Terrain cut away under a shape: |x| < half[0], |z| < half[1] (local),

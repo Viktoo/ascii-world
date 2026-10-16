@@ -55,6 +55,32 @@ pub struct Shape {
     pub open: f32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub open_to: f32,
+    /// Driven in where it struck (an arrow in a tree, a spear in the
+    /// ground): it holds fast there until someone pulls it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stuck: bool,
+    /// Lit: the game time it goes off (`meta.burst`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuse_at: Option<f64>,
+    /// Shots a launcher has sent off since it was last full.
+    #[serde(default, skip_serializing_if = "is_zero_u")]
+    pub spent: u32,
+}
+
+fn is_zero_u(v: &u32) -> bool {
+    *v == 0
+}
+
+/// Driven into a body: where, in the body's own frame (x right, y up,
+/// z forward), and how it lies against it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StuckIn {
+    pub who: ActorId,
+    pub off: Vec3,
+    /// Its turn relative to the body's (after the body's yaw).
+    pub turn: glam::Quat,
+    /// When it works loose.
+    pub until: f64,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -63,7 +89,7 @@ fn is_zero(v: &f32) -> bool {
 
 impl Shape {
     pub fn is_empty(&self) -> bool {
-        self.cuts.is_empty() && self.edits.is_empty() && self.tilt.is_none() && self.open == 0.0 && self.open_to == 0.0
+        self.cuts.is_empty() && self.edits.is_empty() && self.tilt.is_none() && self.open == 0.0 && self.open_to == 0.0 && !self.stuck && self.fuse_at.is_none() && self.spent == 0
     }
 }
 
@@ -115,6 +141,14 @@ pub struct Thing {
     pub shape: Shape,
     /// How the hand holds it this moment (a tool mid-swing); not saved.
     pub hold_tilt: Option<glam::Quat>,
+    /// In flight point first (a thrown spear, a loosed arrow): it turns to
+    /// face the way it goes, and strikes with its tip. Not saved.
+    pub point_first: bool,
+    /// Sent off by a launcher (spent shots too small to see are cleared
+    /// away once they come to rest). Not saved.
+    pub shot: bool,
+    /// Driven into someone's body. Not saved (it works loose).
+    pub stuck_in: Option<StuckIn>,
 }
 
 impl Thing {
@@ -151,6 +185,9 @@ impl Thing {
             through: None,
             shape: Shape::default(),
             hold_tilt: None,
+            point_first: false,
+            shot: false,
+            stuck_in: None,
         }
     }
 
@@ -179,13 +216,19 @@ impl Thing {
         self.holder.is_some() || self.worn.is_some()
     }
 
+    /// Held fast where it struck (in a tree, the ground, a wall, a body):
+    /// it doesn't fall, but a hand pulls it free.
+    pub fn stuck(&self) -> bool {
+        self.shape.stuck || self.stuck_in.is_some()
+    }
+
     pub fn mass(&self) -> f32 {
         self.props[P_MASS]
     }
 
     /// Holdable by one person / by two together.
     pub fn liftable(&self, holders: usize) -> bool {
-        !self.anchored && self.mass() <= STRENGTH * holders as f32
+        (!self.anchored || self.shape.stuck) && self.mass() <= STRENGTH * holders as f32
     }
 
     /// Its tilt after the yaw (upright: identity).

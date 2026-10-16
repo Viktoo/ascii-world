@@ -205,6 +205,7 @@ impl<'s> Cx<'s> {
         let mut tool = None;
         let mut hollow = None;
         let mut drive = None;
+        let mut burst = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -272,6 +273,10 @@ impl<'s> Cx<'s> {
                 "tool" => match &p.value {
                     Expression::ObjectExpression(to) => tool = self.meta_tool(to),
                     _ => self.err(p.span, "meta.tool must be an object { grip, tip, motions }"),
+                },
+                "burst" => match &p.value {
+                    Expression::ObjectExpression(b) => burst = self.meta_burst(b),
+                    _ => self.err(p.span, "meta.burst must be an object { radius, hurt, push, crater, fire, fuse, impact }"),
                 },
                 "drive" => match &p.value {
                     Expression::ObjectExpression(d) => drive = self.meta_drive(d),
@@ -353,7 +358,7 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.tool.grip and tip must lie inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, drive })
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, drive, burst })
     }
 
     /// A key of a small meta object.
@@ -487,11 +492,13 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// `meta.tool`: { grip: [x, y, z], tip: [x, y, z], motions: [...] }
+    /// `meta.tool`: { grip: [x, y, z], tip: [x, y, z], motions: [...], sharp, launch }
     fn meta_tool(&mut self, o: &js::ObjectExpression) -> Option<Tool> {
         let mut grip = None;
         let mut tip = None;
         let mut motions = Vec::new();
+        let mut sharp = None;
+        let mut launch = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
             let Some(key) = self.obj_key(p, "meta.tool") else { continue };
@@ -512,16 +519,132 @@ impl<'s> Cx<'s> {
                     }
                     None => self.err(p.span, "meta.tool.motions is an array of motion names"),
                 },
-                _ => self.err(p.span, format!("unknown meta.tool key '{key}' (grip, tip, motions)")),
+                "sharp" => match literal_num(&p.value) {
+                    Some(v) if (0.0..=1.0).contains(&v) => sharp = Some(v),
+                    _ => self.err(p.span, "meta.tool.sharp is how keen its tip or edge is, 0..1"),
+                },
+                "launch" => match &p.value {
+                    Expression::ObjectExpression(l) => launch = self.meta_launch(l),
+                    _ => self.err(p.span, "meta.tool.launch must be an object { ammo, speed, spread, holds, per_shot, ready }"),
+                },
+                _ => self.err(p.span, format!("unknown meta.tool key '{key}' (grip, tip, motions, sharp, launch)")),
             }
         }
+        // What shoots, shoots (and what is said to shoot, launches something).
+        if launch.is_some() && !motions.iter().any(|m| m == "shoot") {
+            motions.push("shoot".into());
+        }
+        if launch.is_none() && motions.iter().any(|m| m == "shoot") {
+            self.err(o.span, "meta.tool: the shoot motion needs meta.tool.launch (what it shoots)");
+            return None;
+        }
         match (grip, tip) {
-            (Some(grip), Some(tip)) if !motions.is_empty() => Some(Tool { grip, tip, motions }),
+            (Some(grip), Some(tip)) if !motions.is_empty() => Some(Tool { grip, tip, motions, sharp, launch }),
             _ => {
                 self.err(o.span, format!("meta.tool needs grip, tip and at least one motion ({})", MOTIONS.join(", ")));
                 None
             }
         }
+    }
+
+    /// `meta.tool.launch`: { ammo, speed, spread, holds, per_shot, ready }
+    fn meta_launch(&mut self, o: &js::ObjectExpression) -> Option<Launch> {
+        let mut ammo = None;
+        let mut speed = None;
+        let mut l = Launch { ammo: String::new(), speed: 0.0, spread: 0.0, holds: 12, per_shot: 1, ready: 0.8 };
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let Some(key) = self.obj_key(p, "meta.tool.launch") else { continue };
+            let num = literal_num(&p.value).filter(|v| v.is_finite());
+            match key.as_str() {
+                "ammo" => match &p.value {
+                    Expression::StringLiteral(s) if !s.value.trim().is_empty() && s.value.len() <= 60 => ammo = Some(s.value.trim().to_string()),
+                    _ => self.err(p.span, "meta.tool.launch.ammo is the name of what it shoots (\"arrow\", \"musket ball\")"),
+                },
+                "speed" => match num {
+                    Some(v) if v > 0.0 && v <= 1000.0 => speed = Some(v),
+                    _ => self.err(p.span, "meta.tool.launch.speed is m/s, in (0, 1000]"),
+                },
+                "spread" => match num {
+                    Some(v) if (0.0..=45.0).contains(&v) => l.spread = v,
+                    _ => self.err(p.span, "meta.tool.launch.spread is degrees, 0..45"),
+                },
+                "holds" => match num {
+                    Some(v) if (0.0..=500.0).contains(&v) => l.holds = v.round() as u32,
+                    _ => self.err(p.span, "meta.tool.launch.holds is how many shots it holds, 0..500 (0: never runs out)"),
+                },
+                "per_shot" => match num {
+                    Some(v) if (1.0..=24.0).contains(&v) => l.per_shot = v.round() as u32,
+                    _ => self.err(p.span, "meta.tool.launch.per_shot is how many go at once, 1..24"),
+                },
+                "ready" => match num {
+                    Some(v) if (0.05..=60.0).contains(&v) => l.ready = v,
+                    _ => self.err(p.span, "meta.tool.launch.ready is seconds between shots, 0.05..60"),
+                },
+                _ => self.err(p.span, format!("unknown meta.tool.launch key '{key}' (ammo, speed, spread, holds, per_shot, ready)")),
+            }
+        }
+        match (ammo, speed) {
+            (Some(a), Some(s)) => {
+                l.ammo = a;
+                l.speed = s;
+                Some(l)
+            }
+            _ => {
+                self.err(o.span, "meta.tool.launch needs ammo and speed");
+                None
+            }
+        }
+    }
+
+    /// `meta.burst`: { radius, hurt, push, crater, fire, fuse, impact }
+    fn meta_burst(&mut self, o: &js::ObjectExpression) -> Option<Burst> {
+        let mut b = Burst { radius: 0.0, hurt: 0.0, push: 0.0, crater: 0.0, fire: 0.0, fuse: 0.0, impact: false };
+        let mut push = None;
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let Some(key) = self.obj_key(p, "meta.burst") else { continue };
+            let num = literal_num(&p.value).filter(|v| v.is_finite());
+            match key.as_str() {
+                "radius" => match num {
+                    Some(v) if v > 0.0 && v <= 60.0 => b.radius = v,
+                    _ => self.err(p.span, "meta.burst.radius is metres, in (0, 60]"),
+                },
+                "hurt" | "fire" => match num {
+                    Some(v) if (0.0..=1.0).contains(&v) => {
+                        if key == "hurt" {
+                            b.hurt = v
+                        } else {
+                            b.fire = v
+                        }
+                    }
+                    _ => self.err(p.span, format!("meta.burst.{key} is 0..1")),
+                },
+                "push" => match num {
+                    Some(v) if (0.0..=80.0).contains(&v) => push = Some(v),
+                    _ => self.err(p.span, "meta.burst.push is m/s at its heart, 0..80"),
+                },
+                "crater" => match num {
+                    Some(v) if (0.0..=20.0).contains(&v) => b.crater = v,
+                    _ => self.err(p.span, "meta.burst.crater is metres, 0..20"),
+                },
+                "fuse" => match num {
+                    Some(v) if (0.0..=120.0).contains(&v) => b.fuse = v,
+                    _ => self.err(p.span, "meta.burst.fuse is seconds, 0..120"),
+                },
+                "impact" => match &p.value {
+                    Expression::BooleanLiteral(v) => b.impact = v.value,
+                    _ => self.err(p.span, "meta.burst.impact is true or false"),
+                },
+                _ => self.err(p.span, format!("unknown meta.burst key '{key}' (radius, hurt, push, crater, fire, fuse, impact)")),
+            }
+        }
+        if b.radius <= 0.0 {
+            self.err(o.span, "meta.burst needs a radius (metres)");
+            return None;
+        }
+        b.push = push.unwrap_or(b.radius * 3.0);
+        Some(b)
     }
 
     /// `meta.drive`: { speed, on, by }

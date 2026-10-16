@@ -93,10 +93,17 @@ impl Sim {
     }
 
     /// Whether `who` holds something that can strike (a tool with a swing,
-    /// a thrust or a chop in it), and what.
+    /// a thrust or a chop in it, a launcher with shots in it, something
+    /// that goes off), and what.
     pub fn armed(&self, who: ActorId) -> Option<String> {
+        let id = self.actor(who)?.held?;
+        if self.burst_of(id).is_some() {
+            return Some(self.thing_name(id));
+        }
         let (id, tool) = self.held_tool(who)?;
-        tool.motions.iter().any(|m| matches!(m.as_str(), "swing" | "thrust" | "chop")).then(|| self.thing_name(id))
+        let strikes = tool.motions.iter().any(|m| matches!(m.as_str(), "swing" | "thrust" | "chop"));
+        let shoots = tool.launch.is_some() && self.shots_left(id) != Some(0);
+        (strikes || shoots).then(|| self.thing_name(id))
     }
 
     /// How much `me` fears `o` right now: their fear of them, more when

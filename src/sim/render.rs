@@ -289,7 +289,7 @@ impl Sim {
                     let len = ((Vec3::from_array(tool.tip) - Vec3::from_array(tool.grip)).length() * t.scale).max(0.05);
                     let k = (0.55 / len).min(1.0);
                     let fr = match self.player.motion.as_ref() {
-                        Some(m) if m.tool == t.id => super::tool::frame(m.name, m.progress(self.t)),
+                        Some(m) if m.tool == t.id => m.frame(self.t),
                         _ => super::tool::REST,
                     };
                     let mut shown = t.clone();

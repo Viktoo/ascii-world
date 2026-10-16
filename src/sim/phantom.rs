@@ -34,6 +34,8 @@ const ENGAGE: f32 = 14.0;
 const BLOW_GAP: f64 = 1.6;
 /// How far it goes for something to fight with or wear (m).
 const ARM_FROM: f32 = 24.0;
+/// The furthest it shoots at its quarry from (m).
+const SHOOT_FROM: f32 = 45.0;
 const ARMOUR_FROM: f32 = 14.0;
 
 /// Phantoms are told apart by when they first came: "the first phantom",
@@ -282,11 +284,13 @@ impl Sim {
             }
             let Some(ty) = self.snap.type_of(t.type_id) else { continue };
             let Some(tool) = ty.ct.meta.tool.as_ref() else { continue };
-            if !tool.motions.iter().any(|m| matches!(m.as_str(), "swing" | "thrust" | "chop")) {
+            // Something that shoots and has shots in it is best of all.
+            let shoots = tool.launch.is_some() && self.shots_left(id) != Some(0);
+            if !shoots && !tool.motions.iter().any(|m| matches!(m.as_str(), "swing" | "thrust" | "chop")) {
                 continue;
             }
             let len = (Vec3::from_array(tool.tip) - Vec3::from_array(tool.grip)).length() * t.scale;
-            let score = t.mass().min(8.0).sqrt() * (0.5 + len) - (t.pos - pos).length() * 0.03;
+            let score = if shoots { 6.0 } else { 0.0 } + t.mass().min(8.0).sqrt() * (0.5 + len) - (t.pos - pos).length() * 0.03;
             if best.is_none_or(|b| score > b.0) {
                 best = Some((score, id, t.pos));
             }
@@ -394,6 +398,37 @@ impl Sim {
         }
         // At hand: strike, or claw.
         let reach = self.reach_of(me) + self.contact_gap(me, target) + if armed { 0.8 } else { 0.4 };
+        // Something that shoots, and the quarry in range: shoot from where it stands.
+        let launch = self.held_tool(me).and_then(|(id, t)| t.launch.filter(|_| self.shots_left(id) != Some(0)));
+        if let Some(l) = launch {
+            let range = (l.speed * l.speed / super::physics::GRAVITY * 0.5).min(SHOOT_FROM);
+            if d > reach && d < range {
+                if since >= BLOW_GAP.max(l.ready as f64 + 0.3) {
+                    if let Some(n) = self.cast.get_mut(cid) {
+                        n.touched_at = self.t;
+                        n.a.face(tp - pos, 10.0);
+                    }
+                    self.plan(me, vec![], "shoot", false);
+                    let _ = self.strike(me, Some(Target::Actor(target)), Some(tp + Vec3::Y));
+                }
+                next(self, 0.5);
+                return true;
+            }
+        }
+        // Something that goes off in hand, the quarry a throw away: light it and throw it.
+        if let Some(h) = held.filter(|h| self.burst_of(*h).is_some()) {
+            if d > 5.0 && d < 16.0 {
+                let mut steps = Vec::new();
+                if self.things.get(h).is_some_and(|t| t.shape.fuse_at.is_none()) {
+                    steps.push(Action::Use { target: Some(Target::Thing(h)), on: None, at: None });
+                }
+                steps.push(Action::Throw { at: Some(Target::Actor(target)), dir: None, force: None });
+                let hname = self.thing_name(h);
+                self.plan(me, steps, &format!("throw the {hname}"), false);
+                next(self, 1.5);
+                return true;
+            }
+        }
         if d < reach {
             if since >= BLOW_GAP {
                 if let Some(n) = self.cast.get_mut(cid) {
