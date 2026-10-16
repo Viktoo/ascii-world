@@ -291,17 +291,10 @@ export function sdf(x, y, z, k) {
     // shallow under a low flat one.
     const es = clamp(k.y, 0, 1);
     head = smoothUnion(head, capsule(hx, hy, hz, -0.046, 0.04 - 0.003 * es, 0.086 - 0.006 * es, 0.046, 0.04 - 0.003 * es, 0.086 - 0.006 * es, 0.011 - 0.004 * es), 0.012);
-    // The eyes: balls in the face, and lids lying on them, open where
-    // color draws the eye (the same lines), so no gap shows round them.
-    const shut = clamp(k.s10, 0, 1);
-    const ex = abs(hx) - 0.034;
-    const ey = hy - 0.011;
-    const tilt = ex * 0.15 * es;
-    const lidUp = 0.0093 - 0.0036 * es - shut * 0.019 - abs(ex) * 0.2 + tilt;
-    const lidLo = -0.0068 + 0.0016 * es + abs(ex) * 0.15 + tilt;
-    const ball = length3(ex, ey, hz - 0.081);
-    head = smoothUnion(head, max(ball - 0.0187, min(lidUp - ey, ey - lidLo)), 0.005);
-    head = min(head, ball - 0.017);
+    // The eyes: balls the face swells over with no seam round them; the lids
+    // are drawn on them by color.
+    const ball = length3(abs(hx) - 0.034, hy - 0.011, hz - 0.081) - 0.017;
+    head = smoothUnion(head, ball, 0.006);
     // The nose: narrow and high-bridged, or broad and low-bridged.
     const nb = clamp(k.z, 0, 1);
     const nose = capsule(hx, hy, hz, 0, 0.018, 0.099 - 0.016 * nb, 0, -0.022, 0.118 - 0.01 * nb - 0.004 * fem, 0.0100 + 0.004 * nb - 0.002 * fem);
@@ -481,6 +474,9 @@ export function color(x, y, z, k) {
         return hairc * (0.85 + 0.3 * noise3(hx * 50, hy * 160, hz * 50));
       }
     }
+    // A little colour in the cheeks (over the lower lids too).
+    const cheek = length3(abs(hx) - 0.05, hy + 0.025, hz - 0.07);
+    const face = mix(skin, rgb(214, 120, 110), clamp(0.025 - cheek, 0, 0.025) * (6 + 6 * fem));
     // Eyes: white, an iris, the pupil; lids that come down to blink.
     const ex = abs(hx) - 0.034;
     const ey = hy - 0.011;
@@ -491,13 +487,17 @@ export function color(x, y, z, k) {
       const tilt = ex * 0.15 * es;
       const lid = 0.0068 - 0.0036 * es - shut * 0.019 - abs(ex) * 0.2 + tilt;
       const lidLo = -0.0068 + 0.0016 * es + abs(ex) * 0.15 + tilt;
+      // Shut, the lashes meet in a line along the lower lid.
+      if (lid + 0.0025 < lidLo + 0.001 && abs(ey - lidLo) < 0.0007 && abs(ex) < 0.013) {
+        return rgb(34, 24, 22);
+      }
       if (ey > lid + 0.0025 || ey < lidLo) {
         // The lid, shaded only near its edge so it melts into the face; a
         // crease over a round eye's lid, a smooth fold over a narrow one.
         const edge = clamp(max(ey - lid - 0.0025, lidLo - ey) / 0.003, 0, 1);
         const fade = clamp((0.019 - length3(ex, ey, ez)) / 0.004, 0, 1);
         const crease = ey > lid + 0.0045 && ey < lid + 0.0065 ? 0.2 * (1 - es / 0.6) * fade : 0;
-        return skin * (0.86 + 0.14 * edge - max(crease, 0));
+        return face * (0.86 + 0.14 * edge - max(crease, 0));
       }
       if (ey > lid - 0.0005) {
         return rgb(34, 24, 22);
@@ -547,9 +547,7 @@ export function color(x, y, z, k) {
     } else if (bd > 0.12 && hy < -0.035 && hz > -0.02) {
       return mix(skin, hairc, 0.3);
     }
-    // A little colour in the cheeks.
-    const cheek = length3(abs(hx) - 0.05, hy + 0.025, hz - 0.07);
-    return mix(skin, rgb(214, 120, 110), clamp(0.025 - cheek, 0, 0.025) * (6 + 6 * fem));
+    return face;
   }
   // A skirt or a tunic's tail.
   const sw = sin(k.f) * 0.32 * (1 - crouch);

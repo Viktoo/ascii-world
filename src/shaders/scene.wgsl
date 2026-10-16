@@ -270,6 +270,30 @@ fn march(ro: vec3f, rd: vec3f, tmax: f32) -> Hit {
       if (p.y - terrain_height_lod_exact(p.x, p.z, m) > 0.0) { a = m; } else { b = m; }
     }
     h.t = b;
+  } else if (h.id >= 0.0) {
+    // A hit is a few millimetres off its surface: in front (it stops
+    // within eps) or inside (a step is never shorter than a centimetre).
+    // Bring it onto the surface, or fine detail (an eye in a face) is
+    // coloured from off it.
+    let d0 = map_ray(ro + rd * h.t, h.t, h.t, 1.0);
+    if (d0.z < 0.0) {
+      var a = tp;
+      var b = h.t;
+      for (var k = 0; k < 6; k = k + 1) {
+        let m = (a + b) * 0.5;
+        let d = map_ray(ro + rd * m, m, m, 1.0);
+        if (d.z > 0.0) { a = m; } else { b = m; if (d.y >= 0.0) { h.id = d.y; } }
+      }
+      h.t = b;
+    } else {
+      var d = d0;
+      for (var k = 0; k < 4; k = k + 1) {
+        if (d.z < 0.0001) { break; }
+        h.t = h.t + d.z;
+        d = map_ray(ro + rd * h.t, h.t, h.t, 1.0);
+        if (d.y >= 0.0) { h.id = d.y; }
+      }
+    }
   }
   return h;
 }

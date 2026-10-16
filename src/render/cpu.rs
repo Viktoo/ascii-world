@@ -118,14 +118,48 @@ impl Scene<'_> {
             }
         }
         let mut t = 0.06;
+        let mut tp = t;
         let mut hit = None;
         for _ in 0..110 {
             let p = ro + rd * t;
             let (d, id) = self.map(p, &cands);
             if d < 0.002 * t + 0.003 {
+                // A hit is a few millimetres off its surface, in front or
+                // inside: bring it onto it (twin of `march` in scene.wgsl).
+                let mut id = id;
+                if id.is_some() && d > 0.0 {
+                    let mut d = d;
+                    for _ in 0..4 {
+                        if d < 0.0001 {
+                            break;
+                        }
+                        t += d;
+                        let (dn, i) = self.map(ro + rd * t, &cands);
+                        d = dn;
+                        if i.is_some() {
+                            id = i;
+                        }
+                    }
+                } else if id.is_some() {
+                    let (mut a, mut b) = (tp, t);
+                    for _ in 0..6 {
+                        let m = (a + b) * 0.5;
+                        match self.map(ro + rd * m, &cands) {
+                            (d, _) if d > 0.0 => a = m,
+                            (_, i) => {
+                                b = m;
+                                if i.is_some() {
+                                    id = i;
+                                }
+                            }
+                        }
+                    }
+                    t = b;
+                }
                 hit = Some(id);
                 break;
             }
+            tp = t;
             t += d.max(0.02 + 0.004 * t);
             if t > tmax {
                 break;
