@@ -543,8 +543,16 @@ impl Sim {
             }
             t.dirty = true;
         }
-        if let Some(a) = self.actor_mut(who) {
-            a.face(base, 3.0);
+        // A character turns to what it shoots at. The traveler's view is
+        // their own: the shot leaves the muzzle, beside the eye, angled in
+        // to where they look, and turning them along it would pull the
+        // view aside a little with every shot.
+        if who != ActorId::Player {
+            let mark = target_at.unwrap_or(me.pos + base);
+            if let Some(a) = self.actor_mut(who) {
+                let d = mark - a.pos;
+                a.face(d, 3.0);
+            }
         }
         let name = self.actor_name(who);
         let at_whom = match &run.target {

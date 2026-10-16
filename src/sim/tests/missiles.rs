@@ -74,6 +74,16 @@ fn a_bow_shoots_hurts_runs_out_and_is_loaded_again() {
     // The shot is an arrow of the world's own (it has one by that name).
     assert!(s.sim.things.live().any(|t| t.type_id == arrow && t.origin.made_from.iter().any(|m| m == "test bow")), "an arrow flew");
     assert_eq!(s.sim.shots_left(bow_id), Some(1));
+    // Shooting where they look doesn't turn the traveler's view.
+    let yaw = s.sim.player.yaw;
+    s.sim.act(ActorId::Player, Action::Use { target: None, on: None, at: None }).unwrap();
+    s.run(1.0, 0.05);
+    assert!((s.sim.player.yaw - yaw).abs() < 1e-4, "the view stayed put: {:.4} → {:.4}", yaw, s.sim.player.yaw);
+    act_once(&mut s, ActorId::Player, Action::Drop, 0.2);
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(bow_id) }, 0.3);
+    let lying = s.sim.spawn_thing(arrow, s.sim.player.pos + Vec3::new(0.6, 0.0, 0.3), 0.0, 1.0, Default::default(), true).unwrap();
+    act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(lying)), at: None }, 0.3);
+    assert_eq!(s.sim.shots_left(bow_id), Some(1));
     // Into the air ahead, and then it is empty.
     let far = ground(&w, p.x + 20.0, p.z - 20.0);
     let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(far.to_array())), at: Some(far.to_array()) }, 4.0);
