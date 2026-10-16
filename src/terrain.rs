@@ -190,6 +190,8 @@ pub struct Terrain {
     pub carve: std::sync::Arc<parking_lot::RwLock<Carve>>,
     /// Held while ground edits are stamped (one change at a time).
     stamping: std::sync::Arc<parking_lot::Mutex<()>>,
+    /// Rivers from the seed (see `rivers`).
+    pub rivers: std::sync::Arc<parking_lot::Mutex<crate::rivers::Rivers>>,
 }
 
 /// A box (or round pit) of ground taken away, down to `floor`.
@@ -387,7 +389,7 @@ impl Terrain {
         // Offsets stay zero: per-field seeds decorrelate the noise, and any offset
         // would cost precision (and CPU/GPU parity) far from the origin.
         let o = |_i: u32| 0.0f32;
-        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default() }
+        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default(), rivers: Default::default() }
     }
 
     pub fn center(i: usize) -> [f32; 2] {
@@ -537,6 +539,59 @@ impl Terrain {
         let mut c = self.carve.write();
         c.ground.commit(layer, edits, all, tiles);
         c.version = c.version.wrapping_add(1);
+    }
+
+    /// Lay the rivers near `p` (if it moved far enough since last time):
+    /// stretches that come into reach are cut, those left behind fill in.
+    pub fn lay_rivers(&self, x: f32, z: f32) {
+        let p = glam::Vec2::new(x, z);
+        let edits = {
+            let mut r = self.rivers.lock();
+            if !r.due(p) {
+                return;
+            }
+            r.laid_at = Some(p);
+            r.edits_near(self, p, crate::rivers::NEAR)
+        };
+        self.set_ground(crate::ground::Layer::Land, edits);
+    }
+
+    /// As `lay_rivers`, on another thread (for someone walking: the
+    /// stretches ahead are cut a little after they come into reach, and
+    /// they are far off then).
+    pub fn lay_rivers_soon(&self, x: f32, z: f32) {
+        {
+            // Never waits: while they are being worked out, that is busy.
+            let Some(mut r) = self.rivers.try_lock() else { return };
+            if !r.due(glam::Vec2::new(x, z)) {
+                return;
+            }
+            r.busy = true;
+        }
+        let t = self.clone();
+        let spawned = std::thread::Builder::new().name("rivers".into()).spawn(move || {
+            let p = glam::Vec2::new(x, z);
+            let edits = {
+                let mut r = t.rivers.lock();
+                r.laid_at = Some(p);
+                r.edits_near(&t, p, crate::rivers::NEAR)
+            };
+            t.set_ground(crate::ground::Layer::Land, edits);
+            t.rivers.lock().busy = false;
+        });
+        if spawned.is_err() {
+            self.rivers.lock().busy = false;
+        }
+    }
+
+    /// How many springs the land has (0 none … 1 a wet land); rivers are
+    /// worked out again from scratch.
+    pub fn set_rivers(&self, density: f32, sand: [u8; 3]) {
+        let mut r = self.rivers.lock();
+        let sand = rgbv(sand).to_array();
+        if r.density != density || r.sand != sand {
+            *r = crate::rivers::Rivers::new(density, sand);
+        }
     }
 
     /// The ground edits holding (x, z) (within `margin` of their shapes).

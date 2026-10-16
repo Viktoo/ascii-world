@@ -32,7 +32,7 @@ impl Sim {
         let mut top: f32 = crate::terrain::WATER_LEVEL;
         for k in 0..5 {
             let q = p + dir * (k as f32 * 4.0);
-            top = top.max(self.snap.terrain.height(q.x, q.z));
+            top = top.max(self.snap.terrain.height(q.x, q.z)).max(self.snap.terrain.water(q.x, q.z));
         }
         let solids = self.solids_near(p + dir * 8.0, 14.0);
         for s in &solids {
@@ -48,7 +48,7 @@ impl Sim {
         let flat = Vec3::new(p.x - me.x, 0.0, p.z - me.z);
         let len = flat.length();
         let dir = if len > 1e-3 { flat / len } else { Vec3::ZERO };
-        let ground = self.snap.terrain.height(me.x, me.z).max(crate::terrain::WATER_LEVEL - 0.2);
+        let ground = self.snap.terrain.height(me.x, me.z).max(self.snap.terrain.water(me.x, me.z) - 0.2);
         let landing = land && len < 6.0 + height * 2.0 + radius;
         let want = if landing { self.snap.terrain.height(p.x, p.z).max(ground) } else { self.cruise_height(me, dir, height) };
         let dy = (want - me.y).clamp(-CLIMB * dt, CLIMB * dt);
@@ -58,7 +58,7 @@ impl Sim {
         let step = dir * (speed * dt * k).min(len);
         let next = Vec3::new(me.x + step.x, me.y + dy, me.z + step.z);
         // Over water, the surface is the floor (it settles on it, and swims).
-        let floor = self.snap.terrain.height(next.x, next.z).max(crate::terrain::WATER_LEVEL - 0.2);
+        let floor = self.snap.terrain.height(next.x, next.z).max(self.snap.terrain.water(next.x, next.z) - 0.2);
         if let Some(a) = self.actor_mut(who) {
             if dir != Vec3::ZERO {
                 a.face(dir, dt * 4.0);
@@ -239,7 +239,7 @@ impl Sim {
             let Some((p, alt)) = self.actor(m).map(|a| (a.pos, a.alt)) else { return };
             let climb = (pitch * 2.0).clamp(-1.0, 1.0) * CLIMB * dt;
             let next = p + dir * speed * dt;
-            let floor = self.snap.terrain.height(next.x, next.z).max(crate::terrain::WATER_LEVEL - 0.2);
+            let floor = self.snap.terrain.height(next.x, next.z).max(self.snap.terrain.water(next.x, next.z) - 0.2);
             let y = (p.y + climb).max(floor);
             if let Some(a) = self.actor_mut(m) {
                 a.face(dir, dt * 4.0);

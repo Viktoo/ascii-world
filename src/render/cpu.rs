@@ -165,11 +165,19 @@ impl Scene<'_> {
                 }
             }
         };
-        if rd.y < 0.0 && ro.y > WATER_LEVEL {
-            let tw = (WATER_LEVEL - ro.y) / rd.y;
+        // The sea, or a river's or pond's water over the ground seen.
+        let wl = if t_hit < f32::MAX {
+            let ph = ro + rd * t_hit;
+            let lw = self.terrain.water(ph.x, ph.z);
+            if lw > ph.y { lw } else { WATER_LEVEL }
+        } else {
+            WATER_LEVEL
+        };
+        if rd.y < 0.0 && ro.y > wl {
+            let tw = (wl - ro.y) / rd.y;
             if tw < t_hit && tw < tmax {
                 let pw = ro + rd * tw;
-                let depth = (WATER_LEVEL - self.terrain.height(pw.x, pw.z)).max(0.0);
+                let depth = (wl - self.terrain.height(pw.x, pw.z)).max(0.0);
                 let body = self.shade(pw, Vec3::Y, v3(self.g.water));
                 let under = col * Vec3::new(0.55, 0.75, 0.8);
                 let fres = 0.03 + 0.97 * (1.0 - (-rd.y).max(0.0)).powi(5);

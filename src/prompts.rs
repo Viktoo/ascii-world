@@ -123,6 +123,7 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
   "name": "short name of the land",
   "land": "the whole land in one or two sentences",
   "start": "where the traveler begins, in one sentence",
+  "rivers": 0.6,
   "palette": {
     "sky_day": [r,g,b], "horizon_day": [r,g,b], "sky_dusk": [r,g,b], "horizon_dusk": [r,g,b],
     "sky_night": [r,g,b], "horizon_night": [r,g,b], "sun": [r,g,b], "water": [r,g,b],
@@ -139,6 +140,7 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 - scatter = items per 100 m² by tag (trees 0.1–1.5, rocks 0.1–0.6, bushes 0.2–1, grass 0.5–3, flowers 0.2–1.5, tall grass 0.3–2). Use the tags of your base types below; "grass" tufts, "flower" (wildflowers) and "tallgrass" already exist, and your own types of a tag take its place.
 - clump (optional) = how strongly a tag grows in patches, 0 (spread evenly) .. 1 (only in patches, with bare ground between). Without it things gather as in nature: trees 0.6 (woods with clearings and lone trees between), pines 0.45, flowers 0.9 (fields of one colour), tall grass 0.85 (meadows), bushes 0.5, rocks 0.55 (boulder fields). Set it when the land calls for it: a savanna's lone trees 0, an even jungle 0.2, orchard groves 0.9.
 - fog: 1 = clear air, up to 3 = misty.
+- rivers 0..1 = how many rivers run through the land, from springs in the high ground down to the sea or a pond: 0 = none (a desert, a dry plateau, a world of ice), 0.3 = the odd stream, 0.6 = a usual land, 1 = a land of rivers. They are real water: people cross them by bridges and fords, and boats go on them.
 
 Also in the same JSON object, the land's weather: 2 to 6 kinds it has, each with how often it comes and how long a spell lasts. Fit them to the land (a desert: fair, haze, the odd sandstorm; a coast: fair, sea fog, squalls; a fae wood: soft sun, glimmer rain; a dead land: grey, ash fall), and let at least one kind make sunsets worth seeing (some cloud, not all of it):
   "climate": { "kinds": [

@@ -12,7 +12,7 @@
 use super::{CHUNK, Solid, WorldSnapshot, chunk_of};
 use crate::noise::{h2, hseq, hseqf, u2f, vnoise2};
 use crate::render::GpuInst;
-use crate::terrain::{Biome, Terrain, WATER_LEVEL, smoothstep};
+use crate::terrain::{Biome, Terrain, smoothstep};
 use glam::Vec3;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -226,7 +226,7 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
         let pick = if lead { ((stand * cands.len() as f32) as usize).min(cands.len() - 1) } else { (hseq(seed, gx, gz, 5) as usize) % cands.len() };
         let ty = snap.type_of(cands[pick])?;
         let h = h.unwrap_or_else(|| t.height(x, z));
-        if h < WATER_LEVEL + 0.35 {
+        if h < t.water(x, z) + 0.35 {
             return None;
         }
         let big = tag != "grass";

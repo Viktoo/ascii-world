@@ -56,11 +56,19 @@ pub struct Look {
     /// The world's weather kinds, written at genesis (empty: mild, nothing falls).
     #[serde(default, skip_serializing_if = "weather::Climate::is_default")]
     pub climate: weather::Climate,
+    /// How many rivers run through the land, 0 (none, a desert) … 1 (a
+    /// land of streams). Older worlds, saved without it, get some.
+    #[serde(default = "d_rivers")]
+    pub rivers: f32,
+}
+
+fn d_rivers() -> f32 {
+    0.6
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default() }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0 }
     }
 }
 

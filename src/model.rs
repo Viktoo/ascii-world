@@ -7,7 +7,7 @@ use crate::lang::probe::{ProbeReport, default_k, probe, sample_points};
 use crate::lang::{CompiledType, Diag, Stage, compile, format_diags};
 use crate::render::gpu::{Gpu, ScenePipeline};
 use crate::render::{GpuInst, shader};
-use crate::terrain::{Terrain, WATER_LEVEL};
+use crate::terrain::Terrain;
 use crate::world::characters::SavedState;
 use crate::world::{CharacterDef, Look, Persona, Placed, RegionInfo, SceneTypes, TypeEntry, WorldSnapshot};
 use anyhow::Result;
@@ -228,7 +228,7 @@ fn spawn_near(t: &Terrain, mid: f32) -> Vec3 {
             // Further out, more regions come into sight.
             score += 5.0;
         }
-        if h < WATER_LEVEL + 1.5 {
+        if h < t.water(x, z) + 1.5 {
             score += 100.0;
         }
         if score < best_score {
@@ -246,6 +246,7 @@ impl WorldModel {
         let mut look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
         crate::terrain::add_litter(&mut look.biomes);
         let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()));
+        terrain.set_rivers(look.rivers, look.palette.sand);
         let mut m = WorldModel {
             db: db.clone(),
             gpu,
@@ -273,10 +274,16 @@ impl WorldModel {
                 Ok(rows.filter_map(|r| r.ok()).map(|id| id as u32).collect())
             })
             .unwrap_or_default();
+        // The rivers round where the traveler begins.
+        if let Some(s) = db.kv_get("spawn").and_then(|s| serde_json::from_str::<[f32; 3]>(&s).ok()) {
+            m.terrain.lay_rivers(s[0], s[2]);
+        }
         m.spawn = match db.kv_get("spawn").and_then(|s| serde_json::from_str::<[f32; 3]>(&s).ok()) {
-            Some(s) if m.terrain.height(s[0], s[2]) >= WATER_LEVEL + 0.3 => Vec3::from(s),
+            Some(s) if m.terrain.height(s[0], s[2]) >= m.terrain.water(s[0], s[2]) + 0.3 => Vec3::from(s),
             _ => {
                 let s = find_spawn(&m.terrain);
+                m.terrain.lay_rivers(s.x, s.z);
+                let s = dry_near(&m.terrain, s);
                 db.kv_set("spawn", &serde_json::to_string(&s.to_array())?)?;
                 s
             }
@@ -672,7 +679,17 @@ impl WorldModel {
             None => Vec::new(),
         };
         let extra: Vec<LandPlan> = roads.iter().map(road_plan).collect();
-        let laid = if plans.is_empty() && extra.is_empty() { Vec::new() } else { realize(&plans, &extra, &base) };
+        let mut laid = if plans.is_empty() && extra.is_empty() { Vec::new() } else { realize(&plans, &extra, &base) };
+        // Rivers through the settlement's ways run on under them: cut again
+        // after the ways (so they don't dam them) and bridged.
+        if laid.iter().any(|e| is_way(e)) {
+            let (ox, oz) = (r.0 as f32 * crate::world::REGION, r.1 as f32 * crate::world::REGION);
+            let rivers: Vec<crate::ground::Edit> = self.terrain.carve.read().ground.layer(crate::ground::Layer::Land).iter().filter(|e| {
+                let b = e.bounds();
+                b[2] > ox - 40.0 && b[0] < ox + crate::world::REGION + 40.0 && b[3] > oz - 40.0 && b[1] < oz + crate::world::REGION + 40.0
+            }).filter(|e| laid.iter().filter(|w| is_way(w)).any(|w| !crossings(w, e).is_empty())).cloned().collect();
+            laid.extend(rivers);
+        }
         let mut all = others;
         all.extend(laid.iter().cloned());
         self.terrain.set_ground(crate::ground::Layer::Places, all);
@@ -804,7 +821,7 @@ impl WorldModel {
                 let mut p2 = pl.clone();
                 p2.x += a.cos() * r * ring;
                 p2.z += a.sin() * r * ring;
-                if t.height(p2.x, p2.z) < WATER_LEVEL - 0.6 {
+                if t.height(p2.x, p2.z) < t.water(p2.x, p2.z) - 0.6 {
                     continue;
                 }
                 let d = drop(&p2);
@@ -845,9 +862,10 @@ impl WorldModel {
         };
         // A boat set on water floats on it (as `vehicle` keeps it).
         let afloat = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "water");
-        let y = if afloat && pl.y.is_none() && ground < WATER_LEVEL - 0.1 { WATER_LEVEL - ((entry.top - entry.bottom) * scale * 0.25).clamp(0.1, 1.0) - entry.bottom * scale } else { y };
+        let wl = t.water(pl.x, pl.z);
+        let y = if afloat && pl.y.is_none() && ground < wl - 0.1 { wl - ((entry.top - entry.bottom) * scale * 0.25).clamp(0.1, 1.0) - entry.bottom * scale } else { y };
         let water_ok = afloat || entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
-        if ground < WATER_LEVEL - 0.6 && !water_ok {
+        if ground < wl - 0.6 && !water_ok {
             return Err(format!("{label} would stand in deep water at ({:.0}, {:.0})", pl.x, pl.z));
         }
         let mut params = pl.params;
@@ -1084,6 +1102,7 @@ impl WorldModel {
         if let Some(l) = &req.look {
             look = Arc::new(l.clone());
             terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()));
+            terrain.set_rivers(l.rivers, l.palette.sand);
         }
         let cur: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
         let mut all: Vec<TypeRec> = cur.clone();
@@ -1099,7 +1118,11 @@ impl WorldModel {
         }
 
         // A new look changes the terrain: pick a new dry spawn point.
-        let new_spawn = req.look.as_ref().map(|_| find_first_spawn(&terrain)).or_else(|| {
+        let new_spawn = req.look.as_ref().map(|_| {
+            let s = find_first_spawn(&terrain);
+            terrain.lay_rivers(s.x, s.z);
+            dry_near(&terrain, s)
+        }).or_else(|| {
             // A settlement's ground may have flooded the spawn (a lagoon dug
             // round it): the nearest dry spot instead.
             let s = self.spawn;

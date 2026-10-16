@@ -4,7 +4,6 @@
 //! where plants and people choose to be). Nothing here knows what wind is.
 
 use super::Sim;
-use crate::terrain::WATER_LEVEL;
 use glam::Vec3;
 
 /// How far around the ground is compared, to tell a hilltop from a hollow.
@@ -36,7 +35,7 @@ impl Sim {
             }
         }
         let rise = ((ground - sum / n) / PROMINENT).clamp(0.0, 1.0);
-        let high = ((ground - WATER_LEVEL) / HIGH).clamp(0.0, 1.0);
+        let high = ((ground - t.water(p.x, p.z)) / HIGH).clamp(0.0, 1.0);
         let lift = 0.6 * rise + 0.4 * high;
         // Standing things round about break it up.
         let solids = self.cache.items_near(&snap, p, SHELTER).iter().filter(|i| i.solid).count();

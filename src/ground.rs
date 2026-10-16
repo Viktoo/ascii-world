@@ -527,11 +527,17 @@ fn index_of(all: &[Edit]) -> HashMap<(i32, i32), Vec<u32>> {
     index
 }
 
+/// Threads for a big job (stamping, tracing rivers): most cores, but two
+/// under test, where many run at once beside timing tests.
+pub fn workers() -> usize {
+    if cfg!(test) { 2 } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 12) }
+}
+
 /// Stamp the tiles `keys` from the full edit list `all`, over the land's own
 /// height `raw`. In parallel; empty tiles come back as None.
 pub fn stamp(all: &[Edit], keys: &[(i32, i32)], raw: &(dyn Fn(f32, f32) -> f32 + Sync)) -> Vec<((i32, i32), Option<Arc<Tile>>)> {
     let index = index_of(all);
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 12);
+    let threads = workers();
     let chunk = keys.len().div_ceil(threads).max(1);
     std::thread::scope(|s| {
         let hs: Vec<_> = keys.chunks(chunk).map(|ks| s.spawn(|| ks.iter().map(|k| (*k, stamp_tile(all, index.get(k).map(|v| v.as_slice()).unwrap_or(&[]), *k, raw))).collect::<Vec<_>>())).collect();

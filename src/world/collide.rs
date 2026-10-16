@@ -1,7 +1,7 @@
 //! Collision against the CPU SDF of nearby solids, with sliding.
 
 use super::Solid;
-use crate::terrain::{Terrain, WATER_LEVEL};
+use crate::terrain::Terrain;
 use glam::{Vec2, Vec3};
 
 pub const PLAYER_RADIUS: f32 = 0.35;
@@ -166,7 +166,7 @@ impl Obstacles<'_> {
 }
 
 fn wadeable(terrain: &Terrain, x: f32, z: f32) -> bool {
-    terrain.height(x, z) > WATER_LEVEL - MAX_WADE
+    terrain.height(x, z) > terrain.water(x, z) - MAX_WADE
 }
 
 /// Whether going from `from` towards `to` climbs a rock face: the natural
@@ -423,7 +423,7 @@ mod tests {
             for i in 0..300 {
                 let (x, z) = (i as f32 * 3.0 - 450.0, j as f32 * 3.0 - 450.0);
                 let n = terrain.normal(x, z);
-                if n.y < 0.33 && terrain.height(x, z) > WATER_LEVEL + 4.0 {
+                if n.y < 0.33 && terrain.height(x, z) > terrain.water(x, z) + 4.0 {
                     faces.push((Vec2::new(x, z), Vec2::new(n.x, n.z).normalize()));
                     if faces.len() == 20 {
                         break 'scan;

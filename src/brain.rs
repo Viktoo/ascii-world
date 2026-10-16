@@ -994,15 +994,17 @@ fn region_notes(t: &Terrain, r: (i32, i32)) -> String {
     let n = 17;
     let step = REGION / (n - 1) as f32;
     let mut h = vec![0.0f32; n * n];
+    let mut wet = vec![false; n * n];
     let mut biome_count = std::collections::BTreeMap::<String, usize>::new();
     for j in 0..n {
         for i in 0..n {
             let (x, z) = (ox + i as f32 * step, oz + j as f32 * step);
             h[j * n + i] = t.height(x, z);
+            wet[j * n + i] = h[j * n + i] < t.water(x, z);
             *biome_count.entry(t.biomes[t.biome_at(x, z)].name.clone()).or_default() += 1;
         }
     }
-    let water = h.iter().filter(|v| **v < WATER_LEVEL).count() as f32 / h.len() as f32;
+    let water = wet.iter().filter(|v| **v).count() as f32 / h.len() as f32;
     let (mut hi, mut lo) = (0, 0);
     for k in 0..h.len() {
         if h[k] > h[hi] {
@@ -1018,7 +1020,7 @@ fn region_notes(t: &Terrain, r: (i32, i32)) -> String {
     for j in 1..n - 1 {
         for i in 1..n - 1 {
             let k = j * n + i;
-            if h[k] < WATER_LEVEL + 1.0 {
+            if wet[k] || h[k] < WATER_LEVEL + 1.0 {
                 continue;
             }
             let s = (h[k + 1] - h[k - 1]).abs() + (h[k + n] - h[k - n]).abs();
@@ -1044,7 +1046,7 @@ fn region_notes(t: &Terrain, r: (i32, i32)) -> String {
         for i in (0..n).step_by(2) {
             let v = h[j * n + i];
             map.push(match v {
-                v if v < WATER_LEVEL => '~',
+                _ if wet[j * n + i] => '~',
                 v if v < 3.0 => '.',
                 v if v < 12.0 => '-',
                 v if v < 25.0 => '+',
@@ -1256,7 +1258,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let mut home = Vec3::new(ox + clampl(f(c, "home_x", 128.0)), 0.0, oz + clampl(f(c, "home_z", 128.0)));
         // Homes must be on dry land: spiral out until we find some.
         for k in 0..40 {
-            if info.terrain.height(home.x, home.z) > WATER_LEVEL + 0.5 {
+            if info.terrain.height(home.x, home.z) > info.terrain.water(home.x, home.z) + 0.5 {
                 break;
             }
             let a = k as f32 * 2.399;
@@ -1279,7 +1281,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let rad = 1.6 + 0.5 * *k as f32;
         *k += 1;
         let (x, z) = (sx + a.cos() * rad, sz + a.sin() * rad);
-        if info.terrain.height(x, z) <= WATER_LEVEL + 0.2 {
+        if info.terrain.height(x, z) <= info.terrain.water(x, z) + 0.2 {
             continue;
         }
         placements.push(Placement { ty, x, z, y: None, rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
@@ -1305,7 +1307,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             let a = i as f32 * 2.399;
             let mut home = Vec3::new(cx + a.cos() * (1.5 + i as f32), 0.0, cz + a.sin() * (1.5 + i as f32));
             for k in 0..30 {
-                if info.terrain.height(home.x, home.z) > WATER_LEVEL + 0.5 {
+                if info.terrain.height(home.x, home.z) > info.terrain.water(home.x, home.z) + 0.5 {
                     break;
                 }
                 let b = k as f32 * 2.399;

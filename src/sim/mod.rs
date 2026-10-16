@@ -866,6 +866,8 @@ impl Sim {
             self.frame_dt = dt;
         }
         self.t += dt as f64;
+        // The rivers round the traveler, as they walk.
+        self.snap.terrain.lay_rivers_soon(self.player.pos.x, self.player.pos.z);
         self.step_weather();
         let dark = sky::lighting(self.t, &self.snap.look.palette).night;
         self.cache.overlay.lamps = dark;
@@ -981,7 +983,7 @@ impl Sim {
             if !t.held() && !t.anchored {
                 let g = self.snap.terrain.height(t.pos.x, t.pos.z);
                 let lowest = t.pos.y + ty.bottom * t.scale;
-                if lowest < g - 0.5 - ty.radius() * t.scale && g > crate::terrain::WATER_LEVEL {
+                if lowest < g - 0.5 - ty.radius() * t.scale && g > self.snap.terrain.water(t.pos.x, t.pos.z) {
                     bad.push(format!("thing {} ({}) sank {:.1} m into the ground", t.id, ty.name(), g - lowest));
                 }
             }

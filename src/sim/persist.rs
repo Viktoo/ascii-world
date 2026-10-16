@@ -265,7 +265,7 @@ pub fn load(sim: &mut Sim) {
         let size = ty.radius() * scale;
         let pos = it.inst.pos();
         let spent_at = (props[P_FUEL] <= 0.0).then_some(sim.t);
-        sim.field.cells.insert((gx, gz), Cell { props, type_id: ty.id, pos, size, small: size < 0.9, water: snap.terrain.height(pos.x, pos.z) < crate::terrain::WATER_LEVEL, active, fired: Vec::new(), spent_at });
+        sim.field.cells.insert((gx, gz), Cell { props, type_id: ty.id, pos, size, small: size < 0.9, water: snap.terrain.height(pos.x, pos.z) < snap.terrain.water(pos.x, pos.z), active, fired: Vec::new(), spent_at });
     }
     // Relationships.
     let rels: Vec<(i64, i64, String)> = db

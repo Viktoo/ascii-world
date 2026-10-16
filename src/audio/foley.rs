@@ -8,7 +8,6 @@ use super::mix::{Ambience, At, Cmd, Play, Song};
 use super::synth::Body;
 use super::{Cue, Heard, actor_key};
 use crate::sim::{ActorId, Sim};
-use crate::terrain::WATER_LEVEL;
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 
@@ -128,7 +127,7 @@ impl Foley {
             let mut acc = acc + moved;
             let at = if who == ActorId::Player { At::Listener } else { At::Point(pos) };
             let mass = dims.mass.max(1.0);
-            let depth = WATER_LEVEL - snap.terrain.height(pos.x, pos.z);
+            let depth = snap.terrain.water(pos.x, pos.z) - snap.terrain.height(pos.x, pos.z);
             // Small fast feet patter: one sound for every few steps (a voice each is a waste).
             let mut last_step = last_step;
             if grounded && acc >= stride && self.clock - last_step >= 0.14 {
@@ -274,10 +273,10 @@ impl Foley {
             for k in 0..24 {
                 let a = k as f32 / 24.0 * std::f32::consts::TAU;
                 let (x, z) = (me.x + a.sin() * ring, me.z + a.cos() * ring);
-                if t.height(x, z) < WATER_LEVEL - 0.15 {
+                if t.height(x, z) < t.water(x, z) - 0.15 {
                     wet += 1;
                     if water.is_none() {
-                        water = Some((Vec3::new(x, WATER_LEVEL, z), 0.0));
+                        water = Some((Vec3::new(x, t.water(x, z), z), 0.0));
                     }
                 }
             }

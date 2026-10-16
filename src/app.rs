@@ -282,7 +282,7 @@ impl App {
             None => (s.snap.spawn, 0.0, 0.33 * sky::DAY_SECONDS),
         };
         // Saved under water (an older save, or a spawn on a lake bed): back to dry land.
-        let pos = if pos.y < crate::terrain::WATER_LEVEL + 0.3 { s.snap.spawn } else { pos };
+        let pos = if pos.y < s.snap.terrain.water(pos.x, pos.z) + 0.3 { s.snap.spawn } else { pos };
         let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
         sim.has_llm = s.brain.has_llm;
@@ -450,7 +450,7 @@ impl App {
         let k = k * k * (3.0 - 2.0 * k);
         // A small bounce as the head meets the ground.
         let bump = if s > FALL_SECS { (-(s - FALL_SECS) * 9.0).exp() * ((s - FALL_SECS) * 18.0).sin() * 0.04 } else { 0.0 };
-        let ground = self.snap.terrain.height(p.x, p.z).max(crate::terrain::WATER_LEVEL - 0.2) + 0.22;
+        let ground = self.snap.terrain.height(p.x, p.z).max(self.snap.terrain.water(p.x, p.z) - 0.2) + 0.22;
         Camera {
             pos: Vec3::new(p.x, cam.pos.y + (ground - cam.pos.y) * k + bump, p.z),
             pitch: cam.pitch + (0.04 - cam.pitch) * k,
@@ -1171,7 +1171,7 @@ impl App {
             // The land reshaped itself; don't leave the player under water.
             let p = self.pos();
             let h = self.snap.terrain.height(p.x, p.z);
-            if h < crate::terrain::WATER_LEVEL + 0.3 {
+            if h < self.snap.terrain.water(p.x, p.z) + 0.3 {
                 self.sim.player.pos = self.snap.spawn;
             }
             let p = self.pos();
@@ -1248,7 +1248,7 @@ impl App {
         if dirn_none(self.held('w'), self.held('s'), self.held('a'), self.held('d')) {
             self.shift_run = false;
         }
-        let eye = self.sim.player.pos.y.max(crate::terrain::WATER_LEVEL - 0.4) + self.sim.player.eye_height();
+        let eye = self.sim.player.pos.y.max(self.snap.terrain.water(self.sim.player.pos.x, self.sim.player.pos.z) - 0.4) + self.sim.player.eye_height();
         // In a closed cab, the view is from just over it.
         let eye = eye + self.sim.eye_lift(Vec3::new(self.sim.player.pos.x, eye, self.sim.player.pos.z));
         // Smooth over stairs; follow a jump or a fall at once.

@@ -236,3 +236,88 @@ fn beasts_pull_carts_legs_pedal_and_sails_need_wind() {
     let gale = s.sim.drive_power(sail, me);
     assert!(gale > calm_air * 3.0, "the wind fills the sail: {gale:.2} vs {calm_air:.2}");
 }
+
+/// A land of rivers: springs in the hills run down to the sea, their water
+/// standing above the sea's level, cut into the land; a street a
+/// settlement lays across one is bridged, the river running on under it.
+fn river_land(tag: &str) -> W {
+    let look = crate::world::Look { name: "Rivers".into(), rivers: 1.0, ..Default::default() };
+    world_with(tag, 71, look)
+}
+
+/// A spot on a river well above the sea, and its edit.
+fn river_spot(w: &W) -> (Vec3, crate::ground::Edit) {
+    let t = &w.terrain;
+    let rivers: Vec<crate::ground::Edit> = t.carve.read().ground.layer(crate::ground::Layer::Land).iter().filter(|e| e.kind == "river").cloned().collect();
+    assert!(!rivers.is_empty(), "rivers near the spawn");
+    for e in &rivers {
+        let crate::ground::Shape::Line { pts, .. } = &e.shape else { continue };
+        let p = pts[pts.len() / 2];
+        let (h, wl) = (t.height(p[0], p[1]), t.water(p[0], p[1]));
+        if wl > crate::terrain::WATER_LEVEL + 2.0 && wl - h > 0.5 {
+            return (Vec3::new(p[0], h, p[1]), e.clone());
+        }
+    }
+    panic!("no river above the sea among {}", rivers.len());
+}
+
+#[test]
+fn rivers_run_through_the_land_and_streets_bridge_them() {
+    let w = river_land("river");
+    let (p, river) = river_spot(&w);
+    let t = &w.terrain;
+    assert!(t.water_depth(p.x, p.z) > 0.5, "water in the river: {}", t.water_depth(p.x, p.z));
+    // Its banks: dry ground a little way off to the side.
+    let crate::ground::Shape::Line { pts, half } = &river.shape else { unreachable!() };
+    let i = pts.len() / 2;
+    let d = glam::Vec2::from(pts[(i + 1).min(pts.len() - 1)]) - glam::Vec2::from(pts[i.saturating_sub(1)]);
+    let side = glam::Vec2::new(-d.y, d.x).normalize() * (half + river.edge + 3.0);
+    assert!(t.water_depth(p.x + side.x, p.z + side.y) == 0.0, "dry beside it");
+    // A street across it, through the world model as a plan would lay it.
+    let r = crate::world::region_of(p.x, p.z);
+    let (ox, oz) = (r.0 as f32 * crate::world::REGION, r.1 as f32 * crate::world::REGION);
+    let a = glam::Vec2::new(p.x, p.z) - side * 2.5;
+    let b = glam::Vec2::new(p.x, p.z) + side * 2.5;
+    let plan = serde_json::json!([{ "what": "street", "line": [[a.x - ox, a.y - oz], [b.x - ox, b.y - oz]], "width": 3, "color": [150, 130, 100] }]);
+    let ground = crate::settle::parse(plan.as_array().unwrap(), ox, oz).into_iter().map(|p| (p, None)).collect();
+    let st = crate::model::Settlement { x: p.x, z: p.z, road: None, ground, ..Default::default() };
+    let region = crate::model::RegionCommit { r, plan_json: "{}".into(), info: Default::default(), characters: vec![], settlement: Some(st) };
+    let ok = commit_places(&w, vec![], Some(region));
+    let t = &ok.snapshot.terrain;
+    let bridge = builtin_id(&w, "bridge");
+    let br = ok.snapshot.instances.iter().find(|q| q.type_id == bridge).expect("a bridge over the river");
+    assert!((br.pos - p).length() < half + 4.0, "over the river: {} vs {p}", br.pos);
+    assert!(t.water_depth(p.x, p.z) > 0.5, "the river still runs under it: {}", t.water_depth(p.x, p.z));
+}
+
+/// Pictures of a river (look at them): from its bank, and from above.
+#[test]
+#[ignore]
+fn river_png() {
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = river_land("riverpng");
+    let (p, river) = river_spot(&w);
+    let mut s = session(&w, 71, None);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.42;
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    snap.terrain.lay_rivers(p.x, p.z);
+    s.sim.flip(snap.clone());
+    let t = snap.terrain.clone();
+    let crate::ground::Shape::Line { pts, half } = &river.shape else { unreachable!() };
+    let i = pts.len() / 2;
+    let d = (glam::Vec2::from(pts[(i + 1).min(pts.len() - 1)]) - glam::Vec2::from(pts[i.saturating_sub(1)])).normalize();
+    let side = glam::Vec2::new(-d.y, d.x);
+    let look = |from: Vec3, to: Vec3| {
+        let dd = to - from;
+        crate::render::Camera { pos: from, yaw: dd.x.atan2(dd.z), pitch: (dd.y / Vec3::new(dd.x, 0.0, dd.z).length()).atan(), fov_y: 1.05, roll: 0.0 }
+    };
+    let bank = glam::Vec2::new(p.x, p.z) + side * (half + river.edge + 1.0) - d * 6.0;
+    let eye = Vec3::new(bank.x, t.height(bank.x, bank.y) + 1.7, bank.y);
+    let ahead = glam::Vec2::new(p.x, p.z) + d * 25.0;
+    png_of(&mut s, &snap, &gpu, look(eye, Vec3::new(ahead.x, t.water(ahead.x, ahead.y), ahead.y)), &format!("{dir}/pocket-river-bank.png"));
+    let above = Vec3::new(p.x - d.x * 50.0 + side.x * 30.0, p.y + 40.0, p.z - d.y * 50.0 + side.y * 30.0);
+    png_of(&mut s, &snap, &gpu, look(above, p + Vec3::new(d.x * 20.0, 0.0, d.y * 20.0)), &format!("{dir}/pocket-river-above.png"));
+}

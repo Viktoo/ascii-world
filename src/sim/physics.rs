@@ -218,10 +218,11 @@ impl Sim {
         let old_pos = t.pos;
         v.y -= GRAVITY * h;
         // Water: float if lighter than water, drag either way.
-        if c.y < WATER_LEVEL {
+        let wl = if c.y < WATER_LEVEL + 80.0 { self.snap.terrain.water(c.x, c.z) } else { WATER_LEVEL };
+        if c.y < wl {
             let vol = volume(&ty) * t.scale.powi(3);
             let density = mass / vol.max(1e-4);
-            let depth = ((WATER_LEVEL - c.y) / r.max(0.05)).min(1.0);
+            let depth = ((wl - c.y) / r.max(0.05)).min(1.0);
             v.y += GRAVITY * depth * (1000.0 / density.max(50.0)).min(4.0) * h;
             v *= 1.0 - (2.5 * h).min(0.5);
         }

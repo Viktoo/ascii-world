@@ -514,7 +514,7 @@ impl Sim {
                 (n.rand() * std::f32::consts::TAU, 30.0 + n.rand() * 30.0)
             };
             let p = pos + Vec3::new(a.cos(), 0.0, a.sin()) * r;
-            if (p - home).length() < 120.0 && self.snap.terrain.height(p.x, p.z) > crate::terrain::WATER_LEVEL + 0.3 {
+            if (p - home).length() < 120.0 && self.snap.terrain.height(p.x, p.z) > self.snap.terrain.water(p.x, p.z) + 0.3 {
                 return Some(Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z));
             }
         }

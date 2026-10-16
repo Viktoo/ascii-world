@@ -424,7 +424,7 @@ impl Sim {
     fn dig(&mut self, who: ActorId, at: Vec3, tool: ThingId) {
         let terrain = self.snap.terrain.clone();
         let natural = terrain.natural_height(at.x, at.z);
-        if natural < crate::terrain::WATER_LEVEL + 0.1 {
+        if natural < terrain.water(at.x, at.z) + 0.1 {
             return;
         }
         let tool_mass = self.things.get(tool).map(|t| t.mass()).unwrap_or(1.0);

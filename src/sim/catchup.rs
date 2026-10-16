@@ -147,7 +147,7 @@ impl Sim {
                 let a = crate::noise::u2f(crate::noise::pcg(n.rng ^ (t0 as u32))) * std::f32::consts::TAU;
                 let d = 3.0 + crate::noise::u2f(crate::noise::pcg(n.rng ^ 77)) * 12.0;
                 let q = home + Vec3::new(a.cos() * d, 0.0, a.sin() * d);
-                if self.snap.terrain.height(q.x, q.z) > crate::terrain::WATER_LEVEL + 0.3 {
+                if self.snap.terrain.height(q.x, q.z) > self.snap.terrain.water(q.x, q.z) + 0.3 {
                     n.a.pos = q;
                 }
                 n.a.asleep = false;

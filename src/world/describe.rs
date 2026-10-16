@@ -4,7 +4,6 @@
 use super::scatter::ScatterCache;
 use super::{Solid, WorldSnapshot, region_of};
 use crate::render::{Camera, VIEW_DIST};
-use crate::terrain::WATER_LEVEL;
 use glam::Vec3;
 use serde::Serialize;
 
@@ -116,7 +115,8 @@ fn third(u: f32) -> &'static str {
 
 fn terrain_kind(snap: &WorldSnapshot, p: Vec3) -> &'static str {
     let t = &snap.terrain;
-    if p.y < WATER_LEVEL + 0.05 {
+    let wl = t.water(p.x, p.z);
+    if p.y < wl + 0.05 {
         return "water";
     }
     // A rock face (steeper than anyone climbs).
@@ -136,7 +136,7 @@ fn terrain_kind(snap: &WorldSnapshot, p: Vec3) -> &'static str {
         "rise"
     } else if d < -4.0 {
         "hollow"
-    } else if p.y < WATER_LEVEL + 1.5 {
+    } else if p.y < wl + 1.5 {
         "shore"
     } else {
         "flat ground"

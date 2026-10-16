@@ -9,7 +9,6 @@ use super::{ActorId, Note, Request, Sim};
 use crate::lang::BEHAVIOR_FUEL;
 use crate::lang::ir::{Behavior, CTX_FIELDS, Effect};
 use crate::lang::vm::{BehaviorIo, CTX_LEN};
-use crate::terrain::WATER_LEVEL;
 use crate::world::TypeEntry;
 use glam::Vec3;
 use serde_json::json;
@@ -41,7 +40,7 @@ impl Sim {
         ctx_set(&mut c, "near", near as f32);
         ctx_set(&mut c, "speed", t.vel.length());
         ctx_set(&mut c, "ground", (!t.held() && t.in_contact) as u32 as f32);
-        ctx_set(&mut c, "water", (t.pos.y < WATER_LEVEL) as u32 as f32);
+        ctx_set(&mut c, "water", (t.pos.y < self.snap.terrain.water(t.pos.x, t.pos.z)) as u32 as f32);
         c
     }
 

@@ -122,12 +122,17 @@ pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
 /// The height (x, z) has once `edits` are applied over the land `raw`,
 /// worked out directly (the tiles do the same, for everyone, once laid).
 pub fn shaped(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, x: f32, z: f32) -> f32 {
+    shaped_water(edits, raw, x, z).0
+}
+
+/// As `shaped`, and the water standing there (the sea's level at least).
+pub fn shaped_water(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, x: f32, z: f32) -> (f32, f32) {
     let mut h = raw(x, z);
     let (mut paint, mut water) = ((Vec3::ZERO, 0.0), crate::ground::NO_WATER);
     for e in edits {
         e.apply_at(x, z, &mut h, &mut paint, &mut water);
     }
-    h
+    (h, water.max(crate::terrain::WATER_LEVEL))
 }
 
 /// Lay the plans in order: heights that follow the land are read off the
@@ -193,8 +198,13 @@ fn follow(p: &LandPlan, before: &[Edit], raw: &dyn Fn(f32, f32) -> f32) -> Edit 
     let ground = |x: f32, z: f32| shaped(before, raw, x, z);
     match &e.shape {
         Shape::Line { pts, half } => {
-            // A way stays above the sea: across water it is a causeway.
-            let (pts, hs) = lay(pts, 3.0, 12.0, &|x, z| ground(x, z).max(crate::terrain::WATER_LEVEL + 0.35));
+            // A way stays above the water: across the sea it is a causeway;
+            // over a river it keeps its height (and the river is cut through
+            // again, under a bridge).
+            let (pts, hs) = lay(pts, 3.0, 12.0, &|x, z| {
+                let (h, w) = shaped_water(before, raw, x, z);
+                h.max(w + 0.35)
+            });
             let lower = e.mode == Mode::Lower;
             e.shape = Shape::Line { pts, half: *half };
             e.to = Height::Along(hs.into_iter().map(|h| if lower { h - 1.6 } else { h }).collect());

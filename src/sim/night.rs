@@ -584,7 +584,7 @@ impl Sim {
             let d = dist * (0.9 + self.rand() * 0.25);
             let p = self.player.pos + Vec3::new(a.cos(), 0.0, a.sin()) * d;
             let h = self.snap.terrain.height(p.x, p.z);
-            if h > crate::terrain::WATER_LEVEL + 0.2 && !self.player_sees(p) {
+            if h > self.snap.terrain.water(p.x, p.z) + 0.2 && !self.player_sees(p) {
                 return Some(Vec3::new(p.x, h, p.z));
             }
         }

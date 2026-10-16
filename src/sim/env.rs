@@ -10,7 +10,6 @@ use super::props::Crossing;
 use super::rules::{self, EntView, Rule, RuleSpec};
 use super::things::{Origin, Thing, ThingId};
 use super::{Note, Sim};
-use crate::terrain::WATER_LEVEL;
 use glam::Vec3;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -241,7 +240,7 @@ impl Sim {
                     let Some(it) = self.cache.item_at(&snap, cell) else { return };
                     let size = snap.type_of(it.inst.info[0]).map(|t| t.radius() * it.inst.pos_scale[3]).unwrap_or(0.5);
                     let pos = it.inst.pos();
-                    let water = snap.terrain.height(pos.x, pos.z) < WATER_LEVEL;
+                    let water = snap.terrain.height(pos.x, pos.z) < snap.terrain.water(pos.x, pos.z);
                     self.field.cells.insert(cell, Cell { props: p, type_id: it.inst.info[0], pos, size, small: size < 0.9, water, active: true, fired: Vec::new(), spent_at: None });
                 }
                 self.sync_overlay();
@@ -347,7 +346,7 @@ impl Sim {
                 pos: c,
                 props: t.props.clone(),
                 next: t.props.clone(),
-                water: (c.y < WATER_LEVEL) as u32 as f32,
+                water: (c.y < snap.terrain.water(c.x, c.z)) as u32 as f32,
                 held: t.held() as u32 as f32,
                 ground: (t.asleep && !t.held()) as u32 as f32,
                 falling,
@@ -397,7 +396,7 @@ impl Sim {
                 pos,
                 props: n.props.clone(),
                 next: n.props.clone(),
-                water: (snap.terrain.height(n.a.pos.x, n.a.pos.z) < WATER_LEVEL - 0.1 && !n.a.carried()) as u32 as f32,
+                water: (snap.terrain.height(n.a.pos.x, n.a.pos.z) < snap.terrain.water(n.a.pos.x, n.a.pos.z) - 0.1 && !n.a.carried()) as u32 as f32,
                 held: 0.0,
                 ground: 1.0,
                 falling,
@@ -457,7 +456,7 @@ impl Sim {
                         pos,
                         next: props.clone(),
                         props,
-                        water: (snap.terrain.height(pos.x, pos.z) < WATER_LEVEL) as u32 as f32,
+                        water: (snap.terrain.height(pos.x, pos.z) < snap.terrain.water(pos.x, pos.z)) as u32 as f32,
                         held: 0.0,
                         ground: 1.0,
                         falling: sky_amount,
@@ -488,7 +487,7 @@ impl Sim {
                         pos: pl.pos + Vec3::Y * ty.sphere_cy.min(2.0) * pl.scale,
                         next: props.clone(),
                         props,
-                        water: (pl.pos.y < WATER_LEVEL) as u32 as f32,
+                        water: (pl.pos.y < snap.terrain.water(pl.pos.x, pl.pos.z)) as u32 as f32,
                         held: 0.0,
                         ground: 1.0,
                         falling,

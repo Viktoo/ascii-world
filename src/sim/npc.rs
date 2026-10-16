@@ -924,7 +924,7 @@ impl Sim {
                             let side = Vec3::new(-d.z, 0.0, d.x) * if tries == 0 { 3.0 } else { -6.0 } - d * 1.0;
                             let p = me + side;
                             // Close by, whatever blocks them is what they came to.
-                            (away.length() > 4.0 && self.snap.terrain.height(p.x, p.z) > crate::terrain::WATER_LEVEL + 0.2).then(|| (Action::Goto { target: Target::Point(p.to_array()), run: false }, Action::Goto { target: target.clone(), run: *run }))
+                            (away.length() > 4.0 && self.snap.terrain.height(p.x, p.z) > self.snap.terrain.water(p.x, p.z) + 0.2).then(|| (Action::Goto { target: Target::Point(p.to_array()), run: false }, Action::Goto { target: target.clone(), run: *run }))
                         }
                         _ => None,
                     };
@@ -1331,7 +1331,7 @@ impl Sim {
                 None => return,
             };
             let p = home + Vec3::new(a.cos() * r, 0.0, a.sin() * r);
-            if self.snap.terrain.height(p.x, p.z) > crate::terrain::WATER_LEVEL + 0.3 {
+            if self.snap.terrain.height(p.x, p.z) > self.snap.terrain.water(p.x, p.z) + 0.3 {
                 self.plan(ActorId::Npc(cid), vec![Action::Goto { target: Target::Point([p.x, 0.0, p.z]), run: false }], "", false);
                 return;
             }

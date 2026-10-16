@@ -621,8 +621,14 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
     }
     col = shade(p, n, albedo, rd, ao) + glow;
   }
-  // water plane
-  let wl = G.water.w;
+  // water plane: the sea, or a river's, a pond's or a canal's where the
+  // ground seen lies under one (taken as level where it is crossed)
+  var wl = G.water.w;
+  if (t_hit < 1e8 && G.ground.w > 0.0) {
+    let ph = ro + rd * t_hit;
+    let lw = ground_water(ph.x, ph.z);
+    if (lw > ph.y) { wl = max(wl, lw); }
+  }
   if (rd.y < 0.0 && ro.y > wl) {
     let tw = (wl - ro.y) / rd.y;
     if (tw < t_hit && tw < tmax) {
