@@ -5000,3 +5000,35 @@ fn a_character_does_not_repeat_themself() {
     assert_eq!(pit, 2, "much later, the same words are news again");
     assert!(!super::actions::same_words("The pit is dead.", "Berries! Are they ripe today?"));
 }
+
+/// Pictures of a sheer pit dug at a slant to the heightmap grid, from near
+/// and from far (look at them: its rim stays a straight line at any distance).
+#[test]
+#[ignore]
+fn dug_pit_png() {
+    use super::interp::{GroundFx, InterpEffect, PendingInterp};
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = world("pit png", 83);
+    let p = dry_spot(&w, 40.0, 0.3);
+    let mut s = session(&w, 83, None);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.42;
+    s.sim.player.pos = p - Vec3::new(0.6, 0.0, 0.8) * 20.0;
+    s.sim.player.yaw = 0.6f32.atan2(0.8);
+    let pi = PendingInterp { actor: ActorId::Player, text: "dig".into(), held: None, target: Some(Target::Point(p.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![GroundFx { depth_m: 0.9, wide_m: 8.0, long_m: Some(14.0), sides: "sheer".into(), ..Default::default() }], ..Default::default() });
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let mut snap = model.snapshot().unwrap();
+    std::sync::Arc::make_mut(&mut snap).terrain = s.sim.snap.terrain.clone();
+    let t = snap.terrain.clone();
+    let look = |from: Vec3, to: Vec3| {
+        let d = to - from;
+        crate::render::Camera { pos: from, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 0.5, roll: 0.0 }
+    };
+    for d in [8.0f32, 20.0, 40.0, 90.0] {
+        let e = p - Vec3::new(0.6, 0.0, 0.8) * d;
+        let eye = Vec3::new(e.x, t.height(e.x, e.z) + 1.7 + d * 0.08, e.z);
+        png_of(&mut s, &snap, &gpu, look(eye, Vec3::new(p.x, t.height(p.x, p.z), p.z)), &format!("{dir}/pocket-pit-{d}.png"));
+    }
+}

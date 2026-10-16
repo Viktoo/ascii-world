@@ -740,7 +740,10 @@ fn heightmap_main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= n || gid.y >= n) { return; }
   let x = G.hmap.x + f32(gid.x) * G.hmap.z;
   let z = G.hmap.y + f32(gid.y) * G.hmap.z;
-  hmap[gid.y * n + gid.x] = terrain_height(x, z);
+  // Before the pits are cut: they are cut after the lookup, exactly, where a
+  // cell holding one would smear its rim into teeth (a shallow pit's cells
+  // are not steep enough to be read exactly).
+  hmap[gid.y * n + gid.x] = terrain_height_w(x, z, terrain_weights(x, z)) + ground_delta(x, z);
 }
 
 // Parity probe: evaluate a type (mode 0) or the terrain (mode 1) at given points.
