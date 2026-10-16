@@ -41,6 +41,7 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/boat.js"),
     include_str!("builtin/shot.js"),
     include_str!("builtin/slug.js"),
+    include_str!("builtin/conjuring.js"),
 ];
 
 /// Live positions the committer must not build on top of.

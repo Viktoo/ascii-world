@@ -25,6 +25,8 @@ const CHECK: f64 = 0.1;
 const LIGHTS_AT: f32 = 250.0;
 /// How hard a hit sets off one that goes off on impact (m/s).
 const IMPACT_AT: f32 = 4.0;
+/// How long a blast lights things up (s).
+pub const BLAST_LIGHT: f64 = 0.7;
 /// The most standing things one blast tears holes in.
 const MOST_HOLES: usize = 8;
 
@@ -251,7 +253,9 @@ impl Sim {
         // Seen and heard.
         let msg = format!("{} went off", super::physics::cap(&told));
         self.event("burst", by, None, msg.clone(), Some(at), json!({ "what": name, "radius": r, "crater": b.crater }));
-        self.flash(at);
+        let now = self.t;
+        self.blasts.retain(|b| now - b.1 < BLAST_LIGHT);
+        self.blasts.push((at, now, r));
         let mat = crate::audio::call::Material { hard: 1.0, dry: 1.0, ring: 0.05, leafy: 0.0 };
         self.cue(at, by, crate::audio::Heard::Hit { mat, mass: (r * r * 60.0).min(4000.0), speed: 30.0, by: None });
         let heard = (r * 12.0).max(40.0);

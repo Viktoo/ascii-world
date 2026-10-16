@@ -5148,3 +5148,66 @@ fn walking_blend_png() {
     let diff: f64 = walked[half..].iter().zip(&still[half..]).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / (walked.len() - half) as f64;
     println!("walking vs still, mean difference on the ground: {diff:.2}");
 }
+
+/// Pictures of something being conjured (the violet sigil turning on the
+/// ground, motes rising), by day and at dusk, and as it arrives (the sigil
+/// opening out and fading). Look at them: thin, quiet, violet, nothing
+/// like text glyphs.
+#[test]
+#[ignore]
+fn conjuring_png() {
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = world("conjure png", 85);
+    let p = dry_spot(&w, 40.0, 0.3);
+    let mut s = session(&w, 85, None);
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    let t = snap.terrain.clone();
+    let at = Vec3::new(p.x, t.height(p.x, p.z), p.z);
+    let from = at - Vec3::new(0.6, 0.0, 0.8) * 4.5;
+    let eye = Vec3::new(from.x, t.height(from.x, from.z) + 1.7, from.z);
+    let d = at + Vec3::Y * 0.5 - eye;
+    let cam = crate::render::Camera { pos: eye, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 0.8, roll: 0.0 };
+    s.sim.player.pos = Vec3::new(from.x, t.height(from.x, from.z), from.z);
+    s.sim.interp.creating.insert(1, (ActorId::Player, 0.0, "a lantern".into(), at));
+    for (name, hour) in [("day", 0.42), ("dusk", 0.78)] {
+        for k in 0..3 {
+            s.sim.t = crate::render::sky::DAY_SECONDS * hour + k as f64 * 0.7;
+            png_of(&mut s, &snap, &gpu, cam, &format!("{dir}/pocket-conjure-{name}-{k}.png"));
+        }
+    }
+    s.sim.interp.creating.clear();
+    for (k, age) in [0.1f64, 0.35, 0.7].into_iter().enumerate() {
+        s.sim.t = crate::render::sky::DAY_SECONDS * 0.78;
+        s.sim.flashes = vec![(at, s.sim.t - age * super::render::FLASH_FOR)];
+        png_of(&mut s, &snap, &gpu, cam, &format!("{dir}/pocket-conjure-arrive-{k}.png"));
+    }
+}
+
+/// Something made by a deed comes where the doer pointed (the spot that
+/// sparkled while it was being decided), not at their feet; a thing being
+/// written still marks that spot while it is.
+#[test]
+fn what_a_deed_makes_comes_where_it_was_pointed() {
+    use super::interp::{InterpEffect, Make, PendingInterp};
+    let w = world_with("made here", 86, bare());
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let _ = ball;
+    let p = flat_spot(&w, 30.0);
+    let mut s = session(&w, 86, None);
+    s.sim.player.pos = p;
+    let spot = ground(&w, p.x + 9.0, p.z + 4.0);
+    let pi = PendingInterp { actor: ActorId::Player, text: "conjure a ball".into(), held: None, target: Some(Target::Point(spot.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+    let make = |name: &str| Make { name: name.into(), replace: None, description: String::new(), size_m: None, props: Default::default() };
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "A ball appears.".into(), create: vec![make("leather ball")], ..Default::default() });
+    let b = s.sim.things.live().find(|t| s.sim.thing_name(t.id) == "leather ball").expect("a ball was made");
+    let flat = |a: Vec3, b: Vec3| Vec3::new(a.x - b.x, 0.0, a.z - b.z).length();
+    assert!(flat(b.pos, spot) < 1.0, "it came where it was pointed: {:.1} m off", flat(b.pos, spot));
+    // A new kind, still being written: its work marks the pointed spot.
+    s.sim.has_llm = true;
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "A lantern appears.".into(), create: vec![make("brass lantern")], ..Default::default() });
+    let work = s.sim.work().into_iter().find(|w| w.what == "brass lantern").expect("the lantern is being made");
+    assert!(work.appears && flat(work.at.unwrap(), spot) < 1.0, "it will appear where it was pointed: {:?}", work.at);
+}

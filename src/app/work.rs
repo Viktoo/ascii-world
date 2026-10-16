@@ -5,7 +5,8 @@
 //! that something is happening. Its kinds are the sim's `WorkKind`s; the land
 //! being made is the one kind of its own here. Settings choose whose work.
 //! Work with a place says how far and which way it is, and in the view a
-//! conjuring shows as sparkles rising where the thing will appear.
+//! conjuring shows in the world as a violet sigil where the thing will
+//! appear (see `sim::render`), and from far off as a mark to find it by.
 
 use super::{App, DIM, TEXT};
 use crate::settings::ShowWork;
@@ -25,9 +26,10 @@ const DONE: [u8; 3] = [130, 200, 140];
 /// The land's own row (no request id).
 const LAND: u64 = u64::MAX;
 const SPARKLE: [u8; 3] = [205, 165, 255];
-/// How far off the traveler's own conjuring still sparkles, and anyone else's.
+/// How far off the traveler's own conjuring is still marked (nearer, the
+/// sigil in the world shows it; anyone else's only shows there).
 const SPARKLE_MINE: f32 = 150.0;
-const SPARKLE_THEIRS: f32 = 40.0;
+const SIGIL_SEEN: f32 = 30.0;
 /// How near a thing being changed shows a little dust.
 const DUST_NEAR: f32 = 25.0;
 
@@ -235,9 +237,10 @@ fn where_from(me: Vec3, yaw: f32, at: Vec3) -> String {
 }
 
 impl App {
-    /// In the view: sparkles rising where something is being conjured (the
-    /// traveler's own seen from far, through walls, so it can be found
-    /// again), and a little dust where something near is being changed.
+    /// In the view: the traveler's own conjuring, when it is too far off to
+    /// see its sigil, as one small violet mark breathing over the spot (seen
+    /// through walls, so it can be found again); and a little dust where
+    /// something near is being changed.
     pub(super) fn draw_work_marks(&mut self, w: u16, vh: u16) {
         if self.menu.is_some() || self.log_view == 2 {
             return;
@@ -250,14 +253,14 @@ impl App {
         let secs = self.start.elapsed().as_secs_f32();
         let marks: Vec<(Vec3, bool, bool, u64)> = self.work.rows.iter().filter(|r| r.done.is_none()).filter_map(|r| r.at.map(|a| (a, r.conjure, r.mine, r.id))).collect();
         for (at, conjure, mine, id) in marks {
-            let v = at - cam.pos;
+            let v = at + Vec3::Y * if conjure { 0.6 } else { 0.0 } - cam.pos;
             let dist = v.length();
-            let far = match (conjure, mine) {
-                (true, true) => SPARKLE_MINE,
-                (true, false) => SPARKLE_THEIRS,
-                (false, _) => DUST_NEAR,
+            let shown = match (conjure, mine) {
+                (true, true) => dist > SIGIL_SEEN && dist < SPARKLE_MINE,
+                (true, false) => false,
+                (false, _) => dist < DUST_NEAR,
             };
-            if dist > far {
+            if !shown {
                 continue;
             }
             let z = v.dot(f);
@@ -271,41 +274,28 @@ impl App {
             }
             let col = ((sx + 1.0) * 0.5 * w as f32) as i32;
             let row = ((1.0 - sy) * 0.5 * vh as f32) as i32;
-            // A column about two metres tall as seen from here, a few rows at least.
-            let rows_per_m = vh as f32 * 0.5 / (z * tan);
-            let (height, width, count, color) = if conjure {
-                let h = (rows_per_m * 2.2).clamp(3.0, vh as f32 * 0.6) as i32;
-                let k = if mine { 1.0 } else { 0.6 };
-                (h, (rows_per_m * 0.5).clamp(1.0, 4.0) as i32, (h as f32 * 0.7 * k).max(3.0) as u32, SPARKLE)
-            } else {
-                (2, 1, 2, [235, 225, 200])
-            };
-            for i in 0..count {
+            if conjure {
+                if col < 0 || row < 0 || col >= w as i32 || row >= vh as i32 {
+                    continue;
+                }
+                let k = 0.65 + 0.35 * (secs * 2.2 + id as f32).sin();
+                let fg = SPARKLE.map(|c| (c as f32 * k) as u8);
+                self.screen.over(col as u16, row as u16, |c| Cell { ch: '✦', fg, bold: true, ..c });
+                continue;
+            }
+            for i in 0..2u32 {
                 // Each mote rises and fades at its own pace, from its own place.
                 let seed = id.wrapping_mul(2654435761).wrapping_add(i as u64 * 40503) as u32;
                 let rnd = |k: u32| ((seed.wrapping_mul(k).wrapping_add(k >> 3)) % 1000) as f32 / 1000.0;
-                let speed = if conjure { 0.2 + 0.3 * rnd(7919) } else { 0.35 + 0.5 * rnd(7919) };
-                let life = (secs * speed + rnd(104729)).fract();
-                let x = col + ((rnd(1301) * 2.0 - 1.0) * width as f32).round() as i32;
-                let y = row - (life * height as f32) as i32;
+                let life = (secs * (0.35 + 0.5 * rnd(7919)) + rnd(104729)).fract();
+                let x = col + ((rnd(1301) * 2.0 - 1.0)).round() as i32;
+                let y = row - (life * 2.0) as i32;
                 if x < 0 || y < 0 || x >= w as i32 || y >= vh as i32 {
                     continue;
                 }
-                let ch = if !conjure {
-                    '·'
-                } else if life < 0.25 {
-                    '·'
-                } else if life < 0.6 {
-                    if (secs * 6.0 + rnd(31) * 10.0) as i32 % 3 == 0 { '✦' } else { '*' }
-                } else if life < 0.85 {
-                    '+'
-                } else {
-                    '·'
-                };
-                // Brightest in the middle of its rise.
                 let glow = 1.0 - (life * 2.0 - 1.0).abs() * 0.6;
-                let fg = color.map(|c| (c as f32 * glow) as u8);
-                self.screen.over(x as u16, y as u16, |c| Cell { ch, fg, bold: conjure, ..c });
+                let fg = [235u8, 225, 200].map(|c| (c as f32 * glow) as u8);
+                self.screen.over(x as u16, y as u16, |c| Cell { ch: '·', fg, ..c });
             }
         }
     }

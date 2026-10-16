@@ -356,6 +356,8 @@ pub struct Sim {
     pub hover: Option<Target>,
     /// Where new things just appeared, and when: a flash of light (see `render`).
     pub flashes: Vec<(Vec3, f64)>,
+    /// Blasts lighting up what is around them: (where, when, how far it reached).
+    pub blasts: Vec<(Vec3, f64, f32)>,
     /// Who lit what is lit (it goes off by their hand).
     pub lit_by: HashMap<things::ThingId, ActorId>,
     /// When things that go off were last looked over for fire.
@@ -445,6 +447,7 @@ impl Sim {
             acc_life: 0.0,
             hover: None,
             flashes: Vec::new(),
+            blasts: Vec::new(),
             lit_by: HashMap::new(),
             burst_check: 0.0,
             region_seen: HashMap::new(),

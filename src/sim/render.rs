@@ -103,7 +103,7 @@ fn thing_look(p: &Props, ty: &TypeEntry, scale: f32) -> [f32; 4] {
 
 /// How long the flash lasts where something new appears (seconds).
 pub const FLASH_FOR: f64 = 1.4;
-const CONJURE_LIGHT: Vec3 = Vec3::new(0.8, 0.6, 1.0);
+const CONJURE_LIGHT: Vec3 = Vec3::new(0.95, 0.65, 1.0);
 
 /// How bright something being changed is lit now: a slow, gentle breath.
 fn pulse(t: f64) -> f32 {
@@ -370,12 +370,33 @@ impl Sim {
                 lights.push((*d, PointLight { pos: p + Vec3::Y * 0.5 * s, color: Vec3::new(1.0, 0.55, 0.22), intensity: (0.5 + 0.7 * b.fire * (b.size / 1.5).min(2.0)) * flicker, reach: 6.0 + 5.0 * s.min(4.0) }));
             }
         }
-        // Where something is being conjured: a violet glow, breathing, until
-        // it appears in a flash.
+        // Where something is being conjured: a violet sigil on the ground
+        // with motes rising from it, and its breathing light, until it
+        // appears; then the sigil opens out and fades in a flash.
+        let sigil = self.snap.scene.types.values().find(|t| t.builtin && t.name() == "conjuring").cloned();
+        let ground = |p: Vec3| Vec3::new(p.x, self.snap.terrain.height(p.x, p.z).max(p.y - 1.0).min(p.y), p.z);
+        let mut sigil_at = |insts: &mut Vec<GpuInst>, at: Vec3, s: f32, arrival: f32, seed: f32| {
+            if let Some(ty) = &sigil {
+                let p = ground(at);
+                let mut g = GpuInst {
+                    pos_scale: [p.x, p.y, p.z, s],
+                    rot: [1.0, 0.0, ty.sphere_r * s, 1.0],
+                    k0: [seed % 97.0, s, 0.5, 0.5],
+                    k1: [0.5; 4],
+                    fx: { let mut f = [0.0; 4]; f[FX_GLOW] = 0.95 * (1.0 - arrival * 0.4); f },
+                    info: ty.gpu_info(),
+                    ..Default::default()
+                };
+                g.s0[0] = self.t as f32 + seed * 0.37;
+                g.s0[1] = arrival;
+                insts.push(g);
+            }
+        };
         for (i, (at, mine)) in marks.conjures.iter().enumerate() {
             let p = *at + Vec3::Y * 0.8;
             let d = (p - cam).length();
             if d < view {
+                sigil_at(&mut insts, *at, if *mine { 1.0 } else { 0.8 }, 0.0, i as f32 * 13.0 + at.x);
                 // The traveler's own keeps its light among the many.
                 let d = if *mine { d * 0.2 } else { d };
                 let k = 0.75 + 0.25 * (self.t * 2.2 + i as f64).sin() as f32;
@@ -388,8 +409,19 @@ impl Sim {
             let p = *at + Vec3::Y * 1.0;
             let d = (p - cam).length();
             if (0.0..1.0).contains(&age) && d < view {
+                sigil_at(&mut insts, *at, 1.0, age, at.x + at.z);
                 let k = (1.0 - age).powi(2);
                 lights.push((d, PointLight { pos: p, color: Vec3::new(0.95, 0.88, 1.0), intensity: 2.5 * k, reach: 6.0 + 8.0 * k }));
+            }
+        }
+        // A blast: a hot white-orange flash, as big as the blast.
+        for (at, when, r) in &self.blasts {
+            let age = (self.t - when) as f32 / super::burst::BLAST_LIGHT as f32;
+            let p = *at + Vec3::Y * 0.8;
+            let d = (p - cam).length();
+            if (0.0..1.0).contains(&age) && d < view {
+                let k = (1.0 - age).powi(3);
+                lights.push((d * 0.5, PointLight { pos: p, color: Vec3::new(1.0, 0.72, 0.4), intensity: (2.0 + r * 0.4).min(6.0) * k, reach: (r * 3.0 + 6.0) * (0.6 + 0.4 * k) }));
             }
         }
         // Placed lamps and lit windows at night, and their light anchors.

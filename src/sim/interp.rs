@@ -734,9 +734,19 @@ impl Sim {
                 moved.push((format!("the {}", self.thing_name(id)), shifts));
             }
         }
-        for m in fx.create.iter().take(3) {
+        // Where new things come: in place of what they replace, by what was
+        // worked on, else where the doer pointed (the spot they looked at
+        // while it was being decided), else just in front of them.
+        let pointed = match &p.target {
+            Some(Target::Point(q)) => Some(glam::Vec3::from(*q)),
+            _ => p.hit,
+        };
+        let ahead = self.actor(p.actor).map(|a| a.pos + a.forward() * 1.2).unwrap_or(pos);
+        for (i, m) in fx.create.iter().take(3).enumerate() {
             let replace = m.replace.as_deref().and_then(|r| resolve(self, r));
-            let at = replace.and_then(|r| self.things.get(r).map(|t| t.pos)).or_else(|| target_thing.and_then(|t| self.things.get(t).map(|x| x.pos))).unwrap_or(pos + glam::Vec3::Y * 0.0);
+            // Several at once lie side by side.
+            let side = self.actor(p.actor).map(|a| a.right()).unwrap_or(glam::Vec3::X) * (i as f32 * 0.45);
+            let at = replace.and_then(|r| self.things.get(r).map(|t| t.pos)).or_else(|| target_thing.and_then(|t| self.things.get(t).map(|x| x.pos))).or(pointed).unwrap_or(ahead) + side;
             let was_held_by = replace.and_then(|r| self.things.get(r).and_then(|t| t.holder));
             let made_from: Vec<String> = [p.held, target_thing].into_iter().flatten().map(|i| self.thing_name(i)).collect();
             let origin = Origin { made_by: Some(self.actor_name(p.actor)), made_from: made_from.clone(), ..Default::default() };
