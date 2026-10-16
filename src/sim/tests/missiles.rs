@@ -7,11 +7,6 @@
 
 use super::*;
 
-/// The thing of a type nearest `p`.
-fn nearest_of(s: &Session, tid: u32, p: Vec3) -> Option<super::super::things::ThingId> {
-    s.sim.things.live().filter(|t| t.type_id == tid).min_by(|a, b| (a.pos - p).length().total_cmp(&(b.pos - p).length())).map(|t| t.id)
-}
-
 #[test]
 fn a_spear_flies_point_first_sticks_and_pulls_out() {
     let w = world_with("spear", 71, bare());
@@ -96,6 +91,70 @@ fn a_bow_shoots_hurts_runs_out_and_is_loaded_again() {
     sound(&s);
 }
 
+/// What is loaded is what flies: a fire arrow put in the bow comes out a
+/// fire arrow; a quiver of arrows fills the bow and is used up, and never
+/// itself flies.
+#[test]
+fn what_is_loaded_flies_and_a_quiver_fills() {
+    let w = world_with("quiver", 77, bare());
+    let bow = add_type(&w, &fixture("physics/bow.js"));
+    let arrow = add_type(&w, &fixture("physics/arrow.js"));
+    let fire = add_type(&w, &fixture("physics/arrow.js").replace("test arrow", "flaming test arrow").replace("mass: 0.05", "mass: 0.05, fire: 0.8, burns: 0.6"));
+    let quiver = add_type(&w, r#"export const meta = { name: "quiver of test arrows", bounds: [0.08, 0.35, 0.08], tags: ["item"], props: { mass: 1 } };
+export function sdf(x, y, z, k) { return cylinder(x, y, z, 0.07, 0.33); }
+export function color(x, y, z, k) { return rgb(110, 70, 40); }"#);
+    let p = flat_spot(&w, 30.0);
+    let mut s = session(&w, 77, None);
+    s.sim.player.pos = p;
+    let b = s.sim.spawn_thing(bow, p + Vec3::new(0.4, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(b) }, 0.3);
+    let far = ground(&w, p.x + 15.0, p.z + 15.0);
+    let shoot = |s: &mut Session| act_once(s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(far.to_array())), at: Some(far.to_array()) }, 1.0);
+    shoot(&mut s);
+    shoot(&mut s);
+    assert_eq!(s.sim.shots_left(b), Some(0));
+    // A quiver of arrows: it fills the bow, and is gone.
+    let q = s.sim.spawn_thing(quiver, s.sim.player.pos + Vec3::new(0.5, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(q)), at: None }, 0.3);
+    assert_eq!(r["ok"].as_bool(), Some(true), "filled: {r}");
+    assert_eq!(s.sim.shots_left(b), Some(2));
+    assert!(s.sim.things.get(q).is_none(), "the quiver went into it");
+    // Empty one, put a flaming arrow in, and it is what flies.
+    shoot(&mut s);
+    let f = s.sim.spawn_thing(fire, s.sim.player.pos + Vec3::new(0.5, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(f)), at: None }, 0.3);
+    assert_eq!(r["ok"].as_bool(), Some(true), "loaded: {r}");
+    let before = s.sim.things.live().filter(|t| t.type_id == fire).count();
+    shoot(&mut s);
+    assert_eq!(s.sim.things.live().filter(|t| t.type_id == fire).count(), before + 1, "a flaming arrow flew");
+    // And the next is a plain one again.
+    let plain = s.sim.things.live().filter(|t| t.type_id == arrow).count();
+    shoot(&mut s);
+    assert_eq!(s.sim.things.live().filter(|t| t.type_id == arrow).count(), plain + 1, "then its own arrows");
+    assert!(!s.sim.things.live().any(|t| t.type_id == quiver), "no quiver ever flew");
+    // A flaming arrow shot into a crate of TNT sets it off.
+    let tnt = add_type(&w, r#"export const meta = { name: "crate of tnt", bounds: [0.3, 0.25, 0.3], tags: ["item"], props: { mass: 12, burns: 0.2 }, burst: { radius: 5, hurt: 0.9, crater: 1, fuse: 0.5 } };
+export function sdf(x, y, z, k) { return box(x, y, z, 0.3, 0.25, 0.3); }
+export function color(x, y, z, k) { return rgb(170, 40, 30); }"#);
+    let _ = tnt;
+    let mut s = session(&w, 78, None);
+    let tnt = s.sim.type_by_name("crate of tnt").unwrap().id;
+    s.sim.player.pos = p;
+    let b = s.sim.spawn_thing(bow, p + Vec3::new(0.4, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    act_once(&mut s, ActorId::Player, Action::Hold { target: Target::Thing(b) }, 0.3);
+    shoot(&mut s);
+    let f = s.sim.spawn_thing(fire, s.sim.player.pos + Vec3::new(0.5, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
+    act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(f)), at: None }, 0.3);
+    let crate_at = ground(&w, p.x + 12.0, p.z);
+    let c = s.sim.spawn_thing(tnt, crate_at, 0.0, 1.0, Default::default(), true).unwrap();
+    let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Thing(c)), at: None }, 3.0);
+    assert_eq!(r["ok"].as_bool(), Some(true), "shot at the crate: {r}");
+    s.run(1.5, 0.05);
+    assert!(s.sim.things.get(c).is_none(), "the crate went off");
+    assert!(!events(&s.sim, "burst").is_empty());
+    sound(&s);
+}
+
 #[test]
 fn a_musket_ball_stops_at_the_wall() {
     let w = world_with("musket", 73, bare());
@@ -111,12 +170,14 @@ fn a_musket_ball_stops_at_the_wall() {
     let wall = Vec3::new(h.x - 3.2, h.y + 1.4, h.z);
     let r = act_once(&mut s, ActorId::Player, Action::Use { target: None, on: Some(Target::Point(wall.to_array())), at: Some(wall.to_array()) }, 1.5);
     assert_eq!(r["ok"].as_bool(), Some(true), "fired: {r}");
-    // No lead ball is written yet (no LLM): the built-in shot flies for it.
-    let shot = builtin_id(&w, "shot");
-    let id = nearest_of(&s, shot, wall).expect("a shot was fired");
-    let t = s.sim.things.get(id).unwrap();
-    assert!(t.pos.x < h.x - 2.0, "it stayed this side of the wall: {:.2} m from the hut's middle", t.pos.x - h.x);
-    assert!(t.shape.stuck, "and stuck in it");
+    // No lead ball is written yet (no LLM): the built-in slug flies for it.
+    assert!(events(&s.sim, "shot").iter().any(|e| e.data["ammo"] == "slug"), "a slug for a gun");
+    let stuck = events(&s.sim, "stuck");
+    let at = Vec3::from_array(stuck.first().expect("it stuck in the wall").pos.unwrap());
+    assert!(at.x < h.x - 2.0, "this side of the wall: {:.2} m from the hut's middle", at.x - h.x);
+    // Too small to see, it is cleared away; nothing got through.
+    let slug = builtin_id(&w, "slug");
+    assert!(!s.sim.things.live().any(|t| t.type_id == slug && t.pos.x > h.x - 2.0), "nothing passed through");
     sound(&s);
 }
 

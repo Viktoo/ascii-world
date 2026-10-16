@@ -65,6 +65,11 @@ pub struct Shape {
     /// Shots a launcher has sent off since it was last full.
     #[serde(default, skip_serializing_if = "is_zero_u")]
     pub spent: u32,
+    /// The types of shots loaded into a launcher by hand, the last loaded
+    /// on top: they go first (fire arrows put in a bow fly as fire arrows).
+    /// Shots beyond these are its own ammunition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loaded: Vec<u32>,
 }
 
 fn is_zero_u(v: &u32) -> bool {
@@ -89,7 +94,7 @@ fn is_zero(v: &f32) -> bool {
 
 impl Shape {
     pub fn is_empty(&self) -> bool {
-        self.cuts.is_empty() && self.edits.is_empty() && self.tilt.is_none() && self.open == 0.0 && self.open_to == 0.0 && !self.stuck && self.fuse_at.is_none() && self.spent == 0
+        self.cuts.is_empty() && self.edits.is_empty() && self.tilt.is_none() && self.open == 0.0 && self.open_to == 0.0 && !self.stuck && self.fuse_at.is_none() && self.spent == 0 && self.loaded.is_empty()
     }
 }
 

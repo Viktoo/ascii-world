@@ -562,6 +562,16 @@ impl Sim {
                 continue;
             }
             let n = (oc - p) / d;
+            // Fire meeting something that goes off lights it, at once.
+            let lights = |a: &super::things::Thing| a.props[P_FIRE] > 0.1;
+            let (mine, theirs) = (self.things.get(id).is_some_and(lights), lights(ot));
+            if mine && oty.ct.meta.burst.is_some() {
+                let by = self.things.get(id).and_then(|t| t.thrown_by.map(|x| x.0));
+                self.light(by, o);
+            } else if theirs && self.burst_of(id).is_some() {
+                self.light(None, id);
+            }
+            let Some(ot) = self.things.get(o) else { continue };
             let my_mass = self.things.get(id).map(|t| t.mass()).unwrap_or(1.0);
             let om = ot.mass();
             let rel = v.dot(n) - ot.vel.dot(n);

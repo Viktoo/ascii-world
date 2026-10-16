@@ -101,6 +101,19 @@ impl Sim {
                 None => {}
             }
         }
+        // Or something burning touches it (a fire arrow in it, a torch to it).
+        let unlit: Vec<(ThingId, Vec3)> = self
+            .things
+            .live()
+            .filter(|t| t.shape.fuse_at.is_none() && !catch.contains(&t.id) && self.snap.type_of(t.type_id).is_some_and(|ty| ty.ct.meta.burst.is_some()))
+            .map(|t| (t.id, t.pos))
+            .collect();
+        for (id, p) in unlit {
+            let r = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id).map(|ty| ty.radius() * t.scale)).unwrap_or(0.3);
+            if self.things.near(p, r + 1.5).into_iter().any(|o| o != id && self.things.get(o).is_some_and(|x| x.props[P_FIRE] > 0.1 && (x.pos - p).length() < r + 0.8)) {
+                catch.push(id);
+            }
+        }
         for id in catch {
             // Lit by fire: whoever set the fire, or threw it in, did it.
             let by = self.things.get(id).and_then(|t| t.thrown_by.map(|x| x.0).or(t.holder));
@@ -252,7 +265,7 @@ impl Sim {
 
     /// Standing shapes near `p` that a blast reaches (placed things, live
     /// things, scattered trees and rocks), with the nearest point of each.
-    fn standing_near(&mut self, p: Vec3, reach: f32) -> Vec<(Target, Vec3)> {
+    pub(super) fn standing_near(&mut self, p: Vec3, reach: f32) -> Vec<(Target, Vec3)> {
         let mut out: Vec<(f32, Target, Vec3)> = Vec::new();
         let near = |s: &crate::world::Solid| -> Option<(f32, Vec3)> {
             let d = s.sdf(p);

@@ -35,6 +35,8 @@ pub const STICK_KEEN: f32 = 0.45;
 pub const STICK_SPEED: f32 = 7.0;
 /// How long something stays in a living body before it works loose (s).
 const IN_BODY: f64 = 45.0;
+/// A launcher this fast (m/s) is a gun: its stand-in shot is a slug.
+const FAST: f32 = 150.0;
 /// The collision radius of a flying tip (m).
 pub const TIP_R: f32 = 0.03;
 
@@ -63,6 +65,48 @@ pub fn plural(name: &str) -> String {
     } else {
         format!("{n}s")
     }
+}
+
+/// A name in the singular ("arrows" → "arrow"; "glass" stays).
+fn singular(name: &str) -> String {
+    let n = name.trim().to_lowercase();
+    match n.strip_suffix('s') {
+        Some(s) if !n.ends_with("ss") && s.len() >= 2 => s.to_string(),
+        _ => n,
+    }
+}
+
+/// How a thing's name stands to a launcher's ammunition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AmmoName {
+    /// One of it: the ammunition itself, or a kind of it ("fire arrow",
+    /// "barbed arrow", "arrow of fire" for "arrow").
+    One,
+    /// A bundle of it ("quiver of arrows", "box of bullets", "arrows").
+    Bundle,
+    No,
+}
+
+/// Read by the head of the name: what it is, not what it is of (a quiver
+/// of arrows is a quiver).
+pub fn ammo_name(name: &str, ammo: &str) -> AmmoName {
+    let n = name.trim().to_lowercase();
+    let want = singular(ammo);
+    if want.len() < 2 {
+        return AmmoName::No;
+    }
+    let is = |s: &str| s == want || s.ends_with(&format!(" {want}"));
+    let (head, rest) = match n.split_once(" of ") {
+        Some((h, r)) => (h.trim().to_string(), Some(r.trim().to_string())),
+        None => (n.clone(), None),
+    };
+    if is(&head) {
+        return AmmoName::One;
+    }
+    if is(&singular(&head)) || rest.is_some_and(|r| is(&singular(&r))) {
+        return AmmoName::Bundle;
+    }
+    AmmoName::No
 }
 
 /// How much of a body's health something flying takes: its energy, made
@@ -172,6 +216,15 @@ impl Sim {
         let pos = t.pos;
         let name = self.thing_name(id);
         self.event("stuck", None, Some(format!("thing:{id}")), format!("the {name} stuck fast in {}", super::actions::the(into)), Some(pos), json!({ "in": into }));
+        // Driven into something, it touches it, by the world's rules (a
+        // burning arrow in a thatched roof).
+        if let Some((tip, _)) = self.flight_tip(id).or_else(|| self.things.get(id).map(|t| (t.pos, 0.0))) {
+            if let Some((target, _)) = self.standing_near(tip, 0.25).into_iter().next() {
+                if let Some(o) = self.liven(&target).filter(|o| *o != id) {
+                    self.contact(id, o);
+                }
+            }
+        }
     }
 
     /// Drive a thing into a body: it goes where the body goes for a while.
@@ -307,17 +360,21 @@ impl Sim {
     /// Whether a thing is what a launcher shoots: its ammunition by name,
     /// or the built-in shot standing in for ammunition not yet written.
     pub fn is_ammo_for(&self, l: &Launch, id: ThingId) -> bool {
-        let Some(ty) = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)) else { return false };
+        self.ammo_kind(l, id) != AmmoName::No
+    }
+
+    /// Whether a thing is one shot of a launcher's ammunition, a bundle of
+    /// it, or neither.
+    pub fn ammo_kind(&self, l: &Launch, id: ThingId) -> AmmoName {
+        let Some(ty) = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)) else { return AmmoName::No };
         if ty.ct.meta.body.is_some() || ty.ct.meta.tool.as_ref().is_some_and(|t| t.launch.is_some()) {
-            return false;
+            return AmmoName::No;
         }
-        let name = ty.name().trim().to_lowercase();
-        let want = l.ammo.trim().to_lowercase();
-        if name == want || name == plural(&want) || (ty.builtin && name == "shot" && self.type_by_name(&l.ammo).is_none()) {
-            return true;
+        let stand_in = if l.speed > FAST { "slug" } else { "shot" };
+        if ty.builtin && ty.name() == stand_in && self.type_by_name(&l.ammo).is_none() {
+            return AmmoName::One;
         }
-        // A near name will do ("barbed arrow" for "arrow").
-        want.len() >= 3 && name.len() >= 3 && (name.contains(&want) || want.contains(&name))
+        ammo_name(ty.name(), &l.ammo)
     }
 
     /// Load a launcher with a piece of its ammunition lying within reach.
@@ -343,15 +400,36 @@ impl Sim {
             let d = self.actor(who).map(|a| (a.pos - t.pos).length()).unwrap_or(0.0);
             return Err(ActErr::TooFar { at: t.pos, dist: d });
         }
+        let kind = self.ammo_kind(&l, ammo);
+        // One shot goes in as what it is; a bundle fills it with what it holds.
+        let (each, n) = match kind {
+            AmmoName::Bundle => {
+                let inner = aname.split_once(" of ").map(|(_, r)| singular(r)).unwrap_or_else(|| singular(&aname));
+                (self.type_by_name(&inner).filter(|t| t.ct.meta.body.is_none()).map(|t| t.id), self.things.get(launcher).map(|x| x.shape.spent).unwrap_or(0))
+            }
+            _ => (Some(t.type_id), 1),
+        };
         self.unstick(ammo);
         self.release(ammo);
         self.things.remove(ammo);
         if let Some(x) = self.things.get_mut(launcher) {
-            x.shape.spent = x.shape.spent.saturating_sub(1);
+            let n = n.min(x.shape.spent);
+            x.shape.spent -= n;
+            for _ in 0..n {
+                if let Some(e) = each {
+                    x.shape.loaded.push(e);
+                }
+            }
+            let room = l.holds.saturating_sub(x.shape.spent) as usize;
+            let over = x.shape.loaded.len().saturating_sub(room);
+            x.shape.loaded.drain(..over);
             x.dirty = true;
         }
         let left = self.shots_left(launcher).unwrap_or(0);
-        let msg = format!("{name} loads the {aname} into the {lname} ({left} of {})", l.holds);
+        let msg = match kind {
+            AmmoName::Bundle => format!("{name} fills the {lname} from the {aname} ({left} of {})", l.holds),
+            _ => format!("{name} loads the {aname} into the {lname} ({left} of {})", l.holds),
+        };
         let at = self.actor(who).map(|a| a.pos);
         self.event("loaded", Some(who), Some(format!("thing:{launcher}")), msg.clone(), at, json!({ "left": left }));
         Ok(Outcome::ok(msg).thing(launcher))
@@ -366,10 +444,7 @@ impl Sim {
                 .scene
                 .types
                 .values()
-                .filter(|t| {
-                    let n = t.name().to_lowercase();
-                    t.ct.meta.body.is_none() && !t.has_tag("building") && n.len() >= 3 && want.len() >= 3 && (n.contains(&want) || want.contains(&n))
-                })
+                .filter(|t| t.ct.meta.body.is_none() && !t.has_tag("building") && t.ct.meta.tool.as_ref().is_none_or(|x| x.launch.is_none()) && ammo_name(t.name(), &want) == AmmoName::One)
                 .max_by_key(|t| t.id)
                 .cloned()
         });
@@ -381,7 +456,8 @@ impl Sim {
             l.ammo, l.speed
         );
         self.build_type_for(&l.ammo, &desc, None);
-        self.type_by_name("shot")
+        // Meanwhile: a slug from a gun, a dart from anything slower.
+        self.type_by_name(if l.speed > FAST { "slug" } else { "shot" })
     }
 
     /// A launcher's motion comes to its end: what it holds leaves its tip.
@@ -412,7 +488,13 @@ impl Sim {
                 (me.eye() + look * 60.0 - tip).normalize_or(look)
             }
         };
-        let Some(ty) = self.ammo_type(&l, &lname) else { return };
+        // What was loaded by hand goes first; then its own ammunition.
+        let top = self.things.get(tool_id).and_then(|t| t.shape.loaded.last().copied());
+        let ty = match top.and_then(|id| self.snap.type_of(id).cloned()) {
+            Some(ty) => Some(ty),
+            None => self.ammo_type(&l, &lname),
+        };
+        let Some(ty) = ty else { return };
         let points = ty.ct.meta.tool.is_some();
         let burst = ty.ct.meta.burst.clone();
         let now = self.t;
@@ -455,6 +537,9 @@ impl Sim {
         if let Some(t) = self.things.get_mut(tool_id) {
             if l.holds > 0 {
                 t.shape.spent = (t.shape.spent + 1).min(l.holds);
+            }
+            if top.is_some() {
+                t.shape.loaded.pop();
             }
             t.dirty = true;
         }
@@ -520,6 +605,21 @@ mod tests {
         assert!(spear > 0.4, "a spear wounds badly: {spear}");
         assert!(ball > 0.9, "a musket ball nearly kills: {ball}");
         assert!(flight_hurt(0.05, 55.0, 0.9, 600.0) < arrow, "a horse takes an arrow better");
+    }
+
+    #[test]
+    fn ammunition_by_what_it_is() {
+        assert_eq!(ammo_name("arrow", "arrow"), AmmoName::One);
+        assert_eq!(ammo_name("fire arrow", "arrow"), AmmoName::One);
+        assert_eq!(ammo_name("arrow of fire", "arrows"), AmmoName::One);
+        assert_eq!(ammo_name("quiver of arrows", "arrow"), AmmoName::Bundle);
+        assert_eq!(ammo_name("quiver of fire arrows", "arrow"), AmmoName::Bundle);
+        assert_eq!(ammo_name("fire arrows", "arrow"), AmmoName::Bundle);
+        assert_eq!(ammo_name("box of .308 rounds", "round"), AmmoName::Bundle);
+        assert_eq!(ammo_name("quiver", "arrow"), AmmoName::No);
+        assert_eq!(ammo_name("arrowhead mould", "arrow"), AmmoName::No);
+        assert_eq!(ammo_name("ball", "musket ball"), AmmoName::No);
+        assert_eq!(ammo_name("glass", "glass"), AmmoName::One);
     }
 
     #[test]
