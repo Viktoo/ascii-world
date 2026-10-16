@@ -671,6 +671,29 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
     }
     col = shade(p, n, albedo, rd, ao) + glow;
   }
+  // The eye under the water: what is seen fades into the water's own colour
+  // within a few metres, darker the deeper; overhead, the surface shines.
+  var we = G.water.w;
+  if (G.ground.w > 0.0) { we = max(we, ground_water(ro.x, ro.z)); }
+  let eye_ground = terrain_height(ro.x, ro.z);
+  let eye_cave = G.extra.y > 0u && ro.y < eye_ground - 0.3 && void_dist(ro) < 0.3;
+  if (ro.y < we && eye_ground < we && !eye_cave) {
+    let lit = shade(ro, vec3f(0.0, 1.0, 0.0), G.water.xyz, vec3f(0.0, -1.0, 0.0), 1.0);
+    let medium = lit * exp(-(we - ro.y) * 0.08);
+    if (rd.y > 0.0) {
+      let tw = (we - ro.y) / rd.y;
+      if (tw < t_hit) {
+        // The surface from below: the sky through it straight up, the
+        // water's colour mirrored at a slant.
+        let up = smoothstep(0.55, 0.95, rd.y);
+        col = mix(lit * 1.35, mix(lit, sky(rd), 0.6), up);
+        t_hit = tw;
+      }
+    }
+    let f = 1.0 - exp(-min(t_hit, 400.0) * 0.16);
+    col = mix(col * mix(vec3f(1.0), G.water.xyz * 1.6, 0.5), medium, clamp(f, 0.0, 1.0));
+    return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), t_hit);
+  }
   // water plane: the sea, or a river's, a pond's or a canal's where the
   // ground seen lies under one (taken as level where it is crossed)
   var wl = G.water.w;

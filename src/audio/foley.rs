@@ -71,7 +71,8 @@ impl Foley {
         let seed = sim.seed ^ self.n;
         let me = sim.player.pos;
         let eye = me + Vec3::Y * sim.player.dims.eye;
-        out.push(Cmd::Listener { pos: eye, yaw: sim.player.yaw });
+        let under = sim.player.swimming && eye.y < sim.snap.terrain.water(eye.x, eye.z);
+        out.push(Cmd::Listener { pos: eye, yaw: sim.player.yaw, under });
         // Who moves where (calls follow their makers).
         let mut em = Vec::new();
         for n in sim.cast.npcs.iter().filter(|n| n.here()) {

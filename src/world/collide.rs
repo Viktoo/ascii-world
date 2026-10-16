@@ -30,12 +30,14 @@ pub struct Capsule {
     pub height: f32,
     /// The highest step it walks up without jumping.
     pub step: f32,
+    /// Goes into water too deep to wade, and swims there.
+    pub swims: bool,
 }
 
 impl Capsule {
     /// A body of this height and radius, standing.
     pub fn of(height: f32, radius: f32) -> Capsule {
-        Capsule { radius, height, step: step_for(height) }
+        Capsule { radius, height, step: step_for(height), swims: false }
     }
 }
 
@@ -213,7 +215,14 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
     // Clear by the fast distance, or (near a carved opening) by the rim.
     let ok = |x: f32, z: f32, d: f32| d >= radius || obs.clear(x, z, feet, b);
     let start = Vec2::new(from.x, from.z);
-    let passable = |q: Vec2| wadeable(terrain, q.x, q.y) && !too_steep(terrain, start, q, feet) && !cave_wall(terrain, q, feet, b);
+    // A swimmer goes into deep water and, in it or at its edge, pulls
+    // itself out onto a bank (however sheer) no higher than a little over
+    // the water.
+    let wl = terrain.water(start.x, start.y);
+    let out = wl + 0.9;
+    let afloat = b.swims && feet < out && [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.0, 0.0)].iter().any(|(dx, dz)| terrain.height(start.x + dx, start.y + dz) < wl - 0.05);
+    let water_ok = |q: Vec2| if b.swims { !afloat || terrain.height(q.x, q.y) < out.max(feet + b.step) } else { wadeable(terrain, q.x, q.y) };
+    let passable = |q: Vec2| water_ok(q) && (afloat || !too_steep(terrain, start, q, feet)) && !cave_wall(terrain, q, feet, b);
     let mut p = Vec2::new(from.x + delta.x, from.z + delta.z);
     if !passable(p) {
         // Slide along the shoreline or the foot of a cliff: try each axis on its own.

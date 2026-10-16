@@ -532,6 +532,11 @@ pub struct Actor {
     pub crouching: bool,
     /// Wants to run rather than walk.
     pub running: bool,
+    /// In water too deep to stand in: floating, swimming (see `footing`).
+    pub swimming: bool,
+    /// Which way it wants to swim: up (1), down (-1), or let the water
+    /// float it (0).
+    pub swim: f32,
     /// Working a held tool: a swing, a chop, a dig (see `tool`).
     pub motion: Option<super::tool::MotionRun>,
     /// The support its last step found under it (where, and how high).
@@ -561,7 +566,7 @@ pub const HUMAN_ROLES: u16 = 0b1_0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 9], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, seat_no: 0, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, motion: None, support: None, jolt: None, perch: None, conjuring: false }
+        Actor { pos, yaw, held: None, pose: [0.0; 9], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, seat_no: 0, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, swimming: false, swim: 0.0, motion: None, support: None, jolt: None, perch: None, conjuring: false }
     }
 
     /// Sitting on something that carries it (a mount, a cart).

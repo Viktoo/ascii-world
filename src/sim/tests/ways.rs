@@ -473,3 +473,82 @@ fn the_land_is_shaped_in_play() {
     assert!(t2.on_road(on.x, on.y, 0.0), "the road after loading");
     assert_eq!(t2.carve.read().ground.cave_layer(crate::ground::Layer::Made).len(), 1, "the tunnel after loading");
 }
+
+/// The traveler in the lagoon: floats with the eyes just over the water,
+/// dives (no deeper than the bed), comes up again when let be, and swims
+/// to the island and climbs out onto it.
+#[test]
+fn the_traveler_swims_and_climbs_out() {
+    let w = world_with("swim", 68, bare());
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    let (h, ok) = canal_city(&w, hut);
+    let mut s = session(&w, 68, None);
+    s.sim.flip(ok.snapshot.clone());
+    let t = ok.snapshot.terrain.clone();
+    let (x, z) = (h.x, h.z - 65.0);
+    let (bed, wl) = (t.height(x, z), t.water(x, z));
+    assert!(wl - bed > 1.5, "deep water there: {bed} under {wl}");
+    // Dropped in from the surface: under, then up again, afloat.
+    s.sim.player.pos = Vec3::new(x, wl, z);
+    s.sim.player.grounded = false;
+    let eye = |s: &Session| s.sim.player.pos.y + s.sim.player.eye_height();
+    for _ in 0..120 {
+        s.sim.step(1.0 / 30.0);
+    }
+    assert!(s.sim.player.swimming, "swimming");
+    assert!((eye(&s) - wl).abs() < 0.25 && eye(&s) > wl, "afloat, eyes just over the water: {} at {wl}", eye(&s));
+    // Down (c held): under the water, never into the bed.
+    s.sim.player.swim = -1.0;
+    for _ in 0..90 {
+        s.sim.step(1.0 / 30.0);
+    }
+    assert!(eye(&s) < wl - 0.2, "under: {}", eye(&s));
+    assert!(eye(&s) >= bed + 0.3, "not into the bed: eyes at {} over {bed}", eye(&s));
+    // Let go: back up.
+    s.sim.player.swim = 0.0;
+    for _ in 0..150 {
+        s.sim.step(1.0 / 30.0);
+    }
+    assert!(eye(&s) > wl, "up again: {}", eye(&s));
+    // Up (space held) never lifts it out of the water.
+    s.sim.player.swim = 1.0;
+    for _ in 0..60 {
+        s.sim.step(1.0 / 30.0);
+    }
+    assert!(eye(&s) < wl + 0.3, "no higher than afloat: {}", eye(&s));
+    s.sim.player.swim = 0.0;
+    // Swim north to the island and out onto it.
+    let mut walked = 0.0;
+    while walked < 40.0 {
+        let step = Vec3::Z * 3.0 * s.sim.gait_factor(ActorId::Player) / 30.0;
+        s.sim.walk(ActorId::Player, step);
+        s.sim.step(1.0 / 30.0);
+        walked += step.z;
+    }
+    let p = s.sim.player.pos;
+    assert!(p.z > h.z - 35.0, "reached the island: {p}");
+    assert!(!s.sim.player.swimming && (p.y - t.height(p.x, p.z)).abs() < 0.1 && p.y > wl, "out on dry land: {p}");
+}
+
+/// Pictures from in the lagoon (look at them): afloat with the eyes just
+/// over the water, under it looking level towards the island, and looking
+/// up at the surface. Under the water everything is the water's colour.
+#[test]
+#[ignore]
+fn underwater_png() {
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = world_with("underwater", 66, bare());
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    let (h, _) = canal_city(&w, hut);
+    let mut s = session(&w, 66, None);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.42;
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    s.sim.flip(snap.clone());
+    let cam = |y: f32, pitch: f32| crate::render::Camera { pos: Vec3::new(h.x, y, h.z - 50.0), yaw: 0.0, pitch, fov_y: 1.05, roll: 0.0 };
+    png_of(&mut s, &snap, &gpu, cam(0.12, -0.05), &format!("{dir}/pocket-swim-afloat.png"));
+    png_of(&mut s, &snap, &gpu, cam(-0.9, 0.0), &format!("{dir}/pocket-swim-under.png"));
+    png_of(&mut s, &snap, &gpu, cam(-1.2, 0.9), &format!("{dir}/pocket-swim-up.png"));
+}

@@ -5,7 +5,7 @@
 //! sized by each body, so a cat and a giant meet the same world differently.
 
 use super::{ActorId, Sim};
-use crate::world::collide::{Capsule, step_for, support_under};
+use crate::world::collide::{Capsule, MAX_WADE, step_for, support_under};
 use glam::Vec3;
 
 pub const GRAVITY: f32 = super::physics::GRAVITY;
@@ -13,6 +13,11 @@ pub const GRAVITY: f32 = super::physics::GRAVITY;
 const JUMP: f32 = 0.5;
 /// Health a fall takes for each metre beyond one's own height.
 const FALL_HURT_PER_M: f32 = 0.12;
+/// A swimmer afloat keeps its eyes this far over the water.
+const SWIM_EYE_OVER: f32 = 0.12;
+/// How fast a swimmer goes up, and down (m/s): diving is slower.
+const SWIM_UP: f32 = 1.4;
+const SWIM_DOWN: f32 = 0.8;
 /// How fast a crouch goes down or comes up (per second, of the whole way).
 const CROUCH_RATE: f32 = 5.0;
 
@@ -30,7 +35,7 @@ impl Sim {
     /// The capsule a body walks in now (crouching makes it shorter).
     pub fn capsule(&self, id: ActorId) -> Capsule {
         let Some(a) = self.actor(id) else { return Capsule::of(1.75, crate::world::collide::NPC_RADIUS) };
-        Capsule { radius: walk_radius(id, a), height: a.stand_height(), step: step_for(a.dims.height) }
+        Capsule { radius: walk_radius(id, a), height: a.stand_height(), step: step_for(a.dims.height), swims: id == ActorId::Player }
     }
 
     /// Settle a body on its footing for `dt`: stand on what is under it,
@@ -42,6 +47,7 @@ impl Sim {
         }
         let (pos, mut vy, mut grounded) = (a.pos, a.vy, a.grounded);
         let full = a.dims.height;
+        let (eye, swim, was_swimming) = (a.dims.eye, a.swim, a.swimming);
         let want = if a.crouching { 1.0 } else { 0.0 };
         let mut crouch = a.crouch;
         // Standing still on firm footing: nothing changes under it, unless
@@ -72,6 +78,48 @@ impl Sim {
             Some(g) if grounded && vy == 0.0 => g,
             _ => support_under(&self.snap.terrain, &solids, pos, cap.radius, top),
         };
+        // Water too deep to stand in: a swimmer floats with its eyes just
+        // over it, swims up or down, and comes up again when let be.
+        if cap.swims {
+            let t = &self.snap.terrain;
+            let dry_cave = t.caves_near(pos.x, pos.z) && t.void(pos) < 0.0;
+            let wl = if dry_cave { f32::MIN } else { t.water(pos.x, pos.z) };
+            let float = wl + SWIM_EYE_OVER - eye;
+            if wl - ground > MAX_WADE * (full / 1.75) && pos.y < float + 0.3 {
+                let want = if swim > 0.0 { SWIM_UP } else if swim < 0.0 { -SWIM_DOWN } else { ((float - pos.y) * 1.2).clamp(-0.6, 0.5) };
+                vy += (want - vy) * (dt * 3.0).min(1.0);
+                let mut feet = pos.y + vy * dt;
+                if feet > float {
+                    feet = float;
+                    vy = vy.min(0.0);
+                }
+                // Diving, a swimmer lies flat: its eyes go down to just over the bed.
+                let deepest = ground + SWIM_EYE_OVER * 3.0 - eye;
+                if feet < deepest {
+                    feet = deepest;
+                    vy = vy.max(0.0);
+                }
+                if let Some(a) = self.actor_mut(id) {
+                    a.pos.y = feet;
+                    a.vy = vy;
+                    a.grounded = false;
+                    a.swimming = true;
+                    a.crouching = false;
+                    a.crouch = 0.0;
+                    a.support = None;
+                    a.perch = None;
+                }
+                if !was_swimming && vy < -2.0 {
+                    // In with a splash.
+                    let mass = self.actor(id).map(|a| a.dims.mass).unwrap_or(70.0);
+                    self.cue(Vec3::new(pos.x, wl, pos.z), Some(id), crate::audio::Heard::Hit { mat: crate::audio::call::Material::WATER, mass: mass.min(400.0), speed: (-vy).min(12.0), by: None });
+                }
+                return;
+            }
+        }
+        if was_swimming && let Some(a) = self.actor_mut(id) {
+            a.swimming = false;
+        }
         let mut feet = pos.y;
         let mut landed = 0.0f32;
         if grounded && vy <= 0.0 {
@@ -207,7 +255,9 @@ impl Sim {
         let hurt_k = 1.0 - 0.55 * hurt;
         let run = 1.0 + (run - 1.0) * (1.0 - hurt);
         let stagger = if a.jolt.is_some_and(|j| j.staggers(self.t)) { 0.25 } else { 1.0 };
-        run * (1.0 - 0.5 * a.crouch) * hurt_k * stagger
+        // Swimming is slower than walking, and no faster for running.
+        let swim = if a.swimming { 0.55 / run } else { 1.0 };
+        run * (1.0 - 0.5 * a.crouch) * hurt_k * stagger * swim
     }
 
     /// A body is rocked along `dir` (level, world) by `size` radians (see

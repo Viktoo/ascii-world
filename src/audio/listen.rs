@@ -60,7 +60,7 @@ pub fn cli(args: &[String]) -> Result<()> {
     if let Some(name) = flag(args, "--species") {
         let sp = s.sim.snap.species.list.iter().find(|x| x.name.eq_ignore_ascii_case(name.trim())).cloned().with_context(|| format!("no species {name} in this world"))?;
         let mut m = Mixer::new(SR);
-        m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+        m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
         let mut t = 0.3;
         for i in 0..sp.sounds.len() {
             if let Some(call) = species_call(&sp, i) {
@@ -182,7 +182,7 @@ fn approach() -> Vec<f32> {
         let walked = if t < 6.0 { 0.0 } else { ((t - 6.0) * 2.6).min(26.0) };
         let pos = Vec3::new(face.x, 0.0, face.z).normalize() * walked + Vec3::Y * 1.6;
         let yaw = if t < 5.0 { yaw } else { face.x.atan2(face.z) };
-        m.apply(Cmd::Listener { pos, yaw });
+        m.apply(Cmd::Listener { pos, yaw, under: false });
         if t >= next {
             next += 1.6;
             k += 1;
@@ -200,7 +200,7 @@ fn materials() -> Vec<f32> {
         Material { hard: 0.30, dry: 0.05, ring: 0.0, leafy: 1.0 },
     ];
     scene(22.0, |t, m| {
-        m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+        m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0, under: false });
         let i = (t / 5.5) as usize;
         let local = t - i as f32 * 5.5;
         // Walking: a push every 0.55 s.
@@ -239,7 +239,7 @@ fn voices() -> Vec<f32> {
     }
     let total = t + 1.0;
     let mut m = Mixer::new(SR);
-    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
     for (k, (t, mass, call)) in plays.into_iter().enumerate() {
         let x = -(mass.max(1.0).log10() - 1.5) * 2.0;
         m.apply(Cmd::Play(Box::new(Play { at: At::Point(Vec3::new(x, 1.0, 6.0)), call, body: Body { mass, pitch: 1.0 }, seed: k as u64, gain: 1.0, delay: t })));
@@ -259,7 +259,7 @@ fn night() -> Vec<f32> {
     let mut next = 1.0;
     let mut k = 0;
     scene(20.0, |t, m| {
-        m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+        m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
         let d = 30.0 - 26.0 * (t / 17.0).min(1.0);
         let a = -2.7 + 0.9 * (t / 17.0).min(1.0);
         let at = Vec3::new(a.sin() * d, 1.6, a.cos() * d);
@@ -279,7 +279,7 @@ fn night() -> Vec<f32> {
 /// (front, right, behind, left), for six seconds.
 fn play_live() -> Result<()> {
     let out = super::start(0.8).context("no sound device (or POCKET_NO_SOUND is set)")?;
-    out.send(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+    out.send(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
     let bark = guess("a happy bark", 25.0, false).unwrap_or_default();
     let t0 = std::time::Instant::now();
     let mut k = 0u64;
@@ -321,7 +321,7 @@ fn contacts() -> Vec<f32> {
         (bell, 40.0, 3.0, None),
     ];
     let mut m = Mixer::new(SR);
-    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
     for (k, (mat, mass, speed, by)) in hits.into_iter().enumerate() {
         let cue = Cue { at: Vec3::new(0.0, 0.8, 2.0), from: None, what: Heard::Hit { mat, mass, speed, by } };
         if let Some(mut p) = super::foley::play_of(cue, k as u64) {
@@ -335,7 +335,7 @@ fn contacts() -> Vec<f32> {
 /// A fire 6 m ahead and to the left, growing, then dying down.
 fn fire() -> Vec<f32> {
     scene(12.0, |t, m| {
-        m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+        m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
         let drive = if t < 8.0 { (t / 3.0).min(1.0) * 1.1 } else { (1.0 - (t - 8.0) / 4.0).max(0.0) * 1.1 };
         m.apply(Cmd::Texture { key: 99, at: At::Point(Vec3::new(-3.0, 0.8, 5.0)), mat: Material::FIRE, size: 0.3, drive, roar: 0.8, gain: 1.0 });
     })
@@ -386,7 +386,7 @@ fn voices_cli(args: &[String]) -> Result<()> {
     let mut engine = Engine::new(threads)?;
     println!("loaded in {:.2}s", t0.elapsed().as_secs_f32());
     let mut m = Mixer::new(SR);
-    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0 });
+    m.apply(Cmd::Listener { pos: Vec3::Y * 1.6, yaw: 0.0, under: false });
     let mut t = 0.3f32;
     let n = cast.len().max(1);
     for (i, (id, p)) in cast.iter().enumerate() {

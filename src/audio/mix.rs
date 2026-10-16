@@ -84,7 +84,9 @@ pub struct Ambience {
 
 #[derive(Clone, Debug)]
 pub enum Cmd {
-    Listener { pos: Vec3, yaw: f32 },
+    /// Where the ears are, which way they face, and whether they are under
+    /// water (everything heard dull and low).
+    Listener { pos: Vec3, yaw: f32, under: bool },
     Emitters(Vec<(u64, Vec3)>),
     Play(Box<Play>),
     /// Start, move or change an endless texture (0 drive: it fades and ends).
@@ -301,6 +303,10 @@ pub struct Mixer {
     buf_r: Vec<f32>,
     tmp: Vec<(f32, f32)>,
     water_key: u64,
+    /// Under water: how far (0..1, eased) and the filters that dull it.
+    under: f32,
+    under_target: f32,
+    muffle: [[OnePole; 2]; 2],
     /// How much of the room is heard.
     pub room_gain: f32,
     /// Voices rendered in the last block (for tests and the debug line).
@@ -333,6 +339,9 @@ impl Mixer {
             vol_now: 0.8,
             buf_l: vec![0.0; BLOCK],
             buf_r: vec![0.0; BLOCK],
+            under: 0.0,
+            under_target: 0.0,
+            muffle: [[OnePole::new(sr, 380.0); 2]; 2],
             tmp: vec![(0.0, 0.0); BLOCK],
             water_key: WATER_KEY,
             room_gain: 0.08,
@@ -342,9 +351,10 @@ impl Mixer {
 
     pub fn apply(&mut self, c: Cmd) {
         match c {
-            Cmd::Listener { pos, yaw } => {
+            Cmd::Listener { pos, yaw, under } => {
                 self.lis = pos;
                 self.yaw = yaw;
+                self.under_target = if under { 1.0 } else { 0.0 };
             }
             Cmd::Emitters(e) => self.emitters = e,
             Cmd::Play(p) => self.play(*p),
@@ -657,8 +667,19 @@ impl Mixer {
         for k in 0..n {
             let (l, r) = self.room.run(self.room_in[k] * self.room_gain);
             self.vol_now += (self.volume - self.vol_now) * 0.001;
-            self.buf_l[k] = soft_clip((self.buf_l[k] + l) * self.vol_now * MASTER);
-            self.buf_r[k] = soft_clip((self.buf_r[k] + r) * self.vol_now * MASTER);
+            let (mut l, mut r) = (self.buf_l[k] + l, self.buf_r[k] + r);
+            self.under += (self.under_target - self.under) * 0.0005;
+            if self.under > 0.001 {
+                let [ml, mr] = &mut self.muffle;
+                let dl = ml[0].run(l);
+                let dl = ml[1].run(dl) * 1.4;
+                let dr = mr[0].run(r);
+                let dr = mr[1].run(dr) * 1.4;
+                l += (dl - l) * self.under;
+                r += (dr - r) * self.under;
+            }
+            self.buf_l[k] = soft_clip(l * self.vol_now * MASTER);
+            self.buf_r[k] = soft_clip(r * self.vol_now * MASTER);
         }
     }
 
@@ -704,7 +725,7 @@ mod tests {
     /// from a source at `src`.
     fn hear(src: Vec3, yaw: f32) -> (f32, f32, f32) {
         let mut m = Mixer::new(SR);
-        m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw });
+        m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw, under: false });
         let call = guess("a long bleat", 60.0, false).unwrap();
         m.apply(Cmd::Play(Box::new(Play { at: At::Point(src), call, body: Body::default(), seed: 3, gain: 1.0, delay: 0.0 })));
         measure(&m.render(1.6))
@@ -747,7 +768,7 @@ mod tests {
     #[test]
     fn a_dense_night_runs_faster_than_real_time() {
         let mut m = Mixer::new(SR);
-        m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+        m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0, under: false });
         let cricket = Part { kind: Kind::Whistle, hz: [4600.0; 3], len: 0.016, times: 4, gap: 0.016, ..Part::default() };
         m.apply(Cmd::Ambience(Box::new(Ambience { wind: 0.6, dread: 0.5, water: Some((Vec3::new(20.0, 0.0, 0.0), 1.0)), songs: vec![Song { part: cricket, body: Body::default(), gain: 0.3, every: 0.6 }], singers: 24, hush: vec![], ..Default::default() })));
         // A herd calling and running through tall grass, with the night all round.
@@ -771,7 +792,7 @@ mod tests {
     fn hushed_singers_fall_quiet() {
         let songs = |hush: Vec<(Vec3, f32)>| {
             let mut m = Mixer::new(SR);
-            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0, under: false });
             let cricket = Part { kind: Kind::Whistle, hz: [4600.0; 3], len: 0.016, times: 4, gap: 0.016, ..Part::default() };
             m.apply(Cmd::Ambience(Box::new(Ambience { songs: vec![Song { part: cricket, body: Body::default(), gain: 0.3, every: 0.5 }], singers: 20, hush, ..Ambience::default() })));
             let v = m.render(3.0);
@@ -795,7 +816,7 @@ mod tests {
     fn rain_patters_softly_and_drums_dully_on_a_roof() {
         let hear = |rain: f32, roof: bool| {
             let mut m = Mixer::new(SR);
-            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0, under: false });
             m.apply(Cmd::Ambience(Box::new(Ambience { rain, rain_roof: roof, ..Ambience::default() })));
             let v = m.render(4.0);
             brightness(&v[v.len() / 2..])
@@ -806,7 +827,7 @@ mod tests {
         let (_, none) = hear(0.0, false);
         let shore = {
             let mut m = Mixer::new(SR);
-            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0 });
+            m.apply(Cmd::Listener { pos: Vec3::ZERO, yaw: 0.0, under: false });
             m.apply(Cmd::Ambience(Box::new(Ambience { water: Some((Vec3::new(8.0, 0.0, 0.0), 1.0)), ..Ambience::default() })));
             let v = m.render(4.0);
             brightness(&v[v.len() / 2..]).0

@@ -574,8 +574,9 @@ impl App {
 
     fn walk_key(&mut self, k: KeyEvent) {
         if let Some(c) = key_char(k.code) {
-            // Aboard, Space and c are held too: up and down for a flyer.
-            let flying_key = matches!(c, ' ' | 'c') && self.sim.player.aboard.is_some();
+            // Aboard or swimming, Space and c are held too: up and down for
+            // a flyer or a swimmer.
+            let flying_key = matches!(c, ' ' | 'c') && (self.sim.player.aboard.is_some() || self.sim.player.swimming);
             if matches!(c, '^' | 'v' | '<' | '>' | 'a' | 'd' | 'w' | 's') || flying_key {
                 // Shift with a walking key runs (`r` keeps running on).
                 if matches!(c, 'a' | 'd' | 'w' | 's') && k.kind == KeyEventKind::Press {
@@ -1199,6 +1200,8 @@ impl App {
             let strafe = self.held('d') as i32 - self.held('a') as i32;
             let look = self.held('^') as i32 - self.held('v') as i32;
             let aboard = self.sim.player.aboard.is_some() && !self.noclip;
+            // In deep water: Space swims up, c down.
+            self.sim.player.swim = if self.sim.player.swimming { (self.held(' ') as i32 - self.held('c') as i32) as f32 } else { 0.0 };
             if !aboard {
                 self.sim.player.yaw += turn as f32 * TURN_SPEED * dt;
             }
@@ -1248,7 +1251,9 @@ impl App {
         if dirn_none(self.held('w'), self.held('s'), self.held('a'), self.held('d')) {
             self.shift_run = false;
         }
-        let eye = self.sim.player.pos.y.max(self.snap.terrain.water(self.sim.player.pos.x, self.sim.player.pos.z) - 0.4) + self.sim.player.eye_height();
+        // Wading, the view stays over the water; swimming, it goes where the body does.
+        let feet = if self.sim.player.swimming { self.sim.player.pos.y } else { self.sim.player.pos.y.max(self.snap.terrain.water(self.sim.player.pos.x, self.sim.player.pos.z) - 0.4) };
+        let eye = feet + self.sim.player.eye_height();
         // In a closed cab, the view is from just over it.
         let eye = eye + self.sim.eye_lift(Vec3::new(self.sim.player.pos.x, eye, self.sim.player.pos.z));
         // Smooth over stairs; follow a jump or a fall at once.
