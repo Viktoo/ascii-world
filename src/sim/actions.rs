@@ -1088,8 +1088,8 @@ impl Sim {
                 let t = x.target.clone();
                 return self.open(who, &t, None);
             }
-            // A cart, a car, a boat: using it is getting in.
-            (Some(x), None) | (None, Some(x)) if !tool_meta && self.target_drive(&x.target).is_some() => {
+            // A cart, a car, a boat: using it is getting in; a bench, sitting on it.
+            (Some(x), None) | (None, Some(x)) if !tool_meta && (self.target_drive(&x.target).is_some() || (self.target_seats(&x.target) && self.target_shape(&x.target).is_some_and(|(_, ty, _)| ty.ct.behavior(crate::lang::ir::Behavior::Use).is_none()))) => {
                 let x = x.clone();
                 return self.board(who, &x);
             }

@@ -100,3 +100,139 @@ fn canal_city_png() {
     png_of(&mut s, &snap, &gpu, look(above, Vec3::new(h.x, 0.0, h.z)), &format!("{dir}/pocket-canal-above.png"));
 }
 
+
+/// Seats: two sit on a bench and a third finds no room; a villager takes
+/// the city's boat across the lagoon (out of the canal, round the island)
+/// to the far shore and walks on; a passenger rides along with them.
+#[test]
+fn benches_seat_two_and_a_boat_crosses_the_lagoon() {
+    let w = world_with("rowing", 67, bare());
+    let hut = add_type(&w, &fixture("physics/hut.js"));
+    let (h, ok) = canal_city(&w, hut);
+    let bench = builtin_id(&w, "bench");
+    let boat_t = builtin_id(&w, "boat");
+    let boat_i = ok.snapshot.instances.iter().find(|p| p.type_id == boat_t).unwrap().clone();
+    let bp = Vec3::new(h.x + 20.0, 0.0, h.z + 20.0);
+    let bench_i = {
+        let y = ok.snapshot.terrain.height(bp.x, bp.z) + 0.48;
+        w.db.with(|c| db::add_instance(c, bench as i64, w.version, bp.x, y, bp.z, 0.0, 1.0, &[1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])).unwrap()
+    };
+    // Ola stands on the quay by the boat; Bo across the island.
+    let quay = crate::model::dry_near(&ok.snapshot.terrain, boat_i.pos);
+    let ola = add_char(&w, "Ola", "kind", &[], quay);
+    let bo = add_char(&w, "Bo", "kind", &[], Vec3::new(bp.x + 3.0, ok.snapshot.terrain.height(bp.x + 3.0, bp.z + 2.0), bp.z + 2.0));
+    let mut s = session(&w, 67, None);
+    calm(&mut s);
+    let (me, o, b) = (ActorId::Player, ActorId::Npc(ola), ActorId::Npc(bo));
+    // Two on the bench, then no room.
+    s.sim.player.pos = Vec3::new(bp.x - 1.0, s.sim.snap.terrain.height(bp.x - 1.0, bp.z + 1.0), bp.z + 1.0);
+    s.sim.act(me, Action::Ride { target: Target::Instance(bench_i) }).unwrap();
+    assert!(s.sim.player.aboard.is_some(), "sitting");
+    let bench_t = s.sim.player.aboard.unwrap();
+    let seat_y = s.sim.player.pos.y;
+    assert!(seat_y > s.sim.snap.terrain.height(bp.x, bp.z) - 0.5, "on the bench, not in the ground");
+    s.sim.cast.get_mut(bo).unwrap().a.pos = Vec3::new(bp.x + 1.0, s.sim.snap.terrain.height(bp.x + 1.0, bp.z + 1.0), bp.z + 1.0);
+    s.sim.act(b, Action::Ride { target: Target::Thing(bench_t) }).unwrap();
+    assert_eq!(s.sim.riders_in(bench_t).len(), 2, "two sit on it");
+    let seats: Vec<u8> = s.sim.riders_in(bench_t).iter().map(|r| r.1).collect();
+    assert!(seats.contains(&0) && seats.contains(&1), "side by side: {seats:?}");
+    s.sim.act(me, Action::Dismount).unwrap();
+    assert!(s.sim.player.aboard.is_none());
+    // Ola goes to the far shore, past the lagoon: she takes the boat.
+    let far = crate::model::dry_near(&s.sim.snap.terrain, Vec3::new(h.x + 15.0, 0.0, h.z + 115.0));
+    s.sim.cast.get_mut(ola).unwrap().plan.push_back(Action::Goto { target: Target::Point(far.to_array()), run: false });
+    let mut boarded = false;
+    let mut max_depth: f32 = 0.0;
+    for _ in 0..1800 {
+        s.step(0.1);
+        if let Some(v) = s.sim.actor(o).unwrap().aboard {
+            boarded = true;
+            let p = s.sim.things.get(v).unwrap().pos;
+            max_depth = max_depth.max(s.sim.snap.terrain.water_depth(p.x, p.z));
+        }
+        let p = s.sim.actor(o).unwrap().pos;
+        if boarded && s.sim.actor(o).unwrap().aboard.is_none() && Vec3::new(p.x - far.x, 0.0, p.z - far.z).length() < 4.0 {
+            break;
+        }
+    }
+    let p = s.sim.actor(o).unwrap().pos;
+    assert!(boarded, "she took the boat: {:?}", events(&s.sim, "plan_failed"));
+    assert!(max_depth > 1.0, "out on the water ({max_depth:.1} m deep)");
+    assert!(Vec3::new(p.x - far.x, 0.0, p.z - far.z).length() < 6.0, "and got to the far shore: {p} vs {far}");
+    assert!(s.sim.actor(o).unwrap().aboard.is_none(), "on foot again");
+}
+
+/// What drives a vehicle matters: a horse cart crawls when pushed by hand
+/// and goes at a horse's pace with one harnessed (the horse walking before
+/// it); a bicycle goes at its rider's strength and tires them; a sail goes
+/// with the wind.
+#[test]
+fn beasts_pull_carts_legs_pedal_and_sails_need_wind() {
+    let w = world_with("power", 68, bare());
+    let src = fixture("vehicles/cart.js").replace("name: \"hand cart\"", "name: \"horse cart\"").replace("on: \"land\" }", "on: \"land\", by: \"horse\" }");
+    let cart = add_type(&w, &src);
+    let bike = add_type(&w, &fixture("vehicles/cart.js").replace("name: \"hand cart\"", "name: \"bicycle\"").replace("on: \"land\" }", "on: \"land\", by: \"legs\" }"));
+    let skiff = add_type(&w, &fixture("vehicles/cart.js").replace("name: \"hand cart\"", "name: \"sand yacht\"").replace("on: \"land\" }", "on: \"land\", by: \"sail\" }"));
+    let a = flat_spot(&w, 30.0);
+    let ci = place(&w, cart, a, 0.0);
+    let bi = place(&w, bike, a + Vec3::new(12.0, 0.0, 0.0), 0.0);
+    let si = place(&w, skiff, a + Vec3::new(-12.0, 0.0, 0.0), 0.0);
+    let ola = add_char(&w, "Ola", "kind", &[], a + Vec3::new(13.5, 0.0, 0.0));
+    let mut s = session(&w, 68, None);
+    calm(&mut s);
+    let me = ActorId::Player;
+    // Pushed by hand: it crawls.
+    s.sim.player.pos = ground(&w, a.x + 1.5, a.z);
+    s.sim.act(me, Action::Ride { target: Target::Instance(ci) }).unwrap();
+    let id = s.sim.player.aboard.unwrap();
+    assert!(s.sim.hitched.get(&id).is_none(), "no beast near");
+    let p0 = s.sim.things.get(id).unwrap().pos;
+    for _ in 0..40 {
+        s.sim.steer(me, 1.0, 0.0, 0.0, 0.1);
+        s.step(0.1);
+    }
+    let crawl = (s.sim.things.get(id).unwrap().pos - p0).length();
+    s.sim.act(me, Action::Dismount).unwrap();
+    // A horse beside it: harnessed, it pulls.
+    let horse = add_being(&w, "Bram", "horse", &[], a + Vec3::new(2.0, 0.0, 3.0));
+    let mut s = session(&w, 68, None);
+    calm(&mut s);
+    let hb = ActorId::Npc(horse);
+    s.sim.player.pos = ground(&w, a.x + 1.5, a.z);
+    s.sim.act(me, Action::Ride { target: Target::Instance(ci) }).unwrap();
+    let id = s.sim.player.aboard.unwrap();
+    assert_eq!(s.sim.hitched.get(&id), Some(&hb), "the horse is harnessed: {:?}", events(&s.sim, "hitched"));
+    let p0 = s.sim.things.get(id).unwrap().pos;
+    for _ in 0..40 {
+        s.sim.steer(me, 1.0, 0.0, 0.0, 0.1);
+        s.step(0.1);
+        let c = s.sim.things.get(id).unwrap();
+        let h = s.sim.actor(hb).unwrap().pos;
+        let ahead = Vec3::new(h.x - c.pos.x, 0.0, h.z - c.pos.z);
+        assert!(ahead.dot(Vec3::new(c.yaw.sin(), 0.0, c.yaw.cos())) > 1.0, "the horse walks before the cart");
+    }
+    let pulled = (s.sim.things.get(id).unwrap().pos - p0).length();
+    assert!(pulled > crawl * 3.0, "a horse pulls it ({pulled:.1} m) where a hand pushed it ({crawl:.1} m)");
+    // Muscle: a weak rider pedals slower than a strong one, and tires.
+    let bike_id = s.sim.liven(&Target::Instance(bi)).unwrap();
+    let o = ActorId::Npc(ola);
+    s.sim.cast.get_mut(ola).unwrap().a.pos = ground(&w, a.x + 13.5, a.z);
+    s.sim.act(o, Action::Ride { target: Target::Thing(bike_id) }).unwrap();
+    let strong = s.sim.drive_power(bike_id, o);
+    s.sim.cast.get_mut(ola).unwrap().needs.fatigue = 0.9;
+    let tired = s.sim.drive_power(bike_id, o);
+    assert!(tired < strong * 0.7, "tired legs pedal slower: {tired:.2} vs {strong:.2}");
+    s.sim.cast.get_mut(ola).unwrap().needs.fatigue = 0.0;
+    for _ in 0..30 {
+        s.sim.steer(o, 1.0, 0.0, 0.0, 0.1);
+        s.step(0.1);
+    }
+    assert!(s.sim.cast.get(ola).unwrap().needs.fatigue > 0.0, "pedalling tires her");
+    // Wind: a sail goes with it.
+    let sail = s.sim.liven(&Target::Instance(si)).unwrap();
+    s.sim.wx.wind = 0.0;
+    let calm_air = s.sim.drive_power(sail, me);
+    s.sim.wx.wind = 0.9;
+    let gale = s.sim.drive_power(sail, me);
+    assert!(gale > calm_air * 3.0, "the wind fills the sail: {gale:.2} vs {calm_air:.2}");
+}

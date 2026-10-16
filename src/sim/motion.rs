@@ -89,9 +89,20 @@ impl Sim {
         self.cast
             .npcs
             .iter()
-            .filter(|n| n.here() && !n.a.asleep && n.a.dims.seat.is_some() && (n.a.pos - p).length() < range)
+            .filter(|n| n.here() && !n.a.asleep && (n.a.pos - p).length() < range)
             .map(|n| ActorId::Npc(n.def.id))
-            .find(|m| self.owner_of(match m { ActorId::Npc(c) => *c, _ => 0 }) == Some(who) && self.rider_of(*m).is_none())
+            .find(|m| self.owner_of(match m { ActorId::Npc(c) => *c, _ => 0 }) == Some(who) && self.rider_of(*m).is_none() && self.mount_seat(*m).is_some())
+    }
+
+    /// Where a rider sits on a body: its own back (a body with a seat), or
+    /// a saddle, a howdah, a pillion it wears (a layer with a seat anchor).
+    pub fn mount_seat(&self, m: ActorId) -> Option<Vec3> {
+        let a = self.actor(m)?;
+        if let Some(s) = a.seat() {
+            return Some(s);
+        }
+        let saddled = self.worn_by(m).into_iter().any(|t| self.things.get(t).and_then(|x| self.snap.type_of(x.type_id)).is_some_and(|ty| ty.ct.meta.anchors.iter().any(|an| an.kind == "seat")));
+        saddled.then(|| a.pos + Vec3::Y * a.dims.height * 0.82 - a.forward() * a.dims.radius * 0.1)
     }
 
     /// Who rides this body, if anyone.
@@ -110,8 +121,8 @@ impl Sim {
         if me.riding.is_some() {
             return Err(ActErr::Fail(format!("{name} is already riding")));
         }
-        if m.dims.seat.is_none() {
-            return Err(ActErr::Fail(format!("{mname} can't be ridden")));
+        if self.mount_seat(mount).is_none() {
+            return Err(ActErr::Fail(format!("{mname} can't be ridden (no back to sit on, and no saddle)")));
         }
         if m.dims.mass < me.dims.mass * 3.0 || me.dims.mass > self.strength(mount) * 1.6 {
             return Err(ActErr::Fail(format!("{name} is too big for {mname} to carry")));
@@ -194,7 +205,7 @@ impl Sim {
         self.update_aboard();
         let riders: Vec<(ActorId, ActorId)> = self.actor_ids().into_iter().filter_map(|a| self.actor(a).and_then(|x| x.riding).map(|m| (a, m))).collect();
         for (r, m) in riders {
-            let Some((seat, yaw, alt)) = self.actor(m).and_then(|x| Some((x.seat()?, x.yaw, x.alt))) else {
+            let Some((seat, yaw, alt)) = self.mount_seat(m).zip(self.actor(m)).map(|(s, x)| (s, x.yaw, x.alt)) else {
                 if let Some(a) = self.actor_mut(r) {
                     a.riding = None;
                 }

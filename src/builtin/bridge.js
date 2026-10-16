@@ -1,11 +1,11 @@
 // Built-in bridge: carries a way over water or a cut. The deck runs along z,
-// level with the ground at both ends (y = 0 there), rising a little in the
-// middle, on an arch whose feet stand in the banks; low walls along its
-// sides. k.a: span (4–24 m), k.b: width (1.5–6 m), k.c: 0 stone … 1 timber,
+// level with the ground at both ends (y = 0 there), humped in the middle so
+// boats pass under, on an arch whose feet stand in the banks; low walls
+// along its sides. k.a: span (4–24 m), k.b: width (1.5–6 m), k.c: 0 stone … 1 timber,
 // k.d: shade.
 export const meta = {
   name: "bridge",
-  bounds: [3.1, 2.7, 12.2],
+  bounds: [3.1, 2.9, 12.2],
   tags: ["builtin", "bridge", "structure"],
   props: { mass: 40000 },
   sound: { hard: 0.95, dry: 0.6, ring: 0.1 },
@@ -15,11 +15,11 @@ export function sdf(x, y, z, k) {
   const L = 2 + clamp(k.a, 0, 1) * 10;
   const W = 0.75 + clamp(k.b, 0, 1) * 2.25;
   const u = clamp(z / L, -1, 1);
-  const rise = min(L * 0.07, 0.9);
+  const rise = clamp(L * 0.18, 0.4, 2);
   const top = rise * (1 - u * u);
   const a = clamp(z / max(L - 0.7, 0.5), -1, 1);
-  const arch = -2.6 + (2.2 + rise) * sqrt(max(1 - a * a, 0));
-  const under = min(top - 0.45, arch);
+  const arch = -2.6 + (2.25 + rise) * sqrt(max(1 - a * a, 0));
+  const under = min(top - 0.35, arch);
   const deck = max(abs(x) - W, abs(z) - L, y - top, under - y) * 0.6;
   const wall = max(abs(abs(x) - W + 0.12) - 0.12, abs(z) - L, y - top - 0.75, top - 0.1 - y) * 0.6;
   return min(deck, wall);

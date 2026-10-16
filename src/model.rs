@@ -744,6 +744,12 @@ impl WorldModel {
                         (st.x + a.cos() * d, st.z + a.sin() * d)
                     })
                     .filter(|(x, z)| if water { t.water(*x, *z) - t.height(*x, *z) > 0.9 } else { t.height(*x, *z) > t.water(*x, *z) + 0.3 })
+                    // A boat is moored by the shore, where people step in.
+                    .filter(|(x, z)| !water || (0..8).any(|k| {
+                        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                        let (qx, qz) = (x + a.cos() * 2.6, z + a.sin() * 2.6);
+                        t.height(qx, qz) > t.water(qx, qz) + 0.2
+                    }))
                     .collect();
                 for (k, (x, z)) in spots.into_iter().take(30).enumerate() {
                     let pl = Placement { ty: vt.clone(), x, z, y: None, rot_y: k as f32 * 1.3, scale: 1.0, params: [600.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };

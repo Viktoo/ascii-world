@@ -362,6 +362,7 @@ Steps are actions, carried out in order (walking there first when needed). Use n
   {"do": "use", "target": "lantern", "on": "woodpile"}                                {"do": "say", "text": "…", "to": "Ola"}
   {"do": "gesture", "kind": "wave|bow|nod|point|cheer|shrug|dance|sit|handshake|high_five|hug|kiss", "to": "Ola"}
   {"do": "propose", "to": "Ola", "activity": "catch|carry|dance|walk|hug|…", "with": "ball"}   (doing something together)
+  {"do": "ride", "target": "gondola"}   (get into a boat, cart or carriage, or onto a horse; or sit on a bench or chair; then goto drives it there, or rides along if someone else drives)   {"do": "dismount"} (get out, get up)
   {"do": "do", "text": "carve a notch in the door"}   (anything else, in words, including making something new: "make a wooden ball"; only when it really fits who they are)
   {"do": "follow", "target": "the traveler"}  {"do": "wait", "secs": 5}              {"do": "go_home"}   {"do": "flee", "from": "Bo"}
   {"do": "open", "target": "door"}   {"do": "close", "target": "gate"}   (doors, gates, lids, trapdoors)

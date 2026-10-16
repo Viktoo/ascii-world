@@ -388,4 +388,10 @@ impl Solid {
         }
         self.inst.sdf(&self.ty.ct, p)
     }
+
+    /// The shape's own distance, without the bounding shortcuts (which are
+    /// only lower bounds: too small for a wide body passing close).
+    pub fn exact_sdf(&self, p: Vec3) -> f32 {
+        self.inst.sdf(&self.ty.ct, p)
+    }
 }

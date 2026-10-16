@@ -67,7 +67,7 @@ impl Sim {
     /// Whether `mount` would carry `who` now (as `ride` checks it).
     pub fn ride_ok(&self, who: ActorId, mount: ActorId) -> bool {
         let (Some(me), Some(m)) = (self.actor(who), self.actor(mount)) else { return false };
-        if m.dims.seat.is_none() || me.seated() || self.rider_of(mount).is_some() || m.asleep {
+        if self.mount_seat(mount).is_none() || me.seated() || self.rider_of(mount).is_some() || m.asleep {
             return false;
         }
         if m.dims.mass < me.dims.mass * 3.0 || me.dims.mass > self.strength(mount) * 1.6 {

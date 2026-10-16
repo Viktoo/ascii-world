@@ -388,6 +388,12 @@ pub struct Sim {
     pub rooms: Vec<rooms::Room>,
     /// How fast each vehicle in use is going (m/s, forward; see `vehicle`).
     pub drives: std::collections::BTreeMap<things::ThingId, f32>,
+    /// Beasts harnessed to what they pull (a cart's horse, a sledge's dogs).
+    pub hitched: std::collections::BTreeMap<things::ThingId, ActorId>,
+    /// Characters driving somewhere: when they last got anywhere, and where.
+    pub driving: std::collections::HashMap<ActorId, (f64, glam::Vec3)>,
+    /// The way a character is steering along (waypoints, the next one).
+    pub routes: std::collections::HashMap<ActorId, (Vec<glam::Vec2>, usize)>,
     /// The world's weather over time, and what it is now (see `weather`).
     pub weather: crate::world::weather::Weather,
     pub wx: crate::world::weather::Now,
@@ -449,6 +455,9 @@ impl Sim {
             bumped: HashMap::new(),
             frame_dt: 1.0 / 60.0,
             drives: Default::default(),
+            hitched: Default::default(),
+            driving: Default::default(),
+            routes: Default::default(),
             dug_dirty: false,
             rooms: rooms::rooms_of(&snap),
             weather: crate::world::weather::Weather::new(&snap.look.climate, snap.terrain.seed),

@@ -202,7 +202,7 @@ impl Sim {
             _ => None,
         };
         let plain = ty.is_some_and(|ty| ty.ct.behavior(crate::lang::ir::Behavior::Use).is_none());
-        plain && !self.target_hinged(t) && self.target_drive(t).is_none()
+        plain && !self.target_hinged(t) && self.target_drive(t).is_none() && !self.target_seats(t)
     }
 
     /// The nearest small loose thing within reach in front of someone (for

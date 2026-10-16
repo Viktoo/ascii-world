@@ -893,7 +893,7 @@ impl App {
             let p = self.sim.player.pos;
             self.sim.find_named(what, p, ActorId::Player)
         }?;
-        self.sim.target_drive(&t).is_some().then_some(t)
+        (self.sim.target_drive(&t).is_some() || self.sim.target_seats(&t)).then_some(t)
     }
 
     fn person(&mut self, who: &str) -> Option<Target> {
@@ -966,7 +966,7 @@ impl App {
                 self.player_act(Action::Gesture { kind: kind.to_string(), to });
             }
             "drop" if rest.is_empty() => self.player_act(Action::Drop),
-            "ride" | "mount" | "drive" | "board" if self.ride_target(rest).is_some() => {
+            "ride" | "mount" | "drive" | "board" | "sit" if self.ride_target(rest).is_some() => {
                 if let Some(t) = self.ride_target(rest) {
                     self.player_act(Action::Ride { target: t });
                 }
@@ -1573,6 +1573,7 @@ impl App {
                         format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
                     }
                     (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
+                    (None, Some(p), None) if self.sim.target_seats(&p.target) => format!("{}: e sit   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),

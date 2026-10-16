@@ -495,8 +495,9 @@ pub fn parse_step(v: &Value) -> Option<Action> {
         "make" | "build" | "craft" | "create" => "do",
         "hand" | "offer" => "give",
         "put_on" | "dress" | "don" => "wear",
-        "mount" | "ride_on" | "climb_on" => "ride",
-        "get_down" | "get_off" | "dismount" => "dismount",
+        "mount" | "ride_on" | "climb_on" | "board" | "get_in" | "get_into" | "drive" | "row" | "sail" | "sit_on" | "sit_in" => "ride",
+        "sit" | "sit_down" if obj.contains_key("target") || obj.contains_key("on") => "ride",
+        "get_down" | "get_off" | "dismount" | "get_out" | "get_up" | "disembark" | "stand_up" | "alight" => "dismount",
         "take_off" | "undress" | "doff" => "take_off",
         "douse" | "put_out" | "extinguish" | "fight_fire" | "beat_out" | "smother" | "rub" | "press" | "work" => "apply",
         "home" | "go_home" => "go_home",
@@ -509,6 +510,11 @@ pub fn parse_step(v: &Value) -> Option<Action> {
     }
     .to_string();
     obj.insert("do".into(), Value::String(verb.clone()));
+    if verb == "ride" && !obj.contains_key("target") {
+        if let Some(x) = obj.remove("on").or_else(|| obj.remove("at")) {
+            obj.insert("target".into(), x);
+        }
+    }
     if matches!(raw.as_str(), "close" | "shut") {
         obj.insert("close".into(), Value::Bool(true));
     }
@@ -775,6 +781,39 @@ impl Sim {
                     if let (Some(m), Task::Goto { deadline, .. }) = (self.own_mount(who, 15.0), &task) {
                         self.interp.mount_asked.insert(who, deadline.to_bits());
                         let _ = self.ride(who, m);
+                    }
+                }
+            }
+        }
+        // In something with seats: driven, carried along, or got out of.
+        if let Task::Goto { target, stop, deadline, .. } = &task {
+            if self.actor(who).is_some_and(|a| a.aboard.is_some()) {
+                let going = self.goto_aboard(who, target, *stop, *deadline, dt);
+                if !going {
+                    if let Some(a) = self.actor_mut(who) {
+                        if a.task.as_ref() == Some(&task) {
+                            a.task = None;
+                        }
+                    }
+                }
+                return self.actor(who).is_some_and(|a| a.task.is_some());
+            }
+            // A long way, or over water: take a free vehicle that is near.
+            if let ActorId::Npc(c) = who {
+                let dest = self.resolve(target, who).map(|r| r.pos);
+                let asked = self.interp.mount_asked.get(&who) == Some(&deadline.to_bits());
+                let free = self.actor(who).is_some_and(|a| !a.seated() && a.carried_by.is_none());
+                if let (Some(dest), false, true) = (dest, asked, free) {
+                    // Looked for once per trip.
+                    self.interp.mount_asked.insert(who, deadline.to_bits());
+                    if let Some(v) = self.vehicle_for(who, dest) {
+                        if let Some(n) = self.cast.get_mut(c) {
+                            n.plan.push_front(Action::Goto { target: target.clone(), run: false });
+                            n.plan.push_front(Action::Ride { target: v.clone() });
+                            n.plan.push_front(Action::Goto { target: v, run: false });
+                            n.a.task = None;
+                        }
+                        return false;
                     }
                 }
             }

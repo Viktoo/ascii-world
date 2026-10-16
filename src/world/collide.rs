@@ -107,7 +107,10 @@ impl Obstacles<'_> {
             let n = (((hi - lo) / 0.7).ceil() as usize).clamp(1, 8);
             for i in 0..=n {
                 let y = lo + (hi - lo) * i as f32 / n as f32;
-                let d0 = s.sdf(Vec3::new(x, y, z));
+                let mut d0 = s.sdf(Vec3::new(x, y, z));
+                if d0 >= 0.0 && d0 < b.radius {
+                    d0 = s.exact_sdf(Vec3::new(x, y, z));
+                }
                 if d0 < 0.0 {
                     return false;
                 }
