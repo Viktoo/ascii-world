@@ -279,7 +279,7 @@ fn ground_water(x: f32, z: f32) -> f32 {
   return gbl(c, GSAMPLES * 2u);
 }
 
-// What covers the ground at (x, z): rgb, cover.
+// What covers the ground at (x, z): rgb premultiplied by cover, cover.
 fn ground_paint(x: f32, z: f32) -> vec4f {
   let c = ground_cell(x, z);
   if (c.base == 0u) { return vec4f(0.0); }
@@ -430,7 +430,7 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
   let snowy = sstep(46.0, 56.0, h + v * 6.0) * sstep(0.6, 0.8, ny);
   c = mix(c, G.snow.xyz, snowy);
   let gp = ground_paint(x, z);
-  if (gp.w > 0.0) { c = mix(c, gp.xyz * (0.9 + 0.2 * v), gp.w); }
+  if (gp.w > 0.0) { c = mix(c, gp.xyz / max(gp.w, 1.0 / 255.0) * (0.9 + 0.2 * v), gp.w); }
   if (G.extra.x > 0u) {
     let dug = carve(x, z, h).y;
     c = mix(c, vec3f(0.29, 0.22, 0.16) * (0.8 + 0.3 * v), dug * 0.85);

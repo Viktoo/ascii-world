@@ -18,6 +18,7 @@ use std::sync::Arc;
 mod hands;
 mod night;
 mod remains;
+mod ways;
 mod weather;
 
 fn fixture(p: &str) -> String {
@@ -4492,7 +4493,7 @@ fn roads_lamps_and_hollows() {
         plan_json: "{}".into(),
         info: Default::default(),
         characters: vec![],
-        settlement: Some(crate::model::Settlement { x: h.x + 5.0, z: h.z + 8.0, road: Some((None, 1.2)), lamps: Some(crate::model::TypeRef::Existing(lamp)) }),
+        settlement: Some(crate::model::Settlement { x: h.x + 5.0, z: h.z + 8.0, road: Some((None, 1.2)), lamps: Some(crate::model::TypeRef::Existing(lamp)), ..Default::default() }),
     };
     let ok = commit_places(&w, places, Some(region));
     let roads = ok.snapshot.regions.get(&r).map(|i| i.roads.clone()).unwrap_or_default();
@@ -4533,7 +4534,7 @@ fn plans_name_the_new_verbs() {
 }
 
 /// Render a frame of the session's world to a PNG (3× scaled).
-fn png_of(s: &mut Session, snap: &Arc<crate::world::WorldSnapshot>, gpu: &Option<Arc<crate::render::gpu::Gpu>>, cam: crate::render::Camera, out: &str) {
+pub(super) fn png_of(s: &mut Session, snap: &Arc<crate::world::WorldSnapshot>, gpu: &Option<Arc<crate::render::gpu::Gpu>>, cam: crate::render::Camera, out: &str) {
     let (pw, ph) = (320u32, 180u32);
     let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
     let culled = crate::world::cull::cull(snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
@@ -4576,7 +4577,7 @@ fn render_village_png() {
         plan_json: "{}".into(),
         info: Default::default(),
         characters: vec![],
-        settlement: Some(crate::model::Settlement { x: h.x + 4.0, z: h.z + 8.0, road: Some((None, 1.2)), lamps: Some(crate::model::TypeRef::Existing(lamp)) }),
+        settlement: Some(crate::model::Settlement { x: h.x + 4.0, z: h.z + 8.0, road: Some((None, 1.2)), lamps: Some(crate::model::TypeRef::Existing(lamp)), ..Default::default() }),
     };
     commit_places(&w, places, Some(region));
     let swordsman = add_char(&w, "Bo", "bold", &[], h + Vec3::new(3.0, 0.0, 7.0));

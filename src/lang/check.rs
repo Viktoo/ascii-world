@@ -524,10 +524,11 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// `meta.drive`: { speed, on }
+    /// `meta.drive`: { speed, on, by }
     fn meta_drive(&mut self, o: &js::ObjectExpression) -> Option<Drive> {
         let mut speed = None;
         let mut on = "land".to_string();
+        let mut by = String::new();
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
             let Some(key) = self.obj_key(p, "meta.drive") else { continue };
@@ -540,11 +541,15 @@ impl<'s> Cx<'s> {
                     Expression::StringLiteral(s) if DRIVE_ON.contains(&s.value.as_str()) => on = s.value.to_string(),
                     _ => self.err(p.span, format!("meta.drive.on is one of {}", DRIVE_ON.join(", "))),
                 },
-                _ => self.err(p.span, format!("unknown meta.drive key '{key}' (speed, on)")),
+                "by" => match &p.value {
+                    Expression::StringLiteral(s) if s.value.len() <= 40 => by = s.value.trim().to_lowercase(),
+                    _ => self.err(p.span, "meta.drive.by is what drives it, in a word (\"legs\", \"oars\", \"wind\", \"beast\", \"engine\")"),
+                },
+                _ => self.err(p.span, format!("unknown meta.drive key '{key}' (speed, on, by)")),
             }
         }
         match speed {
-            Some(speed) => Some(Drive { speed, on }),
+            Some(speed) => Some(Drive { speed, on, by }),
             None => {
                 self.err(o.span, "meta.drive needs a speed (m/s)");
                 None

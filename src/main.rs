@@ -24,6 +24,7 @@ mod sim;
 mod term;
 mod terrain;
 mod ground;
+mod settle;
 mod voice;
 mod ears;
 mod window;

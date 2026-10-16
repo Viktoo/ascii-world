@@ -199,7 +199,7 @@ impl Edit {
 
     /// Apply to one point: the height `h` there, its paint (rgb, cover) and
     /// water level, in place.
-    fn apply(&self, x: f32, z: f32, h: &mut f32, paint: &mut (Vec3, f32), water: &mut f32) {
+    pub fn apply_at(&self, x: f32, z: f32, h: &mut f32, paint: &mut (Vec3, f32), water: &mut f32) {
         let (d, s) = self.dist(x, z);
         if d > self.reach() {
             return;
@@ -218,15 +218,13 @@ impl Edit {
             // Down its sides (inside the edge) and along the top beyond.
             let k = smoothstep(rw + 0.3, rw, d - self.edge.min(0.6)) * smoothstep(-0.35, -0.05, d);
             if k > 0.0 {
-                paint.0 = paint.0.lerp(Vec3::from_array(c), k);
-                paint.1 = paint.1.max(k);
+                over(paint, c, k);
             }
         }
         if let Some(c) = self.color {
             let k = if self.rim.is_some() { smoothstep(-0.05, -0.35, d) } else { smoothstep(0.3, -0.2, d) };
             if k > 0.0 {
-                paint.0 = paint.0.lerp(Vec3::from_array(c), k);
-                paint.1 = paint.1.max(k);
+                over(paint, c, k);
             }
         }
         if let Some(wl) = &self.water {
@@ -235,6 +233,13 @@ impl Edit {
             }
         }
     }
+}
+
+/// Lay colour `c` at cover `k` over the paint so far (rgb premultiplied by
+/// its cover, and the cover).
+fn over(paint: &mut (Vec3, f32), c: [f32; 3], k: f32) {
+    paint.0 = paint.0 * (1.0 - k) + Vec3::from_array(c) * k;
+    paint.1 += k * (1.0 - paint.1);
 }
 
 /// A way's line as laid on the land: cut into pieces of at most `step`
@@ -384,7 +389,10 @@ impl Ground {
         let bl = |v: &[f32]| lerp(lerp(v[i0], v[i0 + 1], ux), lerp(v[i0 + STRIDE], v[i0 + STRIDE + 1], ux), uz);
         let p = [t.paint[i0], t.paint[i0 + 1], t.paint[i0 + STRIDE], t.paint[i0 + STRIDE + 1]].map(unpack);
         let pc = p[0].lerp(p[1], ux).lerp(p[2].lerp(p[3], ux), uz);
-        Some(At { delta: bl(&t.delta), color: pc.truncate(), cover: pc.w, water: if t.wet { bl(&t.water) } else { NO_WATER } })
+        // Stored premultiplied by its cover, so a soft edge fades to the
+        // ground and not through black.
+        let color = pc.truncate() / pc.w.max(1.0 / 255.0);
+        Some(At { delta: bl(&t.delta), color, cover: pc.w, water: if t.wet { bl(&t.water) } else { NO_WATER } })
     }
 
     /// How far the ground at (x, z) was moved (0 where no edit reaches).
@@ -546,7 +554,7 @@ fn stamp_tile(all: &[Edit], ids: &[u32], k: (i32, i32), raw: &(dyn Fn(f32, f32) 
             let mut paint = (Vec3::ZERO, 0.0f32);
             let mut water = NO_WATER;
             for e in ids.iter().filter_map(|i| all.get(*i as usize)) {
-                e.apply(x, z, &mut h, &mut paint, &mut water);
+                e.apply_at(x, z, &mut h, &mut paint, &mut water);
             }
             let n = j * STRIDE + i;
             t.delta[n] = h - h0;

@@ -211,11 +211,18 @@ pub struct Meta {
 /// What a vehicle goes on.
 pub const DRIVE_ON: [&str; 3] = ["land", "water", "air"];
 
-/// How a vehicle moves: top speed (m/s) and land, water or air.
+/// How a vehicle moves: top speed (m/s), land, water or air, and what
+/// drives it, in a word: "legs" (pedals, a scooter), "oars" (a paddle, a
+/// pole), "wind" (a sail), "beast" (a horse or ox pulling it), "engine"
+/// (and anything else: magic, steam). Muscle tires the one driving and goes
+/// at their strength; wind goes with the weather; a beast's vehicle needs
+/// one harnessed to it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Drive {
     pub speed: f32,
     pub on: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub by: String,
 }
 
 /// What an anchor is for.

@@ -36,6 +36,9 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/mushroom.js"),
     include_str!("builtin/door.js"),
     include_str!("builtin/lamppost.js"),
+    include_str!("builtin/bridge.js"),
+    include_str!("builtin/bench.js"),
+    include_str!("builtin/boat.js"),
 ];
 
 /// Live positions the committer must not build on top of.
@@ -104,12 +107,20 @@ pub struct RegionCommit {
     pub settlement: Option<Settlement>,
 }
 
+#[derive(Default)]
 pub struct Settlement {
     pub x: f32,
     pub z: f32,
     /// None: no roads. A colour of None: trodden earth in the land's colours.
     pub road: Option<(Option<[f32; 3]>, f32)>,
     pub lamps: Option<TypeRef>,
+    /// How it shapes its land (lagoons, islands, canals, streets, squares),
+    /// in order, each with the building type lined up along it, if any.
+    pub ground: Vec<(crate::settle::LandPlan, Option<TypeRef>)>,
+    /// What spans its cuts where its ways cross them (None: the built-in bridge).
+    pub bridge: Option<TypeRef>,
+    /// The one vehicle its people share (a boat, a cart), set by its middle.
+    pub vehicle: Option<TypeRef>,
 }
 
 pub struct CommitRequest {
@@ -182,6 +193,20 @@ pub fn find_spawn(t: &Terrain) -> Vec3 {
 /// one region is in sight and loading waits for it alone.
 pub fn find_first_spawn(t: &Terrain) -> Vec3 {
     spawn_near(t, crate::world::REGION / 2.0)
+}
+
+/// The nearest dry ground to `p` (itself if dry), on the ground.
+pub fn dry_near(t: &Terrain, p: Vec3) -> Vec3 {
+    for k in 0..2000 {
+        let a = k as f32 * 2.399;
+        let r = (k as f32).sqrt() * 1.5;
+        let (x, z) = (p.x + a.cos() * r, p.z + a.sin() * r);
+        let h = t.height(x, z);
+        if h >= t.water(x, z) + 0.3 {
+            return Vec3::new(x, h, z);
+        }
+    }
+    Vec3::new(p.x, t.height(p.x, p.z), p.z)
 }
 
 fn spawn_near(t: &Terrain, mid: f32) -> Vec3 {
@@ -545,16 +570,191 @@ impl WorldModel {
     /// Lay the settlements' ground edits (canals, squares, roads) on the
     /// land, region by region in a fixed order.
     fn apply_ground(&self) {
-        let mut keys: Vec<&(i32, i32)> = self.regions.keys().collect();
+        self.terrain.set_ground(crate::ground::Layer::Places, self.places_edits(None));
+    }
+
+    /// The settlements' ground edits, region by region (but `except`'s).
+    fn places_edits(&self, except: Option<(i32, i32)>) -> Vec<crate::ground::Edit> {
+        let mut keys: Vec<&(i32, i32)> = self.regions.keys().filter(|k| Some(**k) != except).collect();
         keys.sort();
         let raw = |x: f32, z: f32| self.terrain.raw_height(x, z);
         let mut edits = Vec::new();
         for k in keys {
             let r = &self.regions[k];
-            edits.extend(r.ground.iter().cloned());
-            edits.extend(r.roads.iter().map(|rd| rd.edit(&raw)));
+            if r.ground.is_empty() {
+                // Older worlds kept only their roads.
+                edits.extend(r.roads.iter().map(|rd| rd.edit(&raw)));
+            } else {
+                edits.extend(r.ground.iter().cloned());
+            }
         }
-        self.terrain.set_ground(crate::ground::Layer::Places, edits);
+        edits
+    }
+
+    /// The land under a new settlement: the seed's, with the rivers and the
+    /// other settlements' ground (`others`) on it.
+    fn base_land(&self, others: &[crate::ground::Edit]) -> impl Fn(f32, f32) -> f32 + use<> {
+        let t = self.terrain.clone();
+        let mut under: Vec<crate::ground::Edit> = t.carve.read().ground.layer(crate::ground::Layer::Land).to_vec();
+        under.extend(others.iter().cloned());
+        move |x: f32, z: f32| crate::settle::shaped(&under, &|x, z| t.raw_height(x, z), x, z)
+    }
+
+    /// A type for a placement: its entry and the points inside it.
+    fn entry_of(&mut self, t: &TypeRef, new_entries: &[Arc<TypeEntry>], new_types: &[NewType]) -> Option<(Arc<TypeEntry>, Vec<[f32; 3]>)> {
+        match t {
+            TypeRef::New(k) => new_entries.get(*k).cloned().zip(new_types.get(*k).map(|nt| nt.report.interior.clone())),
+            TypeRef::Existing(id) => {
+                let e = self.types.get(id)?.entry.clone();
+                let inside = self.interior_of(e.id);
+                Some((e, inside))
+            }
+        }
+    }
+
+    /// A built-in type by name.
+    fn builtin(&self, name: &str) -> Option<TypeRef> {
+        self.types.values().find(|t| t.entry.builtin && t.entry.name() == name).map(|t| TypeRef::Existing(t.entry.id))
+    }
+
+    /// Build out a settlement around what was placed: buildings along its
+    /// ways, roads from doors (to its streets, or between them when it has
+    /// none), lamps, bridges where ways cross its cuts, and its vehicle.
+    /// Returns its roads and its ground edits, as laid.
+    fn settle(&mut self, r: (i32, i32), st: &Settlement, req: &CommitRequest, new_entries: &[Arc<TypeEntry>], placed: &mut Vec<(Placed, Arc<TypeEntry>)>) -> (Vec<crate::terrain::Road>, Vec<crate::ground::Edit>) {
+        use crate::settle::{LandPlan, crossings, frontage, is_cut, is_way, realize, road_plan, spurs};
+        let plans: Vec<LandPlan> = st.ground.iter().map(|g| g.0.clone()).collect();
+        let others = self.places_edits(Some(r));
+        let base = self.base_land(&others);
+        let laid = realize(&plans, &[], &base);
+
+        // Buildings lined up along its ways and cuts, doors toward them.
+        let mut lined = 0;
+        for (i, (plan, ty)) in st.ground.iter().enumerate() {
+            let (Some(ty), Some((_, sides, every))) = (ty, &plan.frontage) else { continue };
+            let Some(edit) = laid.iter().find(|e| e.kind == plan.edit.kind && e.name == plan.edit.name && e.rim == plan.edit.rim) else { continue };
+            let crate::ground::Shape::Line { pts, half } = &edit.shape else { continue };
+            let Some((entry, interior)) = self.entry_of(ty, new_entries, &req.new_types) else { continue };
+            let b = entry.ct.meta.bounds;
+            let out = entry.ct.meta.anchors.iter().find(|a| a.kind == "door").map(|a| a.out()).unwrap_or([0.0, 0.0, 1.0]);
+            let o = glam::Vec2::new(out[0], out[2]).normalize_or(glam::Vec2::Y);
+            let (width, depth) = if o.y.abs() >= o.x.abs() { (b[0] * 2.0, b[2] * 2.0) } else { (b[2] * 2.0, b[0] * 2.0) };
+            let walk = if is_cut(edit) { 0.4 } else { 1.0 };
+            let clear = half + edit.rim.map(|r| r.1).unwrap_or(0.0) + walk;
+            // Not across another way (a street meeting the quay stays open).
+            let across = |p: glam::Vec2| laid.iter().any(|e| !std::ptr::eq(e, edit) && (is_way(e) || is_cut(e)) && e.dist(p.x, p.y).0 < width.max(depth) * 0.5 + 0.8);
+            for (k, (p, face)) in frontage(pts, clear, *sides, *every, width, depth).into_iter().enumerate() {
+                if lined >= 48 {
+                    break;
+                }
+                if across(p) {
+                    continue;
+                }
+                let rot = o.y.atan2(o.x) - face.y.atan2(face.x);
+                let pl = Placement { ty: ty.clone(), x: p.x, z: p.y, y: None, rot_y: rot, scale: 1.0, params: [400.0 + (i * 64 + k) as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "a building along the way") {
+                    let kids = self.children(&p, &entry, new_entries);
+                    placed.push((p, entry.clone()));
+                    placed.extend(kids);
+                    lined += 1;
+                }
+            }
+        }
+
+        // Roads: from doors to the streets, or between doors when it has none.
+        let fronts: Vec<Vec3> = placed.iter().filter(|(p, e)| e.has_tag("building") || e.ct.meta.anchors.iter().any(|a| a.kind == "door") || (e.solid && e.radius() * p.scale > 3.0 && !e.builtin)).filter(|(p, _)| (p.pos.x - st.x).hypot(p.pos.z - st.z) < 130.0).map(|(p, e)| front_of(p, e)).collect();
+        let streets: Vec<&crate::ground::Edit> = laid.iter().filter(|e| is_way(e)).collect();
+        let roads = match st.road {
+            Some((color, half)) => {
+                let color = color.unwrap_or_else(|| road_color(&self.look.palette));
+                if streets.is_empty() { road_net(&fronts, color, half) } else { spurs(&fronts, &streets, color, half, 40.0) }
+            }
+            None => Vec::new(),
+        };
+        let extra: Vec<LandPlan> = roads.iter().map(road_plan).collect();
+        let laid = if plans.is_empty() && extra.is_empty() { Vec::new() } else { realize(&plans, &extra, &base) };
+        let mut all = others;
+        all.extend(laid.iter().cloned());
+        self.terrain.set_ground(crate::ground::Layer::Places, all);
+
+        // Lamps along the roads and streets.
+        if let Some(lt) = &st.lamps {
+            if let Some((entry, interior)) = self.entry_of(lt, new_entries, &req.new_types) {
+                let mut along = roads.clone();
+                for e in laid.iter().filter(|e| is_way(e)) {
+                    if let crate::ground::Shape::Line { pts, half } = &e.shape {
+                        along.extend((0..pts.len().saturating_sub(1)).step_by(4).map(|i| crate::terrain::Road { a: pts[i], b: pts[(i + 4).min(pts.len() - 1)], half: *half, color: [0.0; 3] }));
+                    }
+                }
+                let mut n = 0;
+                for (i, (a, b)) in lamp_spots(&along).into_iter().enumerate() {
+                    if n >= 16 {
+                        break;
+                    }
+                    let pl = Placement { ty: lt.clone(), x: a, z: b, y: None, rot_y: 0.0, scale: 1.0, params: [300.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                    if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "a lamp") {
+                        placed.push((p, entry.clone()));
+                        n += 1;
+                    }
+                }
+            }
+        }
+
+        // Bridges where ways cross cuts.
+        let bridge = st.bridge.clone().or_else(|| self.builtin("bridge"));
+        if let Some((bt, (entry, interior))) = bridge.and_then(|b| Some((b.clone(), self.entry_of(&b, new_entries, &req.new_types)?))) {
+            let t = self.terrain.clone();
+            let mut n = 0;
+            for w in laid.iter().filter(|e| is_way(e)) {
+                let wh = match &w.shape {
+                    crate::ground::Shape::Line { half, .. } => *half,
+                    _ => continue,
+                };
+                for c in laid.iter().filter(|e| is_cut(e)) {
+                    for (p, dir, reach) in crossings(w, c) {
+                        if n >= 24 {
+                            break;
+                        }
+                        let half_span = reach + 1.2;
+                        let (a, b) = (p - dir * half_span, p + dir * half_span);
+                        let y = t.height(a.x, a.y).max(t.height(b.x, b.y));
+                        let rot = std::f32::consts::FRAC_PI_2 - dir.y.atan2(dir.x);
+                        let ka = ((half_span - 2.0) / 10.0).clamp(0.0, 1.0);
+                        let kb = ((wh + 0.4 - 0.75) / 2.25).clamp(0.0, 1.0);
+                        let timber = w.color.is_some_and(|c| c[0] > c[2] * 1.4 && c[0] < 0.55);
+                        let pl = Placement { ty: bt.clone(), x: p.x, z: p.y, y: Some(y), rot_y: rot, scale: 1.0, params: [500.0 + n as f32, 1.0, ka, kb, if timber { 1.0 } else { 0.0 }, 0.5, 0.5, 0.5] };
+                        if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "a bridge") {
+                            placed.push((p, entry.clone()));
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Its vehicle: afloat on the nearest water for a boat, else by the middle.
+        if let Some(vt) = &st.vehicle {
+            if let Some((entry, interior)) = self.entry_of(vt, new_entries, &req.new_types) {
+                let water = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "water");
+                let t = self.terrain.clone();
+                let spots: Vec<(f32, f32)> = (0..400)
+                    .map(|k| {
+                        let a = k as f32 * 2.399;
+                        let d = (k as f32).sqrt() * 6.0;
+                        (st.x + a.cos() * d, st.z + a.sin() * d)
+                    })
+                    .filter(|(x, z)| if water { t.water(*x, *z) - t.height(*x, *z) > 0.9 } else { t.height(*x, *z) > t.water(*x, *z) + 0.3 })
+                    .collect();
+                for (k, (x, z)) in spots.into_iter().take(30).enumerate() {
+                    let pl = Placement { ty: vt.clone(), x, z, y: None, rot_y: k as f32 * 1.3, scale: 1.0, params: [600.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                    if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "the settlement's vehicle") {
+                        placed.push((p, entry.clone()));
+                        break;
+                    }
+                }
+            }
+        }
+        (roads, laid)
     }
 
     pub fn type_names(&self) -> Vec<(u32, String, Vec<String>, [f32; 3])> {
@@ -759,6 +959,15 @@ impl WorldModel {
     // ---- step 6 + commit + flip ----
 
     pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
+        let res = self.commit_inner(req);
+        if res.is_err() {
+            // A settlement's ground laid for a commit that failed goes again.
+            self.apply_ground();
+        }
+        res
+    }
+
+    fn commit_inner(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
         let reshape = is_reshape(req.kind, &req.summary);
         // Species the brain stored for this commit travel with its snapshot.
         self.species = Arc::new(crate::world::species::SpeciesBook::load(&self.db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), self.db.kv_get("species.world").as_deref()));
@@ -770,6 +979,17 @@ impl WorldModel {
         for nt in &req.new_types {
             new_entries.push(type_entry(next_id, nt.ct.clone(), nt.report.bottom, nt.report.top, false));
             next_id += 1;
+        }
+        // The settlement's ground first: what is placed stands on it.
+        if let Some((r, st)) = req.region.as_ref().and_then(|r| r.settlement.as_ref().map(|s| (r.r, s))) {
+            if !st.ground.is_empty() {
+                let plans: Vec<crate::settle::LandPlan> = st.ground.iter().map(|g| g.0.clone()).collect();
+                let others = self.places_edits(Some(r));
+                let base = self.base_land(&others);
+                let mut edits = others;
+                edits.extend(crate::settle::realize(&plans, &[], &base));
+                self.terrain.set_ground(crate::ground::Layer::Places, edits);
+            }
         }
         // Step 5: placement.
         let mut placed: Vec<(Placed, Arc<TypeEntry>)> = Vec::new();
@@ -829,43 +1049,26 @@ impl WorldModel {
         if !diags.is_empty() {
             return Err(diags);
         }
-        // A settlement's roads between its doors, and lamps along them.
+        // A settlement's ground, what lines its ways, its roads and lamps,
+        // its bridges and its vehicle.
         let mut region_plan = req.region.as_ref().map(|r| r.plan_json.clone());
         let mut region_roads = Vec::new();
-        if let Some(st) = req.region.as_ref().and_then(|r| r.settlement.as_ref()) {
-            let fronts: Vec<Vec3> = placed.iter().filter(|(p, e)| e.has_tag("building") || e.ct.meta.anchors.iter().any(|a| a.kind == "door") || (e.solid && e.radius() * p.scale > 3.0 && !e.builtin)).filter(|(p, _)| (p.pos.x - st.x).hypot(p.pos.z - st.z) < 90.0).map(|(p, e)| front_of(p, e)).collect();
-            let roads = match st.road {
-                Some((color, half)) => road_net(&fronts, color.unwrap_or_else(|| road_color(&self.look.palette)), half),
-                None => Vec::new(),
-            };
-            if !roads.is_empty() {
-                if let Some(lt) = &st.lamps {
-                    let lamp = match lt {
-                        TypeRef::New(k) => new_entries.get(*k).cloned().zip(req.new_types.get(*k).map(|nt| nt.report.interior.clone())),
-                        TypeRef::Existing(id) => self.types.get(id).map(|t| t.entry.clone()).map(|e| (e.clone(), self.interior_of(e.id))),
-                    };
-                    if let Some((entry, interior)) = lamp {
-                        let mut n = 0;
-                        for (i, (a, b)) in lamp_spots(&roads).into_iter().enumerate() {
-                            if n >= 12 {
-                                break;
-                            }
-                            let pl = Placement { ty: lt.clone(), x: a, z: b, y: None, rot_y: 0.0, scale: 1.0, params: [300.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
-                            if let Ok(p) = self.check_place(&pl, &entry, &interior, &placed, "a lamp") {
-                                placed.push((p, entry.clone()));
-                                n += 1;
-                            }
-                        }
+        let mut region_edits = Vec::new();
+        if let Some((r, st)) = req.region.as_ref().and_then(|r| r.settlement.as_ref().map(|s| (r.r, s))) {
+            let built = self.settle(r, st, &req, &new_entries, &mut placed);
+            region_roads = built.0;
+            region_edits = built.1;
+            if let Some(plan) = region_plan.as_mut() {
+                let mut v: serde_json::Value = serde_json::from_str(plan).unwrap_or_default();
+                if let Some(o) = v.as_object_mut() {
+                    if !region_roads.is_empty() {
+                        o.insert("roads".into(), serde_json::to_value(&region_roads).unwrap_or_default());
+                    }
+                    if !region_edits.is_empty() {
+                        o.insert("edits".into(), serde_json::to_value(&region_edits).unwrap_or_default());
                     }
                 }
-                if let Some(plan) = region_plan.as_mut() {
-                    let mut v: serde_json::Value = serde_json::from_str(plan).unwrap_or_default();
-                    if let Some(o) = v.as_object_mut() {
-                        o.insert("roads".into(), serde_json::to_value(&roads).unwrap_or_default());
-                    }
-                    *plan = v.to_string();
-                }
-                region_roads = roads;
+                *plan = v.to_string();
             }
         }
 
@@ -890,12 +1093,17 @@ impl WorldModel {
         }
 
         // A new look changes the terrain: pick a new dry spawn point.
-        let new_spawn = req.look.as_ref().map(|_| find_first_spawn(&terrain));
+        let new_spawn = req.look.as_ref().map(|_| find_first_spawn(&terrain)).or_else(|| {
+            // A settlement's ground may have flooded the spawn (a lagoon dug
+            // round it): the nearest dry spot instead.
+            let s = self.spawn;
+            (terrain.height(s.x, s.z) < terrain.water(s.x, s.z) + 0.3).then(|| dry_near(&terrain, s))
+        });
 
         // Commit to SQLite as one new version.
         let parent = self.current;
         // Characters live beside their houses, never inside them.
-        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(_, h)| self.clear_spot(Vec3::new(h.x, terrain.height(h.x, h.z), h.z), &placed)).collect()).unwrap_or_default();
+        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(_, h)| self.clear_spot(dry_near(&terrain, *h), &placed)).collect()).unwrap_or_default();
         let region = req.region.as_ref();
         let res = self.db.tx(|tx| {
             let v = db::add_version(tx, parent, req.kind, &req.summary, None)?;
@@ -952,6 +1160,7 @@ impl WorldModel {
             }
             let mut info = rc.info;
             info.roads = region_roads;
+            info.ground = region_edits;
             self.regions.insert(rc.r, Arc::new(info));
         }
         if req.look.is_some() {

@@ -1342,7 +1342,15 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             Some(Value::Bool(true)) => resolve("lamppost"),
             _ => None,
         };
-        crate::model::Settlement { x: ox + clampl(f(st, "x", 128.0)), z: oz + clampl(f(st, "z", 128.0)), road, lamps }
+        let ground = crate::settle::parse(st.get("ground").and_then(|g| g.as_array()).map(|a| a.as_slice()).unwrap_or(&[]), ox, oz)
+            .into_iter()
+            .map(|p| {
+                let ty = p.frontage.as_ref().and_then(|f| resolve(&f.0));
+                (p, ty)
+            })
+            .collect();
+        let named = |k: &str| st.get(k).and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).and_then(resolve);
+        crate::model::Settlement { x: ox + clampl(f(st, "x", 128.0)), z: oz + clampl(f(st, "z", 128.0)), road, lamps, ground, bridge: named("bridge"), vehicle: named("vehicle") }
     });
     let n_chars = chars.len();
     let ok = ctx
