@@ -140,12 +140,22 @@ impl Foley {
                 // The footfall: a soft thud, its pitch from the body.
                 let thud = Part { kind: Kind::Knock, len: 0.05, hard: (ground.hard * 0.6).min(0.5), dry: ground.dry, ring: 0.0, loud: (0.05 + 0.12 * heavy).min(0.6), ..Part::default() };
                 // And what the ground does under it (crunch, squelch, splash).
-                let texture = Part { kind: Kind::Noise, len: if depth > 0.05 { 0.3 } else { 0.11 }, hard: ground.hard, dry: ground.dry, swell: 0.05, loud: (0.04 + 0.1 * heavy + if depth > 0.05 { 0.25 } else { 0.0 }).min(0.7), ..Part::default() };
+                let texture = Part { kind: Kind::Noise, len: if depth > 0.05 { 0.22 } else { 0.11 }, hard: ground.hard, dry: ground.dry, swell: 0.05, loud: (0.04 + 0.1 * heavy + if depth > 0.05 { 0.06 + 0.08 * depth.min(1.0) } else { 0.0 }).min(0.5), ..Part::default() };
                 let body = Body { mass, pitch: 1.0 };
                 out.push(Cmd::Play(Box::new(Play { at, call: Call(vec![thud]), body, seed: s, gain, delay: 0.0 })));
                 out.push(Cmd::Play(Box::new(Play { at, call: Call(vec![texture]), body, seed: s ^ 1, gain: gain * 0.8, delay: 0.0 })));
             }
             self.walk.insert(code, (pos, acc.min(stride * 2.0), last_step));
+            // Wading or swimming: a soft swish of water pushed aside, more
+            // the deeper and faster it goes.
+            if depth > 0.05 && speed > 0.2 {
+                let key = (3 << 48) | code as u64;
+                let body = (dims.height / 1.75).clamp(0.3, 3.0);
+                let drive = ((speed / 3.5).min(1.4) * (0.35 + depth.min(1.0) * 0.65) * body.powf(0.5)).min(1.2);
+                let at = if who == ActorId::Player { At::Listener } else { At::Follow(actor_key(who), pos) };
+                out.push(Cmd::Texture { key, at, mat: Material::WATER, size: 0.4, drive, roar: 0.0, gain: UNDERFOOT * 0.7 });
+                brushing.insert(key);
+            }
             // Brushing: how much growth is about the body, and how fast it is
             // pushed. Growth light enough to give way rustles (grass walked
             // through, a shrub walked past); a trunk doesn't.
@@ -266,25 +276,8 @@ impl Foley {
         let me = sim.player.pos;
         let snap = sim.snap.clone();
         let t = &snap.terrain;
-        // Water: the nearest open water round about, and how much of it.
-        let mut water: Option<(Vec3, f32)> = None;
-        let mut wet = 0;
-        for ring in [3.0f32, 7.0, 12.0, 20.0, 30.0, 42.0] {
-            for k in 0..24 {
-                let a = k as f32 / 24.0 * std::f32::consts::TAU;
-                let (x, z) = (me.x + a.sin() * ring, me.z + a.cos() * ring);
-                if t.height(x, z) < t.water(x, z) - 0.15 {
-                    wet += 1;
-                    if water.is_none() {
-                        water = Some((Vec3::new(x, t.water(x, z), z), 0.0));
-                    }
-                }
-            }
-        }
-        if let Some((p, _)) = water {
-            let d = (p - me).length();
-            water = Some((p, ((1.0 - d / 50.0).max(0.0) * (0.4 + wet as f32 / 40.0)).min(1.0)));
-        }
+        // Water makes no sound of its own yet: it has no waves to lap.
+        let water: Option<(Vec3, f32)> = None;
         // Wind: mostly on high, open ground; faint in hollows, woods and
         // indoors. The weather's wind sets how strong it blows.
         let roof = !sim.open_sky(me + Vec3::Y);
