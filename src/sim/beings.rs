@@ -843,6 +843,7 @@ impl Sim {
     /// "quadruped") get their own, written from it: once each, for those
     /// about. Until it comes they keep the generic one.
     pub fn ask_species_bodies(&mut self) {
+        self.mend_lost_bodies();
         if !self.has_llm || !self.cfg.own_bodies {
             return;
         }
@@ -863,6 +864,41 @@ impl Sim {
             let id = self.next_id();
             self.request_now(super::Request::SpeciesBody { id, species: json, template });
         }
+    }
+
+    /// A species whose own body never arrived (the world was closed while it
+    /// was being written: the species is stored before its body) goes back
+    /// to where it started, so it isn't drawn as a person and its body is
+    /// asked for again: a built-in one as it was, any other on the generic
+    /// body of its kind.
+    fn mend_lost_bodies(&mut self) {
+        let mut lost: Vec<crate::world::species::Species> = Vec::new();
+        for n in self.cast.npcs.iter().filter(|n| !n.species.is_human()) {
+            let sp = &n.species;
+            if sp.body.is_empty() || self.snap.body_named(&sp.body).is_some() || lost.iter().any(|l| l.name == sp.name) {
+                continue;
+            }
+            let mut fixed = crate::world::species::SpeciesBook::builtin().get(&sp.name).map(|b| (**b).clone()).unwrap_or_else(|| (**sp).clone());
+            if self.snap.body_named(&fixed.body).is_none() {
+                fixed.body = if sp.mind == crate::world::species::Mind::Sapient { "figure" } else { "quadruped" }.into();
+            }
+            crate::log::info(format!("species {}: its body '{}' is missing, back on '{}'", sp.name, sp.body, fixed.body));
+            lost.push(fixed);
+        }
+        if lost.is_empty() {
+            return;
+        }
+        let mut book = (*self.snap.species).clone();
+        for sp in lost {
+            if let Ok(j) = serde_json::to_string(&sp) {
+                let _ = self.db.with(|c| crate::db::put_species(c, &sp.name, &j));
+            }
+            self.interp.bodies_asked.remove(&sp.name);
+            book.add(sp);
+        }
+        self.set_species_book(book);
+        let snap = self.snap.clone();
+        self.cast.sync(&snap, self.seed);
     }
 
     /// Whether this world has forces of its own (magic, curses…): its own
