@@ -295,6 +295,13 @@ pub fn load(sim: &mut Sim) {
         c.dug = dug;
         c.reindex();
     }
+    // Ways and tunnels made in play.
+    if let Some(edits) = db.kv_get("sim.ground").and_then(|j| serde_json::from_str::<Vec<crate::ground::Edit>>(&j).ok()) {
+        sim.snap.terrain.set_ground(crate::ground::Layer::Made, edits);
+    }
+    if let Some(caves) = db.kv_get("sim.caves").and_then(|j| serde_json::from_str::<Vec<crate::ground::Cave>>(&j).ok()) {
+        sim.snap.terrain.set_caves(crate::ground::Layer::Made, caves);
+    }
     let goals: Vec<String> = db
         .with(|c| {
             let mut st = c.prepare("SELECT json FROM goals ORDER BY id")?;
@@ -340,7 +347,13 @@ pub fn load(sim: &mut Sim) {
 /// Write everything that changed since the last save.
 pub fn save(sim: &mut Sim) {
     let db = sim.db.clone();
-    let dug = if std::mem::take(&mut sim.dug_dirty) { serde_json::to_string(&sim.snap.terrain.carve.read().dug).ok() } else { None };
+    let dug = if std::mem::take(&mut sim.dug_dirty) {
+        let c = sim.snap.terrain.carve.read();
+        let made = (serde_json::to_string(&c.ground.layer(crate::ground::Layer::Made)).ok(), serde_json::to_string(&c.ground.cave_layer(crate::ground::Layer::Made)).ok());
+        serde_json::to_string(&c.dug).ok().map(|d| (d, made))
+    } else {
+        None
+    };
     let vocab = sim.vocab.clone();
     let mut thing_rows = Vec::new();
     let ids: Vec<i64> = sim.things.map.keys().copied().collect();
@@ -456,8 +469,14 @@ pub fn save(sim: &mut Sim) {
         crate::db::kv_set(tx, "sim.night", &night)?;
         crate::db::kv_set(tx, "sim.weather", &weather)?;
         crate::db::kv_set(tx, "sim.incidents", &incidents)?;
-        if let Some(d) = &dug {
+        if let Some((d, (ways, caves))) = &dug {
             crate::db::kv_set(tx, "sim.dug", d)?;
+            if let Some(w) = ways {
+                crate::db::kv_set(tx, "sim.ground", w)?;
+            }
+            if let Some(c) = caves {
+                crate::db::kv_set(tx, "sim.caves", c)?;
+            }
         }
         for (h, rows) in &belief_rows {
             tx.execute("DELETE FROM beliefs WHERE holder = ?1", params![h])?;

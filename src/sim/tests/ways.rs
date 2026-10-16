@@ -428,3 +428,48 @@ fn cave_png() {
     s.sim.step(0.05);
     png_of(&mut s, &snap, &gpu, look(Vec3::new(at.x, floor + 1.6, at.y), Vec3::new(room.x + spec.dir.x * 3.0, floor + 0.8, room.y + spec.dir.y * 3.0)), &format!("{dir}/pocket-cave-inside.png"));
 }
+
+/// Shaping the land in play: the traveler digs a canal off a river (it
+/// fills with the river's water, above the sea), lays a road, and digs a
+/// tunnel into the ground; all of it is still there after a save and a
+/// load. A villager only does a stretch at a time.
+#[test]
+fn the_land_is_shaped_in_play() {
+    use super::super::interp::{GroundFx, InterpEffect, PendingInterp};
+    let w = river_land("shape");
+    let (p, river) = river_spot(&w);
+    let crate::ground::Shape::Line { pts, half } = &river.shape else { unreachable!() };
+    let i = pts.len() / 2;
+    let d = (glam::Vec2::from(pts[(i + 1).min(pts.len() - 1)]) - glam::Vec2::from(pts[i.saturating_sub(1)])).normalize();
+    let side = glam::Vec2::new(-d.y, d.x);
+    let mut s = session(&w, 71, None);
+    let t = s.sim.snap.terrain.clone();
+    // Standing out from the bank, facing the river: a canal dug to it.
+    let stand = glam::Vec2::new(p.x, p.z) + side * (half + river.edge + 22.0);
+    s.sim.player.pos = Vec3::new(stand.x, t.height(stand.x, stand.y), stand.y);
+    let deed = |s: &mut Session, at: Vec3, g: GroundFx| {
+        let pi = PendingInterp { actor: ActorId::Player, text: "dig".into(), held: None, target: Some(Target::Point(at.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+        s.sim.apply_interp(&pi, &InterpEffect { narration: "Done.".into(), ground: vec![g], ..Default::default() });
+    };
+    deed(&mut s, p, GroundFx { depth_m: 1.5, wide_m: 4.0, long_m: Some(30.0), way: "canal".into(), ..Default::default() });
+    let mid = stand - side * 10.0;
+    assert!(t.water_depth(mid.x, mid.y) > 0.5, "the canal holds water: {}", t.water_depth(mid.x, mid.y));
+    assert!(t.water(mid.x, mid.y) > crate::terrain::WATER_LEVEL + 1.0, "the river's water, above the sea: {}", t.water(mid.x, mid.y));
+    // A road laid off the other way, in its colour.
+    let away = stand + side * 25.0;
+    deed(&mut s, Vec3::new(away.x, 0.0, away.y), GroundFx { depth_m: 0.0, wide_m: 3.0, long_m: Some(20.0), way: "road".into(), color: Some([200.0, 180.0, 140.0]), ..Default::default() });
+    let on = stand + side * 10.0;
+    assert!(t.on_road(on.x, on.y, 0.0), "the road is there");
+    // A tunnel dug into the ground the way they look.
+    s.sim.player.yaw = 0.0;
+    let ahead = s.sim.player.pos + Vec3::new(0.0, 0.0, 10.0);
+    deed(&mut s, ahead, GroundFx { depth_m: 4.0, wide_m: 4.0, long_m: Some(10.0), way: "tunnel".into(), ..Default::default() });
+    assert_eq!(t.carve.read().ground.cave_layer(crate::ground::Layer::Made).len(), 1, "a tunnel");
+    // Saved, and back after loading.
+    super::super::persist::save(&mut s.sim);
+    let s2 = session(&w, 71, None);
+    let t2 = s2.sim.snap.terrain.clone();
+    assert!(t2.water_depth(mid.x, mid.y) > 0.5, "the canal after loading");
+    assert!(t2.on_road(on.x, on.y, 0.0), "the road after loading");
+    assert_eq!(t2.carve.read().ground.cave_layer(crate::ground::Layer::Made).len(), 1, "the tunnel after loading");
+}
