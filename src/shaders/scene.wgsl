@@ -207,13 +207,13 @@ fn map_insts(p: vec3f) -> vec2f {
 // centimetres off, which AO turns into contour lines across the land) and
 // the gathered things.
 fn ao_dist(p: vec3f, t: f32) -> f32 {
-  return min((p.y - terrain_height_lod_exact(p.x, p.z, t)) * 0.6, map_insts(p).y);
+  return min(ground_air(p, terrain_height_lod_exact(p.x, p.z, t)) * 0.6, map_insts(p).y);
 }
 
 // Along a ray: only spheres the ray is inside right now are evaluated, and the
 // step never jumps past the next sphere's entry. x = step, y = slot, z = true distance.
 fn map_ray(p: vec3f, t: f32, lod_t: f32, relax: f32) -> vec3f {
-  let dterr = (p.y - terrain_height_lod(p.x, p.z, lod_t)) * 0.6;
+  let dterr = ground_air(p, terrain_height_lod(p.x, p.z, lod_t)) * 0.6;
   var dtrue = dterr;
   var id = -1.0;
   var step = dterr * relax;
@@ -267,7 +267,7 @@ fn march(ro: vec3f, rd: vec3f, tmax: f32) -> Hit {
     for (var k = 0; k < 8; k = k + 1) {
       let m = (a + b) * 0.5;
       let p = ro + rd * m;
-      if (p.y - terrain_height_lod_exact(p.x, p.z, m) > 0.0) { a = m; } else { b = m; }
+      if (ground_air(p, terrain_height_lod_exact(p.x, p.z, m)) > 0.0) { a = m; } else { b = m; }
     }
     h.t = b;
   } else if (h.id >= 0.0) {
@@ -299,6 +299,17 @@ fn march(ro: vec3f, rd: vec3f, tmax: f32) -> Hit {
 }
 
 fn terrain_normal(p: vec3f, t: f32) -> vec3f {
+  // A cave's wall, floor or roof: the hollow's own slope.
+  if (G.extra.y > 0u) {
+    let dv = void_dist(p);
+    if (dv > -0.3 && dv < 0.3 && p.y < terrain_height_lod_exact(p.x, p.z, t) - 0.05) {
+      let e = 0.02;
+      let g = vec3f(void_dist(p + vec3f(e, 0.0, 0.0)) - void_dist(p - vec3f(e, 0.0, 0.0)),
+                    void_dist(p + vec3f(0.0, e, 0.0)) - void_dist(p - vec3f(0.0, e, 0.0)),
+                    void_dist(p + vec3f(0.0, 0.0, e)) - void_dist(p - vec3f(0.0, 0.0, e)));
+      return -normalize(g + vec3f(0.0, 1e-6, 0.0));
+    }
+  }
   let e = 0.04 + 0.0025 * t;
   let hx = terrain_height_lod_exact(p.x + e, p.z, t) - terrain_height_lod_exact(p.x - e, p.z, t);
   let hz = terrain_height_lod_exact(p.x, p.z + e, t) - terrain_height_lod_exact(p.x, p.z - e, t);
@@ -539,6 +550,11 @@ fn apply_fx(albedo: vec3f, fx: vec4f) -> vec3f {
 // roof, a canopy, an overhang (the candidates the view ray gathered).
 fn sky_open(p: vec3f) -> f32 {
   var res = 1.0;
+  // Down in a cave the sky is far: the deeper, the less of it.
+  if (G.extra.y > 0u) {
+    let under = terrain_height(p.x, p.z) - p.y;
+    if (under > 0.3 && void_dist(p) < 0.5) { res = clamp(1.0 - under * 0.35, 0.03, 1.0); }
+  }
   var t = 0.15;
   for (var i = 0; i < 10; i = i + 1) {
     let m = map_insts(p + vec3f(0.0, t, 0.0));
@@ -621,6 +637,11 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
     if (h.id < 0.0) {
       n = terrain_normal(p, h.t);
       albedo = ground_color(p.x, p.z, p.y, n.y);
+      // Inside the ground: its rock and earth.
+      if (G.extra.y > 0u && p.y < terrain_height(p.x, p.z) - 0.3) {
+        let v = vnoise3(p.x * 1.7, p.y * 1.7, p.z * 1.7, G.seed.x + 77u);
+        albedo = mix(G.rock.xyz * 0.7, vec3f(0.29, 0.22, 0.16), 0.35 + 0.3 * v);
+      }
       // contact darkening from nearby objects
       if (!no_ao) {
         let o = ao_dist(p + n * 0.6, h.t);
@@ -653,6 +674,11 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
     let ph = ro + rd * t_hit;
     let lw = ground_water(ph.x, ph.z);
     if (lw > ph.y) { wl = max(wl, lw); }
+  }
+  // Inside a cave the sea doesn't reach.
+  if (t_hit < 1e8 && G.extra.y > 0u) {
+    let ph = ro + rd * t_hit;
+    if (void_dist(ph) < 0.3 && ph.y < terrain_height(ph.x, ph.z) - 0.3) { wl = -1e4; }
   }
   if (rd.y < 0.0 && ro.y > wl) {
     let tw = (wl - ro.y) / rd.y;

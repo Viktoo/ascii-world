@@ -4297,7 +4297,7 @@ fn commit_places(w: &W, places: Vec<crate::model::Placement>, region: Option<cra
 }
 
 fn pl(tid: u32, at: Vec3, rot: f32) -> crate::model::Placement {
-    crate::model::Placement { ty: crate::model::TypeRef::Existing(tid), x: at.x, z: at.z, y: None, rot_y: rot, scale: 1.0, params: [1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] }
+    crate::model::Placement { ty: crate::model::TypeRef::Existing(tid), x: at.x, z: at.z, y: None, under: false, rot_y: rot, scale: 1.0, params: [1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] }
 }
 
 /// A tilted instance maps local to world and back, and its middle turns with it.
@@ -4902,7 +4902,7 @@ fn deeds_dig_into_the_ground() {
         s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![g], ..Default::default() });
     };
     let before = s.sim.snap.terrain.height(p.x, p.z);
-    deed(&mut s, ActorId::Player, p, GroundFx { depth_m: 12.0, wide_m: 20.0, long_m: None, sides: "sloped".into() });
+    deed(&mut s, ActorId::Player, p, GroundFx { depth_m: 12.0, wide_m: 20.0, long_m: None, sides: "sloped".into(), ..Default::default() });
     let t = s.sim.snap.terrain.clone();
     assert!((before - t.height(p.x, p.z) - 12.0).abs() < 0.05, "12 m deep: {}", before - t.height(p.x, p.z));
     assert!(s.sim.dug_dirty, "saved with the world");
@@ -4915,20 +4915,20 @@ fn deeds_dig_into_the_ground() {
     // Dug again there, it deepens the same hollow rather than adding one.
     let n = t.carve.read().dug.len();
     for _ in 0..10 {
-        deed(&mut s, ActorId::Player, p + Vec3::X * 2.0, GroundFx { depth_m: 3.0, wide_m: 8.0, long_m: None, sides: "sheer".into() });
+        deed(&mut s, ActorId::Player, p + Vec3::X * 2.0, GroundFx { depth_m: 3.0, wide_m: 8.0, long_m: None, sides: "sheer".into(), ..Default::default() });
     }
     assert_eq!(t.carve.read().dug.len(), n, "still one hollow");
     assert!(before - t.height(p.x, p.z) > 12.0 + 25.0, "ten digs deeper: {}", before - t.height(p.x, p.z));
     // A character digs only a person's hole, however much is asked.
     let h0 = t.height(q.x, q.z);
-    deed(&mut s, ActorId::Npc(ada), q, GroundFx { depth_m: 30.0, wide_m: 50.0, long_m: None, sides: "sheer".into() });
+    deed(&mut s, ActorId::Npc(ada), q, GroundFx { depth_m: 30.0, wide_m: 50.0, long_m: None, sides: "sheer".into(), ..Default::default() });
     let dug = h0 - t.height(q.x, q.z);
     assert!(dug > 2.0 && dug <= 2.5 + 0.05, "a person's hole: {dug}");
     // A long trench runs the way it was looked along.
     let r = dry_spot(&w, 200.0, 4.0);
     s.sim.player.pos = r - Vec3::Z * 20.0;
     let hr = t.height(r.x, r.z);
-    deed(&mut s, ActorId::Player, r, GroundFx { depth_m: 1.5, wide_m: 2.0, long_m: Some(16.0), sides: "sheer".into() });
+    deed(&mut s, ActorId::Player, r, GroundFx { depth_m: 1.5, wide_m: 2.0, long_m: Some(16.0), sides: "sheer".into(), ..Default::default() });
     assert!(hr - t.height(r.x, r.z + 6.0) > 1.0, "dug along its length");
     assert!(hr - t.height(r.x + 6.0, r.z) < 0.5, "not across it");
     // The scatter there is placed again.
@@ -4960,7 +4960,7 @@ fn what_stands_in_a_dug_hole_goes_down_with_it() {
     let mut s = session(&w, 84, None);
     s.sim.player.pos = p - Vec3::X * 16.0;
     let pi = PendingInterp { actor: ActorId::Player, text: "dig".into(), held: None, target: Some(Target::Point(p.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
-    s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![GroundFx { depth_m: 1.2, wide_m: 24.0, long_m: None, sides: "sheer".into() }], ..Default::default() });
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![GroundFx { depth_m: 1.2, wide_m: 24.0, long_m: None, sides: "sheer".into(), ..Default::default() }], ..Default::default() });
     let t = s.sim.snap.terrain.clone();
     let hid = *s.sim.things.by_instance.get(&h).expect("the hut was brought live");
     let hp = s.sim.things.get(hid).unwrap().pos;

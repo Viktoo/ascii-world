@@ -92,6 +92,8 @@ pub struct Placement {
     pub z: f32,
     /// Explicit height of the instance origin; None = sit on the ground.
     pub y: Option<f32>,
+    /// Sit on the floor of the hollow under the spot (a cave's), not the surface.
+    pub under: bool,
     pub rot_y: f32,
     pub scale: f32,
     pub params: [f32; 8],
@@ -121,6 +123,8 @@ pub struct Settlement {
     pub bridge: Option<TypeRef>,
     /// The one vehicle its people share (a boat, a cart), set by its middle.
     pub vehicle: Option<TypeRef>,
+    /// Hollows it digs into the land: cave dwellings, mines, cellars in a hill.
+    pub caves: Vec<crate::settle::CaveSpec>,
 }
 
 pub struct CommitRequest {
@@ -246,7 +250,7 @@ impl WorldModel {
         let mut look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
         crate::terrain::add_litter(&mut look.biomes);
         let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()));
-        terrain.set_rivers(look.rivers, look.palette.sand);
+        terrain.set_rivers(look.rivers, look.palette.sand, look.caves);
         let mut m = WorldModel {
             db: db.clone(),
             gpu,
@@ -578,6 +582,14 @@ impl WorldModel {
     /// land, region by region in a fixed order.
     fn apply_ground(&self) {
         self.terrain.set_ground(crate::ground::Layer::Places, self.places_edits(None));
+        self.terrain.set_caves(crate::ground::Layer::Places, self.places_caves(None));
+    }
+
+    /// The settlements' caves, region by region (but `except`'s).
+    fn places_caves(&self, except: Option<(i32, i32)>) -> Vec<crate::ground::Cave> {
+        let mut keys: Vec<&(i32, i32)> = self.regions.keys().filter(|k| Some(**k) != except).collect();
+        keys.sort();
+        keys.into_iter().flat_map(|k| self.regions[k].caves.iter().cloned()).collect()
     }
 
     /// The settlements' ground edits, region by region (but `except`'s).
@@ -658,7 +670,7 @@ impl WorldModel {
                     continue;
                 }
                 let rot = o.y.atan2(o.x) - face.y.atan2(face.x);
-                let pl = Placement { ty: ty.clone(), x: p.x, z: p.y, y: None, rot_y: rot, scale: 1.0, params: [400.0 + (i * 64 + k) as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                let pl = Placement { ty: ty.clone(), x: p.x, z: p.y, y: None, under: false, rot_y: rot, scale: 1.0, params: [400.0 + (i * 64 + k) as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
                 if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "a building along the way") {
                     let kids = self.children(&p, &entry, new_entries);
                     placed.push((p, entry.clone()));
@@ -708,7 +720,7 @@ impl WorldModel {
                     if n >= 16 {
                         break;
                     }
-                    let pl = Placement { ty: lt.clone(), x: a, z: b, y: None, rot_y: 0.0, scale: 1.0, params: [300.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                    let pl = Placement { ty: lt.clone(), x: a, z: b, y: None, under: false, rot_y: 0.0, scale: 1.0, params: [300.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
                     if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "a lamp") {
                         placed.push((p, entry.clone()));
                         n += 1;
@@ -739,7 +751,7 @@ impl WorldModel {
                         let ka = ((half_span - 2.0) / 10.0).clamp(0.0, 1.0);
                         let kb = ((wh + 0.4 - 0.75) / 2.25).clamp(0.0, 1.0);
                         let timber = w.color.is_some_and(|c| c[0] > c[2] * 1.4 && c[0] < 0.55);
-                        let pl = Placement { ty: bt.clone(), x: p.x, z: p.y, y: Some(y), rot_y: rot, scale: 1.0, params: [500.0 + n as f32, 1.0, ka, kb, if timber { 1.0 } else { 0.0 }, 0.5, 0.5, 0.5] };
+                        let pl = Placement { ty: bt.clone(), x: p.x, z: p.y, y: Some(y), under: false, rot_y: rot, scale: 1.0, params: [500.0 + n as f32, 1.0, ka, kb, if timber { 1.0 } else { 0.0 }, 0.5, 0.5, 0.5] };
                         if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "a bridge") {
                             placed.push((p, entry.clone()));
                             n += 1;
@@ -769,7 +781,7 @@ impl WorldModel {
                     }))
                     .collect();
                 for (k, (x, z)) in spots.into_iter().take(30).enumerate() {
-                    let pl = Placement { ty: vt.clone(), x, z, y: None, rot_y: k as f32 * 1.3, scale: 1.0, params: [600.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
+                    let pl = Placement { ty: vt.clone(), x, z, y: None, under: false, rot_y: k as f32 * 1.3, scale: 1.0, params: [600.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] };
                     if let Ok(p) = self.check_place(&pl, &entry, &interior, placed, "the settlement's vehicle") {
                         placed.push((p, entry.clone()));
                         break;
@@ -841,6 +853,15 @@ impl WorldModel {
         let (c, s) = (pl.rot_y.cos(), pl.rot_y.sin());
         let (lo, hi) = footprint(&t, pl, entry);
         let ground = t.height(pl.x, pl.z);
+        // On a cave's floor: stood there (the land above doesn't matter).
+        if pl.under && pl.y.is_none() {
+            if let Some(floor) = t.cave_floor_under(pl.x, pl.z) {
+                let mut p2 = pl.clone();
+                p2.y = Some(floor - entry.bottom * pl.scale.clamp(0.2, 6.0) + 0.02);
+                p2.under = false;
+                return self.check_place(&p2, entry, interior, extra, label);
+            }
+        }
         let y = match pl.y {
             // A shape that takes ground away (a cellar, a house in a hillside)
             // stands with its floor (y = 0) on the lowest ground under it;
@@ -849,6 +870,8 @@ impl WorldModel {
             // Seat on the lowest point, raised a little on slopes so less of the
             // uphill side is buried (the downhill gap stays small).
             None => lo.min(ground) + ((hi - lo) * 0.3).min(0.4) - entry.bottom * scale - 0.12,
+            // In a cave, on its floor: the land above doesn't matter.
+            Some(y) if t.void(Vec3::new(pl.x, y + entry.bottom * scale + 0.3, pl.z)) < 0.0 => y,
             Some(y) => {
                 let base = y + entry.bottom * scale;
                 if base - hi > 0.5 {
@@ -1014,6 +1037,11 @@ impl WorldModel {
                 edits.extend(crate::settle::realize(&plans, &[], &base));
                 self.terrain.set_ground(crate::ground::Layer::Places, edits);
             }
+            if !st.caves.is_empty() {
+                let mut caves = self.places_caves(Some(r));
+                caves.extend(st.caves.iter().map(|c| c.cave(self.terrain.height(c.mouth.x, c.mouth.y))));
+                self.terrain.set_caves(crate::ground::Layer::Places, caves);
+            }
         }
         // Step 5: placement.
         let mut placed: Vec<(Placed, Arc<TypeEntry>)> = Vec::new();
@@ -1078,7 +1106,10 @@ impl WorldModel {
         let mut region_plan = req.region.as_ref().map(|r| r.plan_json.clone());
         let mut region_roads = Vec::new();
         let mut region_edits = Vec::new();
+        let mut region_caves = Vec::new();
         if let Some((r, st)) = req.region.as_ref().and_then(|r| r.settlement.as_ref().map(|s| (r.r, s))) {
+            let others = self.places_caves(Some(r));
+            region_caves = self.terrain.carve.read().ground.cave_layer(crate::ground::Layer::Places).iter().filter(|c| !others.contains(c)).cloned().collect();
             let built = self.settle(r, st, &req, &new_entries, &mut placed);
             region_roads = built.0;
             region_edits = built.1;
@@ -1091,6 +1122,9 @@ impl WorldModel {
                     if !region_edits.is_empty() {
                         o.insert("edits".into(), serde_json::to_value(&region_edits).unwrap_or_default());
                     }
+                    if !region_caves.is_empty() {
+                        o.insert("caves".into(), serde_json::to_value(&region_caves).unwrap_or_default());
+                    }
                 }
                 *plan = v.to_string();
             }
@@ -1102,7 +1136,7 @@ impl WorldModel {
         if let Some(l) = &req.look {
             look = Arc::new(l.clone());
             terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()));
-            terrain.set_rivers(l.rivers, l.palette.sand);
+            terrain.set_rivers(l.rivers, l.palette.sand, l.caves);
         }
         let cur: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
         let mut all: Vec<TypeRec> = cur.clone();
@@ -1190,6 +1224,7 @@ impl WorldModel {
             let mut info = rc.info;
             info.roads = region_roads;
             info.ground = region_edits;
+            info.caves = region_caves;
             self.regions.insert(rc.r, Arc::new(info));
         }
         if req.look.is_some() {
@@ -1275,6 +1310,7 @@ pub fn region_info_from_plan(plan_json: &str) -> RegionInfo {
         facts: v.get("facts").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()).unwrap_or_default(),
         roads: v.get("roads").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default(),
         ground: v.get("edits").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default(),
+        caves: v.get("caves").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default(),
     }
 }
 

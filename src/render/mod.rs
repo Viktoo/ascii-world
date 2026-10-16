@@ -41,7 +41,7 @@ pub struct Globals {
     pub lights: [[f32; 4]; MAX_LIGHTS],
     /// Point lights: colour, reach in metres.
     pub light_cols: [[f32; 4]; MAX_LIGHTS],
-    /// Hollows in use, -, -, -.
+    /// Hollows in use, cave parts in use, -, -.
     pub extra: [u32; 4],
     /// Ground taken away, two per hollow: (centre x, z, cos, sin), (half x, z, floor, rim width: + round, - box).
     pub hollows: [[f32; 4]; MAX_HOLLOWS * 2],
@@ -55,10 +55,13 @@ pub struct Globals {
     /// The ground edits' tiles round the camera (see `ground::Pack`): first
     /// tile x, z, tiles across (0: none), whether any holds water.
     pub ground: [f32; 4],
+    /// Caves near the camera, two per capsule: (a.xyz, r), (b.xyz, -).
+    pub voids: [[f32; 4]; MAX_VOIDS * 2],
 }
 
 pub const MAX_LIGHTS: usize = 8;
 pub const MAX_HOLLOWS: usize = 32;
+pub const MAX_VOIDS: usize = 24;
 
 /// A light-emitting thing (lantern, fire) near the camera.
 #[derive(Clone, Copy, Debug)]
@@ -461,6 +464,12 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         hollow_buf[i * 2 + 1] = [h.half[0], h.half[1], h.floor, if h.round { edge } else { -edge }];
     }
     let ground = t.carve.read().ground.pack(cp.x, cp.z).globals();
+    let parts = t.carve.read().ground.parts_near(cp.x, cp.z, MAX_VOIDS);
+    let mut voids = [[0.0f32; 4]; MAX_VOIDS * 2];
+    for (i, q) in parts.iter().enumerate() {
+        voids[i * 2] = [q.a[0], q.a[1], q.a[2], q.r];
+        voids[i * 2 + 1] = [q.b[0], q.b[1], q.b[2], 0.0];
+    }
     let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
     let mut light_cols = [[0.0f32; 4]; MAX_LIGHTS];
     let nl = sp.lights.len().min(MAX_LIGHTS);
@@ -492,7 +501,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         biomes,
         lights,
         light_cols,
-        extra: [hollows.len() as u32, 0, 0, 0],
+        extra: [hollows.len() as u32, parts.len() as u32, 0, 0],
         hollows: hollow_buf,
         wx: [
             [w.clouds, w.drift.x, w.drift.y, crate::world::weather::CLOUD_HEIGHT],
@@ -507,6 +516,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         hmap2: [0.0; 4],
         jitter: [0.0; 4],
         ground,
+        voids,
     }
 }
 

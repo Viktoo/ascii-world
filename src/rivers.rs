@@ -7,6 +7,9 @@
 //! of the seed and the land, so any part of it can be worked out without
 //! the rest of the world: only the stretches near the traveler are laid as
 //! ground edits (the land layer), and they come and go as they walk.
+//!
+//! Caves come the same way: some 384 m cells have one opening in a
+//! hillside, a passage running into the hill and down to a chamber.
 
 use crate::ground::{Edit, Height, Mode, Shape};
 use crate::noise::{hseqf, vnoise2};
@@ -50,6 +53,43 @@ pub struct Rivers {
     pub laid_at: Option<Vec2>,
     /// Being laid on another thread now.
     pub busy: bool,
+    /// How many caves the hills have, 0 … 1.
+    pub caves: f32,
+    caves_found: HashMap<(i32, i32), Option<crate::ground::Cave>>,
+}
+
+/// One cave mouth per cell at most (m).
+pub const CAVE_CELL: f32 = 384.0;
+
+/// The cave in a cell, if it has one: a mouth on a hillside (not too
+/// steep, well above any water), going into the hill.
+pub fn natural_cave(t: &Terrain, density: f32, c: (i32, i32)) -> Option<crate::ground::Cave> {
+    let seed = t.seed.wrapping_add(9931);
+    if hseqf(seed, c.0, c.1, 0) > density * 0.35 {
+        return None;
+    }
+    for k in 0..8 {
+        let p = Vec2::new((c.0 as f32 + 0.1 + 0.8 * hseqf(seed, c.0, c.1, 1 + k * 2)) * CAVE_CELL, (c.1 as f32 + 0.1 + 0.8 * hseqf(seed, c.0, c.1, 2 + k * 2)) * CAVE_CELL);
+        let h = t.raw_height(p.x, p.y);
+        let e = 3.0;
+        let g = Vec2::new(t.raw_height(p.x + e, p.y) - t.raw_height(p.x - e, p.y), t.raw_height(p.x, p.y + e) - t.raw_height(p.x, p.y - e)) / (2.0 * e);
+        let slope = g.length();
+        if h < WATER_LEVEL + 4.0 || !(0.25..0.9).contains(&slope) {
+            continue;
+        }
+        // Into the hill: up its slope, the passage running level-ish while
+        // the hill rises over it.
+        let dir = g / slope;
+        let r = |i: u32| hseqf(seed, c.0, c.1, 40 + i);
+        let len = 8.0 + 14.0 * r(0);
+        let ahead = p + dir * (len + 6.0);
+        // There must be hill enough over the chamber.
+        if t.raw_height(ahead.x, ahead.y) < h + 4.0 {
+            continue;
+        }
+        return Some(crate::ground::Cave::dug("cave", "", glam::Vec3::new(p.x, h, p.y), dir, len, 1.5 + 3.0 * r(1), 3.5 + 3.5 * r(2)));
+    }
+    None
 }
 
 fn cell_of(p: Vec2) -> (i32, i32) {
@@ -205,8 +245,29 @@ impl River {
 }
 
 impl Rivers {
-    pub fn new(density: f32, sand: [f32; 3]) -> Rivers {
-        Rivers { density: density.clamp(0.0, 1.0), sand, ..Default::default() }
+    pub fn new(density: f32, sand: [f32; 3], caves: f32) -> Rivers {
+        Rivers { density: density.clamp(0.0, 1.0), sand, caves: caves.clamp(0.0, 1.0), ..Default::default() }
+    }
+
+    /// The caves within `r` of `p`.
+    pub fn caves_near(&mut self, t: &Terrain, p: Vec2, r: f32) -> Vec<crate::ground::Cave> {
+        if self.caves <= 0.0 {
+            return Vec::new();
+        }
+        let n = (r / CAVE_CELL).ceil() as i32 + 1;
+        let c0 = ((p.x / CAVE_CELL).floor() as i32, (p.y / CAVE_CELL).floor() as i32);
+        let mut out = Vec::new();
+        for dz in -n..=n {
+            for dx in -n..=n {
+                let c = (c0.0 + dx, c0.1 + dz);
+                let density = self.caves;
+                let cave = self.caves_found.entry(c).or_insert_with(|| natural_cave(t, density, c));
+                if let Some(cv) = cave.as_ref().filter(|cv| (Vec2::new(cv.mouth[0], cv.mouth[2]) - p).length() < r) {
+                    out.push(cv.clone());
+                }
+            }
+        }
+        out
     }
 
     /// The edits of every river passing within `r` of `p`.
@@ -244,7 +305,7 @@ impl Rivers {
 
     /// Whether the land layer should be laid again for someone at `p`.
     pub fn due(&self, p: Vec2) -> bool {
-        self.density > 0.0 && !self.busy && self.laid_at.is_none_or(|a| (a - p).length() > MOVE)
+        (self.density > 0.0 || self.caves > 0.0) && !self.busy && self.laid_at.is_none_or(|a| (a - p).length() > MOVE)
     }
 }
 
@@ -254,7 +315,7 @@ mod tests {
 
     fn land() -> Terrain {
         let t = Terrain::new(42, crate::terrain::default_biomes());
-        *t.rivers.lock() = Rivers::new(1.0, [0.8, 0.7, 0.5]);
+        *t.rivers.lock() = Rivers::new(1.0, [0.8, 0.7, 0.5], 0.0);
         t
     }
 

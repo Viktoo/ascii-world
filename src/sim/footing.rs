@@ -47,7 +47,7 @@ impl Sim {
         // Standing still on firm footing: nothing changes under it, unless
         // the ground itself did (a pit dug, a floor gone).
         if grounded && vy == 0.0 && a.moved < 1e-5 && crouch == want && id != ActorId::Player {
-            let g = self.snap.terrain.height(pos.x, pos.z);
+            let g = self.snap.terrain.floor(pos.x, pos.y + 0.3, pos.z);
             if pos.y >= g - 0.01 && pos.y - g < 0.02 {
                 return;
             }

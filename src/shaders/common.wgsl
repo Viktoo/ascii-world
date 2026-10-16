@@ -24,7 +24,7 @@ struct Globals {
   biomes: array<vec4f, 18>, // per biome: (cx, cy, base, amp), (rough, g1), (g2, cliffs)
   lights: array<vec4f, 8>,     // point lights: position, intensity
   light_cols: array<vec4f, 8>, // colour, reach (m)
-  extra: vec4u,       // hollows, -, -, -
+  extra: vec4u,       // hollows, cave parts, -, -
   hollows: array<vec4f, 64>,   // per hollow: (cx, cz, cos, sin), (hx, hz, floor, ±edge: + round, - box)
   // weather: 0 (cover, drift x, drift z, cloud height), 1 (cloud rgb, flash),
   // 2 (falls rgb, amount), 3 (wind dir x, z, wind, falls look), 4 (soak, dusk,
@@ -34,6 +34,7 @@ struct Globals {
   hmap2: vec4f,       // fine heightmap near the camera: origin x, origin z, cell size, cells per side (0 = none)
   jitter: vec4f,      // sub-pixel offset of every ray (x, y pixels), for blending frames
   ground: vec4f,      // ground tiles: first tile x, z, tiles across (0 = none), any water
+  voids: array<vec4f, 48>,     // caves: per capsule (a.xyz, r), (b.xyz, -)
 }
 
 struct Inst {
@@ -287,6 +288,30 @@ fn ground_paint(x: f32, z: f32) -> vec4f {
   let a = unpack4x8unorm(gtiles[i]); let b = unpack4x8unorm(gtiles[i + 1u]);
   let d = unpack4x8unorm(gtiles[i + GCELLS]); let e = unpack4x8unorm(gtiles[i + GCELLS + 1u]);
   return mix(mix(a, b, c.ux), mix(d, e, c.ux), c.uz);
+}
+
+// Distance to the nearest cave hollow (negative inside; 1e4 with none).
+// Twin of Ground::void in ground.rs.
+fn void_dist(p: vec3f) -> f32 {
+  var d = 1e4;
+  let n = min(G.extra.y, 24u);
+  for (var i = 0u; i < n; i = i + 1u) {
+    let a = G.voids[i * 2u];
+    let b = G.voids[i * 2u + 1u];
+    let pa = p - a.xyz;
+    let ba = b.xyz - a.xyz;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    d = min(d, length(pa - ba * h) - a.w);
+  }
+  return d;
+}
+
+// How far into the open air a point is from the solid ground (negative
+// inside it): above the surface, or inside a cave.
+fn ground_air(p: vec3f, h: f32) -> f32 {
+  let d = p.y - h;
+  if (G.extra.y == 0u) { return d; }
+  return max(d, -void_dist(p));
 }
 
 fn terrain_height(x: f32, z: f32) -> f32 {

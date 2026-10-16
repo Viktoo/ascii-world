@@ -154,6 +154,15 @@ pub struct GroundFx {
     /// walk down into and out of).
     #[serde(default)]
     pub sides: String,
+    /// What it is, when more than a hole: a way laid along the land ("canal",
+    /// "ditch", "moat" are cut; "road", "path", "street" are laid level;
+    /// "causeway", "dyke", "embankment" are built up), or a "tunnel" (a cave,
+    /// a mine, a burrow) dug in. Empty: a hole, a pit, a trench.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub way: String,
+    /// What covers a way (cobbles, gravel, packed earth), rgb 0–255.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f32; 3]>,
 }
 
 fn two() -> f32 {
@@ -940,10 +949,93 @@ impl Sim {
         any
     }
 
+    /// A way or a tunnel made by a deed (see `GroundFx::way`): from the doer
+    /// along the way they look (or to where they point), as long as asked
+    /// (a person does a stretch at a time; the traveler as much as they
+    /// ask). A cut joining water fills with it. Saved with the live world.
+    fn lay_way(&mut self, who: ActorId, at: Option<glam::Vec3>, aim: Option<Aim>, g: &GroundFx) -> Result<(), String> {
+        use crate::ground::{Edit, Height, Layer, Mode, Shape};
+        let (me, fwd) = self.actor(who).map(|a| (a.pos, a.forward())).ok_or("no one to dig")?;
+        let ok = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
+        let traveler = who == ActorId::Player;
+        let word = g.way.trim().to_lowercase();
+        let t = self.snap.terrain.clone();
+        let fwd = aim.map(|a| glam::Vec3::new(a.yaw.sin(), 0.0, a.yaw.cos())).unwrap_or(fwd);
+        let start = glam::Vec2::new(me.x, me.z) + glam::Vec2::new(fwd.x, fwd.z) * 1.2;
+        let wanted = g.long_m.unwrap_or(12.0);
+        let long = ok(wanted, 2.0, if traveler { 400.0 } else { 8.0 });
+        let end = match at {
+            Some(p) if glam::Vec2::new(p.x - me.x, p.z - me.z).length() > 2.0 => {
+                let d = glam::Vec2::new(p.x, p.z) - start;
+                start + d.normalize_or(glam::Vec2::Y) * d.length().min(long)
+            }
+            _ => start + glam::Vec2::new(fwd.x, fwd.z).normalize_or(glam::Vec2::Y) * long,
+        };
+        let wide = ok(g.wide_m, 0.8, if traveler { 60.0 } else { 4.0 });
+        let depth = ok(g.depth_m, 0.3, if traveler { 30.0 } else { 2.5 });
+        if ["tunnel", "cave", "mine", "burrow", "adit", "den"].iter().any(|w| word.contains(w)) {
+            let h = t.height(start.x, start.y);
+            let cave = crate::ground::Cave::dug(&word, "", glam::Vec3::new(start.x, h, start.y), end - start, (end - start).length(), depth.max(2.0), wide.max(2.5));
+            let mut made = t.carve.read().ground.cave_layer(Layer::Made).to_vec();
+            made.push(cave);
+            if made.len() > 60 {
+                made.remove(0);
+            }
+            t.set_caves(Layer::Made, made);
+            self.dug_dirty = true;
+            return Ok(());
+        }
+        let cut = ["canal", "ditch", "moat", "channel", "trench", "drain", "dyke ditch", "race", "sluice", "leat"].iter().any(|w| word.contains(w));
+        let raised = ["causeway", "dyke", "dike", "embankment", "levee", "dam", "rampart", "mound"].iter().any(|w| word.contains(w));
+        let raw = |x: f32, z: f32| t.natural_height(x, z);
+        let (pts, hs) = crate::ground::lay(&[start.to_array(), end.to_array()], 3.0, 9.0, &raw);
+        let low = hs.iter().copied().fold(f32::MAX, f32::min);
+        // Water at either end runs in: a canal from the river is the river's.
+        let wet = |p: glam::Vec2| (t.water(p.x, p.y) - t.height(p.x, p.y) > 0.3).then(|| t.water(p.x, p.y));
+        let water = if cut { wet(start).into_iter().chain(wet(end)).reduce(f32::max).filter(|w| *w > low - depth - 0.1 && *w > crate::terrain::WATER_LEVEL + 0.05) } else { None };
+        let (mode, to) = if cut {
+            // The bed level, as deep as asked under its lowest point (and
+            // under the water it joins, so it holds some).
+            let bed = (low - depth).min(water.map(|w| w - 0.8).unwrap_or(f32::MAX));
+            (Mode::Lower, Height::At(bed))
+        } else if raised {
+            (Mode::Raise, Height::Along(hs.iter().map(|h| h.max(t.water(start.x, start.y)) + depth).collect()))
+        } else {
+            (Mode::Level, Height::Along(hs.clone()))
+        };
+        let color = g.color.map(|c| c.map(|v| (v / 255.0).clamp(0.0, 1.0))).or((!cut && !raised).then(|| {
+            let s = crate::terrain::rgbv(self.snap.look.palette.sand);
+            let r = crate::terrain::rgbv(self.snap.look.palette.rock);
+            (s * 0.55 + r * 0.45).to_array()
+        }));
+        let edit = Edit {
+            kind: word,
+            name: String::new(),
+            shape: Shape::Line { pts, half: wide * 0.5 },
+            mode,
+            to,
+            edge: if cut { (depth * 0.6).clamp(0.3, 3.0) } else { 1.5 },
+            color,
+            rim: None,
+            water: water.map(Height::At),
+        };
+        let mut made = t.carve.read().ground.layer(Layer::Made).to_vec();
+        made.push(edit);
+        if made.len() > 200 {
+            made.remove(0);
+        }
+        t.set_ground(Layer::Made, made);
+        self.dug_dirty = true;
+        Ok(())
+    }
+
     /// Take the ground away for a deed (see `GroundFx`), at `at` or, with
     /// nowhere pointed at, just ahead of the doer. The traveler digs as big
     /// as they ask; anyone else only what a person could dig.
     fn dig_ground(&mut self, who: ActorId, at: Option<glam::Vec3>, aim: Option<Aim>, g: &GroundFx) -> Result<(), String> {
+        if !g.way.trim().is_empty() {
+            return self.lay_way(who, at, aim, g);
+        }
         let me = self.actor(who).map(|a| (a.pos, a.forward())).ok_or("no one to dig")?;
         let ok = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
         let (most_deep, most_wide) = if who == ActorId::Player { (40.0, 80.0) } else { (2.5, 4.0) };
