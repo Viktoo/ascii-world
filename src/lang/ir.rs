@@ -8,11 +8,11 @@ use super::api::{Api, Ty};
 /// then what the engine poses on a body (never written by code): `s8` its
 /// grip, `s9` how open its mouth is (talking), `s10` how shut its eyes are
 /// (a blink, sleep), `s11` a clock in seconds (hair and cloth stir with it);
-/// then look sliders six onward, `g` … `v` (the first five are `a` … `e`).
-pub const K_FIELDS: [&str; 36] = [
-    "seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v",
+/// then look sliders six onward, `g` … `z` (the first five are `a` … `e`).
+pub const K_FIELDS: [&str; 40] = [
+    "seed", "scale", "a", "b", "c", "d", "e", "f", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
 ];
-/// Where look slider `i` (0 = the first) is in k: a … e, then g … v.
+/// Where look slider `i` (0 = the first) is in k: a … e, then g … z.
 pub const fn look_k(i: usize) -> usize {
     if i < 5 { 2 + i } else { 20 + (i - 5) }
 }
@@ -286,8 +286,8 @@ pub struct Hollow {
 /// hands (0 open … 1 a fist; a claw, a fin folding in).
 pub const ROLES: [&str; 9] = ["raise_l", "raise_r", "reach_l", "reach_r", "lean", "head", "crouch", "spread", "grip"];
 
-/// Look sliders a body may declare: k.a … k.e, then k.g … k.v, in order.
-pub const MAX_SLIDERS: usize = 21;
+/// Look sliders a body may declare: k.a … k.e, then k.g … k.z, in order.
+pub const MAX_SLIDERS: usize = 25;
 
 /// What a body type says about itself (`meta.body`). Lengths are metres at
 /// the body's default look and scale 1; the engine scales them with size.
@@ -313,7 +313,7 @@ pub struct Body {
     /// from the figure keep its arm maths; other arms hang from above the
     /// grip, which is the right hand at rest.
     pub arms: bool,
-    /// Look sliders (name, lo, hi), read as k.a … k.e, then k.g … k.v.
+    /// Look sliders (name, lo, hi), read as k.a … k.e, then k.g … k.z.
     pub look: Vec<(String, f32, f32)>,
     /// Sliders that are one value unless something says otherwise (what is
     /// worn: most people are dressed), by name; the rest vary per being.

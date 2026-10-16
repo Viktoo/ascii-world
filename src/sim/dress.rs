@@ -192,7 +192,7 @@ impl Sim {
     }
 
     /// The looks the LLM read for people (see `ask_wardrobe`): kept with
-    /// them. Their height, build and skin stay as they were.
+    /// them. Their height, build, skin, eyes and nose stay as they were.
     pub fn on_dressed(&mut self, looks: Vec<(i64, LookMap)>) {
         for (id, look) in looks {
             self.change_persona(id, |p| {
@@ -204,7 +204,7 @@ impl Sim {
                             p.look.remove(old);
                         }
                     }
-                    if v.is_finite() && !matches!(k.as_str(), "height" | "build" | "skin") && !k.starts_with("was_") {
+                    if v.is_finite() && !matches!(k.as_str(), "height" | "build" | "skin" | "undertone" | "eyes" | "eye_shape" | "nose") && !k.starts_with("was_") {
                         p.look.insert(k, v);
                     }
                 }

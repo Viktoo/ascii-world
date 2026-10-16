@@ -105,8 +105,8 @@ pub struct GpuInst {
     /// Cuts taken out of the shape, in its local frame: centre xyz and size
     /// w (w > 0 a sphere of that radius, w < 0 a cube of half-size -w, 0 none).
     pub cuts: [[f32; 4]; MAX_CUTS],
-    /// Look sliders six onward, k.g … k.v.
-    pub look: [[f32; 4]; 4],
+    /// Look sliders six onward, k.g … k.z.
+    pub look: [[f32; 4]; 5],
 }
 
 pub const MAX_CUTS: usize = 4;

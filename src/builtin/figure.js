@@ -17,7 +17,12 @@
 // 0.2 sandals, 0.45 shoes, 0.7 ankle boots, 1 knee boots), s = beard (0 …
 // 1 long), t = underwear (0 none, 1 worn), u = trim hue (belt, hems,
 // collars, shoes, hat), v = hat (0 none, 0.2 a kerchief, 0.4 a cap, 0.6 a
-// brimmed hat, 0.8 a wide straw hat, 1 a tall hat).
+// brimmed hat, 0.8 a wide straw hat, 1 a tall hat), w = eye colour (0 near
+// black, 0.25 brown, 0.45 hazel, 0.6 green, 0.8 grey, 1 blue), x = skin
+// undertone (0 rosy … 0.5 neutral … 1 golden or olive), y = eyes (0 round
+// and deep-set under a strong brow, with a crease over the lid … 1 narrower,
+// tilted up at the outer corner, a fold over the lid, a low flat brow),
+// z = nose (0 narrow with a high bridge … 1 broad with a low bridge).
 // Clothes are shells a little outside the skin, so taking one off (its
 // slider to 0) shows what is under it.
 // Roles (live pose): s0/s1 = left/right arm raised sideways (0 down … 1 up),
@@ -31,7 +36,8 @@ export const meta = { name: "figure", bounds: [0.95, 2.4, 0.95], tags: ["builtin
           look: { height: [1.3, 2.0], build: [0.7, 1.4], skin: [0, 1], top: [0, 1.2], bottom: [0, 1.2],
                   shape: [0, 1], hair: [0, 1], hair_color: [0, 1], hair_style: [0, 1], top_shade: [0, 1], bottom_shade: [0, 1],
                   top_cover: [0, 1, 0.75], sleeves: [0, 1, 0.8], neckline: [0, 1, 0.35], skirt: [0, 1, 0], legs: [0, 1, 1],
-                  shoes: [0, 1, 0.5], beard: [0, 1, 0.1], underwear: [0, 1, 1], trim: [0, 1.2], hat: [0, 1, 0] } } };
+                  shoes: [0, 1, 0.5], beard: [0, 1, 0.1], underwear: [0, 1, 1], trim: [0, 1.2], hat: [0, 1, 0],
+                  eyes: [0, 1, 0.1], undertone: [0, 1], eye_shape: [0, 1], nose: [0, 1] } } };
 
 export function sdf(x, y, z, k) {
   const h = clamp(k.a, 1.3, 2.0) / 1.75;
@@ -281,11 +287,18 @@ export function sdf(x, y, z, k) {
     head = smoothUnion(cranium, jaw, 0.04);
     const open = clamp(k.s9, 0, 1);
     head = smoothUnion(head, sphere(hx, hy + 0.088 + open * 0.01, hz - 0.066, 0.027 - 0.004 * fem), 0.02);
-    head = smoothUnion(head, capsule(hx, hy, hz, -0.046, 0.04, 0.084, 0.046, 0.04, 0.084, 0.01), 0.012);
-    head = smoothSubtract(head, min(sphere(hx - 0.034, hy - 0.011, hz - 0.098, 0.019), sphere(hx + 0.034, hy - 0.011, hz - 0.098, 0.019)), 0.006);
+    // The brow and the eyes under it: deep-set under a strong brow, or
+    // shallow under a low flat one.
+    const es = clamp(k.y, 0, 1);
+    head = smoothUnion(head, capsule(hx, hy, hz, -0.046, 0.04 - 0.003 * es, 0.086 - 0.006 * es, 0.046, 0.04 - 0.003 * es, 0.086 - 0.006 * es, 0.011 - 0.004 * es), 0.012);
+    const sock = 0.1 - 0.006 * es;
+    const sr = 0.0195 - 0.0045 * es;
+    head = smoothSubtract(head, min(sphere(hx - 0.034, hy - 0.011, hz - sock, sr), sphere(hx + 0.034, hy - 0.011, hz - sock, sr)), 0.006);
     head = min(head, min(sphere(hx - 0.034, hy - 0.011, hz - 0.081, 0.017), sphere(hx + 0.034, hy - 0.011, hz - 0.081, 0.017)));
-    const nose = capsule(hx, hy, hz, 0, 0.018, 0.092, 0, -0.022, 0.113 - 0.004 * fem, 0.012 - 0.002 * fem);
-    head = smoothUnion(head, min(nose, ellipsoid(hx, hy + 0.025, hz - 0.1, 0.019, 0.011, 0.012)), 0.01);
+    // The nose: narrow and high-bridged, or broad and low-bridged.
+    const nb = clamp(k.z, 0, 1);
+    const nose = capsule(hx, hy, hz, 0, 0.018, 0.099 - 0.016 * nb, 0, -0.022, 0.118 - 0.01 * nb - 0.004 * fem, 0.0100 + 0.004 * nb - 0.002 * fem);
+    head = smoothUnion(head, min(nose, ellipsoid(hx, hy + 0.025, hz - 0.1, 0.014 + 0.012 * nb, 0.011 + 0.001 * nb, 0.012)), 0.01);
     head = smoothUnion(head, ellipsoid(abs(hx) - 0.092, hy + 0.0, hz + 0.005, 0.013, 0.03, 0.019), 0.008);
     const lips = min(ellipsoid(hx, hy + 0.051, hz - 0.095, 0.024, 0.0075, 0.01), ellipsoid(hx, hy + 0.066 + open * 0.012, hz - 0.091, 0.022, 0.0085 + 0.002 * fem, 0.011));
     head = smoothUnion(head, lips, 0.006);
@@ -352,7 +365,13 @@ export function color(x, y, z, k) {
   const ux = q.x;
   const uy = q.y + 0.9;
   const uz = q.z;
-  const skin = mix(rgb(244, 208, 178), rgb(92, 58, 40), clamp(k.c, 0, 1));
+  // Skin: pale … brown … deep brown, rosy or golden beneath.
+  const tone = clamp(k.c, 0, 1);
+  const warm = clamp(k.x, 0, 1);
+  const pale = mix(rgb(246, 210, 196), rgb(240, 212, 166), warm);
+  const mid = mix(rgb(176, 120, 100), rgb(184, 132, 82), warm);
+  const deep = mix(rgb(62, 40, 36), rgb(72, 48, 28), warm);
+  const skin = mix(mix(pale, mid, clamp(tone * 2, 0, 1)), deep, clamp(tone * 2 - 1, 0, 1));
   // Hair: black, browns, auburn, blond, flaxen, then grey.
   const hc = clamp(k.i, 0, 1);
   let hairc = mix(rgb(22, 18, 16), rgb(58, 38, 26), clamp(hc / 0.25, 0, 1));
@@ -460,9 +479,16 @@ export function color(x, y, z, k) {
     const ey = hy - 0.011;
     const ez = hz - 0.081;
     if (length3(ex, ey, ez) < 0.019 && ez > 0.0) {
-      const lid = 0.0068 - shut * 0.019 - abs(ex) * 0.2;
-      if (ey > lid + 0.0025 || ey < -0.0068 + abs(ex) * 0.15) {
-        return skin * 0.9;
+      // Narrower eyes tilt up at the outer corner (ex > 0) under a fold.
+      const es = clamp(k.y, 0, 1);
+      const tilt = ex * 0.15 * es;
+      const lid = 0.0068 - 0.0036 * es - shut * 0.019 - abs(ex) * 0.2 + tilt;
+      if (ey > lid + 0.0025 || ey < -0.0068 + 0.0016 * es + abs(ex) * 0.15 + tilt) {
+        // A crease over a round eye's lid; a smooth fold over a narrow one.
+        if (ey > lid + 0.0045 && ey < lid + 0.0065 && es < 0.6) {
+          return skin * (0.78 + 0.2 * es / 0.6);
+        }
+        return skin * (0.9 + 0.06 * es);
       }
       if (ey > lid - 0.0005) {
         return rgb(34, 24, 22);
@@ -472,8 +498,12 @@ export function color(x, y, z, k) {
         return rgb(14, 12, 12);
       }
       if (ir < 0.0082) {
-        const eh = hash(k.seed, 11);
-        const iris = eh < 0.5 ? rgb(92, 58, 34) : eh < 0.7 ? rgb(70, 110, 150) : eh < 0.85 ? rgb(90, 112, 72) : rgb(110, 116, 120);
+        const ec = clamp(k.w, 0, 1);
+        let iris = mix(rgb(34, 22, 16), rgb(92, 58, 34), clamp(ec / 0.25, 0, 1));
+        iris = mix(iris, rgb(120, 92, 46), clamp((ec - 0.25) / 0.2, 0, 1));
+        iris = mix(iris, rgb(90, 116, 70), clamp((ec - 0.45) / 0.15, 0, 1));
+        iris = mix(iris, rgb(112, 120, 126), clamp((ec - 0.6) / 0.2, 0, 1));
+        iris = mix(iris, rgb(70, 112, 160), clamp((ec - 0.8) / 0.2, 0, 1));
         return iris * (0.8 + 0.4 * (ir / 0.0082));
       }
       return rgb(236, 230, 222);

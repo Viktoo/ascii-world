@@ -424,6 +424,10 @@ pub struct SpeciesWorld {
     pub traveler_height: Option<f32>,
     #[serde(default)]
     pub attitudes: Vec<Attitude>,
+    /// How a species looks in this world, slider ranges by name, laid over
+    /// its own ("human": the skin, eyes and nose of the people of the place).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub looks: BTreeMap<String, BTreeMap<String, [f32; 2]>>,
 }
 
 pub const BUILTIN_SPECIES: &str = include_str!("../builtin/species.json");
@@ -453,6 +457,14 @@ impl SpeciesBook {
             b.sizes = w.sizes;
             b.traveler_height = w.traveler_height;
             b.attitudes = w.attitudes;
+            for (name, look) in w.looks {
+                if let Some(i) = b.list.iter().position(|s| s.name == name) {
+                    let s = Arc::make_mut(&mut b.list[i]);
+                    for (k, r) in look {
+                        s.look.insert(look_name(&k), r);
+                    }
+                }
+            }
         }
         b
     }

@@ -669,7 +669,7 @@ impl<'s> Cx<'s> {
                             match literal_nums(&lp.value) {
                                 Some(v) if (v.len() == 2 || v.len() == 3) && v.iter().all(|x| x.is_finite()) && v[0] <= v[1] && valid_prop_name(&name) => {
                                     if b.look.len() >= MAX_SLIDERS {
-                                        bad(self, format!("meta.body.look may hold at most {MAX_SLIDERS} sliders (they are k.a … k.e, then k.g … k.v)"));
+                                        bad(self, format!("meta.body.look may hold at most {MAX_SLIDERS} sliders (they are k.a … k.e, then k.g … k.z)"));
                                         break;
                                     }
                                     if let Some(u) = v.get(2) {

@@ -861,7 +861,7 @@ fn varieties_from(db: &Db, list: &[Value]) {
 }
 
 /// World-wide species settings from the genesis plan (attitudes, sizes, the
-/// traveler's height).
+/// traveler's height, how its peoples look).
 fn species_world_from(db: &Db, v: &Value) {
     let mut w: crate::world::species::SpeciesWorld = db.kv_get("species.world").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let mut changed = false;
@@ -886,6 +886,13 @@ fn species_world_from(db: &Db, v: &Value) {
     }
     if let Some(h) = v.get("traveler_height").or_else(|| v.get("traveller_height")).and_then(|x| x.as_f64()).filter(|h| h.is_finite()) {
         w.traveler_height = Some((h as f32).clamp(0.3, 12.0));
+        changed = true;
+    }
+    if let Some(l) = v.get("looks").and_then(|x| serde_json::from_value::<std::collections::BTreeMap<String, std::collections::BTreeMap<String, [f32; 2]>>>(x.clone()).ok()) {
+        w.looks = l
+            .into_iter()
+            .map(|(k, look)| (k.trim().to_lowercase(), look.into_iter().filter(|(_, r)| r.iter().all(|v| v.is_finite())).map(|(n, r)| (n, [r[0].min(r[1]), r[0].max(r[1])])).collect()))
+            .collect();
         changed = true;
     }
     if changed {

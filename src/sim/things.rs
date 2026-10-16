@@ -82,7 +82,7 @@ pub struct Thing {
     pub params: [f32; 8],
     /// Behaviour state, visible to the shape as k.s0 … k.s7.
     pub state: [f32; 8],
-    /// Look sliders past the first five (k.g … k.v): a body's remains keep
+    /// Look sliders past the first five (k.g … k.z): a body's remains keep
     /// its face, hair and clothes. Empty for most things.
     pub look: Vec<f32>,
     pub props: Props,

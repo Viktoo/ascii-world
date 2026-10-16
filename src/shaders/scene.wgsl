@@ -16,7 +16,8 @@ fn inst_params(i: Inst) -> Params {
   return Params(i.k0.x, i.k0.y, i.k0.z, i.k0.w, i.k1.x, i.k1.y, i.k1.z, i.k1.w,
                 i.s0.x, i.s0.y, i.s0.z, i.s0.w, i.s1.x, i.s1.y, i.s1.z, i.s1.w, i.s2.x, i.s2.y, i.s2.z, i.s2.w,
                 i.look[0].x, i.look[0].y, i.look[0].z, i.look[0].w, i.look[1].x, i.look[1].y, i.look[1].z, i.look[1].w,
-                i.look[2].x, i.look[2].y, i.look[2].z, i.look[2].w, i.look[3].x, i.look[3].y, i.look[3].z, i.look[3].w);
+                i.look[2].x, i.look[2].y, i.look[2].z, i.look[2].w, i.look[3].x, i.look[3].y, i.look[3].z, i.look[3].w,
+                i.look[4].x, i.look[4].y, i.look[4].z, i.look[4].w);
 }
 
 // Rotate v by the unit quaternion (q, w) with w = sqrt(1 - |q|^2).

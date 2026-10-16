@@ -30,7 +30,7 @@ pub fn thing_inst(t: &Thing, ty: &TypeEntry, fx: [f32; 4]) -> GpuInst {
         ..Default::default()
     };
     g.set_state(&t.state);
-    for (i, v) in t.look.iter().take(16).enumerate() {
+    for (i, v) in t.look.iter().take(20).enumerate() {
         g.look[i / 4][i % 4] = *v;
     }
     // The dead's eyes are shut.
