@@ -547,7 +547,10 @@ fn apply_fx(albedo: vec3f, fx: vec4f) -> vec3f {
 }
 
 // How open the sky is straight above a point: 1 in the open, low under a
-// roof, a canopy, an overhang (the candidates the view ray gathered).
+// roof, a canopy, an overhang. It gathers what stands above the point: the
+// view ray's candidates were only those it passed near, so a canopy shaded
+// the ground in streaks fanning out from the eye, shifting as it moved.
+// (The candidates are the shadow ray's next anyway.)
 fn sky_open(p: vec3f) -> f32 {
   var res = 1.0;
   // Down in a cave the sky is far: the deeper, the less of it.
@@ -555,8 +558,9 @@ fn sky_open(p: vec3f) -> f32 {
     let under = terrain_height(p.x, p.z) - p.y;
     if (under > 0.3 && void_dist(p) < 0.5) { res = clamp(1.0 - under * 0.35, 0.03, 1.0); }
   }
+  gather(p, vec3f(0.0, 1.0, 0.0), 8.0);
   var t = 0.15;
-  for (var i = 0; i < 10; i = i + 1) {
+  for (var i = 0; i < 20; i = i + 1) {
     let m = map_insts(p + vec3f(0.0, t, 0.0));
     res = min(res, 8.0 * m.y / t);
     if (res < 0.05) { break; }

@@ -7,7 +7,7 @@
 //! changes without a display.
 
 mod gfx;
-mod taa;
+pub(crate) mod taa;
 mod text;
 
 pub use taa::jitter;

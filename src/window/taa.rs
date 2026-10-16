@@ -47,7 +47,7 @@ pub struct Taa {
 fn texture(device: &wgpu::Device, label: &str, w: u32, h: u32, format: wgpu::TextureFormat, target: bool) -> wgpu::Texture {
     let mut usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
     if target {
-        usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+        usage |= wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
     }
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),

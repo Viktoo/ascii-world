@@ -5032,3 +5032,118 @@ fn dug_pit_png() {
         png_of(&mut s, &snap, &gpu, look(eye, Vec3::new(p.x, t.height(p.x, p.z), p.z)), &format!("{dir}/pocket-pit-{d}.png"));
     }
 }
+
+/// Frames blended while walking (the window's frame blending, as played):
+/// the traveler walks toward a pit across open ground; the last blended
+/// picture is written out (look at it: no streaks fanning out from where
+/// they walk, the ground as crisp as one frame standing still).
+#[test]
+#[ignore]
+fn walking_blend_png() {
+    use super::interp::{GroundFx, InterpEffect, PendingInterp};
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let mut b = crate::terrain::default_biomes()[0].clone();
+    b.amp = 14.0;
+    b.rough = 0.7;
+    let w = world_with("walk blend", 7, crate::world::Look { name: "Hills".into(), biomes: vec![b], ..Default::default() });
+    let p = dry_spot(&w, 40.0, 0.3);
+    let mut s = session(&w, 83, None);
+    s.sim.t = crate::render::sky::DAY_SECONDS * std::env::var("POCKET_DAYFRAC").ok().and_then(|v| v.parse().ok()).unwrap_or(0.42);
+    let pi = PendingInterp { actor: ActorId::Player, text: "dig".into(), held: None, target: Some(Target::Point(p.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "The ground gives way.".into(), ground: vec![GroundFx { depth_m: 0.9, wide_m: 8.0, long_m: Some(14.0), sides: "sheer".into(), ..Default::default() }], ..Default::default() });
+    let Some(gpu) = crate::render::gpu::Gpu::new().ok() else { return };
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), Some(gpu.clone()), live).unwrap();
+    let mut snap = model.snapshot().unwrap();
+    std::sync::Arc::make_mut(&mut snap).terrain = s.sim.snap.terrain.clone();
+    let t = snap.terrain.clone();
+    let (dev, queue) = (&gpu.device, &gpu.queue);
+    let mut taa = crate::window::taa::Taa::new(dev);
+    let sampler = dev.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+    let (pw, ph) = (427u32, 240u32);
+    let world_tex = dev.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut handle = crate::render::gpu::spawn(gpu.clone());
+    let dirv = Vec3::new(0.6, 0.0, 0.8);
+    let frames = 45u64;
+    let mut run = |walk: bool, name: &str| -> Vec<u8> {
+    taa.forget();
+    for n in 0..frames {
+        // Walking at 4 m/s, 30 frames a second, turning a little.
+        let k = if walk { n as f32 } else { (frames - 1) as f32 };
+        let e = p - dirv * (30.0 - k * 4.0 / 30.0);
+        let cam = crate::render::Camera { pos: Vec3::new(e.x, t.height(e.x, e.z) + 1.7, e.z), yaw: dirv.x.atan2(dirv.z) + k * 0.004, pitch: -0.25, fov_y: 1.05, roll: 0.0 };
+        let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
+        let culled = crate::world::cull::cull(&snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
+        let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
+        let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: n as u32, shadows: true, lights: &drawn.lights, weather: Default::default() };
+        let mut globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+        let j = crate::window::jitter(n);
+        globals.jitter = [j[0], j[1], 1.0, 0.0];
+        let req = crate::render::FrameRequest { id: n + 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+        handle.tx.send(crate::render::RenderMsg::Frame(Box::new(req))).unwrap();
+        let f = handle.rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &world_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            bytemuck::cast_slice(&f.pixels),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pw * 4), rows_per_image: Some(ph) },
+            wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+        );
+        taa.resolve(dev, queue, &sampler, &f, &world_tex, (pw * 2, ph * 2));
+        if n == frames - 1 && walk {
+            let mut rgb = Vec::new();
+            for px in &f.pixels {
+                rgb.extend_from_slice(&crate::render::unpack(*px));
+            }
+            std::fs::write(format!("{dir}/pocket-walk-one-frame.png"), crate::png::encode(pw, ph, &rgb)).unwrap();
+        }
+    }
+    // Read the history back (half floats, display values).
+    let out = taa.output();
+    let (ow, oh) = (out.size().width, out.size().height);
+    let row = (ow * 8).div_ceil(256) * 256;
+    let buf = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * oh) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = dev.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: out, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(oh) } },
+        wgpu::Extent3d { width: ow, height: oh, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    let _ = dev.poll(wgpu::PollType::wait_indefinitely());
+    let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
+    let f16 = |b: u16| -> f32 {
+        let e = ((b >> 10) & 0x1f) as i32;
+        let m = (b & 0x3ff) as f32;
+        if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e - 15) }
+    };
+    let mut rgb = Vec::new();
+    for y in 0..oh {
+        for x in 0..ow {
+            let i = (y * row + x * 8) as usize;
+            for c in 0..3 {
+                let v = f16(u16::from_le_bytes([data[i + c * 2], data[i + c * 2 + 1]]));
+                rgb.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+        }
+    }
+    std::fs::write(format!("{dir}/pocket-walk-{name}.png"), crate::png::encode(ow, oh, &rgb)).unwrap();
+    rgb
+    };
+    let walked = run(true, "walking");
+    let still = run(false, "still");
+    handle.shutdown();
+    // How far walking's picture is from standing there (the lower half: the ground).
+    let half = walked.len() / 2;
+    let diff: f64 = walked[half..].iter().zip(&still[half..]).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / (walked.len() - half) as f64;
+    println!("walking vs still, mean difference on the ground: {diff:.2}");
+}
