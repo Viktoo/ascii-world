@@ -1206,6 +1206,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             x: ox + clampl(f(lm, "x", 128.0)),
             z: oz + clampl(f(lm, "z", 128.0)),
             y: None,
+            under: false,
             rot_y: f(lm, "rot", 0.0).to_radians(),
             scale: f(lm, "scale", 1.0).clamp(0.3, 4.0),
             params: [0.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
@@ -1221,6 +1222,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
                 x: cx + f(b, "dx", 0.0).clamp(-60.0, 60.0),
                 z: cz + f(b, "dz", 0.0).clamp(-60.0, 60.0),
                 y: None,
+                under: false,
                 rot_y: f(b, "rot", 0.0).to_radians(),
                 scale: 1.0,
                 params: [i as f32 + 1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
@@ -1269,22 +1271,26 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // Small things lying about: each trade's tools and materials by its
     // person's home, and the settlement's plaything in its middle.
     let middle = plan.get("settlement").filter(|v| v.is_object()).map(|st| (ox + clampl(f(st, "x", 128.0)), oz + clampl(f(st, "z", 128.0))));
+    // Hollows the settlement digs: things "near" one lie inside it.
+    let caves = plan.get("settlement").and_then(|st| st.get("ground")).and_then(|g| g.as_array()).map(|a| crate::settle::parse_caves(a, ox, oz)).unwrap_or_default();
     let mut by_spot: std::collections::HashMap<String, usize> = Default::default();
     for (i, th) in plan.get("things").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(12).enumerate() {
         let Some(ty) = resolve(&s(th, "type")) else { continue };
         let near = s(th, "near").trim().to_lowercase();
-        let spot = chars.iter().find(|(p, _)| !near.is_empty() && p.name.trim().to_lowercase() == near).map(|(_, h)| (h.x, h.z)).or(middle).or_else(|| chars.first().map(|(_, h)| (h.x, h.z)));
+        let cave = caves.iter().find(|c| !near.is_empty() && (c.name.to_lowercase() == near || c.kind == near || near.contains(&c.kind)));
+        let spot = cave.map(|c| (c.room_at().x, c.room_at().y)).or_else(|| chars.iter().find(|(p, _)| !near.is_empty() && p.name.trim().to_lowercase() == near).map(|(_, h)| (h.x, h.z))).or(middle).or_else(|| chars.first().map(|(_, h)| (h.x, h.z)));
         let Some((sx, sz)) = spot else { continue };
         // Spread round the spot so a person's things don't pile up.
         let k = by_spot.entry(near).or_default();
         let a = *k as f32 * 2.399 + i as f32 * 0.7;
         let rad = 1.6 + 0.5 * *k as f32;
         *k += 1;
+        let rad = if cave.is_some() { rad.min(cave.map(|c| c.room * 0.6).unwrap_or(2.0)) } else { rad };
         let (x, z) = (sx + a.cos() * rad, sz + a.sin() * rad);
-        if info.terrain.height(x, z) <= info.terrain.water(x, z) + 0.2 {
+        if cave.is_none() && info.terrain.height(x, z) <= info.terrain.water(x, z) + 0.2 {
             continue;
         }
-        placements.push(Placement { ty, x, z, y: None, rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
+        placements.push(Placement { ty, x, z, y: None, under: cave.is_some(), rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
     }
     // Creatures: herds, packs, pets, beasts. No voice or trade, just a
     // species, a home, maybe a name and a person they belong to.
@@ -1352,7 +1358,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             })
             .collect();
         let named = |k: &str| st.get(k).and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).and_then(resolve);
-        crate::model::Settlement { x: ox + clampl(f(st, "x", 128.0)), z: oz + clampl(f(st, "z", 128.0)), road, lamps, ground, bridge: named("bridge"), vehicle: named("vehicle") }
+        crate::model::Settlement { x: ox + clampl(f(st, "x", 128.0)), z: oz + clampl(f(st, "z", 128.0)), road, lamps, ground, bridge: named("bridge"), vehicle: named("vehicle"), caves: caves.clone() }
     });
     let n_chars = chars.len();
     let ok = ctx
@@ -1462,10 +1468,10 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                     };
                     info.terrain.height(pos.x, pos.z) + l - bottom * scale
                 });
-                placements.push(Placement { ty: ty.clone(), x: pos.x, z: pos.z, y, rot_y: yaw + f(p, "rot", 0.0).to_radians(), scale, params: [placements.len() as f32, scale, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
+                placements.push(Placement { ty: ty.clone(), x: pos.x, z: pos.z, y, under: false, rot_y: yaw + f(p, "rot", 0.0).to_radians(), scale, params: [placements.len() as f32, scale, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
             }
             if placements.is_empty() {
-                placements.push(Placement { ty, x: target.x, z: target.z, y: None, rot_y: yaw, scale: 1.0, params: [0.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
+                placements.push(Placement { ty, x: target.x, z: target.z, y: None, under: false, rot_y: yaw, scale: 1.0, params: [0.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
             }
             let summary = {
                 let s0 = s(&v, "summary");

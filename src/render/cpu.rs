@@ -25,7 +25,7 @@ impl Scene<'_> {
     }
 
     fn map(&self, p: Vec3, cands: &[usize]) -> (f32, Option<usize>) {
-        let mut d = (p.y - self.terrain.height(p.x, p.z)) * 0.6;
+        let mut d = (p.y - self.terrain.height(p.x, p.z)).max(-self.terrain.void(p)) * 0.6;
         let mut id = None;
         for &c in cands {
             let gi = &self.insts[c].0;
@@ -138,6 +138,14 @@ impl Scene<'_> {
                 t_hit = t;
                 let p = ro + rd * t;
                 match id {
+                    None if p.y < self.terrain.height(p.x, p.z) - 0.3 => {
+                        // A cave's wall, floor or roof, in its rock.
+                        let t = self.terrain;
+                        let e = 0.02;
+                        let g = Vec3::new(t.void(p + Vec3::X * e) - t.void(p - Vec3::X * e), t.void(p + Vec3::Y * e) - t.void(p - Vec3::Y * e), t.void(p + Vec3::Z * e) - t.void(p - Vec3::Z * e));
+                        let n = -g.normalize_or(Vec3::Y);
+                        self.shade(p, n, v3(self.g.rock) * 0.7)
+                    }
                     None => {
                         let n = self.terrain.normal(p.x, p.z);
                         self.shade(p, n, ground(p.x, p.z, p.y, n.y))
@@ -169,7 +177,7 @@ impl Scene<'_> {
         let wl = if t_hit < f32::MAX {
             let ph = ro + rd * t_hit;
             let lw = self.terrain.water(ph.x, ph.z);
-            if lw > ph.y { lw } else { WATER_LEVEL }
+            if self.terrain.void(ph) < 0.3 && ph.y < self.terrain.height(ph.x, ph.z) - 0.3 { f32::MIN } else if lw > ph.y { lw } else { WATER_LEVEL }
         } else {
             WATER_LEVEL
         };

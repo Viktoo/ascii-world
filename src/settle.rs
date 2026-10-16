@@ -19,6 +19,68 @@ pub struct LandPlan {
     pub frontage: Option<(String, i8, f32)>,
 }
 
+/// A hollow a plan digs into the land (a cave dwelling, a mine, a cellar
+/// under a hill): where its mouth is, which way it goes in, and how far,
+/// how deep and how big its chamber.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaveSpec {
+    pub kind: String,
+    pub name: String,
+    pub mouth: Vec2,
+    pub dir: Vec2,
+    pub len: f32,
+    pub depth: f32,
+    pub room: f32,
+}
+
+impl CaveSpec {
+    /// The middle of its chamber (x, z).
+    pub fn room_at(&self) -> Vec2 {
+        self.mouth + self.dir * (self.len + self.room * 0.7)
+    }
+    /// The cave, its mouth at the ground's height there.
+    pub fn cave(&self, ground: f32) -> crate::ground::Cave {
+        crate::ground::Cave::dug(&self.kind, &self.name, glam::Vec3::new(self.mouth.x, ground, self.mouth.y), self.dir, self.len, self.depth, self.room)
+    }
+}
+
+/// Words that make a ground entry a hollow dug into the land.
+fn is_hollow(what: &str) -> bool {
+    ["cave", "mine", "tunnel", "grotto", "burrow", "den", "cellar", "crypt", "catacomb", "dugout", "hollow", "lair", "vault"].iter().any(|w| what.contains(w))
+}
+
+/// Read the hollows of a plan's `ground` list: entries whose "what" is a
+/// cave, a mine, a tunnel… with "mouth" [x, z], "toward" (degrees, or a
+/// point [x, z]), "length", "depth" and "room" (metres).
+pub fn parse_caves(list: &[Value], ox: f32, oz: f32) -> Vec<CaveSpec> {
+    let mut out = Vec::new();
+    for v in list.iter().take(MAX_PLANS) {
+        let what = v.get("what").and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
+        if !is_hollow(&what) {
+            continue;
+        }
+        let Some(mouth) = v.get("mouth").and_then(|m| pt(m, ox, oz)).or_else(|| v.get("line").and_then(|l| l.as_array()).and_then(|l| l.first()).and_then(|m| pt(m, ox, oz))) else { continue };
+        let mouth = Vec2::from(mouth);
+        let dir = match v.get("toward") {
+            Some(Value::Array(_)) => v.get("toward").and_then(|t| pt(t, ox, oz)).map(|t| Vec2::from(t) - mouth).unwrap_or(Vec2::X),
+            Some(t) => num(t).map(|d| Vec2::new(d.to_radians().sin(), d.to_radians().cos())).unwrap_or(Vec2::X),
+            None => Vec2::X,
+        }
+        .normalize_or(Vec2::X);
+        let n = |k: &str, d: f32, lo: f32, hi: f32| v.get(k).and_then(num).unwrap_or(d).clamp(lo, hi);
+        out.push(CaveSpec {
+            kind: what,
+            name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().chars().take(60).collect(),
+            mouth,
+            dir,
+            len: n("length", 10.0, 3.0, 60.0),
+            depth: n("depth", 3.0, 1.0, 20.0),
+            room: n("room", 4.5, 2.0, 14.0),
+        });
+    }
+    out
+}
+
 /// The most things one plan does to the land.
 pub const MAX_PLANS: usize = 24;
 const MAX_POINTS: usize = 64;
@@ -47,6 +109,9 @@ pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
     let mut out = Vec::new();
     for v in list.iter().take(MAX_PLANS) {
         let words = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
+        if is_hollow(&words("what")) && (v.get("mouth").is_some() || v.get("toward").is_some()) {
+            continue;
+        }
         let width = v.get("width").and_then(num).unwrap_or(4.0).clamp(0.6, 60.0);
         let shape = if let Some(c) = v.get("circle").and_then(|c| c.as_array()).filter(|c| c.len() >= 3) {
             let (Some(x), Some(z), Some(r)) = (num(&c[0]), num(&c[1]), num(&c[2])) else { continue };

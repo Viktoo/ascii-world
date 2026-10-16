@@ -25,7 +25,7 @@ fn canal_city(w: &W, hut: u32) -> (Vec3, crate::model::CommitOk) {
         let ty = p.frontage.as_ref().map(|_| TypeRef::Existing(hut));
         (p, ty)
     }).collect();
-    let st = Settlement { x: h.x, z: h.z, road: Some((None, 1.2)), lamps: Some(TypeRef::Existing(lamp)), ground, bridge: None, vehicle: Some(TypeRef::Existing(boat)) };
+    let st = Settlement { x: h.x, z: h.z, road: Some((None, 1.2)), lamps: Some(TypeRef::Existing(lamp)), ground, bridge: None, vehicle: Some(TypeRef::Existing(boat)), caves: vec![] };
     let region = RegionCommit { r, plan_json: "{}".into(), info: Default::default(), characters: vec![], settlement: Some(st) };
     (h, commit_places(w, vec![], Some(region)))
 }
@@ -320,4 +320,111 @@ fn river_png() {
     png_of(&mut s, &snap, &gpu, look(eye, Vec3::new(ahead.x, t.water(ahead.x, ahead.y), ahead.y)), &format!("{dir}/pocket-river-bank.png"));
     let above = Vec3::new(p.x - d.x * 50.0 + side.x * 30.0, p.y + 40.0, p.z - d.y * 50.0 + side.y * 30.0);
     png_of(&mut s, &snap, &gpu, look(above, p + Vec3::new(d.x * 20.0, 0.0, d.y * 20.0)), &format!("{dir}/pocket-river-above.png"));
+}
+
+/// A hollow dug under flat ground (a cellar dwelling): its mouth opens the
+/// surface, a passage runs down to a chamber; what the plan sets "near" it
+/// lies on its floor; a villager walks in through the mouth and down, and
+/// out again; a stone dropped in there lands on the floor, not the land above.
+fn cave_dwelling(w: &W) -> (crate::settle::CaveSpec, crate::model::CommitOk) {
+    let stone = builtin_id(w, "stone");
+    let lamp = builtin_id(w, "lamppost");
+    let h = flat_spot(w, 50.0);
+    let r = crate::world::region_of(h.x, h.z);
+    let (ox, oz) = (r.0 as f32 * crate::world::REGION, r.1 as f32 * crate::world::REGION);
+    let plan = serde_json::json!([{ "what": "cave", "name": "the Hollow", "mouth": [h.x - ox, h.z - oz], "toward": 90, "length": 12, "depth": 4, "room": 5 }]);
+    let caves = crate::settle::parse_caves(plan.as_array().unwrap(), ox, oz);
+    assert_eq!(caves.len(), 1);
+    let spec = caves[0].clone();
+    let st = crate::model::Settlement { x: h.x, z: h.z, road: None, caves: caves.clone(), ..Default::default() };
+    let region = crate::model::RegionCommit { r, plan_json: "{}".into(), info: Default::default(), characters: vec![], settlement: Some(st) };
+    let room = spec.room_at();
+    let mut things = Vec::new();
+    for (k, ty) in [stone, stone, lamp].into_iter().enumerate() {
+        let a = k as f32 * 2.1;
+        things.push(crate::model::Placement { ty: crate::model::TypeRef::Existing(ty), x: room.x + a.cos() * 1.5, z: room.y + a.sin() * 1.5, y: None, under: true, rot_y: 0.0, scale: 1.0, params: [k as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
+    }
+    (spec, commit_places(w, things, Some(region)))
+}
+
+#[test]
+fn a_dwelling_dug_under_the_ground() {
+    let w = world_with("cave", 69, bare());
+    let (spec, ok) = cave_dwelling(&w);
+    let t = &ok.snapshot.terrain;
+    let room = spec.room_at();
+    let surface = t.height(room.x, room.y);
+    let floor = t.floor(room.x, surface - 1.6, room.y);
+    assert!(surface - floor > 3.0, "a chamber well under the ground: floor {floor:.1}, surface {surface:.1}");
+    assert!(!t.solid(Vec3::new(room.x, floor + 1.5, room.y)), "air in the chamber");
+    assert!(t.solid(Vec3::new(room.x, surface - 0.4, room.y)), "a roof of earth over it");
+    // The mouth opens the surface.
+    let m = spec.mouth + spec.dir * 1.0;
+    assert!(t.floor(m.x, t.height(m.x, m.y) + 0.5, m.y) < t.height(m.x, m.y) - 0.3, "the way down opens at the mouth");
+    // What was set in it lies on its floor.
+    let inside: Vec<&crate::world::Placed> = ok.snapshot.instances.iter().filter(|p| (glam::Vec2::new(p.pos.x, p.pos.z) - room).length() < 3.0).collect();
+    assert_eq!(inside.len(), 3, "the stones and the lamp: {inside:?}");
+    for p in &inside {
+        let base = p.pos.y + ok.snapshot.type_of(p.type_id).unwrap().bottom * p.scale;
+        assert!((base - floor).abs() < 0.5, "on the cave floor, not the land above: {base} vs {floor}");
+    }
+    // A villager walks in (by the mouth, down the passage) and out again.
+    let ola = add_char(&w, "Ola", "kind", &[], Vec3::new(spec.mouth.x - 8.0, 0.0, spec.mouth.y + 6.0));
+    let mut s = session(&w, 69, None);
+    calm(&mut s);
+    let o = ActorId::Npc(ola);
+    let goal = Vec3::new(room.x, floor, room.y);
+    s.sim.cast.get_mut(ola).unwrap().plan.push_back(Action::Goto { target: Target::Point(goal.to_array()), run: false });
+    s.run(60.0, 0.1);
+    let p = s.sim.actor(o).unwrap().pos;
+    assert!(Vec3::new(p.x - goal.x, 0.0, p.z - goal.z).length() < 2.5, "she got to the chamber: {p} vs {goal}");
+    assert!(p.y < surface - 2.5, "down in it, not on the land above: {} (surface {surface})", p.y);
+    let out = Vec3::new(spec.mouth.x - 6.0, s.sim.snap.terrain.height(spec.mouth.x - 6.0, spec.mouth.y), spec.mouth.y);
+    s.sim.cast.get_mut(ola).unwrap().plan.push_back(Action::Goto { target: Target::Point(out.to_array()), run: false });
+    for _ in 0..600 {
+        s.step(0.1);
+    }
+    let p = s.sim.actor(o).unwrap().pos;
+    assert!((p - out).length() < 2.0, "and out again: {p} vs {out}");
+    // A stone dropped in the chamber falls to its floor.
+    let st = s.sim.type_by_name("stone").unwrap().id;
+    let id = s.sim.spawn_thing(st, Vec3::new(room.x, floor + 2.0, room.y), 0.0, 1.0, Default::default(), false).unwrap();
+    if let Some(th) = s.sim.things.get_mut(id) {
+        th.asleep = false;
+    }
+    s.run(3.0, 0.05);
+    let sp = s.sim.things.get(id).unwrap().pos;
+    assert!(sp.y < floor + 0.6 && sp.y > floor - 0.3, "on the cave floor: {} vs {floor}", sp.y);
+}
+
+/// Pictures of the dwelling (look at them): down the mouth from outside,
+/// and inside the chamber by its lamp at night.
+#[test]
+#[ignore]
+fn cave_png() {
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = world_with("cavepng", 69, bare());
+    let (spec, _) = cave_dwelling(&w);
+    let mut s = session(&w, 69, None);
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.42;
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    s.sim.flip(snap.clone());
+    let t = snap.terrain.clone();
+    let look = |from: Vec3, to: Vec3| {
+        let d = to - from;
+        crate::render::Camera { pos: from, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 1.05, roll: 0.0 }
+    };
+    let back = spec.mouth - spec.dir * 7.0;
+    let eye = Vec3::new(back.x, t.height(back.x, back.y) + 1.8, back.y);
+    let m = spec.mouth + spec.dir * 4.0;
+    png_of(&mut s, &snap, &gpu, look(eye, Vec3::new(m.x, t.height(m.x, m.y) - 2.5, m.y)), &format!("{dir}/pocket-cave-mouth.png"));
+    let room = spec.room_at();
+    let floor = t.floor(room.x, t.height(room.x, room.y) - 1.6, room.y);
+    let at = room - spec.dir * 3.0;
+    s.sim.t = crate::render::sky::DAY_SECONDS * 0.95;
+    s.sim.step(0.05);
+    png_of(&mut s, &snap, &gpu, look(Vec3::new(at.x, floor + 1.6, at.y), Vec3::new(room.x + spec.dir.x * 3.0, floor + 0.8, room.y + spec.dir.y * 3.0)), &format!("{dir}/pocket-cave-inside.png"));
 }

@@ -4297,7 +4297,7 @@ fn commit_places(w: &W, places: Vec<crate::model::Placement>, region: Option<cra
 }
 
 fn pl(tid: u32, at: Vec3, rot: f32) -> crate::model::Placement {
-    crate::model::Placement { ty: crate::model::TypeRef::Existing(tid), x: at.x, z: at.z, y: None, rot_y: rot, scale: 1.0, params: [1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] }
+    crate::model::Placement { ty: crate::model::TypeRef::Existing(tid), x: at.x, z: at.z, y: None, under: false, rot_y: rot, scale: 1.0, params: [1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] }
 }
 
 /// A tilted instance maps local to world and back, and its middle turns with it.

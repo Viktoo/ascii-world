@@ -78,6 +78,9 @@ impl Sim {
     /// up or down the stairs, or straight there.
     pub fn route(&self, who: ActorId, dest: Vec3) -> Vec3 {
         let Some(me) = self.actor(who).map(|a| a.pos) else { return dest };
+        if let Some(p) = self.cave_route(me, dest) {
+            return p;
+        }
         if self.rooms.is_empty() {
             return dest;
         }
@@ -113,6 +116,39 @@ impl Sim {
             }
             (None, None) => dest,
         }
+    }
+
+    /// Into or out of a cave: by its mouth and along its way in (its first
+    /// part), as through a doorway. None when neither end is in one.
+    fn cave_route(&self, me: Vec3, dest: Vec3) -> Option<Vec3> {
+        let t = &self.snap.terrain;
+        let caves: Vec<crate::ground::Cave> = {
+            let g = t.carve.read();
+            let mut v: Vec<crate::ground::Cave> = g.ground.caves_at(me.x, me.z).cloned().collect();
+            v.extend(g.ground.caves_at(dest.x, dest.z).filter(|c| !v.contains(c)).cloned().collect::<Vec<_>>());
+            v
+        };
+        if caves.is_empty() {
+            return None;
+        }
+        let flat = |a: Vec3, b: Vec3| Vec3::new(a.x - b.x, 0.0, a.z - b.z).length();
+        let inside = |c: &crate::ground::Cave, p: Vec3| c.dist(p + Vec3::Y * 0.4) < 0.0 && p.y < t.height(p.x, p.z) - 0.3;
+        for c in &caves {
+            let (a, b) = (inside(c, me), inside(c, dest));
+            if a == b {
+                continue;
+            }
+            let mouth = Vec3::from_array(c.mouth);
+            let way = c.parts.first().map(|q| Vec3::from_array(q.b)).unwrap_or(mouth);
+            return Some(if b {
+                // Going in: to the mouth, then down the way in.
+                if flat(me, mouth) > NEAR && flat(me, way) > flat(mouth, way) { mouth } else { dest }
+            } else {
+                // Coming out: up the way in to the mouth.
+                if flat(me, mouth) > NEAR { mouth } else { dest }
+            });
+        }
+        None
     }
 
     /// A bed for a character in the house by their home, if there is one.

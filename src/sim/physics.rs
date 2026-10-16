@@ -218,7 +218,8 @@ impl Sim {
         let old_pos = t.pos;
         v.y -= GRAVITY * h;
         // Water: float if lighter than water, drag either way.
-        let wl = if c.y < WATER_LEVEL + 80.0 { self.snap.terrain.water(c.x, c.z) } else { WATER_LEVEL };
+        // Inside a cave the sea doesn't reach.
+        let wl = if c.y < WATER_LEVEL + 80.0 && !(self.snap.terrain.caves_near(c.x, c.z) && self.snap.terrain.void(c) < 0.0) { self.snap.terrain.water(c.x, c.z) } else { f32::MIN };
         if c.y < wl {
             let vol = volume(&ty) * t.scale.powi(3);
             let density = mass / vol.max(1e-4);
@@ -231,9 +232,30 @@ impl Sim {
         let mut impact = 0.0f32;
         let mut hit_name: Option<String> = None;
         // Terrain.
-        let ground = self.snap.terrain.height(p.x, p.z);
+        let ground = self.snap.terrain.floor(p.x, p.y + r * 0.5, p.z);
         let mut grip = false;
-        if p.y - r < ground {
+        // In a cave: its walls and roof hold it in.
+        let caved = ground < self.snap.terrain.height(p.x, p.z) - 0.3;
+        if caved {
+            let t = &self.snap.terrain;
+            let dv = t.void(p);
+            if dv > -r {
+                let e = 0.05;
+                let g = Vec3::new(t.void(p + Vec3::X * e) - t.void(p - Vec3::X * e), t.void(p + Vec3::Y * e) - t.void(p - Vec3::Y * e), t.void(p + Vec3::Z * e) - t.void(p - Vec3::Z * e));
+                let n = -g.normalize_or_zero();
+                if n != Vec3::ZERO {
+                    p += n * (dv + r + 1e-3);
+                    let vn = v.dot(n);
+                    if vn < 0.0 {
+                        impact = impact.max(-vn);
+                        v -= (1.0 + if -vn < 1.0 { 0.0 } else { bounce }) * vn * n;
+                    }
+                    contact = true;
+                    grip = n.y > 0.7 && friction > 0.2;
+                }
+            }
+        }
+        if !caved && p.y - r < ground {
             let n = self.snap.terrain.normal(p.x, p.z);
             p.y = ground + r;
             let vn = v.dot(n);

@@ -60,6 +60,13 @@ pub struct Look {
     /// land of streams). Older worlds, saved without it, get some.
     #[serde(default = "d_rivers")]
     pub rivers: f32,
+    /// How many caves the hills hold, 0 … 1 (older worlds: a few).
+    #[serde(default = "d_caves")]
+    pub caves: f32,
+}
+
+fn d_caves() -> f32 {
+    0.3
 }
 
 fn d_rivers() -> f32 {
@@ -68,7 +75,7 @@ fn d_rivers() -> f32 {
 
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0 }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0 }
     }
 }
 
@@ -249,6 +256,8 @@ pub struct RegionInfo {
     pub roads: Vec<crate::terrain::Road>,
     /// How the settlement shaped the land: canals, squares, roads, lagoons.
     pub ground: Vec<crate::ground::Edit>,
+    /// Hollows it dug into the land: cave dwellings, mines.
+    pub caves: Vec<crate::ground::Cave>,
 }
 
 /// One immutable world version, everything the main thread needs.

@@ -169,6 +169,20 @@ fn wadeable(terrain: &Terrain, x: f32, z: f32) -> bool {
     terrain.height(x, z) > terrain.water(x, z) - MAX_WADE
 }
 
+/// Whether a body at `q` with its feet at `feet` would be in a cave's rock:
+/// above its step (a wall) or at its head (a low roof). Only near caves.
+fn cave_wall(terrain: &Terrain, q: Vec2, feet: f32, b: Capsule) -> bool {
+    if !terrain.caves_near(q.x, q.y) {
+        return false;
+    }
+    let h = terrain.height(q.x, q.y);
+    if feet > h - 0.05 {
+        // Above the surface: a cave's mouth is a way down, not a wall.
+        return false;
+    }
+    [feet + b.step + 0.05, feet + b.height * 0.85].iter().any(|y| terrain.solid(glam::Vec3::new(q.x, *y, q.y)))
+}
+
 /// Whether going from `from` towards `to` climbs a rock face: the natural
 /// ground ahead rises steeper than `MAX_CLIMB` and above the feet. Dug
 /// ground is left out (anyone climbs out of a pit or a cellar), and so is a
@@ -182,6 +196,10 @@ pub fn too_steep(terrain: &Terrain, from: Vec2, to: Vec2, feet: f32) -> bool {
     let reach = run.max(CLIMB_PROBE);
     let ahead = from + d / run * reach;
     let here = terrain.natural_height(from.x, from.y);
+    // Under the ground (in a cave) its walls stop a body, not the slope above.
+    if feet < here - 0.5 {
+        return false;
+    }
     let there = terrain.natural_height(ahead.x, ahead.y);
     there - here > MAX_CLIMB * reach && there > feet + 0.05 && feet < here + 0.5
 }
@@ -195,7 +213,7 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
     // Clear by the fast distance, or (near a carved opening) by the rim.
     let ok = |x: f32, z: f32, d: f32| d >= radius || obs.clear(x, z, feet, b);
     let start = Vec2::new(from.x, from.z);
-    let passable = |q: Vec2| wadeable(terrain, q.x, q.y) && !too_steep(terrain, start, q, feet);
+    let passable = |q: Vec2| wadeable(terrain, q.x, q.y) && !too_steep(terrain, start, q, feet) && !cave_wall(terrain, q, feet, b);
     let mut p = Vec2::new(from.x + delta.x, from.z + delta.z);
     if !passable(p) {
         // Slide along the shoreline or the foot of a cliff: try each axis on its own.
@@ -250,7 +268,7 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
 /// a roof, a rock). A solid that fills the column at `top` is a wall there,
 /// not a floor.
 pub fn support(terrain: &Terrain, solids: &[Solid], x: f32, z: f32, top: f32) -> f32 {
-    let g = terrain.height(x, z);
+    let g = terrain.floor(x, top, z);
     let mut best = g;
     for s in solids {
         let c = s.inst.center();

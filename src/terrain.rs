@@ -545,15 +545,16 @@ impl Terrain {
     /// stretches that come into reach are cut, those left behind fill in.
     pub fn lay_rivers(&self, x: f32, z: f32) {
         let p = glam::Vec2::new(x, z);
-        let edits = {
+        let (edits, caves) = {
             let mut r = self.rivers.lock();
             if !r.due(p) {
                 return;
             }
             r.laid_at = Some(p);
-            r.edits_near(self, p, crate::rivers::NEAR)
+            (r.edits_near(self, p, crate::rivers::NEAR), r.caves_near(self, p, crate::rivers::NEAR))
         };
         self.set_ground(crate::ground::Layer::Land, edits);
+        self.set_caves(crate::ground::Layer::Land, caves);
     }
 
     /// As `lay_rivers`, on another thread (for someone walking: the
@@ -571,12 +572,13 @@ impl Terrain {
         let t = self.clone();
         let spawned = std::thread::Builder::new().name("rivers".into()).spawn(move || {
             let p = glam::Vec2::new(x, z);
-            let edits = {
+            let (edits, caves) = {
                 let mut r = t.rivers.lock();
                 r.laid_at = Some(p);
-                r.edits_near(&t, p, crate::rivers::NEAR)
+                (r.edits_near(&t, p, crate::rivers::NEAR), r.caves_near(&t, p, crate::rivers::NEAR))
             };
             t.set_ground(crate::ground::Layer::Land, edits);
+            t.set_caves(crate::ground::Layer::Land, caves);
             t.rivers.lock().busy = false;
         });
         if spawned.is_err() {
@@ -586,12 +588,78 @@ impl Terrain {
 
     /// How many springs the land has (0 none … 1 a wet land); rivers are
     /// worked out again from scratch.
-    pub fn set_rivers(&self, density: f32, sand: [u8; 3]) {
+    pub fn set_rivers(&self, density: f32, sand: [u8; 3], caves: f32) {
         let mut r = self.rivers.lock();
         let sand = rgbv(sand).to_array();
-        if r.density != density || r.sand != sand {
-            *r = crate::rivers::Rivers::new(density, sand);
+        if r.density != density || r.sand != sand || r.caves != caves {
+            *r = crate::rivers::Rivers::new(density, sand, caves);
         }
+    }
+
+    /// Replace one layer's caves (hollows inside the ground).
+    pub fn set_caves(&self, layer: crate::ground::Layer, caves: Vec<crate::ground::Cave>) {
+        let mut c = self.carve.write();
+        if c.ground.set_caves(layer, caves) {
+            c.version = c.version.wrapping_add(1);
+        }
+    }
+
+    /// Distance from `p` to the nearest hollow in the ground (negative inside one).
+    pub fn void(&self, p: glam::Vec3) -> f32 {
+        self.carve.read().ground.void(p)
+    }
+
+    /// Whether `p` is inside the solid ground: under its surface and in no hollow.
+    pub fn solid(&self, p: glam::Vec3) -> bool {
+        p.y < self.height(p.x, p.z) && self.void(p) > 0.0
+    }
+
+    /// Whether a cave reaches near (x, z).
+    pub fn caves_near(&self, x: f32, z: f32) -> bool {
+        self.carve.read().ground.caves_at(x, z).next().is_some()
+    }
+
+    /// The floor under a point: the highest ground at or below `top` in the
+    /// column at (x, z). The surface, or inside a cave its floor (and over a
+    /// cave's mouth, the way down). Where `top` is in solid rock (a cave's
+    /// wall), `top` itself.
+    pub fn floor(&self, x: f32, top: f32, z: f32) -> f32 {
+        let h = self.height(x, z);
+        let c = self.carve.read();
+        if c.ground.caves_at(x, z).next().is_none() {
+            return h;
+        }
+        let air = |y: f32| (y - h).max(-c.ground.void(glam::Vec3::new(x, y, z)));
+        let mut y = top.min(h + 50.0);
+        if air(y) <= 0.0 {
+            return y;
+        }
+        for _ in 0..80 {
+            let d = air(y);
+            if d < 0.004 {
+                break;
+            }
+            y -= d.max(0.01);
+        }
+        y
+    }
+
+    /// The floor of the hollow under (x, z), if a cave lies under it (the
+    /// highest one, within 40 m down).
+    pub fn cave_floor_under(&self, x: f32, z: f32) -> Option<f32> {
+        if !self.caves_near(x, z) {
+            return None;
+        }
+        let h = self.height(x, z);
+        let mut y = h - 0.3;
+        while y > h - 40.0 {
+            let d = self.void(glam::Vec3::new(x, y, z));
+            if d < 0.0 {
+                return Some(self.floor(x, y, z));
+            }
+            y -= d.clamp(0.1, 2.0);
+        }
+        None
     }
 
     /// The ground edits holding (x, z) (within `margin` of their shapes).

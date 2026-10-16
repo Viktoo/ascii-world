@@ -270,6 +270,90 @@ pub fn lay(pts: &[[f32; 2]], step: f32, smooth: f32, raw: &dyn Fn(f32, f32) -> f
     (out, hs)
 }
 
+/// A hollow inside the ground: a cave, a tunnel, a mine, a cellar dug
+/// under a hill. Its shape is a few capsules (a passage from `a` to `b` of
+/// radius `r`; a round chamber is a short fat one); where one breaks the
+/// ground's surface is a way in. The ground is solid below its surface
+/// and outside every hollow. `mouth` is where it is entered from outside
+/// (the surface end of its way in), for finding the way.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cave {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    pub parts: Vec<Part>,
+    pub mouth: [f32; 3],
+}
+
+/// One capsule of a cave: from `a` to `b`, `r` round.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Part {
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    pub r: f32,
+}
+
+impl Part {
+    pub fn dist(&self, p: glam::Vec3) -> f32 {
+        let (a, b) = (glam::Vec3::from(self.a), glam::Vec3::from(self.b));
+        let (pa, ba) = (p - a, b - a);
+        let h = (pa.dot(ba) / ba.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        (pa - ba * h).length() - self.r
+    }
+}
+
+impl Cave {
+    /// Distance to its hollow (negative inside).
+    pub fn dist(&self, p: glam::Vec3) -> f32 {
+        self.parts.iter().map(|q| q.dist(p)).fold(f32::MAX, f32::min)
+    }
+    /// Its box in x, z (x0, z0, x1, z1).
+    pub fn bounds(&self) -> [f32; 4] {
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for q in &self.parts {
+            for e in [q.a, q.b] {
+                b = [b[0].min(e[0] - q.r), b[1].min(e[2] - q.r), b[2].max(e[0] + q.r), b[3].max(e[2] + q.r)];
+            }
+        }
+        b
+    }
+    pub fn sane(&self) -> bool {
+        let ok = |v: [f32; 3]| v.iter().all(|x| x.is_finite() && x.abs() < 1e6);
+        !self.parts.is_empty() && self.parts.len() <= 32 && self.parts.iter().all(|q| ok(q.a) && ok(q.b) && q.r.is_finite() && q.r > 0.3 && q.r < 40.0) && ok(self.mouth)
+    }
+    /// A way into the land from `mouth` (on the surface, at its height)
+    /// heading `dir` (x, z) down at `slope`, `len` metres to a chamber
+    /// `room` round, its floor `drop` below the mouth: a cave, a mine, a
+    /// dwelling dug into a hill.
+    pub fn dug(kind: &str, name: &str, mouth: glam::Vec3, dir: glam::Vec2, len: f32, drop: f32, room: f32) -> Cave {
+        let d = dir.normalize_or(glam::Vec2::X);
+        let floor = mouth.y - drop;
+        // Tall enough to walk in; under a roof of earth where it is deep enough.
+        let w = ((drop - 0.8) * 0.5).clamp(1.15, 1.6);
+        // The passage's floor starts at the ground (a ramp down from the
+        // surface: the mouth opens it), and runs down to the chamber's.
+        let a = glam::Vec3::new(mouth.x - d.x * 0.5, mouth.y + w - 0.05, mouth.z - d.y * 0.5);
+        let end = glam::Vec3::new(mouth.x + d.x * len, floor + w * 0.92, mouth.z + d.y * len);
+        // The chamber: as wide as asked, as tall as the depth allows.
+        let rr = ((drop - 1.0) * 0.5).clamp(1.2, room * 0.62);
+        let c = glam::Vec3::new(mouth.x + d.x * (len + room * 0.7), floor + rr * 0.92, mouth.z + d.y * (len + room * 0.7));
+        let side = glam::Vec3::new(-d.y, 0.0, d.x) * (room * 0.5 - rr).max(0.0);
+        let deep = d * (room * 0.5 - rr).max(0.0);
+        let deep = glam::Vec3::new(deep.x, 0.0, deep.y);
+        Cave {
+            kind: kind.into(),
+            name: name.into(),
+            parts: vec![
+                Part { a: a.to_array(), b: end.to_array(), r: w },
+                Part { a: (c - side).to_array(), b: (c + side).to_array(), r: rr },
+                Part { a: (c - deep).to_array(), b: (c + deep).to_array(), r: rr },
+            ],
+            mouth: mouth.to_array(),
+        }
+    }
+}
+
 /// Signed distance to a polygon (negative inside).
 pub fn poly_sdf(pts: &[[f32; 2]], x: f32, z: f32) -> f32 {
     let n = pts.len();
@@ -329,6 +413,11 @@ pub enum Layer {
 #[derive(Default, Debug)]
 pub struct Ground {
     layers: [Vec<Edit>; 3],
+    /// Hollows in the ground, by layer like the edits.
+    caves: [Vec<Cave>; 3],
+    /// Cave ids (into `all_caves`) by tile.
+    cave_index: HashMap<(i32, i32), Vec<u32>>,
+    all_caves: Vec<Cave>,
     /// Edit ids (into `all`) by tile.
     index: HashMap<(i32, i32), Vec<u32>>,
     all: Vec<Edit>,
@@ -339,7 +428,7 @@ pub struct Ground {
 
 impl Clone for Ground {
     fn clone(&self) -> Self {
-        Ground { layers: self.layers.clone(), index: self.index.clone(), all: self.all.clone(), tiles: self.tiles.clone(), version: self.version, pack: Default::default() }
+        Ground { layers: self.layers.clone(), caves: self.caves.clone(), cave_index: self.cave_index.clone(), all_caves: self.all_caves.clone(), index: self.index.clone(), all: self.all.clone(), tiles: self.tiles.clone(), version: self.version, pack: Default::default() }
     }
 }
 
@@ -445,6 +534,61 @@ impl Ground {
         }
         self.version = self.version.wrapping_add(1);
         *self.pack.lock() = None;
+    }
+
+    /// Replace one layer's caves. True if anything changed.
+    pub fn set_caves(&mut self, layer: Layer, caves: Vec<Cave>) -> bool {
+        let caves: Vec<Cave> = caves.into_iter().filter(|c| c.sane()).collect();
+        if self.caves[layer as usize] == caves {
+            return false;
+        }
+        self.caves[layer as usize] = caves;
+        self.all_caves = self.caves.iter().flatten().cloned().collect();
+        self.cave_index.clear();
+        for (i, c) in self.all_caves.iter().enumerate() {
+            for k in tiles_of(c.bounds()) {
+                self.cave_index.entry(k).or_default().push(i as u32);
+            }
+        }
+        self.version = self.version.wrapping_add(1);
+        *self.pack.lock() = None;
+        true
+    }
+
+    pub fn caves(&self) -> &[Cave] {
+        &self.all_caves
+    }
+
+    pub fn cave_layer(&self, l: Layer) -> &[Cave] {
+        &self.caves[l as usize]
+    }
+
+    /// The caves reaching into the tile holding (x, z).
+    pub fn caves_at(&self, x: f32, z: f32) -> impl Iterator<Item = &Cave> {
+        let k = ((x / TILE_M).floor() as i32, (z / TILE_M).floor() as i32);
+        self.cave_index.get(&k).into_iter().flatten().filter_map(|i| self.all_caves.get(*i as usize))
+    }
+
+    /// Distance to the nearest hollow at `p` (negative inside one; large
+    /// where there is none).
+    pub fn void(&self, p: glam::Vec3) -> f32 {
+        self.caves_at(p.x, p.z).map(|c| c.dist(p)).fold(1e4, f32::min)
+    }
+
+    /// The capsules nearest (x, z) for the renderer, at most `n`.
+    pub fn parts_near(&self, x: f32, z: f32, n: usize) -> Vec<Part> {
+        let mut v: Vec<(f32, Part)> = self
+            .all_caves
+            .iter()
+            .flat_map(|c| c.parts.iter())
+            .map(|q| {
+                let d = Part { a: [q.a[0], 0.0, q.a[2]], b: [q.b[0], 0.0, q.b[2]], r: q.r }.dist(glam::Vec3::new(x, 0.0, z));
+                (d, *q)
+            })
+            .filter(|(d, _)| *d < 250.0)
+            .collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v.into_iter().take(n).map(|x| x.1).collect()
     }
 
     /// A fingerprint of the tiles in the box (x0, z0)–(x1, z1): changes
