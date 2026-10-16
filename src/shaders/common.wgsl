@@ -341,10 +341,10 @@ fn hmap_height(x: f32, z: f32, ok: ptr<function, bool>, steep: ptr<function, boo
   return mix(mix(a, b, fx), mix(c, d, fx), fz);
 }
 
-// Rise across one heightmap cell beyond which, within HMAP_EXACT metres,
-// the exact height is used instead (sheer faces stay sharp).
+// Rise across one heightmap cell beyond which the exact height is used
+// instead, at any distance (a bilinear cell turns a sheer face's edge into
+// teeth, plain to see from a hundred metres and more).
 const HMAP_STEEP: f32 = 1.2;
-const HMAP_EXACT: f32 = 80.0;
 
 // The fine heightmap, stored after the coarse one: 12.5 cm cells round the
 // camera, so steps near it read a height instead of working one out.
@@ -391,7 +391,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
     var ok = false;
     var steep = false;
     let h = hmap_height(x, z, &ok, &steep);
-    if (ok && (!steep || t > HMAP_EXACT)) { return h; }
+    if (ok && !steep) { return h; }
   }
   let fine = 1.0 - clamp((t - 35.0) / 40.0, 0.0, 1.0);
   if (fine >= 1.0) { return terrain_height_w(x, z, terrain_weights(x, z)) + ground_delta(x, z); }

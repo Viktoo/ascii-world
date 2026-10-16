@@ -324,7 +324,7 @@ fn inst_normal(idx: u32, p: vec3f, t: f32) -> vec3f {
                  + k3 * inst_sdf(idx, p + k3 * e) + k4 * inst_sdf(idx, p + k4 * e));
 }
 
-// Shadow rays read the heightmap, but exact heights on steep cells (below HMAP_EXACT).
+// Shadow rays read the heightmap, but exact heights on steep cells.
 const SHADOW_LOD: f32 = 40.0;
 
 fn soft_shadow(ro: vec3f, rd: vec3f) -> f32 {
