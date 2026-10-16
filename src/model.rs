@@ -1005,7 +1005,13 @@ impl WorldModel {
 
     // ---- step 6 + commit + flip ----
 
-    pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
+    pub fn commit(&mut self, mut req: CommitRequest) -> Result<CommitOk, Vec<Diag>> {
+        // Regions planned side by side can both dream up the same person:
+        // the one already living in the land stays, the copy is dropped.
+        if let Some(rc) = req.region.as_mut() {
+            let taken: HashSet<String> = self.chars.iter().filter(|c| c.persona.species.is_empty()).map(|c| c.persona.name.trim().to_lowercase()).collect();
+            rc.characters.retain(|(p, _)| !p.species.is_empty() || !taken.contains(&p.name.trim().to_lowercase()));
+        }
         let res = self.commit_inner(req);
         if res.is_err() {
             // A settlement's ground laid for a commit that failed goes again.
