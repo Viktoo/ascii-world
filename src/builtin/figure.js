@@ -146,8 +146,8 @@ export function sdf(x, y, z, k) {
     cover = min(cover, max(1.19 - uy, uy - 1.33));
   }
   torso = min(torso, max(torso - th, cover));
-  // Arms: each from the shoulder to the wrist; past it, a hand: palm,
-  // fingers (two pairs) curling under as the grip closes, and a thumb.
+  // Arms: each from the shoulder, narrowing to the wrist; past it, a hand:
+  // a flat palm, four fingers curling under as the grip closes, and a thumb.
   // Drawn in full only near the hand; from afar, a knob. Sleeves cover
   // the arm from the shoulder as far as they go.
   const la = clamp(k.s0, 0, 1) * 3.0;
@@ -170,12 +170,14 @@ export function sdf(x, y, z, k) {
     const dx = (hx - ax) / al;
     const dy = (hy - 1.42) / al;
     const dz = hz / al;
-    let arm = capsule(ux, uy, uz, ax, 1.42, 0, hx - dx * 0.06, hy - dy * 0.06, hz - dz * 0.06, (0.05 - 0.007 * fem) * w);
+    // The forearm narrows to the wrist.
     const t = ((ux - ax) * dx + (uy - 1.42) * dy + uz * dz) / al;
+    const tw = clamp(t, 0, 1 - 0.05 / al);
+    let arm = length3(ux - ax - dx * tw * al, uy - 1.42 - dy * tw * al, uz - dz * tw * al) - (0.05 - 0.007 * fem) * w * (1 - 0.42 * smoothstep(0.45, 1, tw));
     arm = min(arm, max(arm - th, sl > 0 ? max(t - sl, sl0 - t) : 9));
-    arms = min(arms, arm);
     const near = length3(ux - hx, uy - hy, uz - hz);
     if (near > 0.22) {
+      arms = min(arms, arm);
       // Never past the hand: an open one reaches further.
       arms = min(arms, near - 0.06 - (1 - g) * 0.09);
     } else {
@@ -191,42 +193,75 @@ export function sdf(x, y, z, k) {
       const bx = dy * nz - dz * ny;
       const by = dz * nx - dx * nz;
       const bz = dx * ny - dy * nx;
-      // A flat palm: two rods side by side.
-      const pw = 0.016 * w;
-      const palm = min(
-        capsule(ux, uy, uz, hx - dx * 0.04 - bx * pw, hy - dy * 0.04 - by * pw, hz - dz * 0.04 - bz * pw, hx + dx * 0.035 - bx * pw, hy + dy * 0.035 - by * pw, hz + dz * 0.035 - bz * pw, 0.027 * w),
-        capsule(ux, uy, uz, hx - dx * 0.04 + bx * pw, hy - dy * 0.04 + by * pw, hz - dz * 0.04 + bz * pw, hx + dx * 0.035 + bx * pw, hy + dy * 0.035 + by * pw, hz + dz * 0.035 + bz * pw, 0.027 * w)
-      );
-      const c1 = cos(g * 1.5);
-      const s1 = sin(g * 1.5);
-      const c2 = cos(g * 3.1);
-      const s2 = sin(g * 3.1);
+      // The hand is drawn in its own frame: s across the knuckles, v out of
+      // the palm, u along the fingers.
+      const qx = ux - hx;
+      const qy = uy - hy;
+      const qz = uz - hz;
+      const hs = qx * bx + qy * by + qz * bz;
+      const hv = qx * nx + qy * ny + qz * nz;
+      const hu = qx * dx + qy * dy + qz * dz;
+      // A flat palm, a little thicker at the heel.
+      const palm = roundBox(hs, hv + 0.002, hu - 0.002, 0.037 * w, (0.0115 + 0.003 * clamp(-hu * 20, 0, 1)) * w, 0.045, 0.011);
+      // Four fingers of three joints, the middle one longest, the little
+      // one short and thin; they fan a little when open and curl into the
+      // palm as the grip closes, every joint bending a little at rest.
+      const b1 = 0.14 + g * 1.45;
+      const b2 = b1 + 0.16 + g * 1.6;
+      const b3 = b2 + 0.1 + g * 1.05;
       let fingers = 10;
-      for (let j = 0; j < 2; j++) {
-        const o = (j - 0.5) * 0.034 * w;
-        const kx = hx + dx * 0.04 + bx * o;
-        const ky2 = hy + dy * 0.04 + by * o;
-        const kz2 = hz + dz * 0.04 + bz * o;
-        const mx = kx + (dx * c1 + nx * s1) * 0.045;
-        const my = ky2 + (dy * c1 + ny * s1) * 0.045;
-        const mz = kz2 + (dz * c1 + nz * s1) * 0.045;
-        const tx = mx + (dx * c2 + nx * s2) * 0.04;
-        const ty = my + (dy * c2 + ny * s2) * 0.04;
-        const tz = mz + (dz * c2 + nz * s2) * 0.04;
-        fingers = min(fingers, min(capsule(ux, uy, uz, kx, ky2, kz2, mx, my, mz, 0.016 * w), capsule(ux, uy, uz, mx, my, mz, tx, ty, tz, 0.015 * w)));
+      let knuckles = 10;
+      for (let j = 0; j < 4; j++) {
+        const pinky = step(2.5, j);
+        const fl = 0.092 - 0.008 * abs(j - 1) - 0.012 * pinky;
+        const fr = (0.0098 - 0.0009 * pinky) * w;
+        const sp = (j - 1.5) * 0.07 * (1 - g);
+        const cs = cos(sp);
+        const ss = sin(sp);
+        const ks = (j - 1.5) * 0.0205 * w;
+        const ku = 0.043 - 0.003 * abs(j - 1.2);
+        const m1s = ks + ss * cos(b1) * fl * 0.46;
+        const m1v = sin(b1) * fl * 0.46;
+        const m1u = ku + cs * cos(b1) * fl * 0.46;
+        const m2s = m1s + ss * cos(b2) * fl * 0.31;
+        const m2v = m1v + sin(b2) * fl * 0.31;
+        const m2u = m1u + cs * cos(b2) * fl * 0.31;
+        const m3s = m2s + ss * cos(b3) * fl * 0.23;
+        const m3v = m2v + sin(b3) * fl * 0.23;
+        const m3u = m2u + cs * cos(b3) * fl * 0.23;
+        fingers = min(fingers, min(capsule(hs, hv, hu, ks, 0, ku, m1s, m1v, m1u, fr), min(capsule(hs, hv, hu, m1s, m1v, m1u, m2s, m2v, m2u, fr * 0.93), capsule(hs, hv, hu, m2s, m2v, m2u, m3s, m3v, m3u, fr * 0.84))));
+        knuckles = min(knuckles, length3(hs - ks, hv + 0.003, hu - ku + 0.004) - fr * 1.12);
       }
-      // The thumb sits on the side toward the body; it folds across a fist.
-      const tbx = hx - bx * side * 0.03 * w;
-      const tby = hy - by * side * 0.03 * w;
-      const tbz = hz - bz * side * 0.03 * w;
-      const ox = dx * 0.045 - bx * side * 0.03;
-      const oy = dy * 0.045 - by * side * 0.03;
-      const oz = dz * 0.045 - bz * side * 0.03;
-      const fx = dx * 0.04 + nx * 0.035 + bx * side * 0.02;
-      const fy = dy * 0.04 + ny * 0.035 + by * side * 0.02;
-      const fz = dz * 0.04 + nz * 0.035 + bz * side * 0.02;
-      const thumb = capsule(ux, uy, uz, tbx, tby, tbz, tbx + mix(ox, fx, g), tby + mix(oy, fy, g), tbz + mix(oz, fz, g), 0.016 * w);
-      arms = min(arms, smoothUnion(palm, min(fingers, thumb), 0.012));
+      // The thumb comes off the heel of the palm on the side toward the
+      // body, angled out; it folds across the front of a fist.
+      const ts = -side;
+      const t1s = mix(0.55, 0.3, g) * ts;
+      const t1v = mix(0.3, 0.5, g);
+      const t1u = mix(0.78, 0.85, g);
+      const t2s = mix(0.38, -0.15, g) * ts;
+      const t2v = mix(0.18, 0.6, g);
+      const t2u = mix(0.9, 0.75, g);
+      const t3s = mix(0.22, -0.95, g) * ts;
+      const t3v = mix(0.2, 0.1, g);
+      const t3u = mix(0.95, 0.25, g);
+      const l1 = length3(t1s, t1v, t1u);
+      const l2 = length3(t2s, t2v, t2u);
+      const l3 = length3(t3s, t3v, t3u);
+      const p0s = ts * 0.026 * w;
+      const p0v = 0.006;
+      const p0u = -0.032;
+      const p1s = p0s + t1s / l1 * 0.046;
+      const p1v = p0v + t1v / l1 * 0.046;
+      const p1u = p0u + t1u / l1 * 0.046;
+      const p2s = p1s + t2s / l2 * 0.033;
+      const p2v = p1v + t2v / l2 * 0.033;
+      const p2u = p1u + t2u / l2 * 0.033;
+      const p3s = p2s + t3s / l3 * 0.028;
+      const p3v = p2v + t3v / l3 * 0.028;
+      const p3u = p2u + t3u / l3 * 0.028;
+      const thumb = min(capsule(hs, hv, hu, p0s, p0v, p0u, p1s, p1v, p1u, 0.0135 * w), min(capsule(hs, hv, hu, p1s, p1v, p1u, p2s, p2v, p2u, 0.0112 * w), capsule(hs, hv, hu, p2s, p2v, p2u, p3s, p3v, p3u, 0.0102 * w)));
+      const hand = smoothUnion(smoothUnion(palm, knuckles, 0.006), min(fingers, thumb), 0.006);
+      arms = min(arms, smoothUnion(arm, hand, 0.014));
     }
   }
   let body = smoothUnion(min(legs, arms), torso, 0.05);
