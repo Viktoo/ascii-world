@@ -249,14 +249,6 @@ impl Sim {
         let marks = self.work_marks();
         let breath = pulse(self.t);
         let near = |p: Vec3| (p - cam).length() < view;
-        let hover_thing = match &self.hover {
-            Some(Target::Thing(id)) => Some(*id),
-            _ => None,
-        };
-        let hover_actor = match &self.hover {
-            Some(Target::Actor(a)) => Some(*a),
-            _ => None,
-        };
         let figure = self.snap.figure_type.and_then(|f| self.snap.type_of(f));
         let mut worn: std::collections::HashMap<ActorId, Vec<&Thing>> = std::collections::HashMap::new();
         for t in self.things.live() {
@@ -295,9 +287,6 @@ impl Sim {
                     }
                     if marks.actors.contains(&ActorId::Npc(n.def.id)) {
                         g.fx[FX_HIGHLIGHT] = g.fx[FX_HIGHLIGHT].max(breath);
-                    }
-                    if hover_actor == Some(ActorId::Npc(n.def.id)) {
-                        g.fx[FX_HIGHLIGHT] = 0.5;
                     }
                     insts.push(g);
                     if of_the_dark {
@@ -350,9 +339,6 @@ impl Sim {
             let mut fx = thing_look(&t.props, ty, t.scale);
             if marks.things.contains(&t.id) {
                 fx[FX_HIGHLIGHT] = fx[FX_HIGHLIGHT].max(breath);
-            }
-            if hover_thing == Some(t.id) {
-                fx[FX_HIGHLIGHT] = 0.7;
             }
             let tool = ty.ct.meta.tool.as_ref();
             match eye.filter(|_| t.holder == Some(ActorId::Player) && t.co_holder.is_none()) {

@@ -356,8 +356,6 @@ pub struct Sim {
     acc_behavior: f32,
     acc_regions: f32,
     acc_life: f32,
-    /// Highlighted (hovered) target, drawn brighter.
-    pub hover: Option<Target>,
     /// Where new things just appeared, and when: a flash of light (see `render`).
     pub flashes: Vec<(Vec3, f64)>,
     /// Blasts lighting up what is around them: (where, when, how far it reached).
@@ -450,7 +448,6 @@ impl Sim {
             acc_behavior: 0.0,
             acc_regions: 1.0,
             acc_life: 0.0,
-            hover: None,
             flashes: Vec::new(),
             blasts: Vec::new(),
             lit_by: HashMap::new(),

@@ -11,7 +11,9 @@ use glam::Vec3;
 pub const GRAVITY: f32 = super::physics::GRAVITY;
 /// A jump lifts a body this much of its own height.
 const JUMP: f32 = 0.5;
-/// Health a fall takes for each metre beyond one's own height.
+/// A drop up to this many of one's own heights doesn't hurt.
+const FALL_SAFE_HEIGHTS: f32 = 1.5;
+/// Health a fall takes for each metre beyond that.
 const FALL_HURT_PER_M: f32 = 0.12;
 /// A swimmer afloat keeps its eyes this far over the water.
 const SWIM_EYE_OVER: f32 = 0.12;
@@ -218,7 +220,7 @@ impl Sim {
         }
     }
 
-    /// Landing from higher than one's own height hurts, more the further it
+    /// Landing from higher than 1.5 times one's own height hurts, more the further it
     /// was (a jump on flat ground never does; off a roof or out of a tree
     /// it does, and again and again it can kill).
     fn land_hard(&mut self, id: ActorId, speed: f32) {
@@ -226,7 +228,7 @@ impl Sim {
         let perch = a.perch.take();
         // What hurts is how fast they land: told as the drop it takes on Earth.
         let drop = speed * speed / (2.0 * GRAVITY);
-        let over = drop - a.dims.height.max(1.0);
+        let over = drop - a.dims.height.max(1.0) * FALL_SAFE_HEIGHTS;
         if over <= 0.0 {
             return;
         }

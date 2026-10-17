@@ -562,7 +562,7 @@ fn the_traveler_falls_and_wakes_at_the_beginning_in_the_morning() {
     assert!(s.sim.things.get(sw).is_some_and(|t| (t.pos - p).length() < 3.0), "the sword lies where they fell");
 }
 
-/// A jump on flat ground never hurts; a drop from higher than one's own
+/// A jump on flat ground never hurts; a drop from higher than 1.5 times one's own
 /// height does, more the further; again and again it kills.
 #[test]
 fn falls_from_a_height_hurt_and_can_kill() {
@@ -576,7 +576,7 @@ fn falls_from_a_height_hurt_and_can_kill() {
     assert!(s.sim.jump(ActorId::Player));
     run_for(&mut s, 2.0);
     assert_eq!(s.sim.health(), 1.0, "a jump doesn't hurt");
-    // Dropped from 3 m (under twice the traveler's height): a little.
+    // Dropped from 4.5 m (a roof): a little.
     let drop = |s: &mut Session, who: ActorId, h: f32| {
         let a = s.sim.actor_mut(who).unwrap();
         a.pos.y += h;
@@ -584,9 +584,9 @@ fn falls_from_a_height_hurt_and_can_kill() {
         a.vy = 0.0;
         run_for(s, 3.0);
     };
-    drop(&mut s, ActorId::Player, 3.0);
+    drop(&mut s, ActorId::Player, 4.5);
     let hurt = 1.0 - s.sim.health();
-    assert!(hurt > 0.05 && hurt < 0.25, "a roof's height: {hurt:.2}");
+    assert!(hurt > 0.05 && hurt < 0.35, "a roof's height: {hurt:.2}");
     assert!(!events(&s.sim, "fell_hard").is_empty());
     // Out of a tall tree: much worse; and again, dead.
     drop(&mut s, ActorId::Player, 8.0);

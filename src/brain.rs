@@ -696,9 +696,12 @@ async fn write_body(ctx: &Ctx, system: &str, name: &str, desc: &str, species: &s
 /// (to commit) and the species' names.
 async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (Vec<NewType>, Vec<String>) {
     let mut bodies = body_names(&ctx.db);
+    // Bodies written this time, by the generic body each was written from.
+    let mut written: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // (species value, its body, what to write it from: (template, description),
-    // the generic body its own one comes from).
-    let mut plans: Vec<(Value, String, Option<(String, String)>, Option<String>)> = Vec::new();
+    // the generic body its own one comes from, the generic body its size was
+    // given against).
+    let mut plans: Vec<(Value, String, Option<(String, String)>, Option<String>, Option<String>)> = Vec::new();
     for v in list.iter().take(max) {
         let mut v = v.clone();
         let Some(o) = v.as_object_mut() else { continue };
@@ -727,13 +730,17 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
         } else {
             None
         };
-        if write.is_some() {
+        if let Some((template, _)) = &write {
             // Two species naming one new body share one writing.
             bodies.insert(body.clone());
+            written.insert(body.clone(), template.clone());
         }
-        plans.push((v, body, write, template_of));
+        // A body written now, from a generic one or new, is at its natural
+        // size, while the species' size was given against the generic body.
+        let sized_from = written.get(&body).cloned();
+        plans.push((v, body, write, template_of, sized_from));
     }
-    let futs = plans.iter().map(|(v, body, write, template_of)| async move {
+    let futs = plans.iter().map(|(v, body, write, template_of, _)| async move {
         let (template, desc) = write.as_ref()?;
         match write_body(ctx, system, body, desc, &v.to_string(), template, template_of.is_some()).await {
             Ok(t) => Some((body.clone(), Ok(t))),
@@ -752,7 +759,7 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
         }
     }
     let mut names = Vec::new();
-    for (mut v, mut body, write, template_of) in plans {
+    for (mut v, mut body, write, template_of, sized_from) in plans {
         let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
         if failed.contains(&body) {
             // Its body couldn't be written: the generic one it started from.
@@ -761,11 +768,16 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
         }
         if let Some(o) = v.as_object_mut() {
             // A body of its own from a generic one: its sliders are its own
-            // (the generic ranges don't apply), and it keeps its height.
-            if let Some(template) = template_of.filter(|_| !TEMPLATE_BODIES.contains(&body.as_str())) {
+            // (the generic ranges don't apply).
+            if template_of.is_some() && !TEMPLATE_BODIES.contains(&body.as_str()) {
                 o.remove("look");
+            }
+            // A body written now keeps the height the species' size gave it
+            // on the generic body (with no size, it stands as written).
+            let size = o.get("size").and_then(|x| x.as_f64()).or(template_of.is_some().then_some(1.0));
+            if let (Some(template), Some(size)) = (sized_from.filter(|_| !TEMPLATE_BODIES.contains(&body.as_str())), size) {
                 let own = types.iter().find(|t| t.ct.meta.name == body).and_then(|t| t.ct.meta.body.as_ref()).map(|b| b.height).or_else(|| body_height(&ctx.db, &body));
-                let size = o.get("size").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32;
+                let size = size as f32;
                 if let Some(h) = own {
                     o.insert("size".into(), serde_json::json!(size_on_own_body(size, body_height(&ctx.db, &template), h)));
                 }

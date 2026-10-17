@@ -1376,11 +1376,6 @@ impl App {
         // Half a reticle cell, as a slope off the ray.
         let cone = (tan / vh as f32).max(tan * aspect / w as f32);
         let picked = self.sim.pick(cam.pos, rd, 40.0, cone, Some(ActorId::Player));
-        let hover = picked.as_ref().filter(|p| p.dist < 12.0 && !matches!(p.target, Target::Point(_))).map(|p| p.target.clone());
-        if hover != self.sim.hover {
-            self.sim.hover = hover;
-            self.dirty = true;
-        }
         if picked.as_ref().map(|p| (&p.target, p.name.as_str())) != self.pointed.as_ref().map(|p| (&p.target, p.name.as_str())) {
             self.dirty = true;
         }
