@@ -247,6 +247,10 @@ pub struct Species {
     /// or unreadable ones are guessed from the words.
     #[serde(default, deserialize_with = "crate::audio::call::lenient_calls", skip_serializing_if = "Vec::is_empty")]
     pub voice: Vec<crate::audio::call::Call>,
+    /// How those of it who speak sound, as numbers (a character's own
+    /// `tone` goes over it): see `voice::recipe::Recipe::of`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tone: LookMap,
     /// Mass in kg at full size.
     #[serde(default = "mass")]
     pub mass: f32,

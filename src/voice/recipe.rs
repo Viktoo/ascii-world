@@ -27,8 +27,21 @@ pub struct Recipe {
     pub speed: f32,
     /// -1 dark .. +1 bright.
     pub tilt: f32,
+    /// 0 voiced .. 1 all breath, no voice at all.
+    pub whisper: f32,
+    /// A second voice an octave below, mixed in (0 none .. 1 as loud).
+    pub under: f32,
+    /// Sounding through a tube or a hollow chest (0 .. 1).
+    pub hollow: f32,
     pub seed: u64,
 }
+
+/// The numbers a character's (or their species') `tone` may give, and
+/// what each sets: pitch (Hz), range (pitch movement, 1 as spoken), size
+/// (the throat, 1 an adult's, 1.3 bigger and deeper-sounding, 0.8 smaller),
+/// breath, rough, whisper, under, hollow, waver (a slow shake, 0 .. 1),
+/// waver_hz, pace (1 an ordinary pace).
+pub const TONE: &[&str] = &["pitch", "range", "size", "breath", "rough", "whisper", "under", "hollow", "waver", "waver_hz", "pace"];
 
 const F_US: &[&str] = &["af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky", "af_nova", "af_aoede", "af_kore", "af_jessica", "af_river"];
 const M_US: &[&str] = &["am_michael", "am_fenrir", "am_puck", "am_echo", "am_eric", "am_liam", "am_onyx", "am_adam"];
@@ -65,6 +78,11 @@ impl Recipe {
         if self.female { 1.17 } else { 1.0 }
     }
 
+    /// `of` with no species tone under theirs.
+    pub fn of_plain(p: &Persona, id: i64) -> Recipe {
+        Self::of(p, &Default::default(), id)
+    }
+
     /// How fast they speak, as a share of an ordinary pace.
     pub fn pace(p: &Persona) -> f32 {
         let ws = words(&format!("{} {}", p.voice, p.personality));
@@ -83,7 +101,8 @@ impl Recipe {
         s
     }
 
-    pub fn of(p: &Persona, id: i64) -> Recipe {
+    /// `kind`: how their species sounds (`tone`), under their own.
+    pub fn of(p: &Persona, kind: &crate::world::species::LookMap, id: i64) -> Recipe {
         let h = hash(&p.name, id);
         let desc = words(&format!("{} {} {}", p.appearance, p.personality, p.voice));
         let how = words(&p.voice);
@@ -125,6 +144,9 @@ impl Recipe {
             jitter: 0.1,
             speed: Self::pace(p),
             tilt: 0.0,
+            whisper: 0.0,
+            under: 0.0,
+            hollow: 0.0,
             seed: h,
         };
         // Age: children small and high; the old shakier, rougher, breathier.
@@ -195,6 +217,27 @@ impl Recipe {
         if any(&how, &["calm", "patient", "steady", "kind", "slow"]) {
             r.jitter *= 0.7;
         }
+        // What their tone says outright, their species' first, then their own.
+        for (key, v) in kind.iter().chain(p.tone.iter()) {
+            let v = *v;
+            if !v.is_finite() {
+                continue;
+            }
+            match key.as_str() {
+                "pitch" => r.f0 = v.clamp(40.0, 400.0),
+                "range" => r.range = v.clamp(0.0, 2.0),
+                "size" => r.throat = r.base_throat() / v.clamp(0.6, 1.6),
+                "breath" => r.breath = v.clamp(0.0, 1.0),
+                "rough" => r.rasp = v.clamp(0.0, 1.0),
+                "whisper" => r.whisper = v.clamp(0.0, 1.0),
+                "under" => r.under = v.clamp(0.0, 1.0),
+                "hollow" => r.hollow = v.clamp(0.0, 1.0),
+                "waver" => r.tremor = v.clamp(0.0, 1.0),
+                "waver_hz" => r.trem_hz = v.clamp(1.0, 12.0),
+                "pace" => r.speed = v.clamp(0.6, 1.5),
+                _ => {}
+            }
+        }
         // Their own: no two the same.
         r.f0 *= 0.93 + 0.14 * u(h, 2);
         r.throat *= 0.97 + 0.06 * u(h, 3);
@@ -207,8 +250,11 @@ impl Recipe {
         r.speed = r.speed.clamp(0.75, 1.3);
         // Keep pitch and throat within what reshaping does cleanly.
         let base_f0 = if r.female { 190.0 } else { 112.0 };
-        r.f0 = r.f0.clamp(base_f0 / 1.6, base_f0 * 1.6);
-        r.throat = r.throat.clamp(r.base_throat() * 0.85, r.base_throat() * 1.18);
+        // A pitch asked for outright may go further (a voice gone wrong).
+        let span = if kind.contains_key("pitch") || p.tone.contains_key("pitch") { 2.0 } else { 1.6 };
+        r.f0 = r.f0.clamp(base_f0 / span, base_f0 * span);
+        let span = if kind.contains_key("size") || p.tone.contains_key("size") { 0.7 } else { 0.85 };
+        r.throat = r.throat.clamp(r.base_throat() * span, r.base_throat() * 1.18);
         r
     }
 }
@@ -225,9 +271,9 @@ mod tests {
 
     #[test]
     fn reads_who_they_are() {
-        let nan = Recipe::of(&p("Aune", 72, "Broad, weathered woman with grey braids", "Short, flat sentences", 1.62), 1);
-        let girl = Recipe::of(&p("Lyyti", 11, "Wiry girl with tangled hair", "breathless rushes", 1.42), 2);
-        let big = Recipe::of(&p("Bram", 40, "Huge man with a black beard", "deep and gruff", 1.98), 3);
+        let nan = Recipe::of_plain(&p("Aune", 72, "Broad, weathered woman with grey braids", "Short, flat sentences", 1.62), 1);
+        let girl = Recipe::of_plain(&p("Lyyti", 11, "Wiry girl with tangled hair", "breathless rushes", 1.42), 2);
+        let big = Recipe::of_plain(&p("Bram", 40, "Huge man with a black beard", "deep and gruff", 1.98), 3);
         assert!(nan.female && nan.tremor > 0.3 && nan.range < 0.9);
         assert!(girl.f0 > 250.0 && girl.throat > 1.22 && girl.speed > 1.1);
         assert!(!big.female && big.f0 < 105.0 && big.rasp > 0.3);
@@ -235,11 +281,24 @@ mod tests {
     }
 
     #[test]
+    fn tone_numbers_say_how_they_sound() {
+        let mut q = p("Oda", 40, "Tall thin man", "soft and pleasant", 2.1);
+        let plain = Recipe::of(&q, &Default::default(), 9);
+        let kind = [("whisper".to_string(), 0.4), ("under".into(), 0.5), ("pitch".into(), 80.0)].into_iter().collect();
+        q.tone.insert("pitch".into(), 70.0);
+        q.tone.insert("hollow".into(), 0.6);
+        let r = Recipe::of(&q, &kind, 9);
+        assert!(r.whisper == 0.4 && r.under == 0.5 && r.hollow == 0.6 && plain.whisper == 0.0);
+        // Their own pitch over their kind's (within their own small offset).
+        assert!(r.f0 < 76.0 && r.f0 > 64.0, "{}", r.f0);
+    }
+
+    #[test]
     fn same_character_same_voice_others_differ() {
         let a = p("Veikko", 31, "Tall, rangy man", "Quick and joking", 1.86);
-        assert_eq!(Recipe::of(&a, 7), Recipe::of(&a, 7));
+        assert_eq!(Recipe::of_plain(&a, 7), Recipe::of_plain(&a, 7));
         let mut b = a.clone();
         b.name = "Olli".into();
-        assert_ne!(Recipe::of(&a, 7), Recipe::of(&b, 8));
+        assert_ne!(Recipe::of_plain(&a, 7), Recipe::of_plain(&b, 8));
     }
 }

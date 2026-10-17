@@ -36,6 +36,21 @@ Read off the persona, with no extra LLM call:
   pronunciation matches) in a mix of their own, and a small offset from
   their id. The same character always sounds the same.
 
+### Tone: numbers the LLM writes
+
+Over that guess, a character's `tone` (and their species' `tone` under
+it) says outright how they sound, as numbers the world's writer gives,
+like the sliders of animal calls: `pitch` (Hz), `range`, `size` (the
+throat), `pace`, and 0–1 `breath`, `rough`, `whisper`, `under`, `hollow`,
+`waver` (with `waver_hz`). All are done by the body, after the model has
+spoken, on WORLD's parts of the speech: a **whisper** drives the mouth with
+breath and no voice (aperiodicity up; past 0.75 no pitch at all), **under**
+synthesises the same speech again an octave down from a bigger throat and
+mixes it in, **hollow** combs the throat's resonances every 550 Hz and adds
+a short 9 ms ring, **waver** is the tremor at a chosen rate. The phantom's
+species carries a stock tone like its stock body. `pocket listen --voices`
+says each one in the cast, the phantom among them.
+
 The sim spaces a conversation's lines by how long each takes to say at the
 speaker's pace (`voice::secs`), heard or not, so talk keeps a human rhythm.
 

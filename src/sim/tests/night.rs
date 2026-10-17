@@ -665,7 +665,7 @@ fn a_fall_from_a_roof_says_so() {
 
 /// Pictures of the dark's own, up close: a phantom and a night walker by
 /// day (to see their shape) and by night, standing (the phantom in a
-/// breastplate and cloak, holding a sword), then struck down and
+/// helmet, breastplate and cloak, holding a sword), then struck down and
 /// lying (look at them: frightening alive, flat on the ground dead).
 #[test]
 #[ignore]
@@ -675,6 +675,7 @@ fn night_bodies_png() {
     let sword = add_type(&w, &fixture("physics/sword.js"));
     let plate = add_type(&w, &fixture("layers/breastplate.js"));
     let cloak = add_type(&w, &fixture("layers/cloak.js"));
+    let helmet = add_type(&w, &fixture("layers/helmet.js"));
     let mut s = session(&w, 7, None);
     s.sim.cfg.difficulty = 2;
     s.sim.player.pos = w.spawn;
@@ -686,7 +687,7 @@ fn night_bodies_png() {
     // Armed and armoured, as a phantom goes hunting.
     {
         let at = s.sim.cast.get(ph).unwrap().a.pos;
-        for ty in [plate, cloak] {
+        for ty in [plate, cloak, helmet] {
             let id = s.sim.spawn_thing(ty, at + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
             s.sim.wear(ActorId::Npc(ph), ActorId::Npc(ph), id).unwrap();
         }
@@ -732,6 +733,8 @@ fn night_bodies_png() {
         png_hd(&mut s, &snap, &gpu, front, &format!("{dir}/pocket-night-{name}-both.png"));
         png_hd(&mut s, &snap, &gpu, face(spots[0].1), &format!("{dir}/pocket-night-{name}-phantom-face.png"));
         png_hd(&mut s, &snap, &gpu, face(spots[1].1), &format!("{dir}/pocket-night-{name}-walker-face.png"));
+        let p = spots[0].1;
+        png_hd(&mut s, &snap, &gpu, cam_at(Vec3::new(p.x - 2.6, 1.3, p.z - 0.4), p + Vec3::Y * 1.1), &format!("{dir}/pocket-night-{name}-phantom-side.png"));
     }
     s.sim.t = night;
     for (id, p) in spots {
@@ -810,4 +813,60 @@ fn the_dark_lies_flat_when_struck_down() {
         let name = s.sim.actor_name(ActorId::Npc(id));
         assert!(high - ground < 0.7, "{name} lies flat: its highest point is {:.2} m up", high - ground);
     }
+}
+
+/// A body that says where its parts are holds things in its own hands and
+/// wears what was made for the body it was written from on its own parts:
+/// a phantom's long arms hold a sword where its hand is (not where a
+/// person's hand would be), and a person's helmet sits on its hanging head.
+#[test]
+fn a_phantom_holds_and_wears_on_its_own_body() {
+    let w = world("own parts", 7);
+    let sword = add_type(&w, &fixture("physics/sword.js"));
+    let helmet = add_type(&w, &fixture("layers/helmet.js"));
+    let mut s = session(&w, 7, None);
+    s.sim.cfg.difficulty = 1;
+    s.sim.player.pos = w.spawn;
+    s.sim.t = before_dusk(1.0, 2.0);
+    for _ in 0..40 {
+        s.step(0.1);
+    }
+    let ph = phantoms(&s)[0];
+    let at = s.sim.cast.get(ph).unwrap().a.pos;
+    let hl = s.sim.spawn_thing(helmet, at + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.wear(ActorId::Npc(ph), ActorId::Npc(ph), hl).unwrap();
+    let sw = s.sim.spawn_thing(sword, at + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.hand_to(ActorId::Npc(ph), sw);
+    {
+        let n = s.sim.cast.get_mut(ph).unwrap();
+        n.think_at = f64::MAX;
+        n.plan.clear();
+        n.a.task = None;
+    }
+    for _ in 0..20 {
+        s.step(0.05);
+    }
+    let n = s.sim.cast.get(ph).unwrap();
+    let body = s.sim.snap.type_of(n.body_ty).unwrap().clone();
+    let g = n.gpu(&body);
+    let k = g.k();
+    // Its hands are where its body draws them, well away from a person's.
+    let [r, l] = n.a.hands.expect("its body says where its hands are");
+    let own = n.a.pos + n.a.right() * r.x + Vec3::Y * r.y + n.a.forward() * r.z;
+    assert!((g.from_local(body.ct.part(0, &k).unwrap()) - own).length() < 0.05);
+    let mut person = n.a.clone();
+    person.hands = None;
+    assert!((person.hand(false) - n.a.hand(false)).length() > 0.15, "its long arms reach further than a person's");
+    // The sword is held between them (it is big), by its grip.
+    let mid = n.a.pos + n.a.right() * ((r.x + l.x) * 0.5) + Vec3::Y * ((r.y + l.y) * 0.5) + n.a.forward() * ((r.z + l.z) * 0.5);
+    let t = s.sim.things.get(sw).unwrap();
+    let ty = s.sim.snap.type_of(t.type_id).unwrap();
+    let grip = t.pos + glam::Quat::from_rotation_y(t.yaw) * (t.hold_tilt.unwrap_or_default() * (Vec3::from_array(ty.ct.meta.tool.as_ref().unwrap().grip) * t.scale));
+    assert!((grip - mid).length() < 0.2, "held in its hands: {:.2} m off", (grip - mid).length());
+    // The helmet moves from a person's head to its own.
+    let hty = s.sim.snap.type_of(s.sim.things.get(hl).unwrap().type_id).unwrap().clone();
+    let shift = s.sim.layer_shift(&g, &body, &hty).expect("the helmet follows its head");
+    let figure = s.sim.snap.body_named("figure").unwrap().clone();
+    let want = g.from_local(body.ct.part(2, &k).unwrap()) - g.from_local(figure.ct.part(2, &k).unwrap());
+    assert!(shift.length() > 0.1 && (shift - want).length() < 1e-3, "to its own head: {shift:?}");
 }

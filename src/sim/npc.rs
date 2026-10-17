@@ -419,6 +419,29 @@ pub fn body_inst(a: &super::actor::Actor, body: &TypeEntry, sliders: &[f32; crat
     g
 }
 
+impl super::Sim {
+    /// Where everyone's hands are this frame, from their bodies: a body that
+    /// says where its parts are (`parts()`) holds things in its own hands,
+    /// however long its arms or wherever they reach.
+    pub fn place_hands(&mut self) {
+        let snap = &self.snap;
+        for n in self.cast.npcs.iter_mut().filter(|n| n.here() && !n.dead) {
+            let Some(body) = snap.type_of(n.body_ty) else {
+                n.a.hands = None;
+                continue;
+            };
+            if body.ct.parts.is_none() {
+                n.a.hands = None;
+                continue;
+            }
+            let g = n.gpu(body);
+            let k = g.k();
+            let s = g.pos_scale[3];
+            n.a.hands = body.ct.part(0, &k).map(|r| [r * s, body.ct.part(1, &k).unwrap_or(r) * s]);
+        }
+    }
+}
+
 /// Fit a character to its species: body, look sliders, size, roles and
 /// temper (on arrival, and again when its species changes).
 pub fn fit(n: &mut Npc, snap: &WorldSnapshot, seed: u64) {

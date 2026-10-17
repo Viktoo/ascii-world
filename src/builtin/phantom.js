@@ -12,6 +12,9 @@
 // Roles (live pose): s0/s1 = left/right arm raised sideways (0 down … 1 up),
 // s2/s3 = left/right arm reaching forward (0 … 1), s4 = lean forward (radians),
 // s5 = head nod, s6 = crouch (0 … 1). s10 = eyes shut (the lights go out).
+// parts(i, _, _, k): its right hand (0), left hand (1), the middle of its
+// head (2) and chest (3), where sdf() draws them: what it holds is in its
+// hand, and what it wears follows its hanging head.
 export const meta = { name: "phantom", bounds: [1.1, 2.6, 1.2], tags: ["builtin", "body"],
   props: { mass: 55, alive: 1 },
   body: { height: 2.0, eye: 1.76, radius: 0.33, reach: 2.6, grip: [0.3, 1.0, 0.3], from: "figure",
@@ -51,11 +54,10 @@ export function sdf(x, y, z, k) {
   const waist = roundBox(q.x, q.y - 0.16, q.z, 0.11 * w, 0.17, 0.065 * w, 0.05);
   const blades = ellipsoid(abs(q.x) - 0.08 * w, q.y - 0.46, q.z + 0.07 * w, 0.06, 0.07, 0.03);
   const torso = smoothUnion(smoothUnion(chest, waist, 0.08), blades, 0.03);
-  // The left shoulder slumped lower than the right; arms bent, the hands
-  // where a person's are (what it holds is held there), the fingers long.
+  // The left shoulder slumped lower than the right; arms too long, bent.
   const lsy = 0.5;
   const rsy = 0.55;
-  const arm = 0.58;
+  const arm = 0.8;
   // The left arm hangs dead, a little forward.
   const la = clamp(k.s0, 0, 1) * 3.0;
   const ra = clamp(k.s1, 0, 1) * 3.0;
@@ -214,4 +216,28 @@ export function color(x, y, z, k) {
     return mix(hsv(k.d, 0.1, 0.25 + 0.05 * rot), rgb(46, 34, 28), stain);
   }
   return mix(hsv(k.e, 0.08, 0.18 + 0.04 * rot), rgb(40, 30, 26), stain);
+}
+
+export function parts(x, y, z, k) {
+  const h = clamp(k.a, 1.9, 2.2) / 1.75;
+  const w = clamp(k.b, 0.65, 0.85);
+  const crouch = clamp(k.s6, 0, 1);
+  const hip = 0.9 - crouch * 0.38;
+  // In the stooped torso's frame, as sdf() draws them.
+  let q = vec3(0, 0.42, 0);
+  if (x < 0.5) {
+    const ra = clamp(k.s1, 0, 1) * 3.0;
+    const rf = clamp(k.s3, 0, 1) * 1.45;
+    q = vec3(0.22 * w + 0.8 * sin(ra) - 0.04, 0.55 - 0.8 * cos(ra) * cos(rf), 0.8 * cos(ra) * sin(rf));
+  } else if (x < 1.5) {
+    const la = clamp(k.s0, 0, 1) * 3.0;
+    const lf = 0.15 + clamp(k.s2, 0, 1) * 1.3;
+    q = vec3(-0.22 * w - 0.8 * sin(la), 0.5 - 0.8 * cos(la) * cos(lf), 0.8 * cos(la) * sin(lf));
+  } else if (x < 2.5) {
+    const nod = clamp(k.s5, -1, 1);
+    q = vec3(0.05, 0.74 - nod * 0.03, 0.12 + nod * 0.04);
+  }
+  const q0 = rotZ(q.x, q.y, q.z, -0.07);
+  const p = rotX(q0.x, q0.y, q0.z, clamp(k.s4, -0.3, 0.6));
+  return vec3(p.x, p.y + hip, p.z) * h;
 }

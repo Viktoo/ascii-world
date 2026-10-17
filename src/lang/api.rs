@@ -52,6 +52,7 @@ pub enum Api {
     Noise3,
     Hash,
     Rgb,
+    Vec3,
     Hsv,
     Glow,
     Mix,
@@ -83,7 +84,7 @@ pub enum Api {
 pub const NAMES: &[&str] = &[
     "sphere", "box", "roundBox", "cylinder", "cappedCone", "capsule", "torus", "plane", "ellipsoid",
     "union", "smoothUnion", "subtract", "smoothSubtract", "intersect", "rotX", "rotY", "rotZ",
-    "noise3", "hash", "rgb", "hsv", "glow", "mix", "abs", "min", "max", "clamp", "floor", "ceil", "round",
+    "noise3", "hash", "rgb", "vec3", "hsv", "glow", "mix", "abs", "min", "max", "clamp", "floor", "ceil", "round",
     "fract", "sin", "cos", "tan", "atan2", "sqrt", "pow", "exp", "sign", "step", "smoothstep",
     "length2", "length3", "mod",
 ];
@@ -159,6 +160,7 @@ pub fn resolve(name: &str, args: &[Ty]) -> Result<Resolved, String> {
             Ok(Resolved::PadHash)
         }
         "rgb" => need(Rgb, 3),
+        "vec3" => need(Vec3, 3),
         "hsv" => need(Hsv, 3),
         "glow" => match args {
             [V] => Ok(Resolved::PadGlow),
@@ -201,7 +203,7 @@ pub fn resolve(name: &str, args: &[Ty]) -> Result<Resolved, String> {
 pub fn ret_ty(api: Api) -> Ty {
     use Api::*;
     match api {
-        RotX | RotY | RotZ | Rgb | Hsv | MixV | Glow => Ty::V,
+        RotX | RotY | RotZ | Rgb | Vec3 | Hsv | MixV | Glow => Ty::V,
         _ => Ty::F,
     }
 }
@@ -222,7 +224,7 @@ pub fn arg_width(api: Api) -> usize {
         PlaneY => 4,
         Ellipsoid => 6,
         Union | Subtract | Intersect | Min | Max | Atan2 | Pow | Step | Length2 | Mod => 2,
-        SmoothUnion | SmoothSubtract | Clamp | Smoothstep | Length3 | Noise3 | Hash | Rgb | Hsv | Mix => 3,
+        SmoothUnion | SmoothSubtract | Clamp | Smoothstep | Length3 | Noise3 | Hash | Rgb | Vec3 | Hsv | Mix => 3,
         RotX | RotY | RotZ | Glow => 4,
         MixV => 7,
         Abs | Floor | Ceil | Round | Fract | Sin | Cos | Tan | Sqrt | Exp | Sign => 1,
@@ -254,6 +256,7 @@ pub fn wgsl_name(api: Api) -> &'static str {
         Noise3 => "api_noise3",
         Hash => "api_hash",
         Rgb => "api_rgb",
+        Vec3 => "vec3<f32>",
         Hsv => "api_hsv",
         Glow => "api_glow",
         Mix => "api_mix",
@@ -378,6 +381,10 @@ pub fn eval(api: Api, a: &[f32], out: &mut [f32; 3]) {
         }
         Noise3 => vnoise3(g(0), g(1), g(2), 1234),
         Hash => hash3f(g(0), g(1), g(2)),
+        Vec3 => {
+            *out = [g(0), g(1), g(2)];
+            return;
+        }
         Rgb => {
             *out = [
                 clampf(g(0) / 255.0, 0.0, 1.0),

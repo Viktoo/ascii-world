@@ -414,6 +414,12 @@ pub struct Body {
     pub dead: Option<[f32; 8]>,
 }
 
+/// The parts a body's `parts(x, y, z, k)` tells the place of, by number
+/// (`x`): 0 where it holds a thing (the right hand, a mouth, a claw), 1 the
+/// other hand, 2 the middle of its head, 3 the middle of its chest. What is
+/// held goes in those hands, and what is worn follows those parts.
+pub const PARTS: &[&str] = &["hand", "other hand", "head", "chest"];
+
 impl Default for Body {
     fn default() -> Self {
         Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), usual: Vec::new(), from: None, rest: [0.0; 8], dead: None }
@@ -468,6 +474,8 @@ pub struct Module {
     pub meta: Meta,
     pub sdf: Func,
     pub color: Func,
+    /// Where a body's parts are in this pose (CPU only): see `PARTS`.
+    pub parts: Option<Func>,
     pub behaviors: Vec<(Behavior, Func)>,
     /// Property names read or written by behaviour code (`w.<prop>`, `o.<prop>`).
     pub prop_names: Vec<String>,

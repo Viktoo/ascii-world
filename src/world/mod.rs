@@ -179,6 +179,10 @@ pub struct Persona {
     pub goals: String,
     #[serde(default)]
     pub voice: String,
+    /// How their voice sounds, as numbers (see `voice::recipe::Recipe::of`),
+    /// over what the words in `voice` suggest.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tone: species::LookMap,
     #[serde(default)]
     pub relationships: Vec<String>,
     #[serde(default)]

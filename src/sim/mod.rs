@@ -313,6 +313,9 @@ pub struct Sim {
     pub cfg: SimConfig,
     /// What each body wears (kg), tallied once a frame while actors step.
     worn_mass: Option<HashMap<ActorId, f32>>,
+    /// Which part each layer sits on, on the body it was made for (by layer
+    /// and body type): see `render::layer_shift`.
+    layer_parts: std::sync::Mutex<HashMap<(u32, u32), Option<usize>>>,
     pub db: Arc<Db>,
     pub snap: Arc<WorldSnapshot>,
     pub cache: ScatterCache,
@@ -414,6 +417,7 @@ impl Sim {
         let mut sim = Sim {
             cfg,
             worn_mass: None,
+            layer_parts: Default::default(),
             db: db.clone(),
             snap: snap.clone(),
             cache: ScatterCache::default(),
@@ -884,6 +888,7 @@ impl Sim {
         self.cache.overlay.lamps = dark;
         self.mark_work();
         self.step_actors(dt);
+        self.place_hands();
         self.update_riders();
         self.step_social(dt);
         self.step_physics(dt);

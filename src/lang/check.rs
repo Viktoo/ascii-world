@@ -97,6 +97,7 @@ impl<'s> Cx<'s> {
         let mut meta = None;
         let mut sdf_fn: Option<&js::Function<'a>> = None;
         let mut color_fn: Option<&js::Function<'a>> = None;
+        let mut parts_fn: Option<&js::Function<'a>> = None;
         let mut behavior_fns: Vec<(Behavior, &js::Function<'a>)> = Vec::new();
         let mut consts: Vec<(&'a str, &js::Expression<'a>, Span)> = Vec::new();
 
@@ -111,11 +112,12 @@ impl<'s> Cx<'s> {
                         match name {
                             "sdf" if sdf_fn.is_none() => sdf_fn = Some(f),
                             "color" if color_fn.is_none() => color_fn = Some(f),
-                            "sdf" | "color" => self.err(f.span, format!("{name}() is defined twice")),
+                            "parts" if parts_fn.is_none() => parts_fn = Some(f),
+                            "sdf" | "color" | "parts" => self.err(f.span, format!("{name}() is defined twice")),
                             n => match Behavior::from_name(n) {
                                 Some(b) if behavior_fns.iter().any(|(x, _)| *x == b) => self.err(f.span, format!("{name}() is defined twice")),
                                 Some(b) => behavior_fns.push((b, f)),
-                                None => self.err(f.span, format!("only sdf(), color(), tick(), use() and touch() may be exported, not '{name}'")),
+                                None => self.err(f.span, format!("only sdf(), color(), parts(), tick(), use() and touch() may be exported, not '{name}'")),
                             },
                         }
                     }
@@ -177,13 +179,14 @@ impl<'s> Cx<'s> {
         let lists = meta.as_ref().map(|m| [m.says.len(), m.sounds.len(), m.spawns.len()]);
         let sdf = sdf_fn.and_then(|f| self.function(f, "sdf", Role::Shape(Ty::F), &consts, lists));
         let color = color_fn.and_then(|f| self.function(f, "color", Role::Shape(Ty::V), &consts, lists));
+        let parts = parts_fn.and_then(|f| self.function(f, "parts", Role::Shape(Ty::V), &consts, lists));
         let mut behaviors = Vec::new();
         for (b, f) in behavior_fns {
             if let Some(func) = self.function(f, b.name(), Role::Behavior(b), &consts, lists) {
                 behaviors.push((b, func));
             }
         }
-        Some(Module { meta: meta?, sdf: sdf?, color: color?, behaviors, prop_names: std::mem::take(&mut self.prop_names) })
+        Some(Module { meta: meta?, sdf: sdf?, color: color?, parts, behaviors, prop_names: std::mem::take(&mut self.prop_names) })
     }
 
     fn top_level_reject(&mut self, st: &Statement) {

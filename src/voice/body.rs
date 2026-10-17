@@ -1,7 +1,9 @@
 //! A character's body, given to a plain voice: the WORLD vocoder splits the
 //! speech into pitch, the throat's resonances and breath, and each is
 //! reshaped (pitch and its range, throat size, breath, rasp, an old voice's
-//! tremor) before it is put back together. The words stay the voice model's.
+//! tremor) before it is put back together; it can be whispered (breath
+//! alone, no voice), sound hollow (as down a tube), and carry a second voice
+//! an octave under it. The words stay the voice model's.
 
 use super::recipe::Recipe;
 
@@ -109,7 +111,9 @@ pub fn reshape(x: &[f32], fs: u32, r: &Recipe) -> Vec<f32> {
             }
         }
     }
-    let nf0: Vec<f64> = (0..n).map(|i| if voiced[i] { nl[i].exp() } else { 0.0 }).collect();
+    // A whisper has no voice at all, only breath through the same mouth.
+    let whisper = r.whisper as f64;
+    let nf0: Vec<f64> = (0..n).map(|i| if voiced[i] && whisper < 0.75 { nl[i].exp() } else { 0.0 }).collect();
 
     // Throat: formants move, the pitch doesn't.
     let alpha = (r.throat / r.base_throat()) as f64;
@@ -125,19 +129,41 @@ pub fn reshape(x: &[f32], fs: u32, r: &Recipe) -> Vec<f32> {
     let tilt: Vec<f64> = freq.iter().map(|f| (1.0 + f.min(5000.0) / 1500.0).powf(0.9 * r.tilt as f64).powi(2)).collect();
     let wgt: Vec<f64> = freq.iter().map(|f| (f / 3000.0).clamp(0.15, 1.0)).collect();
     let band: Vec<f64> = freq.iter().map(|f| (-((f - 1200.0) / 900.0).powi(2)).exp()).collect();
+    // Hollow: resonances every 550 Hz, as down a pipe or in a barrel chest.
+    let hollow = r.hollow as f64;
+    let comb: Vec<f64> = freq.iter().map(|f| 1.0 + hollow * 0.85 * (std::f64::consts::TAU * f / 550.0).cos()).collect();
     for i in 0..n {
         let shimmer = if r.rasp > 0.0 { (0.25 * r.rasp as f64 * rng.gauss()).exp() } else { 1.0 };
         for k in 0..bins {
-            sp[i][k] *= tilt[k] * shimmer;
+            sp[i][k] *= tilt[k] * shimmer * comb[k];
             let mut a = ap[i][k];
             a += (1.0 - a) * r.breath as f64 * 0.8 * wgt[k];
+            a += (1.0 - a) * whisper;
             if r.rasp > 0.0 {
                 a += (1.0 - a) * r.rasp as f64 * 0.5 * band[k];
             }
             ap[i][k] = a.clamp(0.0, 0.999);
         }
     }
-    let y = rsworld::synthesis(&nf0, &sp, &ap, FP, fs_i);
+    let mut y = rsworld::synthesis(&nf0, &sp, &ap, FP, fs_i);
+    // A voice under the voice: an octave down, from a bigger throat.
+    if r.under > 0.0 && nf0.iter().any(|v| *v > 0.0) {
+        let low: Vec<f64> = nf0.iter().map(|v| v * 0.5).collect();
+        let big: Vec<Vec<f64>> = sp.iter().map(|row| warp(row, 0.85)).collect();
+        let ab: Vec<Vec<f64>> = ap.iter().map(|row| warp(row, 0.85)).collect();
+        let y2 = rsworld::synthesis(&low, &big, &ab, FP, fs_i);
+        let g = r.under as f64 * 0.9;
+        for (a, b) in y.iter_mut().zip(y2.iter()) {
+            *a += g * b;
+        }
+    }
+    // And the hollow's echo: a short ring inside it.
+    if hollow > 0.0 {
+        let d = (fs as f64 * 0.009) as usize;
+        for i in (d..y.len()).rev() {
+            y[i] += hollow * 0.45 * y[i - d];
+        }
+    }
     level(&y)
 }
 
@@ -151,6 +177,50 @@ pub fn level(y: &[f64]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain buzz at 120 Hz, a second long, like a held vowel.
+    fn buzz(fs: u32) -> Vec<f32> {
+        (0..fs as usize).map(|i| (1..12).map(|h| (std::f32::consts::TAU * 120.0 * h as f32 * i as f32 / fs as f32).sin() / h as f32).sum::<f32>() * 0.2).collect()
+    }
+
+    /// Energy below `hz` against all of it (a plain DFT over a few bins).
+    fn low_share(y: &[f32], fs: u32, hz: f32) -> f32 {
+        let n = y.len().min(8192);
+        let mut lo = 0.0;
+        let mut all = 0.0;
+        for b in 1..(n / 8) {
+            let f = b as f32 * fs as f32 / n as f32;
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, v) in y[..n].iter().enumerate() {
+                let a = std::f32::consts::TAU * b as f32 * i as f32 / n as f32;
+                re += v * a.cos();
+                im += v * a.sin();
+            }
+            let e = re * re + im * im;
+            all += e;
+            if f < hz {
+                lo += e;
+            }
+        }
+        lo / all.max(1e-12)
+    }
+
+    /// A voice under the voice puts energy an octave below; a whisper and
+    /// a hollow voice still come out whole and even.
+    #[test]
+    fn under_whisper_and_hollow_reshape_a_voice() {
+        let fs = 24000;
+        let x = buzz(fs);
+        let p = crate::world::Persona { name: "Oda".into(), voice: "plain".into(), ..Default::default() };
+        let plain = Recipe { f0: 120.0, range: 1.0, tremor: 0.0, jitter: 0.0, ..Recipe::of_plain(&p, 1) };
+        let under = Recipe { under: 1.0, ..plain.clone() };
+        let (a, b) = (reshape(&x, fs, &plain), reshape(&x, fs, &under));
+        assert!(low_share(&b, fs, 90.0) > low_share(&a, fs, 90.0) * 2.0, "{} vs {}", low_share(&b, fs, 90.0), low_share(&a, fs, 90.0));
+        for r in [Recipe { whisper: 1.0, ..plain.clone() }, Recipe { hollow: 1.0, ..plain.clone() }] {
+            let y = reshape(&x, fs, &r);
+            assert!(y.len() > x.len() / 2 && y.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
+        }
+    }
 
     #[test]
     fn warp_moves_a_peak_up() {

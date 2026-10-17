@@ -75,6 +75,8 @@ pub struct CompiledType {
     pub wgsl: String,
     pub sdf: vm::Program,
     pub color: vm::Program,
+    /// Where a body's parts are in a pose: `parts(i, 0, 0, k)` (see `ir::PARTS`).
+    pub parts: Option<vm::Program>,
     pub tick: Option<vm::Program>,
     pub use_fn: Option<vm::Program>,
     pub touch: Option<vm::Program>,
@@ -100,6 +102,13 @@ impl CompiledType {
     }
     pub fn color_checked(&self, p: [f32; 3], k: &[f32; crate::lang::vm::K_LEN], fuel: u32) -> Result<([f32; 3], u32), vm::VmError> {
         REGS.with(|r| self.color.run(&mut r.borrow_mut(), p, k, fuel))
+    }
+    /// Where part `i` of a body is (local, as its shape is drawn) for the
+    /// pose in `k`, when the body says (see `ir::PARTS`).
+    pub fn part(&self, i: usize, k: &[f32; crate::lang::vm::K_LEN]) -> Option<glam::Vec3> {
+        let prog = self.parts.as_ref()?;
+        let out = REGS.with(|r| prog.run(&mut r.borrow_mut(), [i as f32, 0.0, 0.0], k, RUN_FUEL)).ok()?.0;
+        out.iter().all(|v| v.is_finite()).then(|| glam::Vec3::from_array(out))
     }
     /// The colour and how much it glows (0..1), from glow() in color().
     pub fn color_glow(&self, p: [f32; 3], k: &[f32; crate::lang::vm::K_LEN]) -> ([f32; 3], f32) {
@@ -146,6 +155,7 @@ pub fn compile(source: &str) -> Result<CompiledType, Vec<Diag>> {
     let tr = |e: String| vec![Diag::new(Stage::Translate, 0, e)];
     let sdf = vm::compile(&module.sdf).map_err(tr)?;
     let color = vm::compile(&module.color).map_err(tr)?;
+    let parts = module.parts.as_ref().map(vm::compile).transpose().map_err(tr)?;
     let n = module.prop_names.len();
     let mut progs: [Option<vm::Program>; 3] = [None, None, None];
     for (b, f) in &module.behaviors {
@@ -158,7 +168,7 @@ pub fn compile(source: &str) -> Result<CompiledType, Vec<Diag>> {
     }
     let [tick, use_fn, touch] = progs;
     let carved = wgsl.contains("api_subtract") || wgsl.contains("api_smooth_subtract") || source.contains("subtract(");
-    Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color, tick, use_fn, touch, prop_names: module.prop_names, carved })
+    Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color, parts, tick, use_fn, touch, prop_names: module.prop_names, carved })
 }
 
 #[cfg(test)]

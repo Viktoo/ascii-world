@@ -54,7 +54,7 @@ impl App {
             return Some(r.clone());
         }
         let n = self.sim.cast.get(cid)?;
-        let r = Arc::new(Recipe::of(&n.def.persona, cid));
+        let r = Arc::new(Recipe::of(&n.def.persona, &n.species.tone, cid));
         self.voice_recipes.insert(cid, r.clone());
         Some(r)
     }

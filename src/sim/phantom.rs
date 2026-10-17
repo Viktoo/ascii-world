@@ -54,6 +54,7 @@ pub fn phantom_species() -> crate::world::species::Species {
         "name": PHANTOM, "plural": "phantoms", "body": "phantom", "mass": 55,
         "look": { "height": [1.95, 2.15], "build": [0.7, 0.8], "skin": [0.0, 0.15], "shirt": [0.0, 1.0], "trousers": [0.0, 1.0] },
         "mind": "sapient", "speech": "words", "social": "solitary",
+        "tone": { "pitch": 82, "range": 0.45, "size": 1.25, "breath": 0.45, "rough": 0.35, "whisper": 0.35, "under": 0.45, "hollow": 0.4, "waver": 0.3, "waver_hz": 3.0, "pace": 0.85 },
         "diet": { "plants": 0.0, "meat": 0.0 },
         "temper": { "bold": 1.0, "wary": 0.2, "playful": 0.3, "tame": 0.0 },
         "life": { "sleep": [7, 19] },

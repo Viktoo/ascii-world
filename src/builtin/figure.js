@@ -30,6 +30,8 @@
 // s5 = head nod, s6 = crouch (0 … 1), s8 = grip (0 open hands … 1 fists).
 // The engine also poses the face: s9 = mouth open (talking), s10 = eyes shut
 // (a blink, sleep), s11 = a clock in seconds that hair stirs with.
+// parts(i, _, _, k): where the right hand (0), left hand (1), the middle of
+// the head (2) and of the chest (3) are in this pose, by the same maths.
 export const meta = { name: "figure", bounds: [0.95, 2.4, 0.95], tags: ["builtin", "figure", "body"],
   body: { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3],
           roles: ["raise", "reach", "lean", "head", "crouch", "grip"], gait: "biped", arms: true,
@@ -642,4 +644,28 @@ export function color(x, y, z, k) {
     return under;
   }
   return skin;
+}
+
+export function parts(x, y, z, k) {
+  const h = clamp(k.a, 1.3, 2.0) / 1.75;
+  const w = clamp(k.b, 0.7, 1.4);
+  const fem = smoothstep(0.3, 0.7, k.g);
+  const crouch = clamp(k.s6, 0, 1);
+  const hip = 0.9 - crouch * 0.38;
+  // In the torso's own frame (leaning with it), as sdf() draws them.
+  let u = vec3(0, 1.25, 0.02);
+  if (x < 1.5) {
+    const side = x < 0.5 ? 1 : -1;
+    const a1 = (x < 0.5 ? clamp(k.s1, 0, 1) : clamp(k.s0, 0, 1)) * 3.0;
+    const f1 = (x < 0.5 ? clamp(k.s3, 0, 1) : clamp(k.s2, 0, 1)) * 1.45;
+    const still = 1 - clamp(max(k.s2, k.s3) * 2 + crouch, 0, 1);
+    const sw = sin(k.f) * 0.32 * (1 - crouch);
+    const sx = (0.24 - 0.035 * fem) * w;
+    u = vec3(side * (sx + 0.04 * w + 0.56 * sin(a1)), 1.42 - 0.56 * cos(a1) * cos(f1), 0.56 * cos(a1) * sin(f1) + side * sw * 0.8 * still);
+  } else if (x < 2.5) {
+    const c = rotX(0, 0.06, 0, -clamp(k.s5, -1, 1) * 0.35);
+    u = vec3(c.x, c.y + 1.56, c.z);
+  }
+  const p = rotX(u.x, u.y - 0.9, u.z, clamp(k.s4, -0.3, 0.6));
+  return vec3(p.x, p.y + hip, p.z) * h;
 }

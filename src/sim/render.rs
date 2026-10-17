@@ -76,6 +76,81 @@ pub fn layer_inst(wearer: &GpuInst, body: &TypeEntry, layer: &TypeEntry, fx: [f3
     g
 }
 
+impl Sim {
+    /// A layer as worn on `g` (a body of type `body`): drawn in its frame
+    /// and pose, and, when it was made for a body this one was written from
+    /// (a person's helmet on a phantom), moved with the part it sits on to
+    /// where this body has that part (see `layer_shift`).
+    pub fn worn_inst(&self, g: &GpuInst, body: &TypeEntry, layer: &TypeEntry, fx: [f32; 4]) -> GpuInst {
+        let mut l = layer_inst(g, body, layer, fx);
+        if let Some(d) = self.layer_shift(g, body, layer) {
+            l.pos_scale[0] += d.x;
+            l.pos_scale[1] += d.y;
+            l.pos_scale[2] += d.z;
+        }
+        l
+    }
+
+    /// How far a layer made for another body moves on this one: the part
+    /// it sits on (the nearest to its middle: a helmet the head, a
+    /// breastplate the chest) is where each body's `parts()` says, in the
+    /// same pose; the layer goes from that part on the body it was made
+    /// for to that part on this one. Nothing when either body doesn't say.
+    pub fn layer_shift(&self, g: &GpuInst, body: &TypeEntry, layer: &TypeEntry) -> Option<Vec3> {
+        let fits = layer.ct.meta.fits.as_deref()?;
+        if fits == body.name() || body.ct.parts.is_none() {
+            return None;
+        }
+        let base = self.snap.body_named(fits)?;
+        base.ct.parts.as_ref()?;
+        let k = g.k();
+        let key = (layer.id, base.id);
+        let cached = self.layer_parts.lock().ok().and_then(|m| m.get(&key).copied());
+        let part = match cached {
+            Some(p) => p,
+            None => {
+                let p = layer_part(layer, base, &k);
+                if let Ok(mut m) = self.layer_parts.lock() {
+                    m.insert(key, p);
+                }
+                p
+            }
+        }?;
+        let (a, b) = (body.ct.part(part, &k)?, base.ct.part(part, &k)?);
+        Some(g.from_local(a) - g.from_local(b))
+    }
+}
+
+/// Which part of `base` a layer made for it sits on: the one nearest the
+/// middle of what the layer covers (probed through its bounds).
+fn layer_part(layer: &TypeEntry, base: &TypeEntry, k: &[f32; crate::lang::vm::K_LEN]) -> Option<usize> {
+    const N: usize = 20;
+    let b = layer.ct.meta.bounds;
+    // All of its bounds: where it is depends on the wearer's size and pose.
+    let (y0, y1) = (-b[1] * 0.1, b[1]);
+    // Near its surface: a layer is often a thin shell.
+    let near = 2.0 * b[0].max(b[2]).max((y1 - y0) * 0.5) / N as f32 * 0.6;
+    let mut sum = Vec3::ZERO;
+    let mut n = 0;
+    for i in 0..N {
+        for j in 0..N {
+            for l in 0..N {
+                let f = |q: usize| (q as f32 + 0.5) / N as f32;
+                let p = Vec3::new(-b[0] + 2.0 * b[0] * f(i), y0 + (y1 - y0) * f(j), -b[2] + 2.0 * b[2] * f(l));
+                if layer.ct.sdf(p.to_array(), k) < near {
+                    sum += p;
+                    n += 1;
+                }
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let mid = sum / n as f32;
+    (0..crate::lang::ir::PARTS.len()).filter_map(|i| base.ct.part(i, k).map(|p| (i, (p - mid).length()))).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+}
+
 /// `FX_CHAR` for the dark's own: blackened, and what glows on it glows red.
 pub const DARK_OWN: f32 = 2.0;
 
@@ -239,7 +314,7 @@ impl Sim {
                     // What they wear, drawn in their frame and pose.
                     for t in worn.get(&ActorId::Npc(n.def.id)).map(|v| v.as_slice()).unwrap_or(&[]) {
                         let Some(ty) = self.snap.type_of(t.type_id) else { continue };
-                        insts.push(layer_inst(&g, body, ty, look(&t.props)));
+                        insts.push(self.worn_inst(&g, body, ty, look(&t.props)));
                     }
                 }
             }
@@ -250,7 +325,7 @@ impl Sim {
             insts.push(v.inst);
             for t in worn.get(&ActorId::Player).map(|v| v.as_slice()).unwrap_or(&[]) {
                 let Some(ty) = self.snap.type_of(t.type_id) else { continue };
-                let mut l = layer_inst(&v.inst, &v.body, ty, look(&t.props));
+                let mut l = self.worn_inst(&v.inst, &v.body, ty, look(&t.props));
                 l.cuts = v.inst.cuts;
                 insts.push(l);
             }
@@ -337,7 +412,7 @@ impl Sim {
                     if let Some(c) = t.origin.remains {
                         for w in worn.get(&ActorId::Npc(c)).map(|v| v.as_slice()).unwrap_or(&[]) {
                             let Some(lty) = self.snap.type_of(w.type_id) else { continue };
-                            insts.push(layer_inst(&g, ty, lty, look(&w.props)));
+                            insts.push(self.worn_inst(&g, ty, lty, look(&w.props)));
                         }
                     }
                 }

@@ -350,12 +350,14 @@ fn voices_cli(args: &[String]) -> Result<()> {
     let line = flag(args, "--say").unwrap_or_else(|| "Morning! Did you see the fox down by the old mill? It took two of my hens, the cheeky thing.".into());
     let file = args.iter().skip_while(|a| *a != "--voices").nth(1).filter(|a| !a.starts_with("--")).cloned();
     let mut cast: Vec<(i64, Persona)> = Vec::new();
+    let mut kinds: std::collections::HashMap<i64, crate::world::species::LookMap> = Default::default();
     if let Some(f) = file {
         let db = crate::db::Db::open(Path::new(&f))?;
         let s = crate::sim::headless::Session::with_db(db, Some(1), None)?;
         for c in s.sim.cast.npcs.iter() {
             if s.sim.speaks(crate::sim::ActorId::Npc(c.def.id)) {
                 cast.push((c.def.id, c.def.persona.clone()));
+                kinds.insert(c.def.id, c.species.tone.clone());
             }
         }
         cast.truncate(10);
@@ -372,7 +374,9 @@ fn voices_cli(args: &[String]) -> Result<()> {
             (4, mk("Ada", 38, "Calm healer woman", "Soft and gentle", 1.66)),
             (5, mk("Wick", 27, "Thin clerk, ink on his fingers", "Fast and nervous, stammers", 1.8)),
             (6, mk("Nan", 84, "Tiny old woman, a shawl", "Shaky and thin", 1.5)),
+            (7, mk("the first phantom", 0, "", "", 2.1)),
         ];
+        kinds.insert(7, crate::sim::phantom::phantom_species().tone);
     }
     if !crate::voice::pack::ready() && has(args, "--fetch") {
         crate::voice::pack::fetch(&|p| eprint!("\rfetching the voices: {:.0}%", p * 100.0))?;
@@ -390,7 +394,7 @@ fn voices_cli(args: &[String]) -> Result<()> {
     let mut t = 0.3f32;
     let n = cast.len().max(1);
     for (i, (id, p)) in cast.iter().enumerate() {
-        let r = Recipe::of(p, *id);
+        let r = Recipe::of(p, kinds.get(id).unwrap_or(&Default::default()), *id);
         let t1 = std::time::Instant::now();
         let plain = engine.plain(&line, &r)?;
         let model = t1.elapsed().as_secs_f32();
@@ -398,7 +402,7 @@ fn voices_cli(args: &[String]) -> Result<()> {
         let made = t1.elapsed().as_secs_f32();
         print!("model {model:.2}s body {:.2}s  ", made - model);
         let secs = y.len() as f32 / SAMPLE_RATE as f32;
-        println!("{:<18} {:>4.1}s said, made in {:.2}s  {} f0 {:.0} throat {:.2} speed {:.2} rasp {:.2} breath {:.2} tremor {:.2}  {:?}", p.name, secs, made, if r.female { "F" } else { "M" }, r.f0, r.throat, r.speed, r.rasp, r.breath, r.tremor, r.blend);
+        println!("{:<18} {:>4.1}s said, made in {:.2}s  {} f0 {:.0} throat {:.2} speed {:.2} rasp {:.2} breath {:.2} tremor {:.2} whisper {:.2} under {:.2} hollow {:.2}  {:?}", p.name, secs, made, if r.female { "F" } else { "M" }, r.f0, r.throat, r.speed, r.rasp, r.breath, r.tremor, r.whisper, r.under, r.hollow, r.blend);
         let mono: Vec<f32> = y.iter().flat_map(|x| [*x, *x]).collect();
         write_wav(&dir.join(format!("{}.wav", p.name.replace(' ', "_"))), SAMPLE_RATE, &mono)?;
         // Round the listener, each from their own side.
