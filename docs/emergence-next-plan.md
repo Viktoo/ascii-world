@@ -73,7 +73,7 @@ Read this whole plan first, then `docs/emergence-plan.md` and
   same folder, use a separate git worktree for the branch.
 - `main` has moved ahead (the "sounds!" commit). Merge `main` into the
   branch before starting, fix conflicts, and get the tests green.
-- Commands: `cargo test --release` (all must pass), `cargo build --release`
+- Commands: `cargo test` (all must pass; `--release --features slow-tests` before merging), `cargo build --release`
   at the end of each phase. A headless run of a real world:
   `target/release/pocket sim COPY.pocket --hours 6 --no-llm --events out.jsonl`.
   Always run it on a **copy** of a file from `~/.pocket/universes/`,

@@ -315,15 +315,28 @@ impl WorldModel {
 
         // Built-in types are stored like any other. Worlds made by older
         // versions get new built-ins added and changed ones updated in place.
+        // A built-in's probe never changes, so it is done once per run (a
+        // run that opens many worlds, like the tests, probes each once).
+        static PROBED: Mutex<Vec<Option<(f32, f32)>>> = Mutex::new(Vec::new());
         let rows = db.types()?;
-        for src in BUILTIN_SOURCES {
+        for (i, src) in BUILTIN_SOURCES.iter().enumerate() {
             let ct = compile(src).map_err(|d| anyhow::anyhow!("builtin type failed: {}", format_diags(&d)))?;
             let existing = rows.iter().find(|r| r.status == "builtin" && r.name == ct.meta.name);
             if existing.is_some_and(|r| r.code == *src) {
                 continue;
             }
-            let rep = probe(&ct).map_err(|d| anyhow::anyhow!("builtin {} failed probe: {}", ct.meta.name, format_diags(&d)))?;
-            let meta = meta_json(&ct, rep.bottom, rep.top);
+            let known = PROBED.lock().get(i).copied().flatten();
+            let (bottom, top) = match known {
+                Some(b) => b,
+                None => {
+                    let rep = probe(&ct).map_err(|d| anyhow::anyhow!("builtin {} failed probe: {}", ct.meta.name, format_diags(&d)))?;
+                    let mut p = PROBED.lock();
+                    p.resize(BUILTIN_SOURCES.len(), None);
+                    p[i] = Some((rep.bottom, rep.top));
+                    (rep.bottom, rep.top)
+                }
+            };
+            let meta = meta_json(&ct, bottom, top);
             match existing {
                 Some(r) => db.with(|c| {
                     c.execute("UPDATE types SET code = ?1, meta_json = ?2 WHERE id = ?3", rusqlite::params![src, meta, r.id])?;

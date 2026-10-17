@@ -36,6 +36,11 @@ wgpu = "30.0.1"
 whisper-rs = { version = "0.16", features = ["metal"] }
 winit = "0.30.13"
 
+[features]
+# Long scenarios (a village day, a meadow fire fought, generations of
+# wolves, a crowd at speed): `cargo test --features slow-tests`.
+slow-tests = []
+
 [profile.release]
 opt-level = 3
 debug = false
