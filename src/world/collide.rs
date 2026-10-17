@@ -351,9 +351,10 @@ pub fn support_under(terrain: &Terrain, solids: &[Solid], p: Vec3, radius: f32, 
 }
 
 /// The nearest spot to `p` (spiralling out up to `max` metres) where a body of
-/// `radius` fits on dry land. Returns `p` if it already fits.
-pub fn free_spot(terrain: &Terrain, obs: &Obstacles, p: Vec3, radius: f32, max: f32) -> Vec3 {
-    let fits = |x: f32, z: f32| wadeable(terrain, x, z) && obs.dist(terrain, x, z) >= radius + 0.15;
+/// `radius` fits on dry land, or anywhere clear in the water for one that
+/// `swims` (kept at its own height there). Returns `p` if it already fits.
+pub fn free_spot(terrain: &Terrain, obs: &Obstacles, p: Vec3, radius: f32, max: f32, swims: bool) -> Vec3 {
+    let fits = |x: f32, z: f32| (swims || wadeable(terrain, x, z)) && obs.dist(terrain, x, z) >= radius + 0.15;
     if fits(p.x, p.z) {
         return p;
     }
@@ -366,7 +367,8 @@ pub fn free_spot(terrain: &Terrain, obs: &Obstacles, p: Vec3, radius: f32, max: 
         let a = k as f32 * 2.399_963;
         let (x, z) = (p.x + a.cos() * r, p.z + a.sin() * r);
         if fits(x, z) {
-            return Vec3::new(x, terrain.height(x, z), z);
+            let h = terrain.height(x, z);
+            return Vec3::new(x, if swims && !wadeable(terrain, x, z) { p.y.max(h) } else { h }, z);
         }
         k += 1;
     }
@@ -409,7 +411,7 @@ mod tests {
         }
         assert!(p.z - c.z > 3.0, "blocked at the wall: {}", p.z - c.z);
         assert!(before.z > p.z, "walked back until the wall");
-        let f = free_spot(&terrain, &obs, Vec3::new(c.x, 0.0, c.z), PLAYER_RADIUS, 20.0);
+        let f = free_spot(&terrain, &obs, Vec3::new(c.x, 0.0, c.z), PLAYER_RADIUS, 20.0, false);
         assert!(obs.dist(&terrain, f.x, f.z) >= PLAYER_RADIUS);
     }
 

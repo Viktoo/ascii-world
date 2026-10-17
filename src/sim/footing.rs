@@ -77,7 +77,7 @@ impl Sim {
         }
         let (pos, mut vy, mut grounded) = (a.pos, a.vy, a.grounded);
         let full = a.dims.height;
-        let (eye, swim, was_swimming) = (a.dims.eye, a.swim, a.swimming);
+        let (eye, swim, was_swimming, dive_to) = (a.dims.eye, a.swim, a.swimming, a.dive_to);
         let want = if a.crouching { 1.0 } else { 0.0 };
         let mut crouch = a.crouch;
         // Standing still on firm footing: nothing changes under it, unless
@@ -91,7 +91,12 @@ impl Sim {
         }
         let cap = self.capsule(id);
         // What the last walk found around it, if it hasn't moved since.
-        let cached = a.support.filter(|(p, _)| (*p - pos).length_squared() < 1e-8 && crouch == want).map(|x| x.1);
+        let support = a.support;
+        // Set afresh by each step on the way (see `step_toward`).
+        if dive_to.is_some() && let Some(a) = self.actor_mut(id) {
+            a.dive_to = None;
+        }
+        let cached = support.filter(|(p, _)| (*p - pos).length_squared() < 1e-8 && crouch == want).map(|x| x.1);
         let solids = if cached.is_some() && grounded && vy == 0.0 { Vec::new() } else { self.solids_near(pos, cap.radius + full + 2.0) };
         // Crouch down at once; stand up only where there is room overhead.
         if crouch != want {
@@ -119,9 +124,18 @@ impl Sim {
             // A fish swims in any water it fits in; others where they can't wade.
             let deep = if cap.needs_water > 0.0 { wl - ground > cap.needs_water * 0.5 } else { wl - ground > MAX_WADE * (full / 1.75) };
             if deep && pos.y < float + 0.3 {
-                // Let be, it rises to where it swims: the top, or its own depth.
-                let hold = float - self.dive_of(id);
-                let want = if swim > 0.0 { SWIM_UP } else if swim < 0.0 { -SWIM_DOWN } else { ((hold - pos.y) * 1.2).clamp(-SWIM_DOWN, 0.5) };
+                // Let be, it rises to where it swims: the top, or its own
+                // depth. Inside a house under the water a being keeps to its
+                // floor (it doesn't float up through the roof), and on its
+                // way in it makes for the doorway.
+                let indoors = id != ActorId::Player && self.room_at(pos + Vec3::Y * 0.3).is_some();
+                let hold = match dive_to {
+                    Some(y) => y.min(float),
+                    None if indoors => ground.min(float),
+                    None => float - self.dive_of(id),
+                };
+                let fast = if dive_to.is_some() || indoors { SWIM_UP } else { 0.5 };
+                let want = if swim > 0.0 { SWIM_UP } else if swim < 0.0 { -SWIM_DOWN } else { ((hold - pos.y) * 1.2).clamp(-SWIM_DOWN, fast) };
                 vy += (want - vy) * (dt * 3.0).min(1.0);
                 let mut feet = pos.y + vy * dt;
                 if feet > float {

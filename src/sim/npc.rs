@@ -1012,10 +1012,23 @@ impl Sim {
     fn step_toward(&mut self, who: ActorId, p: Vec3, speed: f32, dt: f32) -> bool {
         let Some(me) = self.actor(who).map(|a| a.pos) else { return false };
         // Through doorways and up stairs: the next step on the way.
+        let dest = p;
         let p = self.route(who, p);
         let speed = speed * self.gait_factor(who);
         let d = Vec3::new(p.x - me.x, 0.0, p.z - me.z);
         let len = d.length();
+        // A swimmer going into or out of a house under the water swims at
+        // the height of its way (the doorway, the floor), and near the
+        // doorway first goes down to it rather than into the wall above.
+        let swimming = self.actor(who).is_some_and(|a| a.swimming);
+        let housed = swimming && who != ActorId::Player && (self.room_at(me + Vec3::Y * 0.3).is_some() || self.room_at(dest + Vec3::Y * 0.3).is_some());
+        let dive_to = housed.then_some(p.y);
+        if let Some(a) = self.actor_mut(who) {
+            a.dive_to = dive_to;
+        }
+        if dive_to.is_some_and(|y| me.y - y > 0.6) && len < 2.5 {
+            return true;
+        }
         if len < 1e-3 {
             return true;
         }

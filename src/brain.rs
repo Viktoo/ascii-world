@@ -1024,37 +1024,47 @@ fn region_notes(t: &Terrain, r: (i32, i32)) -> String {
         }
     }
     let at = |k: usize| ((k % n) as f32 * step, (k / n) as f32 * step);
-    // Flat dry spots.
-    let mut flat: Vec<(f32, usize)> = Vec::new();
-    for j in 1..n - 1 {
-        for i in 1..n - 1 {
-            let k = j * n + i;
-            if wet[k] || h[k] < WATER_LEVEL + 1.0 {
-                continue;
-            }
-            let s = (h[k + 1] - h[k - 1]).abs() + (h[k + n] - h[k - n]).abs();
-            flat.push((s, k));
-        }
-    }
-    flat.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut spots: Vec<usize> = Vec::new();
-    for (_, k) in flat {
+    let water_at = |k: usize| {
         let (x, z) = at(k);
-        if spots.iter().all(|s| {
-            let (sx, sz) = at(*s);
-            ((sx - x).powi(2) + (sz - z).powi(2)).sqrt() > 60.0
-        }) {
-            spots.push(k);
+        t.water(ox + x, oz + z)
+    };
+    // The flattest spots, 60 m apart: dry ones, and on the bed under water.
+    let pick = |under: bool| {
+        let mut flat: Vec<(f32, usize)> = Vec::new();
+        for j in 1..n - 1 {
+            for i in 1..n - 1 {
+                let k = j * n + i;
+                let ok = if under { water_at(k) - h[k] >= 1.5 } else { !wet[k] && h[k] >= WATER_LEVEL + 1.0 };
+                if !ok {
+                    continue;
+                }
+                let s = (h[k + 1] - h[k - 1]).abs() + (h[k + n] - h[k - n]).abs();
+                flat.push((s, k));
+            }
         }
-        if spots.len() >= 3 {
-            break;
+        flat.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut spots: Vec<usize> = Vec::new();
+        for (_, k) in flat {
+            let (x, z) = at(k);
+            if spots.iter().all(|s| {
+                let (sx, sz) = at(*s);
+                ((sx - x).powi(2) + (sz - z).powi(2)).sqrt() > 60.0
+            }) {
+                spots.push(k);
+            }
+            if spots.len() >= 3 {
+                break;
+            }
         }
-    }
+        spots
+    };
+    let (spots, beds) = (pick(false), pick(true));
     let mut map = String::new();
     for j in (0..n).step_by(2) {
         for i in (0..n).step_by(2) {
             let v = h[j * n + i];
             map.push(match v {
+                _ if wet[j * n + i] && water_at(j * n + i) - v > 3.0 => '≈',
                 _ if wet[j * n + i] => '~',
                 v if v < 3.0 => '.',
                 v if v < 12.0 => '-',
@@ -1071,14 +1081,65 @@ fn region_notes(t: &Terrain, r: (i32, i32)) -> String {
         let (x, z) = at(*k);
         format!("({x:.0}, {z:.0}) at {:.0} m", h[*k])
     }).collect();
+    let beds: Vec<String> = beds.iter().map(|k| {
+        let (x, z) = at(*k);
+        format!("({x:.0}, {z:.0}) under {:.0} m of water", water_at(*k) - h[*k])
+    }).collect();
+    let beds = if beds.is_empty() { String::new() } else { format!("\nFlat beds under the water: {}.", beds.join(", ")) };
     format!(
-        "Biomes: {}. Water covers {:.0}% of the region (sea level 0 m).\nHighest point ({hx:.0}, {hz:.0}) at {:.0} m; lowest ({lx:.0}, {lz:.0}) at {:.0} m.\nFlat dry spots: {}.\nMap (x → right, z ↓ down, 32 m per cell; ~ water, . shore/low, - plain, + hills, ^ high):\n{map}",
+        "Biomes: {}. Water covers {:.0}% of the region (sea level 0 m).\nHighest point ({hx:.0}, {hz:.0}) at {:.0} m; lowest ({lx:.0}, {lz:.0}) at {:.0} m.\nFlat dry spots: {}.{beds}\nMap (x → right, z ↓ down, 32 m per cell; ≈ deep water, ~ shallow water, . shore/low, - plain, + hills, ^ high):\n{map}",
         biomes.join(", "),
         water * 100.0,
         h[hi],
         h[lo],
         if spots.is_empty() { "none".into() } else { spots.join(", ") }
     )
+}
+
+/// Where a type the region plan places (a building, a landmark) stands, for
+/// its writer: in the shallows or on the bed under the water, so it is made
+/// for it. "" on dry land. Also whether it stands in water too deep for
+/// anything not meant for it (it gets the tag "water").
+fn standing_note(t: &Terrain, plan: &Value, r: (i32, i32), name: &str) -> (String, bool) {
+    let (ox, oz) = (r.0 as f32 * REGION, r.1 as f32 * REGION);
+    let is = |v: &Value| s(v, "type").trim().eq_ignore_ascii_case(name.trim());
+    let mut spots: Vec<(f32, f32)> = Vec::new();
+    if let Some(st) = plan.get("settlement").filter(|v| v.is_object()) {
+        let (cx, cz) = (f(st, "x", 128.0), f(st, "z", 128.0));
+        for b in st.get("buildings").and_then(|x| x.as_array()).into_iter().flatten().filter(|b| is(b)) {
+            spots.push((cx + f(b, "dx", 0.0).clamp(-60.0, 60.0), cz + f(b, "dz", 0.0).clamp(-60.0, 60.0)));
+        }
+    }
+    for lm in plan.get("landmarks").and_then(|x| x.as_array()).into_iter().flatten().filter(|l| is(l)) {
+        spots.push((f(lm, "x", 128.0), f(lm, "z", 128.0)));
+    }
+    // The deepest of the places it stands.
+    let Some(d) = spots.iter().map(|&(x, z)| {
+        let (x, z) = (ox + x.clamp(4.0, REGION - 4.0), oz + z.clamp(4.0, REGION - 4.0));
+        t.water(x, z) - t.height(x, z)
+    }).reduce(f32::max) else { return (String::new(), false) };
+    let note = if d >= 1.5 {
+        format!(
+            "\nWhere it stands: on the bed under about {d:.0} m of water (y = 0 is the bed; the surface is at y = {d:.0}). Make it as a thing under the water would be (no fire, no chimney; stone, shell, coral, timber gone green). For those who live in the water: they swim, so a doorway may be at any height or open from above, floors need only an opening between them (no stairs), and windows may stand open; keep its doorways wide and tall enough to swim through. If it rises out of the water instead (a lighthouse, a stilt house), keep its floors above y = {:.1}, with a ladder or stair up from the water.",
+            d + 0.5
+        )
+    } else if d > 0.1 {
+        format!(
+            "\nWhere it stands: in about {d:.1} m of water (y = 0 is the bed; the surface is at y = {d:.1}). Raise its floor clear of the water on stilts, piles or a stone footing (the floor at y = {:.1} or higher), with steps or a ladder up from the water to its door (a stairs anchor, the door anchor at the floor's height); for a people of the water it may instead stand open to the water.",
+            d + 0.5
+        )
+    } else {
+        String::new()
+    };
+    (note, d > 0.6)
+}
+
+/// Whether a being of `species` ("" for people) can live at (x, z): dry
+/// land, its water, or either.
+fn lives_at(t: &Terrain, book: &crate::world::species::SpeciesBook, species: &str, x: f32, z: f32) -> bool {
+    let (water, depth) = if species.is_empty() { (0.0, [0.0, 0.0]) } else { book.get(species).map(|x| (x.water, x.depth)).unwrap_or((0.0, [0.0, 0.0])) };
+    let wd = t.water(x, z) - t.height(x, z);
+    if water >= 0.95 { wd >= (depth[0] + 0.5).min(3.0) } else if water > 0.0 { wd > -1.5 } else { wd < -0.5 }
 }
 
 fn f(v: &Value, k: &str, d: f32) -> f32 {
@@ -1147,8 +1208,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             String::new()
         };
         let folk = folk_note(&ctx.db);
+        let (stands, wet) = standing_note(&info.terrain, &plan, r, &name);
         let task = format!(
-            "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): {}\nIt appears in the region \"{rname}\" ({}).\n{folk}\n\n{}",
+            "Object type to write: \"{name}\"\nDescription: {}\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): {}\nIt appears in the region \"{rname}\" ({}).{stands}\n{folk}\n\n{}",
             s(spec, "description"),
             spec.get("size_m").map(|v| v.to_string()).unwrap_or_else(|| "unspecified".into()),
             spec.get("tags").map(|v| v.to_string()).unwrap_or_else(|| "[]".into()),
@@ -1158,7 +1220,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         );
         let task = if layer_note.is_empty() { task } else { format!("{task}\n\n{layer_note}") };
         let system = system.clone();
-        let tags: &[&str] = if is_layer { &["layer"] } else { &[] };
+        let tags: &[&str] = if is_layer { &["layer"] } else if wet { &["water"] } else { &[] };
         async move {
             let res = build_type(ctx, &system, task, &name, tags, &[]).await;
             let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -1241,6 +1303,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             });
         }
     }
+    let book = crate::world::species::SpeciesBook::load(&ctx.db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
     let mut chars = Vec::new();
     for c in plan.get("characters").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
         let mut p: Persona = serde_json::from_value(c.clone()).unwrap_or_default();
@@ -1270,9 +1333,10 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             p.species = p.species.trim().to_lowercase();
         }
         let mut home = Vec3::new(ox + clampl(f(c, "home_x", 128.0)), 0.0, oz + clampl(f(c, "home_z", 128.0)));
-        // Homes must be on dry land: spiral out until we find some.
+        // Homes are where their people can live (dry land, or the water
+        // for a people of the water): spiral out until we find some.
         for k in 0..40 {
-            if info.terrain.height(home.x, home.z) > info.terrain.water(home.x, home.z) + 0.5 {
+            if lives_at(&info.terrain, &book, &p.species, home.x, home.z) {
                 break;
             }
             let a = k as f32 * 2.399;
@@ -1293,13 +1357,15 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let spot = cave.map(|c| (c.room_at().x, c.room_at().y)).or_else(|| chars.iter().find(|(p, _)| !near.is_empty() && p.name.trim().to_lowercase() == near).map(|(_, h)| (h.x, h.z))).or(middle).or_else(|| chars.first().map(|(_, h)| (h.x, h.z)));
         let Some((sx, sz)) = spot else { continue };
         // Spread round the spot so a person's things don't pile up.
-        let k = by_spot.entry(near).or_default();
+        let k = by_spot.entry(near.clone()).or_default();
         let a = *k as f32 * 2.399 + i as f32 * 0.7;
         let rad = 1.6 + 0.5 * *k as f32;
         *k += 1;
         let rad = if cave.is_some() { rad.min(cave.map(|c| c.room * 0.6).unwrap_or(2.0)) } else { rad };
         let (x, z) = (sx + a.cos() * rad, sz + a.sin() * rad);
-        if cave.is_none() && info.terrain.height(x, z) <= info.terrain.water(x, z) + 0.2 {
+        // Not in the water, unless it is the things of a people of the water.
+        let wet_owner = chars.iter().find(|(p, _)| !near.is_empty() && p.name.trim().to_lowercase() == near).or(chars.first()).is_some_and(|(p, _)| book.get(&p.species).is_some_and(|x| x.water > 0.0));
+        if cave.is_none() && !wet_owner && info.terrain.height(x, z) <= info.terrain.water(x, z) + 0.2 {
             continue;
         }
         placements.push(Placement { ty, x, z, y: None, under: cave.is_some(), rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
@@ -1307,18 +1373,13 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // Creatures: herds, packs, pets, beasts. No voice or trade, just a
     // species, a home, maybe a name and a person they belong to.
     let mut n_creatures = 0;
-    let book = crate::world::species::SpeciesBook::load(&ctx.db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
     for c in plan.get("creatures").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
         let sp = s(c, "species").trim().to_lowercase();
         if sp.is_empty() || sp == "human" {
             continue;
         }
         // Where it can live: dry land, its water, or either.
-        let (water, depth) = book.get(&sp).map(|x| (x.water, x.depth)).unwrap_or((0.0, [0.0, 0.0]));
-        let lives = |x: f32, z: f32| {
-            let wd = info.terrain.water(x, z) - info.terrain.height(x, z);
-            if water >= 0.95 { wd >= (depth[0] + 0.5).min(3.0) } else if water > 0.0 { wd > -1.5 } else { wd < -0.5 }
-        };
+        let lives = |x: f32, z: f32| lives_at(&info.terrain, &book, &sp, x, z);
         let count = (f(c, "count", 1.0) as usize).clamp(1, 8);
         let names: Vec<String> = c.get("names").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|n| n.as_str().map(|s| s.trim().to_string())).collect()).unwrap_or_default();
         let owner = s(c, "owner");
@@ -1927,7 +1988,42 @@ mod tests {
         let t = Terrain::new(3, crate::terrain::default_biomes());
         let n = region_notes(&t, (0, 0));
         assert!(n.contains("Water covers"));
-        assert_eq!(n.lines().filter(|l| l.len() == 9 && l.chars().all(|c| "~.-+^".contains(c))).count(), 9);
+        assert_eq!(n.lines().filter(|l| l.chars().count() == 9 && l.chars().all(|c| "≈~.-+^".contains(c))).count(), 9);
+    }
+
+    /// A sea floor: the notes list flat beds under the water, and a
+    /// building planned there is told it stands under the water (and is
+    /// tagged for it); one on the land is told nothing.
+    #[test]
+    fn under_the_water_is_told() {
+        let mut b = crate::terrain::default_biomes();
+        for x in &mut b {
+            x.base = -8.0;
+            x.amp = 2.0;
+            x.cliffs = 0.0;
+        }
+        let t = Terrain::new(3, b);
+        let n = region_notes(&t, (0, 0));
+        assert!(n.contains("Flat beds under the water: (") && n.contains("Flat dry spots: none"), "{n}");
+        assert!(n.contains('≈'), "deep water on the map");
+        let plan = serde_json::json!({ "settlement": { "x": 128, "z": 128, "buildings": [{ "type": "Coral House", "dx": 5, "dz": 0 }] } });
+        let (note, wet) = standing_note(&t, &plan, (0, 0), "coral house");
+        assert!(wet && note.contains("under about") && note.contains("swim"), "{note}");
+        let (note, wet) = standing_note(&t, &plan, (0, 0), "boat shed");
+        assert!(!wet && note.is_empty(), "not placed: nothing said");
+        let dry = Terrain::new(3, crate::terrain::default_biomes());
+        let spot = (0..64).flat_map(|i| (0..64).map(move |j| (i as f32 * 4.0, j as f32 * 4.0))).find(|&(x, z)| dry.height(x, z) > dry.water(x, z) + 2.0).unwrap();
+        let plan = serde_json::json!({ "landmarks": [{ "type": "tower", "x": spot.0, "z": spot.1 }] });
+        let (note, wet) = standing_note(&dry, &plan, (0, 0), "tower");
+        assert!(!wet && note.is_empty(), "on land: {note}");
+        // Where people and beings of the water may live.
+        let mer = serde_json::json!({ "name": "merfolk", "body": "figure", "mind": "sapient", "speech": "words", "move": { "walk": 0.5, "swim": 2.0 }, "water": 1, "depth": [1, 6] });
+        let book = crate::world::species::SpeciesBook::load(&[("merfolk".into(), mer.to_string())], None);
+        let (x, z) = (128.0, 128.0);
+        assert!(lives_at(&t, &book, "merfolk", x, z), "merfolk live on the sea bed");
+        assert!(!lives_at(&dry, &book, "merfolk", spot.0, spot.1), "and not on land");
+        assert!(!lives_at(&t, &book, "", x, z), "people don't live on the sea bed");
+        assert!(lives_at(&dry, &book, "", spot.0, spot.1), "people live on land");
     }
 }
 
