@@ -958,7 +958,7 @@ pub fn walker_species() -> crate::world::species::Species {
         "temper": { "bold": 1.0, "wary": 0.0, "playful": 0.0, "tame": 0.0 },
         "life": { "sleep": [7, 19] },
         "move": { "walk": WALKER_WALK, "run": WALKER_RUN },
-        "active": "night", "want": "traveler", "shuns": ["light"], "moves_unseen": true,
+        "active": "night", "want": "traveler", "shuns": ["light"], "moves_unseen": true, "breathes": false,
         "touch": { "hurt": 0.25 }
     });
     let mut sp: crate::world::species::Species = serde_json::from_value(v).expect("night walker");

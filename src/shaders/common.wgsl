@@ -35,6 +35,7 @@ struct Globals {
   jitter: vec4f,      // sub-pixel offset of every ray (x, y pixels), for blending frames
   ground: vec4f,      // ground tiles: first tile x, z, tiles across (0 = none), any water
   voids: array<vec4f, 48>,     // caves: per capsule (a.xyz, r), (b.xyz, -)
+  craters: array<vec4f, 2>,    // how cratered each biome is, four to a row
 }
 
 struct Inst {
@@ -161,7 +162,7 @@ fn terrain_weights(x: f32, z: f32) -> Weights {
 }
 
 fn terrain_height_w(x: f32, z: f32, wt: Weights) -> f32 {
-  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0;
+  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0; var cr = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
     if (i < G.seed.y) {
       let b0 = G.biomes[i * 3u];
@@ -170,12 +171,13 @@ fn terrain_height_w(x: f32, z: f32, wt: Weights) -> f32 {
       amp = amp + wt.w[i] * b0.w;
       rough = rough + wt.w[i] * b1.x;
       cl = cl + wt.w[i] * G.biomes[i * 3u + 2u].w;
+      cr = cr + wt.w[i] * G.craters[i / 4u][i % 4u];
     }
   }
   let s = G.seed.x;
   let n = fbm2(x * 0.0045 + G.toff1.x, z * 0.0045 + G.toff1.y, s + 101u, 5u);
   let r = ridged2(x * 0.0032 + G.toff1.y, z * 0.0032 + G.toff1.x, s + 202u, 3u);
-  return cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp);
+  return craters_h(x, z, cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp), cr);
 }
 
 const CLIFF_FACE: f32 = 0.12;
@@ -196,6 +198,41 @@ fn cliff_h(x: f32, z: f32, h: f32, cl: f32, amp: f32) -> f32 {
   let t = q - floor(q);
   let g = CLIFF_TILT * t + (1.0 - CLIFF_TILT) * sstep(1.0 - wf, 1.0, t);
   return h + k * (g - t) * st;
+}
+
+const CRATER_CELLS = array<f32, 2>(140.0, 30.0);
+
+// Craters where the land has them. Twin of Terrain::craters in terrain.rs
+// (see there for how it works); keep the operation order.
+fn craters_h(x: f32, z: f32, h: f32, cr: f32) -> f32 {
+  if (cr < 0.01) { return h; }
+  var d = 0.0;
+  for (var k = 0u; k < 2u; k = k + 1u) {
+    let cell = CRATER_CELLS[k];
+    let gx = i32(floor(x / cell)); let gz = i32(floor(z / cell));
+    for (var oz = -1; oz <= 1; oz = oz + 1) {
+      for (var ox = -1; ox <= 1; ox = ox + 1) {
+        let ix = gx + ox; let iz = gz + oz;
+        let hs = h2(ix, iz, G.seed.x + 510u + k);
+        let a = clamp((cr - u2f(hs)) * 8.0, 0.0, 1.0);
+        if (a <= 0.0) { continue; }
+        let cx = (f32(ix) + 0.15 + 0.7 * u2f(pcg(hs + 1u))) * cell;
+        let cz = (f32(iz) + 0.15 + 0.7 * u2f(pcg(hs + 2u))) * cell;
+        let r = cell * (0.18 + 0.27 * u2f(pcg(hs + 3u)));
+        let dx = x - cx; let dz = z - cz;
+        let q = sqrt(dx * dx + dz * dz) / r;
+        if (q >= 1.6) { continue; }
+        let depth = r * 0.22 * a;
+        if (q < 1.0) { d = d - depth * (1.0 - q * q); }
+        let u = (q - 1.05) / 0.55;
+        if (abs(u) < 1.0) {
+          let b = 1.0 - u * u;
+          d = d + depth * 0.3 * b * b;
+        }
+      }
+    }
+  }
+  return h + d;
 }
 
 // Ground taken away (cellars, houses set into hills, dug pits): the height
@@ -396,7 +433,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   let fine = 1.0 - clamp((t - 35.0) / 40.0, 0.0, 1.0);
   if (fine >= 1.0) { return terrain_height_w(x, z, terrain_weights(x, z)) + ground_delta(x, z); }
   let wt = terrain_weights(x, z);
-  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0;
+  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0; var cr = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
     if (i < G.seed.y) {
       let b0 = G.biomes[i * 3u];
@@ -405,6 +442,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
       amp = amp + wt.w[i] * b0.w;
       rough = rough + wt.w[i] * b1.x;
       cl = cl + wt.w[i] * G.biomes[i * 3u + 2u].w;
+      cr = cr + wt.w[i] * G.craters[i / 4u][i % 4u];
     }
   }
   let s = G.seed.x;
@@ -425,7 +463,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   if (rough > 0.02) {
     r = ridged2(x * 0.0032, z * 0.0032, s + 202u, select(3u, 2u, fine <= 0.0));
   }
-  return cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp) + ground_delta(x, z);
+  return craters_h(x, z, cliff_h(x, z, base + amp * nlerp(n, r * 2.0 - 0.6, rough), cl, amp), cr) + ground_delta(x, z);
 }
 
 fn sstep(e0: f32, e1: f32, x: f32) -> f32 {

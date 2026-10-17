@@ -57,6 +57,8 @@ pub struct Globals {
     pub ground: [f32; 4],
     /// Caves near the camera, two per capsule: (a.xyz, r), (b.xyz, -).
     pub voids: [[f32; 4]; MAX_VOIDS * 2],
+    /// How cratered each biome is, four to a row.
+    pub craters: [[f32; 4]; 2],
 }
 
 pub const MAX_LIGHTS: usize = 8;
@@ -419,7 +421,7 @@ pub struct SceneParams<'a> {
 pub fn terrain_epoch(t: &Terrain) -> u32 {
     let mut h = crate::noise::pcg(t.seed);
     for b in &t.biomes {
-        for v in [b.base, b.amp, b.rough, b.cliffs] {
+        for v in [b.base, b.amp, b.rough, b.cliffs, b.craters] {
             h = crate::noise::pcg(h ^ v.to_bits());
         }
     }
@@ -435,6 +437,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
     let w = &sp.weather;
     let l = &weathered(&sp.light, w);
     let mut biomes = [[0.0f32; 4]; 18];
+    let mut craters = [[0.0f32; 4]; 2];
     for (i, b) in t.biomes.iter().enumerate().take(MAX_BIOMES) {
         let c = Terrain::center(i);
         let g1 = rgbv(b.ground);
@@ -442,6 +445,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         biomes[i * 3] = [c[0], c[1], b.base, b.amp];
         biomes[i * 3 + 1] = [b.rough, g1.x, g1.y, g1.z];
         biomes[i * 3 + 2] = [g2.x, g2.y, g2.z, b.cliffs];
+        craters[i / 4][i % 4] = b.craters;
     }
     let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
     let mut flags = 0;
@@ -517,6 +521,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         jitter: [0.0; 4],
         ground,
         voids,
+        craters,
     }
 }
 

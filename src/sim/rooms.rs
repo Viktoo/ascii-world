@@ -21,6 +21,8 @@ pub struct Room {
     pub stairs: Vec<(Vec3, Vec3)>,
     pub beds: Vec<Vec3>,
     pub seats: Vec<Vec3>,
+    /// The air it holds inside (its building's `air`), for a world with little of its own.
+    pub air: f32,
 }
 
 impl Room {
@@ -43,7 +45,7 @@ pub fn rooms_of(snap: &WorldSnapshot) -> Vec<Room> {
         let g = p.gpu(ty, 1.0);
         let s = p.scale.max(0.1);
         let pt = |v: [f32; 3]| g.from_local(Vec3::from_array(v));
-        let mut r = Room { g, half: Vec3::from_array(ty.ct.meta.bounds), doors: vec![], stairs: vec![], beds: vec![], seats: vec![] };
+        let mut r = Room { g, half: Vec3::from_array(ty.ct.meta.bounds), doors: vec![], stairs: vec![], beds: vec![], seats: vec![], air: ty.ct.meta.props.iter().find(|(k, _)| k == "air").map(|(_, v)| *v).unwrap_or(0.0) };
         for a in anchors {
             match a.kind.as_str() {
                 "door" => {

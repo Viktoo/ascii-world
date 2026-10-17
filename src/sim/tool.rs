@@ -219,13 +219,13 @@ impl Sim {
         if motion == "shoot" {
             let l = tool.launch.clone().ok_or(ActErr::Fail("it shoots nothing".into()))?;
             if let Some(p) = spot {
-                let range = (l.speed * l.speed / super::physics::GRAVITY).min(600.0);
+                let range = (l.speed * l.speed / self.gravity()).min(600.0);
                 let flat = Vec3::new(p.x - me.pos.x, 0.0, p.z - me.pos.z).length();
                 if flat > range {
                     return fail(format!("{} is out of range of the {tname}", tgt_name.as_deref().map(super::actions::the).unwrap_or_else(|| "that".into())));
                 }
                 let from = me.pos + Vec3::Y * me.eye_height();
-                let d = super::missile::aim(from, p, l.speed);
+                let d = super::missile::aim(from, p, l.speed, self.gravity());
                 aim_pitch = d.y.clamp(-1.0, 1.0).asin();
             } else if who == ActorId::Player {
                 aim_pitch = self.look_pitch;

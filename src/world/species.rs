@@ -302,6 +302,19 @@ pub struct Species {
     /// empty: whatever the weather.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comes_with: Vec<String>,
+    /// It needs air to live: without any about it (or worn, held, or in the
+    /// room it is in) it suffocates. False for what never draws breath (a
+    /// golem, a ghost, a vacuum-born thing).
+    #[serde(default = "one_bool", skip_serializing_if = "is_true")]
+    pub breathes: bool,
+}
+
+fn one_bool() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 fn is_always(a: &Active) -> bool {

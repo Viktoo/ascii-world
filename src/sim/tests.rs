@@ -5211,3 +5211,63 @@ fn what_a_deed_makes_comes_where_it_was_pointed() {
     let work = s.sim.work().into_iter().find(|w| w.what == "brass lantern").expect("the lantern is being made");
     assert!(work.appears && flat(work.at.unwrap(), spot) < 1.0, "it will appear where it was pointed: {:?}", work.at);
 }
+
+/// On the Moon a jump goes six times as high, a stick set alight goes out,
+/// and someone who breathes suffocates out in the open while one holding
+/// an air tank does not.
+#[test]
+fn the_moon_has_low_gravity_and_no_air() {
+    let jump_peak = |gravity: f32| {
+        let mut look = bare();
+        (look.gravity, look.air) = (gravity, 0.0);
+        let w = world_with("moon-jump", 64, look);
+        let p = flat_spot(&w, 30.0);
+        let mut s = session(&w, 64, None);
+        s.sim.player.pos = p;
+        s.run(0.5, 0.05);
+        let y0 = s.sim.player.pos.y;
+        assert!(s.sim.jump(ActorId::Player), "a jump from the ground");
+        let (mut peak, mut t) = (0.0f32, 0.0);
+        while t < 8.0 {
+            s.step(0.02);
+            t += 0.02;
+            peak = peak.max(s.sim.player.pos.y - y0);
+            if t > 0.2 && s.sim.player.grounded {
+                break;
+            }
+        }
+        (peak, t)
+    };
+    let (earth, earth_t) = jump_peak(crate::sim::physics::GRAVITY);
+    let (moon, moon_t) = jump_peak(1.62);
+    eprintln!("jump: Earth {earth:.2} m for {earth_t:.1} s, the Moon {moon:.2} m for {moon_t:.1} s");
+    assert!(moon > earth * 4.5 && moon_t > earth_t * 4.0, "the Moon's jump: {moon:.2} m for {moon_t:.1} s, Earth's {earth:.2} m for {earth_t:.1} s");
+
+    let mut look = bare();
+    (look.gravity, look.air) = (1.62, 0.0);
+    let w = world_with("moon", 65, look);
+    let p = flat_spot(&w, 30.0);
+    let ada = add_char(&w, "Ada", "calm", &[], p + Vec3::new(3.0, 0.0, 0.0));
+    let ben = add_char(&w, "Ben", "calm", &[], p + Vec3::new(-3.0, 0.0, 0.0));
+    let mut s = session(&w, 65, None);
+    s.sim.player.pos = p;
+    let snap = s.sim.snap.clone();
+    for it in s.sim.cache.items_near(&snap, p, 30.0) {
+        s.sim.cache.overlay.taken.insert(it.cell);
+        s.sim.things.taken.insert(it.cell, -1);
+    }
+    let stick = s.sim.type_by_name("stick").unwrap().id;
+    let fire = s.sim.spawn_thing(stick, p + Vec3::new(0.0, 0.0, 4.0), 0.0, 2.0, Default::default(), true).unwrap();
+    s.sim.things.get_mut(fire).unwrap().props[P_FIRE] = 0.5;
+    s.sim.things.get_mut(fire).unwrap().props[P_FUEL] = 5.0;
+    let tank = s.sim.spawn_thing(stick, p + Vec3::new(-3.0, 0.0, 1.0), 0.0, 1.0, Default::default(), true).unwrap();
+    s.sim.things.get_mut(tank).unwrap().props[P_AIR] = 1.0;
+    s.sim.things.get_mut(tank).unwrap().holder = Some(ActorId::Npc(ben));
+    s.sim.cast.get_mut(ben).unwrap().a.held = Some(tank);
+    s.run(20.0, 0.1);
+    assert_eq!(s.sim.things.get(fire).unwrap().props[P_FIRE], 0.0, "no fire burns without air");
+    let (a, b) = (s.sim.cast.get(ada).unwrap(), s.sim.cast.get(ben).unwrap());
+    assert!(a.gasping && a.props[P_HEALTH] < 0.8, "Ada suffocates: health {:.2}", a.props[P_HEALTH]);
+    assert!(!b.gasping && b.props[P_HEALTH] > 0.99, "Ben breathes from his tank: health {:.2}", b.props[P_HEALTH]);
+    assert!(s.sim.body_line(ada).is_some_and(|l| l.contains("no air")), "Ada's planner is told: {:?}", s.sim.body_line(ada));
+}
