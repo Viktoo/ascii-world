@@ -16,7 +16,7 @@ use crate::app::{App, Frontend, WinGeom};
 use crate::render::Frame;
 use crate::term::Screen;
 use anyhow::{Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
 use gfx::Compositor;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -473,6 +473,8 @@ fn key(e: &winit::event::KeyEvent, mods: ModifiersState) -> Option<KeyEvent> {
             NamedKey::PageUp => KeyCode::PageUp,
             NamedKey::PageDown => KeyCode::PageDown,
             NamedKey::Space => KeyCode::Char(' '),
+            // Shift on its own, so holding or letting go of it mid-walk runs or walks.
+            NamedKey::Shift => KeyCode::Modifier(ModifierKeyCode::LeftShift),
             NamedKey::F1 => KeyCode::F(1),
             NamedKey::F2 => KeyCode::F(2),
             NamedKey::F3 => KeyCode::F(3),

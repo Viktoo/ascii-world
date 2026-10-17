@@ -14,7 +14,7 @@ use crate::world::characters::TALK_RANGE;
 use crate::world::collide::{Obstacles, PLAYER_RADIUS};
 use crate::world::describe::describe;
 use crate::world::{WorldSnapshot, cull, region_center, region_of};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -504,6 +504,11 @@ impl App {
             }
             return;
         }
+        // Shift alone (the window reports it): held runs, let go walks.
+        if let KeyCode::Modifier(ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift) = k.code {
+            self.shift_run = k.kind != KeyEventKind::Release;
+            return;
+        }
         if k.kind == KeyEventKind::Release {
             if let Some(c) = key_char(k.code) {
                 self.keys.down.remove(&c);
@@ -570,8 +575,9 @@ impl App {
             // a flyer or a swimmer.
             let flying_key = matches!(c, ' ' | 'c') && (self.sim.player.aboard.is_some() || self.sim.player.swimming);
             if matches!(c, '^' | 'v' | '<' | '>' | 'a' | 'd' | 'w' | 's') || flying_key {
-                // Shift with a walking key runs (`r` keeps running on).
-                if matches!(c, 'a' | 'd' | 'w' | 's') && k.kind == KeyEventKind::Press {
+                // Shift with a walking key runs (`r` keeps running on); a
+                // repeat says again whether Shift is still down.
+                if matches!(c, 'a' | 'd' | 'w' | 's') {
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT) || matches!(k.code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
                     self.shift_run = shift;
                 }
@@ -2825,6 +2831,25 @@ mod tests {
         assert!((moved - WALK_SPEED).abs() < WALK_SPEED * 0.2, "1 s held moved {moved} m");
         let after = Vec3::new(app.pos().x - rp.x, 0.0, app.pos().z - rp.z).length();
         assert!(after < 0.15, "kept moving {after} m after release");
+        app.shutdown();
+    }
+
+    /// Shift pressed or let go while already walking runs or walks.
+    #[test]
+    fn shift_mid_walk_runs_and_letting_go_walks() {
+        let (mut app, _db) = make_app();
+        app.noclip = true;
+        let shift = |kind| KeyEvent::new_with_kind(KeyCode::Modifier(ModifierKeyCode::LeftShift), KeyModifiers::SHIFT, kind);
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(!app.sim.player.running, "plain W walks");
+        app.on_key(shift(KeyEventKind::Press));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(app.sim.player.running, "Shift mid-walk runs");
+        app.on_key(shift(KeyEventKind::Release));
+        drive(&mut app, 0.1, |_, _| true);
+        assert!(!app.sim.player.running, "letting go of Shift walks");
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Release));
         app.shutdown();
     }
 
