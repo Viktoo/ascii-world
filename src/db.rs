@@ -161,6 +161,8 @@ impl Db {
         let conn = Connection::open(path).with_context(|| format!("creating {}", path.display()))?;
         Self::configure(&conn)?;
         conn.execute("INSERT INTO universe(id, seed, bible, palette, created_at) VALUES (1, ?1, ?2, ?3, ?4)", params![seed as i64, bible, look_json, now()])?;
+        kv_set(&conn, "made_with", COMMIT)?;
+        kv_set(&conn, "last_opened_with", COMMIT)?;
         Ok(Arc::new(Db { conn: Mutex::new(conn) }))
     }
 
@@ -170,6 +172,7 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         Self::configure(&conn)?;
+        kv_set(&conn, "last_opened_with", COMMIT)?;
         Ok(Arc::new(Db { conn: Mutex::new(conn) }))
     }
 
@@ -432,6 +435,11 @@ pub fn creations(c: &Connection) -> Result<Vec<CreationRow>> {
     out.sort_by(|a, b| a.wall.total_cmp(&b.wall));
     Ok(out)
 }
+
+/// The git commit this game was built from (`-dirty` with changes not yet
+/// committed). A world keeps the one that made it (kv `made_with`, absent in
+/// worlds older than this) and the one that last opened it (`last_opened_with`).
+pub const COMMIT: &str = env!("POCKET_COMMIT");
 
 pub fn kv_set(c: &Connection, key: &str, value: &str) -> Result<()> {
     c.execute("INSERT INTO kv(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value])?;

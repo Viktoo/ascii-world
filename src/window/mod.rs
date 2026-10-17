@@ -113,6 +113,8 @@ pub enum Ev {
     Click,
     Close,
     Paste(String),
+    /// A file dropped on the window.
+    Dropped(std::path::PathBuf),
 }
 
 struct Gpu {
@@ -360,6 +362,8 @@ impl PlayFront<'_> {
                 }
                 Ev::Close => app.quit_now(),
                 Ev::Paste(t) => app.paste(&t),
+                // Worlds are added from the list of them.
+                Ev::Dropped(_) => {}
             }
         }
         // Mouse look only while walking: menus and typing get the pointer back.
@@ -412,6 +416,7 @@ impl ApplicationHandler for Handler {
             WindowEvent::CloseRequested => self.events.push(Ev::Close),
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => self.events.push(Ev::Resized),
             WindowEvent::Focused(f) => self.events.push(Ev::Focus(f)),
+            WindowEvent::DroppedFile(p) => self.events.push(Ev::Dropped(p)),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => self.events.push(Ev::Click),
             WindowEvent::KeyboardInput { event, .. } => {
