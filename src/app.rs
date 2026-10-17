@@ -278,11 +278,9 @@ impl App {
     pub fn new(s: Setup) -> App {
         let player = s.db.player();
         let (pos, yaw, t_game) = match player {
-            Some(p) => (Vec3::new(p.x, s.snap.terrain.height(p.x, p.z), p.z), p.yaw, p.t_game),
+            Some(p) => (crate::model::afloat(&s.snap.terrain, Vec3::new(p.x, 0.0, p.z)), p.yaw, p.t_game),
             None => (s.snap.spawn, 0.0, 0.33 * sky::DAY_SECONDS),
         };
-        // Saved under water (an older save, or a spawn on a lake bed): back to dry land.
-        let pos = if pos.y < s.snap.terrain.water(pos.x, pos.z) + 0.3 { s.snap.spawn } else { pos };
         let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
         sim.has_llm = s.brain.has_llm;
@@ -404,7 +402,7 @@ impl App {
             // Stuck where its feet are (a floor, a roof), not at the ground below.
             let cap = self.sim.capsule(ActorId::Player);
             if obs.dist_body(p.x, p.z, p.y, cap) < PLAYER_RADIUS * 0.5 && !obs.clear(p.x, p.z, p.y, cap) {
-                self.sim.player.pos = free_spot(&snap.terrain, &obs, p, PLAYER_RADIUS, 40.0);
+                self.sim.player.pos = free_spot(&snap.terrain, &obs, p, PLAYER_RADIUS, 40.0, true);
                 self.cam_y = self.sim.player.pos.y + self.sim.player.dims.eye;
             }
         }
@@ -417,7 +415,7 @@ impl App {
             let obs = Obstacles { solids: &solids, bodies: &[] };
             let cap = self.sim.capsule(ActorId::Npc(self.sim.cast.npcs[i].def.id));
             if obs.dist_body(p.x, p.z, p.y, cap) < NPC_RADIUS * 0.5 && !obs.clear(p.x, p.z, p.y, cap) {
-                self.sim.cast.npcs[i].a.pos = free_spot(&snap.terrain, &obs, p, NPC_RADIUS, 40.0);
+                self.sim.cast.npcs[i].a.pos = free_spot(&snap.terrain, &obs, p, NPC_RADIUS, 40.0, cap.swims);
             }
         }
     }

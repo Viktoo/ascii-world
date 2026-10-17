@@ -191,15 +191,27 @@ fn type_entry(id: u32, ct: Arc<CompiledType>, bottom: f32, top: f32, builtin: bo
     Arc::new(TypeEntry { id, ct, builtin, solid, bottom, top, sphere_cy, sphere_r })
 }
 
-/// Choose a dry, gentle spawn point near the origin.
+/// Choose a gentle spawn point near the origin (on land or in the water:
+/// the traveler swims).
 pub fn find_spawn(t: &Terrain) -> Vec3 {
-    spawn_near(t, 0.0)
+    spawn_near(t, 0.0, 0.0)
 }
 
-/// For a newly made land: near the middle of the first region, so only that
-/// one region is in sight and loading waits for it alone.
+/// For a newly made land: near the middle of a region, so only that one
+/// region is in sight and loading waits for it alone; the nearest region
+/// whose middle lies in the first biome (where the land's "start" is).
 pub fn find_first_spawn(t: &Terrain) -> Vec3 {
-    spawn_near(t, crate::world::REGION / 2.0)
+    let reg = crate::world::REGION;
+    let mid = |i: i32, j: i32| (i as f32 * reg + reg / 2.0, j as f32 * reg + reg / 2.0);
+    let first = (0..=16i32).flat_map(|ring| {
+        (-ring..=ring).flat_map(move |i| (-ring..=ring).map(move |j| (i, j))).filter(move |(i, j)| i.abs().max(j.abs()) == ring)
+    }).find(|&(i, j)| {
+        let (x, z) = mid(i, j);
+        t.biome_at(x, z) == 0
+    });
+    let (i, j) = first.unwrap_or((0, 0));
+    let (x, z) = mid(i, j);
+    spawn_near(t, x, z)
 }
 
 /// The nearest dry ground to `p` (itself if dry), on the ground.
@@ -216,26 +228,24 @@ pub fn dry_near(t: &Terrain, p: Vec3) -> Vec3 {
     Vec3::new(p.x, t.height(p.x, p.z), p.z)
 }
 
-fn spawn_near(t: &Terrain, mid: f32) -> Vec3 {
-    let mut best = Vec3::new(mid, 0.0, mid);
+fn spawn_near(t: &Terrain, mx: f32, mz: f32) -> Vec3 {
+    let mut best = Vec3::new(mx, 0.0, mz);
     let mut best_score = f32::MAX;
-    // Spiral outwards. Past the first ~180 m, take the first dry spot: a world
-    // can open on a wide lake, and spawning on its bed leaves the player stuck.
-    for i in 0..40_000 {
-        if i >= 400 && best_score < 100.0 {
-            break;
-        }
+    // Spiral outwards for the gentlest spot close by, dry if there is any:
+    // with only water round about, the traveler starts afloat in it.
+    for i in 0..400 {
         let a = i as f32 * 2.399;
         let r = (i as f32).sqrt() * 9.0;
-        let (x, z) = (mid + a.cos() * r, mid + a.sin() * r);
+        let (x, z) = (mx + a.cos() * r, mz + a.sin() * r);
         let h = t.height(x, z);
+        let wl = t.water(x, z);
         let n = t.normal(x, z);
         let mut score = r * 0.02 + (1.0 - n.y) * 30.0;
-        if mid > 0.0 && r > 18.0 {
+        if (mx, mz) != (0.0, 0.0) && r > 18.0 {
             // Further out, more regions come into sight.
             score += 5.0;
         }
-        if h < t.water(x, z) + 1.5 {
+        if h < wl + 1.5 {
             score += 100.0;
         }
         if score < best_score {
@@ -243,7 +253,14 @@ fn spawn_near(t: &Terrain, mid: f32) -> Vec3 {
             best = Vec3::new(x, h, z);
         }
     }
-    best
+    afloat(t, best)
+}
+
+/// A spot as the traveler starts there: on the ground, or at the top of
+/// water too deep to stand in.
+pub fn afloat(t: &Terrain, p: Vec3) -> Vec3 {
+    let h = t.height(p.x, p.z);
+    Vec3::new(p.x, h.max(t.water(p.x, p.z) - 1.5), p.z)
 }
 
 impl WorldModel {
@@ -286,11 +303,11 @@ impl WorldModel {
             m.terrain.lay_rivers(s[0], s[2]);
         }
         m.spawn = match db.kv_get("spawn").and_then(|s| serde_json::from_str::<[f32; 3]>(&s).ok()) {
-            Some(s) if m.terrain.height(s[0], s[2]) >= m.terrain.water(s[0], s[2]) + 0.3 => Vec3::from(s),
-            _ => {
+            Some(s) => Vec3::from(s),
+            None => {
                 let s = find_spawn(&m.terrain);
                 m.terrain.lay_rivers(s.x, s.z);
-                let s = dry_near(&m.terrain, s);
+                let s = afloat(&m.terrain, s);
                 db.kv_set("spawn", &serde_json::to_string(&s.to_array())?)?;
                 s
             }
@@ -372,7 +389,9 @@ impl WorldModel {
             let state: SavedState = serde_json::from_str(&c.state_json).unwrap_or_default();
             let mut home = Vec3::new(c.home_x, m.terrain.height(c.home_x, c.home_z), c.home_z);
             // Older worlds may have homes inside buildings: move them to the doorstep for good.
-            let fixed = m.clear_spot(home, &[]);
+            // (A people of the water keeps its home in the water.)
+            let swims = !persona.species.is_empty() && m.species.get(&persona.species).is_some_and(|s| s.water > 0.0);
+            let fixed = m.clear_spot(home, &[], swims);
             if (fixed - home).length() > 0.01 {
                 home = fixed;
                 let _ = db.with(|cn| {
@@ -405,13 +424,13 @@ impl WorldModel {
     }
 
     /// The nearest spot to `p` where a person can stand (not inside a building).
-    fn clear_spot(&self, p: Vec3, extra: &[(Placed, Arc<TypeEntry>)]) -> Vec3 {
+    fn clear_spot(&self, p: Vec3, extra: &[(Placed, Arc<TypeEntry>)], swims: bool) -> Vec3 {
         let solids = self.story_solids_near(p, extra);
         if solids.is_empty() {
             return p;
         }
         let obs = crate::world::collide::Obstacles { solids: &solids, bodies: &[] };
-        crate::world::collide::free_spot(&self.terrain, &obs, p, crate::world::collide::NPC_RADIUS + 0.3, 40.0)
+        crate::world::collide::free_spot(&self.terrain, &obs, p, crate::world::collide::NPC_RADIUS + 0.3, 40.0, swims)
     }
 
     pub fn terrain(&self) -> Arc<Terrain> {
@@ -1160,24 +1179,19 @@ impl WorldModel {
             }
         }
 
-        // A new look changes the terrain: pick a new dry spawn point.
+        // A new look changes the terrain: pick a new spawn point.
         let new_spawn = req.look.as_ref().map(|_| {
             let s = find_first_spawn(&terrain);
             terrain.lay_rivers(s.x, s.z);
-            dry_near(&terrain, s)
-        }).or_else(|| {
-            // A settlement's ground may have flooded the spawn (a lagoon dug
-            // round it): the nearest dry spot instead.
-            let s = self.spawn;
-            (terrain.height(s.x, s.z) < terrain.water(s.x, s.z) + 0.3).then(|| dry_near(&terrain, s))
+            afloat(&terrain, s)
         });
 
         // Commit to SQLite as one new version.
         let parent = self.current;
         // Characters live beside their houses, never inside them.
-        // (Creatures that live in water keep the water they were put in.)
+        // (Beings that live in water keep the water they were put in.)
         let wet = |p: &Persona| !p.species.is_empty() && self.species.get(&p.species).is_some_and(|s| s.water > 0.0);
-        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(p, h)| if wet(p) { *h } else { self.clear_spot(dry_near(&terrain, *h), &placed) }).collect()).unwrap_or_default();
+        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(p, h)| if wet(p) { self.clear_spot(*h, &placed, true) } else { self.clear_spot(dry_near(&terrain, *h), &placed, false) }).collect()).unwrap_or_default();
         let region = req.region.as_ref();
         let res = self.db.tx(|tx| {
             let v = db::add_version(tx, parent, req.kind, &req.summary, None)?;

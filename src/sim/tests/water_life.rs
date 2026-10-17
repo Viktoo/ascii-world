@@ -226,3 +226,61 @@ fn water_life_png() {
     png_of(&mut s, &snap, &gpu, at(Vec3::new(fish.x, 0.0, fish.z) + back * 8.0 + Vec3::Y * 3.0, -0.35), &format!("{dir}/pocket-water-over.png"));
     png_of(&mut s, &snap, &gpu, at(Vec3::new(fish.x, fish.y + 0.3, fish.z) + back * 4.0, -0.05), &format!("{dir}/pocket-water-under.png"));
 }
+
+fn put_merfolk(w: &W) {
+    let mer = serde_json::json!({ "name": "merfolk", "plural": "merfolk", "body": "figure", "mind": "sapient", "speech": "words", "social": "village",
+        "move": { "walk": 0.5, "run": 1.0, "swim": 2.0 }, "water": 1, "depth": [0.2, 0.6], "description": "a people of the sea" });
+    w.db.with(|c| db::put_species(c, "merfolk", &mer.to_string())).unwrap();
+}
+
+/// A house on the sea bed: one of a people of the water swims down to its
+/// doorway and in, opening the door, to its bed; and inside it keeps to its
+/// floor rather than floating up through the roof.
+#[test]
+fn merfolk_swim_into_a_house_under_the_water() {
+    let w = world_with("sunken", 12, coast());
+    put_merfolk(&w);
+    let hut = add_type(&w, &fixture("physics/hut.js").replace("tags: [\"building\"]", "tags: [\"building\", \"water\"]"));
+    add_type(&w, &fixture("physics/sword.js"));
+    // Open sea: deep all round, so the house and its yard are well under.
+    let t = w.terrain.clone();
+    let wd = |x: f32, z: f32| t.water(x, z) - t.height(x, z);
+    let deep = (0..40000).map(|k| {
+        let (a, r) = (k as f32 * 2.399, (k as f32).sqrt() * 2.0);
+        Vec3::new(w.spawn.x + a.cos() * r, 0.0, w.spawn.z + a.sin() * r)
+    }).find(|p| wd(p.x, p.z) > 7.0 && (0..12).all(|i| { let b = i as f32 * 0.524; wd(p.x + b.cos() * 14.0, p.z + b.sin() * 14.0) > 6.0 })).expect("open sea");
+    let ok = commit_places(&w, vec![pl(hut, deep, 0.0)], None);
+    let h = ok.snapshot.instances.iter().find(|p| p.type_id == hut).expect("the hut stands under the water").pos;
+    assert!(t.water(h.x, h.z) - h.y > 3.0, "on the bed, {:.1} m down", t.water(h.x, h.z) - h.y);
+    let id = add_being(&w, "Nerys", "merfolk", &[], h + Vec3::new(5.0, 0.0, 8.0));
+    let mut s = session(&w, 12, None);
+    calm(&mut s);
+    let me = ActorId::Npc(id);
+    for _ in 0..100 {
+        s.sim.step(0.1);
+    }
+    let a = s.sim.actor(me).unwrap().clone();
+    // Let be, it swims at its own depth near the top (eyes 0.2–0.6 m
+    // under), well over the roof.
+    let under = |a: &crate::sim::actor::Actor| t.water(a.pos.x, a.pos.z) - (a.pos.y + a.dims.eye);
+    assert!(a.swimming && (0.0..1.0).contains(&under(&a)), "swimming at its depth first: eyes {:.1} m under", under(&a));
+    assert!(a.pos.y > h.y + 3.0, "over the roof: {:.1} m over the floor", a.pos.y - h.y);
+    let bed = s.sim.rooms[0].beds[0];
+    let r = act_once(&mut s, me, Action::Goto { target: Target::Point(bed.to_array()), run: false }, 40.0);
+    let at = s.sim.actor(me).unwrap().pos;
+    assert!(s.sim.room_at(at + Vec3::Y * 0.3).is_some(), "Nerys swam in through the door: {r}, at {:?} from the hut", at - h);
+    assert!(s.sim.log.recent.iter().any(|e| e.kind == "opened" && e.actor == Some(me)), "Nerys opened the door to go in");
+    for _ in 0..100 {
+        s.sim.step(0.1);
+    }
+    let at = s.sim.actor(me).unwrap().pos;
+    assert!(s.sim.room_at(at + Vec3::Y * 0.3).is_some() && at.y < h.y + 1.0, "still inside, by the floor: {:.2} m over it", at.y - h.y);
+    // And out again, back up to its depth.
+    let out = h + Vec3::new(6.0, 0.0, 10.0);
+    act_once(&mut s, me, Action::Goto { target: Target::Point(out.to_array()), run: false }, 40.0);
+    for _ in 0..100 {
+        s.sim.step(0.1);
+    }
+    let a = s.sim.actor(me).unwrap().clone();
+    assert!(s.sim.room_at(a.pos + Vec3::Y * 0.3).is_none() && (0.0..1.0).contains(&under(&a)), "out and up to its depth again: {:?} from the hut, eyes {:.1} m under", a.pos - h, under(&a));
+}

@@ -241,7 +241,7 @@ impl Sim {
                 };
                 let solids = self.solids_near(p, 6.0);
                 let obs = Obstacles { solids: &solids, bodies: &[] };
-                let q = free_spot(&self.snap.terrain, &obs, Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z), crate::world::collide::PLAYER_RADIUS, 4.0);
+                let q = free_spot(&self.snap.terrain, &obs, Vec3::new(p.x, self.snap.terrain.height(p.x, p.z), p.z), crate::world::collide::PLAYER_RADIUS, 4.0, false);
                 Vec3::new(q.x, self.snap.terrain.height(q.x, q.z), q.z)
             }
             None => self.actor(who).map(|a| a.pos).unwrap_or_default(),

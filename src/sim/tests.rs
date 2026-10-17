@@ -63,9 +63,37 @@ fn world_with(tag: &str, seed: u32, look: crate::world::Look) -> W {
     let live = Arc::new(Mutex::new(crate::model::Live::default()));
     let model = crate::model::WorldModel::load(db.clone(), None, live).unwrap();
     let terrain = (*model.terrain()).clone();
-    let spawn = model.spawn;
+    // Scenes are set out on land: the traveler may start in the water, but
+    // these tests start them on the nearest gentle dry ground.
+    let spawn = dry_start(&terrain, model.spawn);
+    db.kv_set("spawn", &serde_json::to_string(&spawn.to_array()).unwrap()).unwrap();
     let version = db.with(|c| db::add_version(c, None, "region", "test scene", None)).unwrap();
     W { db, path, terrain, spawn, version }
+}
+
+/// The nearest gentle spot at least 1.5 m over the water, spiralling out
+/// from `p` (it stays if it is one).
+fn dry_start(t: &crate::terrain::Terrain, p: Vec3) -> Vec3 {
+    let mut best = p;
+    let mut best_score = f32::MAX;
+    for i in 0..40_000 {
+        if i >= 400 && best_score < 100.0 {
+            break;
+        }
+        let a = i as f32 * 2.399;
+        let r = (i as f32).sqrt() * 9.0;
+        let (x, z) = (p.x + a.cos() * r, p.z + a.sin() * r);
+        let h = t.height(x, z);
+        let mut score = r * 0.02 + (1.0 - t.normal(x, z).y) * 30.0;
+        if h < t.water(x, z) + 1.5 {
+            score += 100.0;
+        }
+        if score < best_score {
+            best_score = score;
+            best = Vec3::new(x, h, z);
+        }
+    }
+    best
 }
 
 fn add_type(w: &W, src: &str) -> u32 {
