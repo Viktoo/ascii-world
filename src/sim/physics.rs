@@ -8,7 +8,7 @@ use super::things::ThingId;
 use super::{ActorId, Note, Sim, Target};
 use crate::terrain::WATER_LEVEL;
 use crate::world::Solid;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use serde_json::json;
 
 pub const GRAVITY: f32 = 9.81;
@@ -603,7 +603,8 @@ impl Sim {
             return;
         }
         let Some(t) = self.things.get(id) else { return };
-        let fragile = t.props[P_FRAGILE];
+        // Something that goes off is set off, not shattered into more of itself.
+        let fragile = if self.burst_of(id).is_some() { 0.0 } else { t.props[P_FRAGILE] };
         let pos = t.pos;
         let (type_id, props) = (t.type_id, t.props.clone());
         let name = self.thing_name(id);
@@ -625,32 +626,72 @@ impl Sim {
             let by = self.things.get(id).and_then(|t| t.thrown_by.map(|x| x.0));
             self.event("hit", by, Some(format!("thing:{id}")), format!("the {name} hit {what} at {speed:.0} m/s"), Some(pos), json!({ "with": with, "speed": (speed as f64 * 10.0).round() / 10.0 }));
         }
-        if self.things.get(id).is_some_and(|t| t.props[P_HEALTH] <= 0.0 && t.props[P_FRAGILE] > 0.0) {
+        if fragile > 0.0 && self.things.get(id).is_some_and(|t| t.props[P_HEALTH] <= 0.0 && t.props[P_FRAGILE] > 0.0) {
             self.break_thing(id);
         }
     }
 
     /// A fragile thing breaks into pieces that keep its properties (a broken
-    /// lamp is still hot and still full of oil).
+    /// lamp is still hot and still full of oil). Each piece is a different
+    /// part of it, cut out of the whole: slices across its longer side, with
+    /// a bite out of the broken face, falling apart where they stood.
     pub fn break_thing(&mut self, id: ThingId) {
         let Some(t) = self.things.get(id).cloned() else { return };
         let Some(ty) = self.type_entry(t.type_id) else { return };
         self.release(id);
         self.things.remove(id);
         let n = 2 + (self.rand() * 2.0) as usize;
+        let b = ty.ct.meta.bounds;
+        // Across the longer flat side, so every piece keeps its footing.
+        let axis = if b[0] >= b[2] { 0 } else { 2 };
+        let half = b[axis].max(0.01);
+        let big = 4.0 * b[0].max(b[1]).max(b[2]).max(ty.top - ty.bottom) + 1.0;
+        let mid_y = (ty.top + ty.bottom) * 0.5;
+        let at = |along: f32, y: f32| {
+            let mut c = [0.0, y, 0.0];
+            c[axis] = along;
+            c
+        };
+        let rot = Quat::from_rotation_y(t.yaw) * t.tilt();
         for i in 0..n {
             if self.things.len() >= self.cfg.max_things {
                 break;
             }
-            let a = i as f32 * 2.4 + self.rand();
+            let lo = -half + 2.0 * half * i as f32 / n as f32;
+            let hi = -half + 2.0 * half * (i + 1) as f32 / n as f32;
+            let mut cuts: Vec<[f32; 4]> = Vec::new();
+            if i > 0 {
+                let c = at(lo - big, mid_y);
+                cuts.push([c[0], c[1], c[2], -big]);
+            }
+            if i + 1 < n {
+                let c = at(hi + big, mid_y);
+                cuts.push([c[0], c[1], c[2], -big]);
+            }
+            // A bite out of a broken face, so no two pieces are alike.
+            let face = if i + 1 < n { hi } else { lo };
+            let r = (half / n as f32).max(0.03) * (0.5 + self.rand() * 0.5);
+            let y = ty.bottom + (ty.top - ty.bottom) * (0.3 + self.rand() * 0.6);
+            let mut c = at(face, y);
+            c[if axis == 0 { 2 } else { 0 }] = (self.rand() * 2.0 - 1.0) * b[2 - axis] * 0.6;
+            cuts.push([c[0], c[1], c[2], r]);
+            for o in &t.shape.cuts {
+                if cuts.len() < crate::render::MAX_CUTS {
+                    cuts.push(*o);
+                }
+            }
+            // Out from the middle, the way its part lay.
+            let out_local = at((lo + hi) * 0.5, 0.0);
+            let out = (rot * Vec3::from_array(out_local) * t.scale).normalize_or(Vec3::new(self.rand() - 0.5, 0.0, self.rand() - 0.5).normalize_or(Vec3::X));
             let nid = self.things.alloc();
             let mut p = t.props.clone();
             p[P_MASS] /= n as f32;
             p[P_FRAGILE] = 0.0;
             p[P_HEALTH] = 0.0;
-            let mut piece = super::things::Thing::new(nid, &ty, t.pos + Vec3::new(a.cos() * 0.15, 0.05, a.sin() * 0.15), t.yaw + a, t.scale * 0.55, t.params, p, self.t);
-            piece.params[0] = t.params[0] + i as f32 + 1.0;
-            piece.vel = t.vel * 0.4 + Vec3::new(a.cos() * 1.2, 1.5, a.sin() * 1.2);
+            let mut piece = super::things::Thing::new(nid, &ty, t.pos + out * 0.04, t.yaw, t.scale, t.params, p, self.t);
+            piece.set_tilt(t.tilt());
+            piece.shape.cuts = cuts;
+            piece.vel = t.vel * 0.4 + out * (0.8 + self.rand() * 0.8) + Vec3::Y * (0.6 + self.rand() * 0.6);
             piece.asleep = false;
             piece.anchored = false;
             piece.origin.made_from = vec![ty.name().to_string()];

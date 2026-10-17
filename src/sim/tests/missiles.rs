@@ -323,3 +323,25 @@ export function sdf(x, y, z, k) { return box(x, y, z, 0.05, 0.05, 0.4); }"#;
     let e = crate::lang::compile(bad).unwrap_err();
     assert!(crate::lang::format_diags(&e).contains("launch"), "{}", crate::lang::format_diags(&e));
 }
+
+#[test]
+fn a_broken_thing_falls_into_different_parts_and_a_grenade_does_not_shatter() {
+    let w = world_with("smash", 77, bare());
+    let lantern = add_type(&w, &fixture("sims/lantern.js"));
+    let grenade = add_type(&w, &fixture("physics/grenade.js"));
+    let p = flat_spot(&w, 30.0);
+    let li = place(&w, lantern, p + Vec3::new(0.5, 0.0, 0.0), 0.0);
+    let gi = place(&w, grenade, p + Vec3::new(-0.5, 0.0, 0.0), 0.0);
+    let mut s = session(&w, 77, None);
+    let l = s.sim.liven(&Target::Instance(li)).unwrap();
+    s.sim.break_thing(l);
+    let pieces: Vec<_> = s.sim.things.live().filter(|t| t.type_id == lantern).map(|t| t.shape.cuts.clone()).collect();
+    assert!(pieces.len() >= 2, "it broke into pieces");
+    assert!(pieces.iter().all(|c| !c.is_empty()), "each piece is cut out of the whole");
+    assert!(pieces.windows(2).all(|w| w[0] != w[1]), "no two pieces alike");
+    // Struck hard, something that goes off doesn't become more of itself.
+    let g = s.sim.liven(&Target::Instance(gi)).unwrap();
+    s.sim.things.get_mut(g).unwrap().props[P_FRAGILE] = 1.0;
+    s.sim.impact(g, 20.0, None);
+    assert_eq!(s.sim.things.live().filter(|t| t.type_id == grenade).count(), 1, "still one grenade");
+}
