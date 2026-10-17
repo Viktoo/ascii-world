@@ -734,19 +734,32 @@ impl Sim {
                 moved.push((format!("the {}", self.thing_name(id)), shifts));
             }
         }
-        // Where new things come: in place of what they replace, by what was
-        // worked on, else where the doer pointed (the spot they looked at
-        // while it was being decided), else just in front of them.
+        // Where new things come: in place of what they replace, else where
+        // what was worked on was touched, else where the doer pointed (the
+        // spot they looked at while it was being decided), else just in front
+        // of them. Anything not replacing is set down clear of solids, on the
+        // doer's side (never inside the boulder it was pointed at).
         let pointed = match &p.target {
             Some(Target::Point(q)) => Some(glam::Vec3::from(*q)),
             _ => p.hit,
         };
         let ahead = self.actor(p.actor).map(|a| a.pos + a.forward() * 1.2).unwrap_or(pos);
+        let worked_on = p.hit.filter(|_| target_thing.is_some()).or_else(|| target_thing.and_then(|t| self.things.get(t).map(|x| x.pos)));
+        let mut unspawned = 0;
         for (i, m) in fx.create.iter().take(3).enumerate() {
             let replace = m.replace.as_deref().and_then(|r| resolve(self, r));
             // Several at once lie side by side.
             let side = self.actor(p.actor).map(|a| a.right()).unwrap_or(glam::Vec3::X) * (i as f32 * 0.45);
-            let at = replace.and_then(|r| self.things.get(r).map(|t| t.pos)).or_else(|| target_thing.and_then(|t| self.things.get(t).map(|x| x.pos))).or(pointed).unwrap_or(ahead) + side;
+            let at = match replace.and_then(|r| self.things.get(r).map(|t| t.pos)) {
+                Some(at) => at + side,
+                None => {
+                    let r = match self.type_by_name(&m.name) {
+                        Some(ty) => ty.ct.meta.bounds[0].max(ty.ct.meta.bounds[2]),
+                        None => m.size_m.map(|s| s[0].max(s[2]) * 0.5).unwrap_or(0.25),
+                    };
+                    self.clear_spot(worked_on.or(pointed).unwrap_or(ahead) + side, pos, r)
+                }
+            };
             let was_held_by = replace.and_then(|r| self.things.get(r).and_then(|t| t.holder));
             let made_from: Vec<String> = [p.held, target_thing].into_iter().flatten().map(|i| self.thing_name(i)).collect();
             let origin = Origin { made_by: Some(self.actor_name(p.actor)), made_from: made_from.clone(), ..Default::default() };
@@ -756,7 +769,11 @@ impl Sim {
             }
             match self.type_by_name(&m.name) {
                 Some(ty) => {
-                    if let Some(nid) = self.spawn_thing(ty.id, at, 0.0, 1.0, origin, was_held_by.is_none()) {
+                    let Some(nid) = self.spawn_thing(ty.id, at, 0.0, 1.0, origin, was_held_by.is_none()) else {
+                        unspawned += 1;
+                        continue;
+                    };
+                    {
                         self.record_creation(ty.id, "made", Some(p.actor), &made_from.join(" and "), at);
                         self.apply_make_props(nid, m);
                         if let Some(h) = was_held_by {
@@ -854,6 +871,14 @@ impl Sim {
             if !line.trim().is_empty() {
                 self.say(p.actor, line.trim(), None);
             }
+        }
+        // Only things were to come and none could: the story didn't happen.
+        let only_creates = fx.changes.is_empty() && fx.make.is_empty() && fx.cut.is_empty() && fx.reshape.is_empty() && fx.ground.is_empty() && fx.being.is_none() && fx.beings.is_empty() && fx.weather.is_none() && fx.remove.is_empty();
+        if unspawned > 0 && unspawned == fx.create.len().min(3) && only_creates {
+            crate::log::info(format!("'{}': nothing it made could be placed", p.text));
+            let msg = "Nothing comes of it.".to_string();
+            self.tell_story(pos, p.actor, &msg, None);
+            return (msg, None);
         }
         let msg = if fx.narration.trim().is_empty() { format!("{} {}.", super::physics::cap(&self.actor_name(p.actor)), p.text) } else { fx.narration.trim().to_string() };
         let line = (p.actor == ActorId::Player).then(|| effect_line(fx, moved)).flatten();
@@ -1259,6 +1284,32 @@ impl Sim {
                 }
             }
         }
+    }
+
+    /// Where something `r` across (half-width) can be set down near `want`
+    /// without being inside a solid: `want` itself if clear, else stepping
+    /// toward `from` (the doer) until it is, else just short of the doer.
+    pub(super) fn clear_spot(&mut self, want: glam::Vec3, from: glam::Vec3, r: f32) -> glam::Vec3 {
+        let r = r.clamp(0.05, 3.0);
+        let mut to = from - want;
+        to.y = 0.0;
+        let len = to.length();
+        let dir = if len > 1e-3 { to / len } else { glam::Vec3::ZERO };
+        let solids = self.solids_near(want, len + r + 1.0);
+        let clear = |s: &Sim, q: glam::Vec3| {
+            let g = s.snap.terrain.height(q.x, q.z);
+            // Probe low and at its middle: it stands on the ground.
+            [0.15, r.min(1.0)].iter().all(|h| solids.iter().all(|so| so.sdf(glam::Vec3::new(q.x, g + h, q.z)) >= r * 0.8))
+        };
+        let mut d = 0.0;
+        while d <= (len - 0.4).max(0.0) {
+            let q = want + dir * d;
+            if clear(self, q) {
+                return q;
+            }
+            d += 0.2;
+        }
+        if dir == glam::Vec3::ZERO { want } else { from - dir * (0.4 + r).min(len) }
     }
 
     /// Something new appeared here: a flash of light.

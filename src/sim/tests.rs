@@ -5186,6 +5186,38 @@ fn conjuring_png() {
     }
 }
 
+/// Something made while pointing at a boulder comes out in front of the
+/// boulder, on the doer's side, not inside it (a bare "machine gun" at a
+/// granite boulder made one, hidden in the stone).
+#[test]
+fn what_a_deed_makes_is_not_hidden_inside_what_was_pointed_at() {
+    use super::interp::{InterpEffect, Make, PendingInterp};
+    let w = world("not inside", 87);
+    add_type(&w, &fixture("sims/ball.js"));
+    let p = dry_spot(&w, 10.0, 0.4);
+    let boulder = builtin_id(&w, "boulder");
+    let at = p + Vec3::new(0.0, 0.0, 6.0);
+    let inst = place(&w, boulder, at, 0.0);
+    let mut s = session(&w, 87, None);
+    calm(&mut s);
+    clear_scatter(&mut s, p, 12.0);
+    s.sim.player.pos = ground(&w, p.x, p.z);
+    let centre = ground(&w, at.x, at.z) + Vec3::Y * 0.5;
+    let make = |name: &str| Make { name: name.into(), replace: None, description: String::new(), size_m: None, props: Default::default() };
+    let pi = PendingInterp { actor: ActorId::Player, text: "leather ball".into(), held: None, target: Some(Target::Instance(inst)), hit: Some(centre), key: String::new(), at: 0.0, aim: None };
+    s.sim.apply_interp(&pi, &InterpEffect { narration: "A ball appears before the boulder.".into(), create: vec![make("leather ball")], ..Default::default() });
+    let b = s.sim.things.live().find(|t| s.sim.thing_name(t.id) == "leather ball").expect("a ball was made");
+    let (c, r) = { let ty = s.sim.snap.type_of(b.type_id).unwrap().clone(); b.proxy(&ty) };
+    let inside = s.sim.solids_near(c, 2.0).iter().map(|so| so.sdf(c)).fold(f32::MAX, f32::min);
+    assert!(inside > r * 0.5, "the ball is clear of the boulder: {inside:.2} m from its surface");
+    let flat = |a: Vec3, b: Vec3| Vec3::new(a.x - b.x, 0.0, a.z - b.z).length();
+    assert!(flat(c, at) < 4.0 && flat(c, s.sim.player.pos) < flat(at, s.sim.player.pos), "by the boulder, on the traveler's side: {:.1} m from it", flat(c, at));
+    // When nothing can be set down (the world is full), the story isn't told.
+    s.sim.cfg.max_things = 0;
+    let (msg, _) = s.sim.apply_interp(&pi, &InterpEffect { narration: "Another ball appears.".into(), create: vec![make("leather ball")], ..Default::default() });
+    assert_eq!(msg, "Nothing comes of it.");
+}
+
 /// Something made by a deed comes where the doer pointed (the spot that
 /// sparkled while it was being decided), not at their feet; a thing being
 /// written still marks that spot while it is.
