@@ -30,8 +30,8 @@ pub struct Level {
 pub const LEVELS: [Level; 4] = [
     Level { name: "peaceful", walkers: 0, phantoms: 0 },
     Level { name: "easy", walkers: 1, phantoms: 1 },
-    Level { name: "normal", walkers: 1, phantoms: 1 },
-    Level { name: "hard", walkers: 2, phantoms: 2 },
+    Level { name: "normal", walkers: 2, phantoms: 2 },
+    Level { name: "hard", walkers: 3, phantoms: 3 },
 ];
 
 /// After its touch lands, a night walker draws back this long (s).
