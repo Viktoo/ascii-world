@@ -284,7 +284,6 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, stop: &
         render,
         snap: l.snap,
         live: l.live,
-        enhanced: true,
         truecolor: true,
         size: (cols, rows),
         llm,
@@ -508,7 +507,7 @@ fn bench(args: &[String]) -> Result<()> {
         None => render::cpu::spawn(),
     };
     let backend = render.backend.clone();
-    let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, enhanced: true, truecolor: true, size: (w, h), llm, genesis: false });
+    let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, truecolor: true, size: (w, h), llm, genesis: false });
     app.noclip = true;
     let start = app.pos();
     let stop = AtomicBool::new(false);

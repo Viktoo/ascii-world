@@ -133,7 +133,6 @@ impl App {
             self.set_log_view(0);
         }
         self.keys.down.clear();
-        self.keys.until.clear();
         self.dirty = true;
     }
 

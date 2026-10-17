@@ -318,7 +318,10 @@ fn renders_a_frame_quickly() {
     eprintln!("GPU ms at 250x140: median {:.2}", times[times.len() / 2]);
 }
 
+/// How far the GPU's terrain noise strays from the CPU's, term by term
+/// (prints only; `gpu_parity_types_and_terrain` checks the result).
 #[test]
+#[ignore]
 fn terrain_debug() {
     let Ok(gpu) = Gpu::new() else { return };
     let pipe = gpu.build_pipeline(&shader::assemble(&[]), 1).unwrap();

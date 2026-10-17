@@ -378,7 +378,9 @@ impl Overlay {
 /// Per-chunk scatter cache, invalidated per chunk when its inputs change.
 #[derive(Default)]
 pub struct ScatterCache {
-    chunks: HashMap<(i32, i32), (u64, Arc<Vec<ScatterItem>>)>,
+    /// Per chunk: its signature, its items, and the box (min x, min z, max
+    /// x, max z) its solid items' bounding spheres reach.
+    chunks: HashMap<(i32, i32), (u64, Arc<Vec<ScatterItem>>, [f32; 4])>,
     pub overlay: Overlay,
 }
 
@@ -396,15 +398,25 @@ fn signature(snap: &WorldSnapshot, c: (i32, i32)) -> u64 {
 
 impl ScatterCache {
     pub fn get(&mut self, snap: &WorldSnapshot, c: (i32, i32)) -> Arc<Vec<ScatterItem>> {
+        self.get_with_reach(snap, c).0
+    }
+
+    /// A chunk's items and the box its solid items reach.
+    fn get_with_reach(&mut self, snap: &WorldSnapshot, c: (i32, i32)) -> (Arc<Vec<ScatterItem>>, [f32; 4]) {
         let sig = signature(snap, c);
-        if let Some((s, v)) = self.chunks.get(&c) {
+        if let Some((s, v, reach)) = self.chunks.get(&c) {
             if *s == sig {
-                return v.clone();
+                return (v.clone(), *reach);
             }
         }
         let v = Arc::new(generate(snap, c.0, c.1));
-        self.chunks.insert(c, (sig, v.clone()));
-        v
+        let mut reach = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for it in v.iter().filter(|it| it.solid) {
+            let (m, r) = (it.inst.center(), it.inst.radius());
+            reach = [reach[0].min(m.x - r), reach[1].min(m.z - r), reach[2].max(m.x + r), reach[3].max(m.z + r)];
+        }
+        self.chunks.insert(c, (sig, v.clone(), reach));
+        (v, reach)
     }
 
     /// Drop chunks far from the player.
@@ -448,12 +460,11 @@ impl ScatterCache {
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let cc = (c.0 + dx, c.1 + dz);
-                let items = self.get(snap, cc);
-                for it in items.iter() {
-                    if !it.solid || !self.overlay.shows(it.cell) {
-                        continue;
-                    }
-                    if (it.inst.center() - p).length() - it.inst.radius() > radius {
+                let (items, reach) = self.get_with_reach(snap, cc);
+                // Most of the time no solid in the chunk comes near.
+                let (gx, gz) = ((reach[0] - p.x).max(p.x - reach[2]).max(0.0), (reach[1] - p.z).max(p.z - reach[3]).max(0.0));
+                for it in items.iter().filter(|_| gx * gx + gz * gz <= radius * radius) {
+                    if !it.solid || (it.inst.center() - p).length() - it.inst.radius() > radius || !self.overlay.shows(it.cell) {
                         continue;
                     }
                     if let Some(ty) = snap.type_of(it.inst.info[0]) {

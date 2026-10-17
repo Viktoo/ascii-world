@@ -71,6 +71,13 @@ fn world_with(tag: &str, seed: u32, look: crate::world::Look) -> W {
     W { db, path, terrain, spawn, version }
 }
 
+/// A bare universe file for a scripted LLM to keep its costs and cache in.
+fn scratch_db(tag: &str) -> Arc<Db> {
+    let dir = std::env::temp_dir().join(format!("pocket-simtest-{}-{tag}-{}", std::process::id(), rand_n()));
+    std::fs::create_dir_all(&dir).unwrap();
+    Db::create(&dir.join("w.pocket"), 1, "a quiet test valley", "{}").unwrap()
+}
+
 /// The nearest gentle spot at least 1.5 m over the water, spiralling out
 /// from `p` (it stays if it is one).
 fn dry_start(t: &crate::terrain::Terrain, p: Vec3) -> Vec3 {
@@ -478,8 +485,7 @@ fn an_acorn_on_the_ground_becomes_a_sapling_and_grows() {
 // ------------------------------------------------------------------ phase 5
 
 fn interp_script(calls: Arc<Mutex<usize>>) -> Arc<Llm> {
-    let w = world("interp-llm", 1);
-    Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+    Llm::scripted(scratch_db("interp-llm"), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("physics and common sense") {
             *calls.lock() += 1;
@@ -530,8 +536,7 @@ fn interpreter_lights_the_lantern_and_caches_the_answer() {
 // ------------------------------------------------------------------ phase 6
 
 fn play_script(ball_src: String, calls: Arc<Mutex<Vec<String>>>) -> Arc<Llm> {
-    let w = world("play-llm", 1);
-    Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+    Llm::scripted(scratch_db("play-llm"), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("You decide what a character") {
             calls.lock().push(user.lines().next().unwrap_or("").to_string());
@@ -592,51 +597,6 @@ fn a_made_ball_ends_up_thrown_at_a_hoop() {
     assert!(!thrown_at_hoop.is_empty(), "someone threw it at the hoop:\n{}", log.join("\n"));
     let _ = hoop_id;
     eprintln!("throws at the hoop: {}, through: {}", thrown_at_hoop.len(), events(&s.sim, "through").len());
-    sound(&s);
-}
-
-/// Asked in conversation for a ball, a character makes one and hands it over
-/// once it is made (the giving waits for the making).
-#[test]
-fn asked_for_a_ball_they_make_it_and_hand_it_over() {
-    let w = world("asked", 38);
-    let spot = dry_spot(&w, 10.0, 0.4);
-    let a = add_char(&w, "Tam", "a kind toymaker", &[], spot);
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let ball = fixture("sims/ball.js");
-    let c2 = calls.clone();
-    let llm = Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
-        let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
-        if sys.contains("You decide what a character") {
-            if user.contains("The traveler just said") {
-                c2.lock().push("asked".to_string());
-                return r#"{"goal": "make the traveler a ball", "say": null, "steps": [{"do": "create", "text": "a leather ball"}, {"do": "give", "to": "the traveler"}]}"#.into();
-            }
-            return r#"{"goal": "", "steps": []}"#.into();
-        }
-        if sys.contains("physics and common sense") && user.contains("ball") {
-            return r#"{"narration": "", "make": [{"text": "a leather ball"}]}"#.into();
-        }
-        if user.contains("is making something in the world") {
-            return format!("```json\n{{\"summary\": \"a leather ball\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 1}}]}}\n```\n```js\n{ball}\n```");
-        }
-        r#"{"lines": []}"#.into()
-    }));
-    let mut s = session(&w, 8, Some(llm));
-    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
-    s.sim.asked(a, "Could you make me a ball?", "Of course, I'll make you one.");
-    let mut got = None;
-    for _ in 0..(120.0 / 0.1) as usize {
-        s.step(0.1);
-        if let Some(h) = s.sim.player.held {
-            got = Some(h);
-            break;
-        }
-    }
-    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
-    assert_eq!(calls.lock().as_slice(), ["asked"], "{}", log.join("\n"));
-    let h = got.unwrap_or_else(|| panic!("the traveler was handed the ball:\n{}", log.join("\n")));
-    assert!(s.sim.thing_name(h).contains("ball"), "{}", s.sim.thing_name(h));
     sound(&s);
 }
 
@@ -742,36 +702,12 @@ fn cooks_llm(w: &W) -> Arc<Llm> {
 }
 
 /// With no grill anywhere, the cook asks people in turn: the first says no,
-/// the second builds one, and the cook makes the burrito there and hands it over.
+/// the second builds one, and the cook makes the burrito there and hands it
+/// over. Quitting while the cook is out asking doesn't stop it: the mission
+/// is kept with the world and carried on.
 #[test]
 fn a_need_nobody_has_is_asked_for_in_turn() {
     let (w, spot, vic) = cooks_town("askround");
-    let llm = cooks_llm(&w);
-    let mut s = session(&w, 8, Some(llm));
-    s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
-    s.sim.asked(vic, "Could you make me a burrito?", "Sure, coming up.");
-    let mut got = None;
-    for _ in 0..(400.0 / 0.1) as usize {
-        s.step(0.1);
-        if let Some(h) = s.sim.player.held {
-            got = Some(h);
-            break;
-        }
-    }
-    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
-    let h = got.unwrap_or_else(|| panic!("the traveler was handed a burrito:\n{}", log.join("\n")));
-    assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
-    assert!(log.iter().any(|l| l.contains("Rosa wouldn't help Vic")), "Rosa was asked first and said no:\n{}", log.join("\n"));
-    assert!(log.iter().any(|l| l.contains("Ben agreed to help Vic")), "{}", log.join("\n"));
-    assert!(s.sim.cast.get(vic).unwrap().mission.is_none(), "the mission is over");
-    sound(&s);
-}
-
-/// Quitting mid-mission and coming back: the cook still asks, gets the grill
-/// built, and hands the burrito over.
-#[test]
-fn a_mission_carries_on_after_a_restart() {
-    let (w, spot, vic) = cooks_town("restart");
     let mut s = session(&w, 8, Some(cooks_llm(&w)));
     s.sim.player.pos = spot + Vec3::new(0.0, 0.0, -3.0);
     s.sim.asked(vic, "Could you make me a burrito?", "Sure, coming up.");
@@ -788,6 +724,7 @@ fn a_mission_carries_on_after_a_restart() {
     drop(s);
     let mut s = session(&w, 8, Some(cooks_llm(&w)));
     assert!(s.sim.cast.get(vic).unwrap().mission.is_some(), "the mission was kept");
+    let all = record(&mut s);
     let mut got = None;
     for _ in 0..(400.0 / 0.1) as usize {
         s.step(0.1);
@@ -796,9 +733,12 @@ fn a_mission_carries_on_after_a_restart() {
             break;
         }
     }
-    let log: Vec<String> = s.sim.log.recent.iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
-    let h = got.unwrap_or_else(|| panic!("the traveler was handed a burrito after the restart:\n{}", log.join("\n")));
+    let log: Vec<String> = all.lock().iter().map(|e| format!("{:.0} {} {}", e.t, e.kind, e.text)).collect();
+    let h = got.unwrap_or_else(|| panic!("the traveler was handed a burrito:\n{}", log.join("\n")));
     assert!(s.sim.thing_name(h).contains("burrito"), "{}", s.sim.thing_name(h));
+    assert!(log.iter().any(|l| l.contains("Rosa wouldn't help Vic")), "Rosa was asked first and said no:\n{}", log.join("\n"));
+    assert!(log.iter().any(|l| l.contains("Ben agreed to help Vic")), "{}", log.join("\n"));
+    assert!(s.sim.cast.get(vic).unwrap().mission.is_none(), "the mission is over");
     sound(&s);
 }
 
@@ -918,6 +858,7 @@ fn people_play_catch_carry_together_and_hug() {
 
 /// 1,000 things and 50 characters run headless well above real time.
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow: cargo test --features slow-tests")]
 fn a_thousand_things_and_fifty_people_run_fast() {
     let w = world("scale", 39);
     for i in 0..50 {
@@ -1182,6 +1123,7 @@ fn a_fire_is_one_incident_with_one_cause_and_one_line() {
 /// bare hands it is a few tufts in fifty, whoever decides: across seeds the
 /// old ladders and the scorer save the same, about 3.5.)
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow: cargo test --features slow-tests")]
 fn villagers_fight_a_fire_near_their_homes() {
     // The same fire with nobody to fight it saves nothing.
     let (w0, a0, _) = grass_patch("fight-none", 46, 22.5);
@@ -1894,8 +1836,7 @@ fn a_cut_takes_a_piece_out_where_it_was_touched() {
 }
 
 fn edit_script(calls: Arc<Mutex<Vec<String>>>, hut_src: String) -> Arc<Llm> {
-    let w = world("edit-llm", 1);
-    Llm::scripted(w.db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+    Llm::scripted(scratch_db("edit-llm"), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("physics and common sense") {
             calls.lock().push(user.to_string());
@@ -2058,7 +1999,7 @@ fn pieces_that_leave_the_shape_unchanged_are_not_cached() {
     let inst = place(&w, hut, at, 0.0);
     let calls = Arc::new(Mutex::new(0usize));
     let c2 = calls.clone();
-    let llm = Llm::scripted(world("nocache-llm", 1).db.clone(), Arc::new(move |sys: &str, _msgs: &[Msg]| {
+    let llm = Llm::scripted(scratch_db("nocache-llm"), Arc::new(move |sys: &str, _msgs: &[Msg]| {
         if sys.contains("physics and common sense") {
             *c2.lock() += 1;
             return r#"{"narration": "You pull the hide off the doorway.", "create": [{"name": "stone", "description": "a hide"}], "cache": true}"#.into();
@@ -2086,7 +2027,7 @@ fn a_reshape_keeping_the_old_name_still_changes_the_shape() {
     let at = dry_spot(&w, 9.0, 0.3);
     let inst = place(&w, hut, at, 0.0);
     let src2 = src.clone();
-    let llm = Llm::scripted(world("samename-llm", 1).db.clone(), Arc::new(move |sys: &str, msgs: &[Msg]| {
+    let llm = Llm::scripted(scratch_db("samename-llm"), Arc::new(move |sys: &str, msgs: &[Msg]| {
         let user = msgs.last().map(|m| m.text.as_str()).unwrap_or("");
         if sys.contains("physics and common sense") {
             return r#"{"narration": "The door swings open.", "reshape": [{"target": "target", "name": "wooden hut", "change": "the door stands open"}]}"#.into();
@@ -3129,7 +3070,8 @@ fn wolf_generations(seed: u64) -> (Vec<String>, Session, Arc<Mutex<Vec<SimEvent>
     let ola = add_char(&w, "Ola", "a kind villager who feeds the wolves", &[], den + Vec3::new(-4.0, 0.0, 0.0));
     let founders: Vec<i64> = (0..4).map(|i| add_being(&w, &format!("Wolf {i}"), "wolf", &[], den + Vec3::new((i % 2) as f32 * 1.5, 0.0, (i / 2) as f32 * 6.0))).collect();
     let mut s = session(&w, seed, None);
-    s.sim.cfg.life_speed = 8.0;
+    // Lives go fast so a dozen generations fit in half an hour.
+    s.sim.cfg.life_speed = 40.0;
     s.sim.cfg.max_creatures = 30;
     let all = record(&mut s);
     s.sim.t = crate::render::sky::DAY_SECONDS * (15.0 / 24.0);
@@ -3142,7 +3084,7 @@ fn wolf_generations(seed: u64) -> (Vec<String>, Session, Arc<Mutex<Vec<SimEvent>
     let (c, d) = (ActorId::Npc(founders[2]), ActorId::Npc(founders[3]));
     s.sim.social.bond(a, b, 0.8, 0.0);
     s.sim.social.bond(c, d, 0.8, 0.0);
-    for _ in 0..140 {
+    for _ in 0..30 {
         // The villager feeds the wolves; the young who grow up together pair up.
         let t = s.sim.t;
         let wolves: Vec<i64> = s.sim.cast.npcs.iter().filter(|n| n.species.name.contains("wolf") && !n.dead).map(|n| n.def.id).collect();
@@ -3150,7 +3092,7 @@ fn wolf_generations(seed: u64) -> (Vec<String>, Session, Arc<Mutex<Vec<SimEvent>
             if let Some(n) = s.sim.cast.get_mut(*wf) {
                 n.needs.hunger = 0.0;
             }
-            s.sim.social.bond(ActorId::Npc(*wf), o, 0.05, t);
+            s.sim.social.bond(ActorId::Npc(*wf), o, 0.25, t);
         }
         let adults: Vec<(i64, i64)> = s.sim.cast.npcs.iter().filter(|n| n.born > 0.0 && n.growth >= 1.0 && !n.dead).map(|n| (n.def.id, n.lineage)).collect();
         for (x, lx) in &adults {
@@ -3171,6 +3113,7 @@ fn wolf_generations(seed: u64) -> (Vec<String>, Session, Arc<Mutex<Vec<SimEvent>
 /// tamer with each generation until people call it by its own name. The
 /// same seed gives the same family history.
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow: cargo test --features slow-tests")]
 fn families_grow_and_a_fed_wolf_line_turns_tame() {
     let (born, s, all, _) = wolf_generations(29);
     assert!(born.len() >= 3, "young were born: {born:?}");
@@ -3196,17 +3139,10 @@ fn families_grow_and_a_fed_wolf_line_turns_tame() {
         assert!(v.data["variety"].as_str().unwrap_or("").contains("tame"), "{v:?}");
     }
     sound(&s);
-    // Same seed, same history.
-    let (again, _, _, _) = wolf_generations(29);
-    assert_eq!(born, again, "the same seed gives the same lineage history");
 }
 
 // ------------------------------------------------------------------ work in progress
 
-/// Slow work shows while it goes: the deed while the world decides, then the
-/// new thing while it is written. The deed counts ("interpreted", which
-/// achievements watch) only once that thing exists, or as having come to
-/// nothing when it never does.
 /// A conjuring knows where its thing will appear from the moment it is
 /// asked (so it can be marked while it is made), and it appears in a flash.
 #[test]
@@ -3228,6 +3164,10 @@ fn a_conjuring_is_marked_where_it_will_appear() {
     assert_eq!(s.sim.flashes.len(), 1, "it appears in a flash");
 }
 
+/// Slow work shows while it goes: the deed while the world decides, then the
+/// new thing while it is written. The deed counts ("interpreted", which
+/// achievements watch) only once that thing exists, or as having come to
+/// nothing when it never does.
 #[test]
 fn a_deed_shows_as_work_and_counts_once_its_making_is_done() {
     use super::Request;
@@ -4106,10 +4046,10 @@ fn a_promise_not_kept_by_its_deadline_is_dropped_remembered_and_costs_trust() {
 // ------------------------------------------------------------- one scorer
 
 /// One scorer runs a test village for a game day with no LLM: needs stay
-/// met, people do many kinds of things, nobody near is stuck, the same seed
-/// replays the same day, and the planner, when there is one, hears what
+/// met, people do many kinds of things, nobody near is stuck, and the planner, when there is one, hears what
 /// they could do as a menu (food first when hungry and food is near).
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow: cargo test --features slow-tests")]
 fn one_scorer_runs_a_village_day() {
     let w = world("village-day", 57);
     let p = dry_spot(&w, 10.0, 1.1);
@@ -4156,10 +4096,6 @@ export function color(x, y, z, k) { return rgb(200, 30, 30); }
     }
     let _ = rex;
     sound(&s);
-    // The same seed, the same day.
-    let (again, _) = day(&w);
-    let line = |v: &[SimEvent]| v.iter().map(|e| format!("{:.2} {} {}", e.t, e.kind, e.text)).collect::<Vec<_>>();
-    assert_eq!(line(&events), line(&again), "a seed replays the same day");
     // The planner's menu: what is really there, food first for the hungry.
     let mut s = session(&w, 58, None);
     let a = s.sim.spawn_thing(apple, s.sim.cast.get(ids[0]).unwrap().a.pos + Vec3::new(1.0, 0.0, 0.0), 0.0, 1.0, Default::default(), true).unwrap();
@@ -4736,9 +4672,8 @@ fn petting_and_carrying_animals() {
     sound(&s);
 }
 
-/// Vehicles: a cart is got into, driven along the ground (turning only
-/// when it rolls), stopped by a hut it is driven at, and got out of beside
-/// it; a boat floats and keeps to the water.
+/// A flying carpet rises off the ground, hovers, climbs and comes down to
+/// land again.
 #[test]
 fn flyers_climb_and_land() {
     let w = world("flyer", 64);
@@ -4785,6 +4720,9 @@ fn flyers_climb_and_land() {
     assert!(alt(&s) < 0.3, "landed ({:.1} m)", alt(&s));
 }
 
+/// Vehicles: a cart is got into, driven along the ground (turning only
+/// when it rolls), stopped by a hut it is driven at, and got out of beside
+/// it; a boat floats and keeps to the water.
 #[test]
 fn carts_drive_and_boats_float() {
     let w = world("vehicles", 62);

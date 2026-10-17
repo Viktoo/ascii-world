@@ -60,10 +60,8 @@ pub enum Mode {
 
 #[derive(Default)]
 struct Keys {
-    /// Keys currently held (terminals with key-release reporting).
+    /// Keys currently held (pressed and not yet released).
     down: HashSet<char>,
-    /// Fallback: a key counts as held until this time (one step per press/repeat).
-    until: HashMap<char, Instant>,
 }
 
 /// Movement keys normalised to chars: arrows are ^ v < >.
@@ -158,7 +156,6 @@ pub struct App {
     input: String,
     log: VecDeque<LogLine>,
     keys: Keys,
-    pub enhanced: bool,
     debug: bool,
     pub screen: Screen,
     last_frame: Option<Frame>,
@@ -267,7 +264,6 @@ pub struct Setup {
     pub render: RenderHandle,
     pub snap: Arc<WorldSnapshot>,
     pub live: LiveRef,
-    pub enhanced: bool,
     pub truecolor: bool,
     pub size: (u16, u16),
     pub llm: Option<Arc<crate::llm::Llm>>,
@@ -300,7 +296,6 @@ impl App {
             input: String::new(),
             log: VecDeque::new(),
             keys: Keys::default(),
-            enhanced: s.enhanced,
             debug: false,
             screen: Screen::new(s.size.0, s.size.1, s.truecolor),
             last_frame: None,
@@ -429,11 +424,7 @@ impl App {
     }
 
     fn held(&self, c: char) -> bool {
-        if self.enhanced {
-            self.keys.down.contains(&c)
-        } else {
-            self.keys.until.get(&c).is_some_and(|t| *t > Instant::now())
-        }
+        self.keys.down.contains(&c)
     }
 
     fn camera(&self) -> Camera {
@@ -581,11 +572,7 @@ impl App {
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT) || matches!(k.code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
                     self.shift_run = shift;
                 }
-                if self.enhanced {
-                    self.keys.down.insert(c);
-                } else {
-                    self.keys.until.insert(c, Instant::now() + Duration::from_millis(140));
-                }
+                self.keys.down.insert(c);
                 return;
             }
         }
@@ -811,7 +798,6 @@ impl App {
         }
         self.mode = m;
         self.keys.down.clear();
-        self.keys.until.clear();
         self.input.clear();
         self.dirty = true;
     }
@@ -2085,7 +2071,7 @@ impl App {
             format!("pos {:.0}, {:.0}  yaw {:.0}°  v{}", self.pos().x, self.pos().z, self.yaw().to_degrees().rem_euclid(360.0), self.snap.version),
             format!("live {} things ({} moving)  {} burning cells  {} people", self.sim.things.len(), self.sim.things.live().filter(|t| !t.asleep).count(), self.sim.field.cells.values().filter(|c| c.props[crate::sim::props::P_FIRE] > 0.0).count(), self.sim.cast.npcs.len()),
             format!("events {}  llm queued {}  rules {} ({} the universe's own)", self.sim.log.total, self.sim.queued(), self.sim.rules.len(), self.sim.rules.iter().filter(|r| !r.builtin).count()),
-            format!("{} keys{}", if self.enhanced { "enhanced" } else { "legacy" }, if self.screen.truecolor { "  truecolor" } else { "  256 colours" }),
+            (if self.screen.truecolor { "truecolor" } else { "256 colours" }).to_string(),
         ];
         for (i, l) in lines.iter().enumerate() {
             let s = format!(" {l:<44}");
@@ -2581,15 +2567,15 @@ mod tests {
         "ok".into()
     }
 
-    fn make_app(enhanced: bool) -> (App, Arc<Db>) {
-        let (a, d, _) = make_app_gpu(enhanced);
+    fn make_app() -> (App, Arc<Db>) {
+        let (a, d, _) = make_app_gpu();
         (a, d)
     }
 
-    fn make_app_gpu(enhanced: bool) -> (App, Arc<Db>, Option<Arc<crate::render::gpu::Gpu>>) {
+    fn make_app_gpu() -> (App, Arc<Db>, Option<Arc<crate::render::gpu::Gpu>>) {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("pocket-app-{}-{enhanced}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pocket-app-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.pocket");
@@ -2617,7 +2603,7 @@ mod tests {
             Some(g) => crate::render::gpu::spawn(g.clone()),
             None => crate::render::cpu::spawn(),
         };
-        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, enhanced, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false });
+        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false });
         (app, db, gpu)
     }
 
@@ -2637,7 +2623,7 @@ mod tests {
         let snap = model.snapshot().unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
         let brain = Brain::start(model, None, tx, false);
-        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, enhanced: false, truecolor: true, size: (110, 44), llm: None, genesis: false });
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false });
         app.open_menu(false);
         app.on_key(key(KeyCode::Char('3'), KeyEventKind::Press));
         for _ in 0..3 {
@@ -2681,7 +2667,7 @@ mod tests {
 
     #[test]
     fn e_greets_the_person_in_front() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         app.sim.player.yaw = 0.0;
         let mut done = false;
         drive(&mut app, 10.0, |a, _t| {
@@ -2706,7 +2692,7 @@ mod tests {
 
     #[test]
     fn talk_create_undo_via_keys() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         // Keep Mara where she is, in front of us.
         app.sim.player.yaw = 0.0;
         let mut phase = 0;
@@ -2784,7 +2770,7 @@ mod tests {
     #[test]
     #[ignore]
     fn long_walk_with_generation_has_no_hitches() {
-        let (mut app, db, gpu) = make_app_gpu(false);
+        let (mut app, db, gpu) = make_app_gpu();
         let llm = Llm::scripted(db.clone(), Arc::new(|s: &str, m: &[Msg]| region_reply(s, m)));
         // Swap in a brain that plans regions (same GPU device as the renderer).
         let live = app.live.clone();
@@ -2806,7 +2792,7 @@ mod tests {
                 a.stats.max_gap_ms = 0.0;
                 warm = t;
             }
-            a.keys.until.insert('w', Instant::now() + Duration::from_millis(200));
+            a.keys.down.insert('w');
             let d = Vec3::new(a.pos().x - start.x, 0.0, a.pos().z - start.z).length();
             d < distance
         });
@@ -2820,7 +2806,7 @@ mod tests {
 
     #[test]
     fn held_key_moves_at_constant_speed_and_stops_on_release() {
-        let (mut app, _db) = make_app(true);
+        let (mut app, _db) = make_app();
         app.noclip = true; // isolate key handling from collisions
         let start = app.pos();
         let mut pressed_at = None;
@@ -2847,26 +2833,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_keys_step_per_event() {
-        let (mut app, _db) = make_app(false);
-        app.noclip = true;
-        let start = app.pos();
-        let mut sent = 0;
-        drive(&mut app, 1.5, |a, t| {
-            if t > 0.2 && sent < 1 {
-                a.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
-                sent += 1;
-            }
-            true
-        });
-        let moved = Vec3::new(app.pos().x - start.x, 0.0, app.pos().z - start.z).length();
-        assert!(moved > 0.2 && moved < 1.6, "one press = one short step, moved {moved}");
-        app.shutdown();
-    }
-
-    #[test]
     fn arrows_look_up_and_down_without_moving() {
-        let (mut app, _db) = make_app(true);
+        let (mut app, _db) = make_app();
         app.noclip = true;
         let start = app.pos();
         let p0 = app.pitch;
@@ -2888,7 +2856,7 @@ mod tests {
     /// at the world's beginning.
     #[test]
     fn falling_shows_you_died_and_enter_wakes_you() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         let mara = app.sim.cast.npcs[0].def.id;
         app.sim.player.pos += Vec3::new(5.0, 0.0, 5.0);
         let fell_at = app.sim.player.pos;
@@ -2933,7 +2901,7 @@ mod tests {
 
     #[test]
     fn log_opens_half_and_full_and_scrolls_back() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         for i in 0..80 {
             app.say(None, &format!("line number {i}"), TEXT);
         }
@@ -2967,7 +2935,7 @@ mod tests {
     #[test]
     fn log_keeps_what_matters_and_the_journal_keeps_all() {
         use crate::sim::Note;
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         for _ in 0..3 {
             app.tell(Note::Ambient("The horse gives a snort.".into()));
         }
@@ -3015,7 +2983,7 @@ mod tests {
 
     #[test]
     fn achievements_pop_up_are_kept_and_listed() {
-        let (mut app, db) = make_app(false);
+        let (mut app, db) = make_app();
         let p = app.pos();
         app.sim.event("made", Some(ActorId::Player), Some("instance:1".into()), "the traveler made a lamp", Some(p), serde_json::json!({}));
         drive(&mut app, 0.2, |_, _| true);
@@ -3029,7 +2997,7 @@ mod tests {
         assert!(t.earned("word_made_real").is_some());
         assert_eq!(t.count(), 1);
         assert!(db.kv_get("world_id").is_some());
-        let (other, other_db) = make_app(false);
+        let (other, other_db) = make_app();
         assert_ne!(other_db.world_id(), db.world_id());
         assert_eq!(other.achievements.count(), 0, "another world starts with none");
         // Each is earned once.
@@ -3055,7 +3023,7 @@ mod tests {
 
     #[test]
     fn work_in_progress_shows_until_done() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         app.sim.has_llm = true;
         app.sim.act(ActorId::Player, Action::Do { text: "whittle a flute".into(), on: None, at: None }).unwrap();
         app.update_work();
@@ -3083,7 +3051,7 @@ mod tests {
 
     #[test]
     fn a_poke_is_no_makeover() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         let p = app.pos();
         let deed = |app: &mut App, data: serde_json::Value| app.sim.event("deed_on", Some(ActorId::Player), Some("npc:7".into()), "the traveler did something to the moth", Some(p), data);
         deed(&mut app, serde_json::json!({ "mood": true, "looks": false, "trust": -0.2 }));
@@ -3097,7 +3065,7 @@ mod tests {
 
     #[test]
     fn achievements_follow_the_fire() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         let p = app.pos();
         let t = app.sim.t;
         let ev = |app: &mut App, kind: &str, actor: Option<ActorId>, subject: &str, at: Vec3| app.sim.event(kind, actor, Some(subject.into()), kind, Some(at), serde_json::json!({}));
@@ -3127,7 +3095,7 @@ mod tests {
 
     #[test]
     fn quit_is_in_the_esc_menu_not_walk() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         app.on_key(key(KeyCode::Char('q'), KeyEventKind::Press));
         assert!(!app.quit, "q while walking does nothing");
         app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
@@ -3139,7 +3107,7 @@ mod tests {
 
     #[test]
     fn settings_screen_opens_changes_and_closes() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
         assert!(app.menu.is_some(), "Esc in walk opens settings");
         app.compose();
@@ -3206,14 +3174,14 @@ mod tests {
 
     #[test]
     fn grab_throw_inspect_and_do_with_keys() {
-        let (mut app, _db) = make_app(false);
+        let (mut app, _db) = make_app();
         let stick = app.sim.type_by_name("stick").unwrap().id;
         let at = app.pos() + Vec3::new(1.2, 0.0, 1.0);
         let id = app.sim.spawn_thing(stick, at, 0.0, 1.0, Default::default(), true).unwrap();
         app.sim.player.yaw = 1.2f32.atan2(1.0);
         app.pitch = -0.78;
         let mut phase = 0;
-        drive(&mut app, 12.0, |a, t| {
+        drive(&mut app, 12.0, |a, _t| {
             if let Some(n) = a.sim.cast.npcs.first_mut() {
                 n.think_at = f64::MAX;
             }
@@ -3254,7 +3222,7 @@ mod tests {
                     assert_eq!(a.mode, Mode::Walk);
                     phase = 4;
                 }
-                4 if t > 8.0 => {
+                4 if log_has(a, "whistle a tune") => {
                     phase = 5;
                     return false;
                 }

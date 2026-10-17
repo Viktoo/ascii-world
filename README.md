@@ -549,9 +549,19 @@ Targets are `{"thing": ID}`, `{"actor": "player" | ID}`, `{"instance": ID}`,
 ## Tests
 
 ```bash
-cargo test --release                          # 75 tests, ~9 s
-cargo test --release -- --ignored --nocapture # + 1.5 km walk with live generation, compile-time scaling, rendered PNGs
+cargo test                                    # every edit: ~285 tests, ~4 s (debug build, rebuilds in seconds)
+cargo test sim::tests::night                  # only the part you touched (any name or module path)
+cargo test --release --features slow-tests    # before merging: + a village day, a fought fire, wolf generations, a crowd at speed
+cargo test --release -- --ignored --nocapture # by hand: 1.5 km walk with live generation, compile-time scaling, rendered PNGs
 ```
+
+Tests run in the debug build by default: it rebuilds in a few seconds after an
+edit where the release build takes half a minute, and the code it tests is
+optimised enough (`opt-level = 1`, dependencies at 2). Long scenarios sit behind
+the `slow-tests` feature; anything that only prints or writes pictures is
+`#[ignore]`. A new test should simulate as little as shows its point, and not
+run the world twice to check determinism (`sim::tests::same_seed_same_history`
+does that once for all).
 
 How the acceptance criteria are covered:
 
