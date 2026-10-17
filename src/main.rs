@@ -20,6 +20,7 @@ mod prompts;
 mod random_world;
 mod render;
 mod settings;
+mod share;
 mod sim;
 mod term;
 mod terrain;

@@ -391,7 +391,7 @@ fn delete_world(path: &Path) -> std::io::Result<()> {
 }
 
 /// Your worlds, as cards.
-fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool) {
+fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Option<&str>) {
     let (w, h) = (scr.w, scr.h);
     blank(scr);
     let cx = w as f32 / 2.0;
@@ -402,7 +402,7 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool) {
     let width = cw.saturating_sub(4);
     let per = 5u16;
     let top = 8u16;
-    let visible = ((h.saturating_sub(top + 3)) / per).max(1) as usize;
+    let visible = ((h.saturating_sub(top + 4)) / per).max(1) as usize;
     let first = sel.saturating_sub(visible - 1).min(list.len().saturating_sub(visible));
     if list.is_empty() {
         scr.center_text(cx, top + 1, "No worlds yet. Press N to start one.", DIM);
@@ -429,13 +429,16 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool) {
         scr.text(x0 + 2, y + 2, &clip(&stats, width), DIM, BG, false);
     }
     let fy = h.saturating_sub(2);
-    if deleting && sel < list.len() {
+    scr.center_text(cx, fy.saturating_sub(1), &clip("Drop a .pocket file here to add a world someone shared", w.saturating_sub(4) as usize), DIM);
+    if let Some(n) = note {
+        scr.center_text(cx, fy, &clip(n, w.saturating_sub(4) as usize), ACCENT);
+    } else if deleting && sel < list.len() {
         let q = clip(&format!("Delete “{}” for good?", list[sel].name), w.saturating_sub(40) as usize);
         let n = q.chars().count() as u16 + 3 + hint_width("Y delete   Any other key keep");
         let x = scr.text(w.saturating_sub(n) / 2, fy, &q, ACCENT, BG, true);
         scr.hints(x + 3, fy, "Y delete   Any other key keep", DIM, BG);
     } else {
-        let keys = if list.is_empty() { "N new world   Q quit" } else { "↑↓ choose   Enter open   N new world   D delete   Q quit" };
+        let keys = if list.is_empty() { "N new world   Q quit" } else { "↑↓ choose   Enter open   N new world   S share   D delete   Q quit" };
         scr.hints(w.saturating_sub(hint_width(keys)) / 2, fy, keys, DIM, BG);
     }
 }
@@ -447,16 +450,31 @@ pub fn pick(win: &mut Win) -> Choice {
     let mut scr = Screen::new(w, h, true);
     let mut sel = 0usize;
     let mut deleting = false;
+    let mut note: Option<String> = None;
     loop {
         fit(win, &mut scr);
-        draw(&mut scr, &list, sel, deleting);
+        draw(&mut scr, &list, sel, deleting, note.as_deref());
         win.present(&scr, 0, None);
         for ev in win.pump(Duration::from_millis(500)) {
             let k = match ev {
                 Ev::Close => return Choice::Quit,
+                Ev::Dropped(p) => {
+                    deleting = false;
+                    note = Some(match crate::share::take_in(&p, &crate::log::dir().join("universes")) {
+                        Ok(added) => {
+                            list = worlds();
+                            let at = added.canonicalize().ok();
+                            sel = list.iter().position(|w| w.path.canonicalize().ok() == at).unwrap_or(0);
+                            format!("Added “{}” to your worlds.", list.get(sel).map_or("the world", |w| w.name.as_str()))
+                        }
+                        Err(e) => format!("Couldn't add {}: {e}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()),
+                    });
+                    continue;
+                }
                 Ev::Key(k) if k.kind != KeyEventKind::Release => k,
                 _ => continue,
             };
+            note = None;
             if deleting {
                 deleting = false;
                 if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) && sel < list.len() {
@@ -470,6 +488,11 @@ pub fn pick(win: &mut Win) -> Choice {
             }
             match k.code {
                 KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if !list.is_empty() => deleting = true,
+                KeyCode::Char('s') | KeyCode::Char('S') if !list.is_empty() => {
+                    if !share_on(win, &mut scr, &list[sel]) {
+                        return Choice::Quit;
+                    }
+                }
                 KeyCode::Up => sel = sel.saturating_sub(1),
                 KeyCode::Down => sel = (sel + 1).min(list.len().saturating_sub(1)),
                 KeyCode::Enter if !list.is_empty() => return Choice::Open(list[sel].path.clone()),
@@ -479,6 +502,99 @@ pub fn pick(win: &mut Win) -> Choice {
                     Composed::Back => {}
                 },
                 KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => return Choice::Quit,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Where the share screen stands.
+enum Sharing {
+    Asking,
+    Made(PathBuf),
+    Failed(String),
+}
+
+fn size_text(path: &Path) -> String {
+    let b = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as f64;
+    if b >= 1e6 { format!("{:.1} MB", b / 1e6) } else { format!("{:.0} KB", (b / 1e3).max(1.0)) }
+}
+
+/// The share screen: what a copy keeps and leaves out, then where it went.
+fn draw_share(scr: &mut Screen, wd: &World, st: &Sharing) {
+    let (w, h) = (scr.w, scr.h);
+    blank(scr);
+    let cx = w as f32 / 2.0;
+    let top = (h as f32 * 0.30 - 7.0).max(0.0) as u16;
+    scr.title(cx, top as f32 + 2.6, "Share a world", 2.6, ACCENT);
+    let cw = (w as usize).saturating_sub(10).clamp(20, 64).min(w as usize);
+    let x0 = ((w as usize - cw) / 2) as u16;
+    let width = cw.saturating_sub(4);
+    let y0 = top + 6;
+    let lines: Vec<(String, [u8; 3])> = match st {
+        Sharing::Asking => vec![
+            ("Makes a copy of this world as one file to send to anyone.".into(), TEXT),
+            (String::new(), TEXT),
+            ("It keeps the land, everything made in it, its people and".into(), DIM),
+            ("what they remember.".into(), DIM),
+            (String::new(), TEXT),
+            ("It leaves out you: your health, what you carry, how you".into(), DIM),
+            ("look, where you stand, and what the world cost you.".into(), DIM),
+            ("No keys are ever in it.".into(), DIM),
+        ],
+        Sharing::Made(p) => vec![
+            (format!("Saved {} ({}).", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), size_text(p)), TEXT),
+            (format!("In {}", p.parent().map(|d| d.display().to_string()).unwrap_or_default()), DIM),
+            (String::new(), TEXT),
+            ("Send it however you like: a chat, an email, GitHub.".into(), DIM),
+            ("To play it, they drop it on the Pocket Universe window".into(), DIM),
+            ("while it shows their worlds.".into(), DIM),
+        ],
+        Sharing::Failed(e) => vec![("The copy couldn't be made:".into(), TEXT), (e.clone(), DIM)],
+    };
+    scr.deco(Deco::panel(x0 as f32, y0 as f32 - 1.0, cw as f32, lines.len() as f32 + 4.0, CARD).border(CARD_EDGE));
+    scr.labels.push(Label { x: x0 as f32 + 2.0, y: y0 as f32 - 0.25, text: clip(&wd.name, width), size: 1.45, color: ACCENT, face: Face::Title, center: false });
+    for (i, (l, c)) in lines.iter().enumerate() {
+        scr.text(x0 + 2, y0 + 2 + i as u16, &clip(l, width), *c, BG, false);
+    }
+    let hint = match st {
+        Sharing::Asking => "Enter make the copy   Esc back".to_string(),
+        Sharing::Made(_) => format!("Enter {}   Esc done", crate::share::browser_name()),
+        Sharing::Failed(_) => "Esc back".to_string(),
+    };
+    let y = (y0 + lines.len() as u16 + 5).min(h.saturating_sub(2));
+    scr.hints(w.saturating_sub(hint_width(&hint)) / 2, y, &hint, DIM, BG);
+}
+
+/// Run the share screen for one world; false if the window was closed.
+fn share_on(win: &mut Win, scr: &mut Screen, wd: &World) -> bool {
+    let mut st = Sharing::Asking;
+    loop {
+        fit(win, scr);
+        draw_share(scr, wd, &st);
+        win.present(scr, 0, None);
+        for ev in win.pump(Duration::from_millis(500)) {
+            let k = match ev {
+                Ev::Close => return false,
+                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
+                _ => continue,
+            };
+            match (&st, k.code) {
+                (_, KeyCode::Esc) => return true,
+                (Sharing::Asking, KeyCode::Enter) => {
+                    st = match crate::share::make_copy(&wd.path, &crate::share::copies_dir()) {
+                        Ok(p) => Sharing::Made(p),
+                        Err(e) => {
+                            crate::log::error(format!("share {}: {e:#}", wd.path.display()));
+                            Sharing::Failed(format!("{e:#}"))
+                        }
+                    };
+                }
+                (Sharing::Made(p), KeyCode::Enter) => {
+                    if let Err(e) = crate::share::reveal(p) {
+                        crate::log::error(format!("reveal {}: {e:#}", p.display()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -571,12 +687,26 @@ mod tests {
             assert!((shown.contains("Enter") && shown.contains("begin")) || w < 20, "{shown}");
             d.key(key(KeyCode::Home));
             draw_new(&mut scr, &d, "back");
-            draw(&mut scr, &[], 0, false);
+            draw(&mut scr, &[], 0, false, None);
         }
         let mut scr = Screen::new(100, 30, true);
         draw_new(&mut scr, &Draft::rolled(), "quit");
         let shown = screen_text(&scr);
         assert!(shown.contains("A new world") && shown.contains("Esc") && shown.contains("quit"), "{shown}");
+    }
+
+    #[test]
+    fn share_screen_says_what_a_copy_is_and_where_it_went() {
+        let wd = World { path: "/w/salt.pocket".into(), name: "Salt Flats".into(), prompt: String::new(), regions: 0, people: 0, creatures: 0, species: 0, kinds: 0, built: 0, modified: SystemTime::UNIX_EPOCH };
+        for (w, h) in [(100, 30), (24, 8)] {
+            let mut scr = Screen::new(w, h, true);
+            draw_share(&mut scr, &wd, &Sharing::Asking);
+            assert!(w < 40 || screen_text(&scr).contains("No keys"), "{}", screen_text(&scr));
+            draw_share(&mut scr, &wd, &Sharing::Made("/Users/x/Downloads/salt.pocket".into()));
+            assert!(w < 40 || screen_text(&scr).contains("Saved salt.pocket"), "{}", screen_text(&scr));
+            draw_share(&mut scr, &wd, &Sharing::Failed("disk full".into()));
+            draw(&mut scr, &[], 0, false, Some("Added “Salt Flats” to your worlds."));
+        }
     }
 
     #[test]

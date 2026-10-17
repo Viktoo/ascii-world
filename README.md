@@ -176,6 +176,16 @@ relationships, recent decisions and memories.
 - The world saves continuously into one `.pocket` file (SQLite), including what characters
   are in the middle of (plans, missions, favours), which carries on when you come back.
   Copy it to fork a world.
+- **Sharing a world:** on **Your worlds**, choose it and press `S`, then `Enter`. That
+  makes one `.pocket` file in Downloads and can show it in Finder. Send it however you
+  like. To play one someone sent you, drop the file on the game window while it shows
+  your worlds. A copy keeps the land, everything made in it, its people and what they
+  remember, and the cache of what words did. It leaves out the traveler's health,
+  what they carried (put down where they stood), their look and place (they start
+  over at the start point), and what the world cost you. API keys are never in a
+  world file. A world keeps the git commit of the build that made it (`made_with`)
+  and of the one that last opened it (`last_opened_with`), for when an old world
+  acts oddly in a newer build.
 - Universes live in `~/.pocket/universes/` unless you pass `--out FILE`; the debug log
   is `~/.pocket/pocket.log`.
 
