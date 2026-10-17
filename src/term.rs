@@ -100,6 +100,19 @@ pub struct Label {
     pub center: bool,
 }
 
+/// A line being typed, set freely (window mode only): from column `x`,
+/// `w` cells wide; once the words are wider, the start scrolls off to the
+/// left so the end (and the caret after it, if any) stays in view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub text: String,
+    pub color: [u8; 3],
+    pub caret: Option<[u8; 3]>,
+}
+
 #[derive(Clone)]
 pub struct Screen {
     pub w: u16,
@@ -114,6 +127,7 @@ pub struct Screen {
     /// A text cursor (in a window): before the letter in this cell, in this
     /// colour, wherever the words set it.
     pub caret: Option<(u16, u16, [u8; 3])>,
+    pub field: Option<Field>,
     /// Shapes and free text over the cells (each screen draws them anew).
     pub decor: Vec<Deco>,
     pub labels: Vec<Label>,
@@ -125,7 +139,7 @@ pub struct Screen {
 impl Screen {
     pub fn new(w: u16, h: u16, truecolor: bool) -> Screen {
         let n = w as usize * h as usize;
-        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, decor: Vec::new(), labels: Vec::new(), grids: Vec::new() }
+        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, field: None, decor: Vec::new(), labels: Vec::new(), grids: Vec::new() }
     }
 
     pub fn resize(&mut self, w: u16, h: u16) {
@@ -185,6 +199,7 @@ impl Screen {
         self.labels.clear();
         self.grids.clear();
         self.caret = None;
+        self.field = None;
     }
 
     /// Text centred on column `cx`, set freely (not in cells).

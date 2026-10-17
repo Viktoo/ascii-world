@@ -1,7 +1,8 @@
 //! Speak to talk: `/`, or Enter with someone, opens the mic. The words show
-//! in the input line as they are made out and are sent at the pause, like
-//! typed ones. Typing takes over (the mic closes, the words stay to edit),
-//! Enter sends at once, Esc forgets what was heard.
+//! in the input line as they are made out; the pause (or Enter) closes it,
+//! and they wait there to be read over, edited, and sent with Enter like
+//! typed ones: nothing heard goes out unseen. Typing takes over (the mic
+//! closes, the words stay to edit), Esc forgets what was heard.
 
 use super::{ACCENT, App, DIM, Mode};
 use crate::ears::{Cmd, Ears, Heard, State, words};
@@ -77,7 +78,8 @@ impl App {
         }
     }
 
-    /// While listening: Esc forgets what was heard, Enter sends it now, and
+    /// While listening: Esc forgets what was heard, Enter stops (the words
+    /// wait for a second Enter), and
     /// anything else is typing (the mic closes, the words stay). True when
     /// the key was used up.
     pub(super) fn hearing_key(&mut self, code: crossterm::event::KeyCode) -> bool {
@@ -179,7 +181,7 @@ impl App {
                     }
                     self.input = words::merge(&base, &text);
                     crate::log::info(&format!("ears: heard \"{text}\""));
-                    self.submit_input();
+                    self.heard = true;
                 }
                 Heard::Trouble { id, why } if id == cur.id => {
                     self.hearing = None;
@@ -205,7 +207,10 @@ impl App {
             if !e.mic_open() && h.since.elapsed().as_secs_f32() > 1.5 {
                 return Some(("waiting for the microphone (allow it if the system asks) · Esc".into(), DIM));
             }
-            return Some(("● listening · pause to send · Esc cancel".to_string(), fg));
+            return Some(("● listening · pause to stop · Esc cancel".to_string(), fg));
+        }
+        if self.heard && !self.input.trim().is_empty() {
+            return Some(("Enter send · type to edit · Esc cancel".into(), DIM));
         }
         match e.state() {
             State::Fetching(p) => Some((format!("speech model {:.0}%", p * 100.0), DIM)),

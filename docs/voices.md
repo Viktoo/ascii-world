@@ -80,9 +80,10 @@ rate is the same with voices on and off.
 
 Built 2026-10-13 (`src/ears`, `src/app/ears.rs`). Press `/`, or Enter with
 someone, and the mic opens: the words show in the input line as they are made
-out, and at a pause (1 s) the line is sent like typed text. Typing takes over
-(the mic closes and the words stay to edit; Enter sends), Enter sends at
-once, Esc forgets what was heard. With someone, Enter on an empty line
+out. A pause (1 s) or Enter closes the mic, and the words wait in the line
+to be read over and edited; only Enter sends them, as with typed text, so
+nothing heard goes out unseen. Typing (Backspace too) takes over at once (the
+mic closes and the words stay to edit), Esc forgets what was heard. With someone, Enter on an empty line
 listens again. The mic is open only while listening.
 
 - **Recogniser**: whisper.cpp (`whisper-rs`, MIT / Unlicense; the model

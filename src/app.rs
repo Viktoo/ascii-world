@@ -243,6 +243,8 @@ pub struct App {
     /// listening now, and the last trouble told.
     ears: Option<crate::ears::Ears>,
     hearing: Option<ears::Hearing>,
+    /// Words just heard wait in the input line for Enter (or editing).
+    heard: bool,
     hear_id: u64,
     ears_told: Option<u8>,
     ears_trouble: Option<String>,
@@ -353,6 +355,7 @@ impl App {
             voice_told: None,
             ears: None,
             hearing: None,
+            heard: false,
             hear_id: 0,
             ears_told: None,
             ears_trouble: None,
@@ -810,6 +813,7 @@ impl App {
             self.dirty = true;
             return;
         }
+        self.heard = false;
         match k.code {
             KeyCode::Esc => self.set_mode(Mode::Walk),
             // Enter with nothing to say, in a conversation: speak instead.
@@ -1600,29 +1604,25 @@ impl App {
                     Mode::Command => "",
                     _ => "> ",
                 };
-                let shown: String = {
-                    let full = format!("{prompt}{}", self.input);
-                    let n = full.chars().count();
-                    let max = w as usize - 3;
-                    if n > max { full.chars().skip(n - max).collect() } else { full }
-                };
-                let x = self.screen.text(1, iy, &shown, TEXT, PANEL_BG, false);
+                let full = format!("{prompt}{}", self.input);
                 let blink = (self.start.elapsed().as_millis() / 500) % 2 == 0;
+                // The mark at the right: the words make room for it.
+                let mark = self.hearing_mark().or_else(|| self.replying.is_some().then(|| ("(listening)".to_string(), DIM)));
+                let room = w.saturating_sub(3 + mark.as_ref().map_or(0, |(m, _)| m.chars().count() as u16 + 2));
                 if self.win.is_some() {
-                    // A caret where the words end (they are narrower than their cells).
-                    if blink {
-                        self.screen.caret = Some((x, iy, ACCENT));
-                    }
+                    // Set freely: as many words fit as their real width allows.
+                    self.screen.field = Some(crate::term::Field { x: 1, y: iy, w: room, text: full, color: TEXT, caret: blink.then_some(ACCENT) });
                 } else {
+                    let n = full.chars().count();
+                    let shown: String = if n > room as usize { full.chars().skip(n - room as usize).collect() } else { full };
+                    let x = self.screen.text(1, iy, &shown, TEXT, PANEL_BG, false);
                     self.screen.set(x, iy, Cell { ch: if blink { '▏' } else { ' ' }, fg: ACCENT, bg: PANEL_BG, bold: false });
                 }
-                if let Some((mark, fg)) = self.hearing_mark() {
+                if let Some((mark, fg)) = mark {
                     let n = mark.chars().count() as u16;
-                    if x + 2 + n < w {
+                    if n + 4 < w {
                         self.screen.text(w - n - 1, iy, &mark, fg, PANEL_BG, false);
                     }
-                } else if self.replying.is_some() {
-                    self.screen.text(w.saturating_sub(12), iy, "(listening)", DIM, PANEL_BG, false);
                 }
             }
         }

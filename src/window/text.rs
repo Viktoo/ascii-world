@@ -3,7 +3,7 @@
 //! other free labels in a soft serif (Fraunces). Block and box characters are
 //! not text: the grid shader draws them as shapes.
 
-use crate::term::{Cell, Face, Label, Screen};
+use crate::term::{Cell, Face, Field, Label, Screen};
 use std::collections::HashMap;
 
 static BODY: &[u8] = include_bytes!("../../assets/fonts/Nunito-SemiBold.ttf");
@@ -169,6 +169,7 @@ impl Text {
             // The caret, if on this row: where the words put its cell.
             let caret = screen.caret.filter(|c| c.1 as usize == y);
             let mut caret_x = caret.map(|c| c.0 as f32 * cell_w);
+            let (mut placed, mut last) = (false, None);
             let in_grid = |x: usize| screen.grids.iter().any(|g| (g[0] as usize..(g[0] + g[2]) as usize).contains(&x) && (g[1] as usize..(g[1] + g[3]) as usize).contains(&y));
             let mut x = 0;
             while x < w {
@@ -181,6 +182,7 @@ impl Text {
                 if in_grid(x) {
                     let adv = self.glyph(c.ch, face(c), px).advance;
                     self.run(&row[x..x + 1], x as f32 * cell_w + (cell_w - adv) * 0.5, y as f32 * cell_h + base, cell_w.max(adv), px, None, out);
+                    last = None;
                     x += 1;
                     continue;
                 }
@@ -196,10 +198,21 @@ impl Text {
                     end += 1;
                 }
                 let at = caret.map(|c| c.0 as usize).filter(|c| (start..=end).contains(c)).map(|c| c - start);
-                if let Some(p) = self.run(&row[start..end], start as f32 * cell_w, y as f32 * cell_h + base, (end - start) as f32 * cell_w, px, at, out) {
-                    caret_x = Some(p);
+                let (p, pen) = self.run(&row[start..end], start as f32 * cell_w, y as f32 * cell_h + base, (end - start) as f32 * cell_w, px, at, out);
+                if p.is_some() {
+                    caret_x = p;
+                    placed = true;
                 }
+                last = Some((end, pen));
                 x = end;
+            }
+            // Past the words by spaces alone (just typed one): after them, not
+            // at its cell, which is further right than the words reach.
+            if let (false, Some(c), Some((end, pen))) = (placed, caret, last) {
+                let col = c.0 as usize;
+                if col > end && row[end..col.min(w)].iter().all(|c| c.ch == ' ') {
+                    caret_x = Some(pen + (col - end) as f32 * self.glyph(' ', Face::Body, px).advance);
+                }
             }
             if let (Some((_, _, col)), Some(cx)) = (caret, caret_x) {
                 let c = col.map(|v| v as f32 / 255.0);
@@ -209,6 +222,39 @@ impl Text {
         }
         for l in &screen.labels {
             self.label(l, cell_w, cell_h, out);
+        }
+        if let Some(f) = &screen.field {
+            self.field(f, cell_w, cell_h, base, px, out);
+        }
+    }
+
+    /// The line being typed: as much of its end as fits, then the caret.
+    #[allow(clippy::too_many_arguments)]
+    fn field(&mut self, f: &Field, cell_w: f32, cell_h: f32, base: f32, px: f32, out: &mut Vec<Quad>) {
+        let slots: Vec<(char, Slot)> = f.text.chars().map(|c| (c, self.glyph(c, Face::Body, px))).collect();
+        let room = f.w as f32 * cell_w - (cell_h * 0.2).max(2.0);
+        let mut width: f32 = slots.iter().map(|s| s.1.advance).sum();
+        let mut first = 0;
+        while width > room && first < slots.len() {
+            width -= slots[first].1.advance;
+            first += 1;
+        }
+        let col = f.color.map(|v| v as f32 / 255.0);
+        let (mut pen, baseline) = (f.x as f32 * cell_w, f.y as f32 * cell_h + base);
+        for (ch, s) in &slots[first..] {
+            if s.w > 0 && *ch != ' ' {
+                out.push(Quad {
+                    rect: [(pen + s.xmin).round(), (baseline - s.ymin - s.h as f32).round(), s.w as f32, s.h as f32],
+                    uv: [s.x as f32, s.y as f32, (s.x + s.w) as f32, (s.y + s.h) as f32],
+                    color: [col[0], col[1], col[2], 1.0],
+                });
+            }
+            pen += s.advance;
+        }
+        if let Some(c) = f.caret {
+            let c = c.map(|v| v as f32 / 255.0);
+            let (w, h) = ((cell_h * 0.08).max(1.5).round(), (cell_h * 0.78).round());
+            out.push(Quad { rect: [pen.round(), (f.y as f32 * cell_h + (cell_h - h) * 0.5).round(), w, h], uv: [0.5, 0.5, 1.5, 1.5], color: [c[0], c[1], c[2], 1.0] });
         }
     }
 
@@ -235,9 +281,10 @@ impl Text {
         }
     }
 
-    /// Set a run of cells from `x0`; returns where letter `caret` begins, if asked.
+    /// Set a run of cells from `x0`; returns where letter `caret` begins, if
+    /// asked, and where the run ends.
     #[allow(clippy::too_many_arguments)]
-    fn run(&mut self, cells: &[Cell], x0: f32, baseline: f32, room: f32, px: f32, caret: Option<usize>, out: &mut Vec<Quad>) -> Option<f32> {
+    fn run(&mut self, cells: &[Cell], x0: f32, baseline: f32, room: f32, px: f32, caret: Option<usize>, out: &mut Vec<Quad>) -> (Option<f32>, f32) {
         let slots: Vec<Slot> = cells.iter().map(|c| self.glyph(c.ch, face(*c), px)).collect();
         let total: f32 = slots.iter().map(|s| s.advance).sum();
         // Wider than its cells (rare: "mmm"): squeeze the spacing to fit.
@@ -263,7 +310,7 @@ impl Text {
         if caret == Some(cells.len()) {
             at = Some(pen);
         }
-        at
+        (at, pen)
     }
 }
 
@@ -299,5 +346,30 @@ mod tests {
         let on = q.iter().rev().nth(1).unwrap();
         assert!(on.rect[0] >= 13.0 * 10.0 - 2.0, "{:?}", on.rect);
         assert_eq!(q.len(), 9);
+    }
+
+    #[test]
+    fn caret_after_a_space_follows_the_words() {
+        let mut s = Screen::new(40, 1, true);
+        s.text(0, 0, "mmm mmm ", [255, 255, 255], [0, 0, 0], false);
+        s.caret = Some((8, 0, [255, 0, 0]));
+        let (mut t, mut q) = (Text::new(), Vec::new());
+        t.layout(&s, 20.0, 20.0, &mut q);
+        // Just after the space, not at the ninth cell (160 px).
+        let caret = q.last().unwrap().rect[0];
+        let words = q[q.len() - 2].rect;
+        assert!(caret > words[0] + words[2] && caret < 140.0, "caret at {caret}, words end {words:?}");
+    }
+
+    #[test]
+    fn a_long_field_shows_its_end() {
+        let mut s = Screen::new(20, 1, true);
+        let text = "a long line of words that will not fit in twenty cells at the end";
+        s.field = Some(Field { x: 1, y: 0, w: 18, text: text.into(), color: [255, 255, 255], caret: Some([255, 0, 0]) });
+        let (mut t, mut q) = (Text::new(), Vec::new());
+        t.layout(&s, 10.0, 20.0, &mut q);
+        let caret = q.last().unwrap().rect[0];
+        assert!(caret <= 190.0 && caret > 150.0, "caret at {caret}");
+        assert!(q.len() - 1 < text.chars().filter(|c| *c != ' ').count(), "the start scrolled off");
     }
 }
