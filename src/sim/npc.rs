@@ -1022,11 +1022,13 @@ impl Sim {
         // doorway first goes down to it rather than into the wall above.
         let swimming = self.actor(who).is_some_and(|a| a.swimming);
         let housed = swimming && who != ActorId::Player && (self.room_at(me + Vec3::Y * 0.3).is_some() || self.room_at(dest + Vec3::Y * 0.3).is_some());
-        let dive_to = housed.then_some(p.y);
+        // Near what it goes for under the water, a swimmer dives to it.
+        let under = swimming && who != ActorId::Player && len < 15.0 && dest.y < self.snap.terrain.water(dest.x, dest.z) - 1.0;
+        let dive_to = (housed || under).then_some(p.y);
         if let Some(a) = self.actor_mut(who) {
             a.dive_to = dive_to;
         }
-        if dive_to.is_some_and(|y| me.y - y > 0.6) && len < 2.5 {
+        if housed && dive_to.is_some_and(|y| me.y - y > 0.6) && len < 2.5 {
             return true;
         }
         if len < 1e-3 {

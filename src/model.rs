@@ -799,7 +799,7 @@ impl WorldModel {
         // Its vehicle: afloat on the nearest water for a boat, else by the middle.
         if let Some(vt) = &st.vehicle {
             if let Some((entry, interior)) = self.entry_of(vt, new_entries, &req.new_types) {
-                let water = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "water");
+                let water = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "water" || d.on == "under");
                 let t = self.terrain.clone();
                 let spots: Vec<(f32, f32)> = (0..400)
                     .map(|k| {
@@ -922,7 +922,8 @@ impl WorldModel {
         let afloat = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "water");
         let wl = t.water(pl.x, pl.z);
         let y = if afloat && pl.y.is_none() && ground < wl - 0.1 { wl - ((entry.top - entry.bottom) * scale * 0.25).clamp(0.1, 1.0) - entry.bottom * scale } else { y };
-        let water_ok = afloat || entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
+        let under = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "under");
+        let water_ok = afloat || under || entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
         if ground < wl - 0.6 && !water_ok {
             return Err(format!("{label} would stand in deep water at ({:.0}, {:.0})", pl.x, pl.z));
         }

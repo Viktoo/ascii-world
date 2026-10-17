@@ -284,3 +284,101 @@ fn merfolk_swim_into_a_house_under_the_water() {
     let a = s.sim.actor(me).unwrap().clone();
     assert!(s.sim.room_at(a.pos + Vec3::Y * 0.3).is_none() && (0.0..1.0).contains(&under(&a)), "out and up to its depth again: {:?} from the hut, eyes {:.1} m under", a.pos - h, under(&a));
 }
+
+const SUB: &str = r#"export const meta = { name: "brass submarine", bounds: [0.9, 0.9, 2.2], tags: ["prop", "water"], props: { mass: 900 },
+  anchors: [{ kind: "seat", at: [0, -0.2, 0], face: 0 }], drive: { speed: 6, on: "under", by: "engine" } };
+export function sdf(x, y, z, k) { return max(ellipsoid(x, y, z, 0.9, 0.9, 2.2), -box(x, y - 0.7, z, 0.5, 0.4, 0.6)); }
+export function color(x, y, z, k) { return rgb(180, 140, 60); }
+"#;
+
+/// A submarine made on the sea bed sits there; driven, Space takes it up
+/// (never over the surface), c back down to the bed, and the traveler gets
+/// out of it down there and swims.
+#[test]
+fn a_submarine_dives_and_lets_you_out_under_the_water() {
+    let w = world_with("sub", 12, coast());
+    let sub = add_type(&w, SUB);
+    let (deep, _) = sea_and_shore(&w);
+    let t = w.terrain.clone();
+    let id0 = place(&w, sub, deep, 0.0);
+    let mut s = session(&w, 12, None);
+    calm(&mut s);
+    let me = ActorId::Player;
+    s.sim.player.pos = deep + Vec3::new(1.5, 0.5, 0.0);
+    let r = s.sim.act(me, Action::Ride { target: Target::Instance(id0) });
+    assert!(r.as_ref().is_ok_and(|o| o.msg.contains("Space up")), "{r:?}");
+    let id = s.sim.player.aboard.unwrap();
+    let feet = |s: &Session| {
+        let th = s.sim.things.get(id).unwrap();
+        th.pos.y + s.sim.snap.type_of(th.type_id).unwrap().bottom * th.scale
+    };
+    let bed = |s: &Session| {
+        let p = s.sim.things.get(id).unwrap().pos;
+        t.height(p.x, p.z)
+    };
+    assert!(feet(&s) - bed(&s) < 0.5, "made on the bed");
+    let drive = |s: &mut Session, fwd: f32, climb: f32, n: usize| {
+        for _ in 0..n {
+            s.sim.steer(me, fwd, 0.0, climb, 0.1);
+            s.step(0.1);
+        }
+    };
+    drive(&mut s, 0.0, 1.0, 10);
+    let up = feet(&s) - bed(&s);
+    assert!(up > 2.0, "Space takes it up ({up:.1} m off the bed)");
+    drive(&mut s, 0.0, 0.0, 10);
+    assert!((feet(&s) - bed(&s) - up).abs() < 0.5, "let be, it holds its depth");
+    drive(&mut s, 1.0, 1.0, 60);
+    let p = s.sim.things.get(id).unwrap().pos;
+    assert!(feet(&s) < t.water(p.x, p.z), "never over the surface");
+    drive(&mut s, 0.0, -1.0, 80);
+    assert!(feet(&s) - bed(&s) < 0.5, "c takes it down to the bed ({:.1} m off it)", feet(&s) - bed(&s));
+    let r = s.sim.act(me, Action::Dismount);
+    assert!(r.is_ok() && s.sim.player.aboard.is_none(), "out under the water: {r:?}");
+    s.step(0.1);
+    let a = &s.sim.player;
+    assert!(a.swimming && a.pos.y < t.water(a.pos.x, a.pos.z) - 2.0, "swimming down there");
+}
+
+/// At night on the sea, a night walker comes for the traveler through the
+/// water and dives to claw them where they swim near the bed.
+#[test]
+fn a_night_walker_swims_down_to_the_traveler() {
+    let w = world_with("deep dark", 12, coast());
+    let (deep, _) = sea_and_shore(&w);
+    let t = w.terrain.clone();
+    let mut s = session(&w, 12, None);
+    calm(&mut s);
+    s.sim.cfg.difficulty = 1;
+    s.sim.player.pos = deep + Vec3::Y * 0.5;
+    s.sim.player.yaw = 0.0;
+    s.sim.t = before_dusk(1.0, 2.0);
+    let all = record(&mut s);
+    let mut dark = Vec::new();
+    for _ in 0..40 {
+        s.sim.player.swim = -1.0;
+        s.step(0.1);
+        dark = the_dark(&s);
+    }
+    for id in s.sim.cast.npcs.iter_mut().filter(|n| n.species.hostile) {
+        id.a.pos += Vec3::new(400.0, 0.0, 400.0);
+        id.think_at = f64::MAX;
+    }
+    assert_eq!(dark.len(), 1, "a walker came, though there's only sea about");
+    // Up at the surface, behind the traveler.
+    let p = deep - s.sim.player.forward() * 8.0;
+    let n = s.sim.cast.get_mut(dark[0]).unwrap();
+    n.a.pos = Vec3::new(p.x, t.water(p.x, p.z) - 1.5, p.z);
+    n.think_at = 0.0;
+    for _ in 0..300 {
+        s.sim.player.swim = -1.0;
+        s.step(0.1);
+        if !of(&all, "touched").is_empty() {
+            break;
+        }
+    }
+    let a = s.sim.actor(ActorId::Npc(dark[0])).unwrap();
+    let me = s.sim.player.pos;
+    assert!(me.y < t.water(me.x, me.z) - 2.5, "the traveler stayed down");
+    assert!(!of(&all, "touched").is_empty(), "it dove and clawed them: it's {:?} from them, swimming {}", a.pos - me, a.swimming);
+}

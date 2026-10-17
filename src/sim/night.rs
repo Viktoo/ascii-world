@@ -574,18 +574,20 @@ impl Sim {
         }
     }
 
-    /// A spot about `dist` from the traveler, behind them, on dry land.
+    /// A spot about `dist` from the traveler, behind them, on dry land, or
+    /// (none near, out on the sea) in the water, at the traveler's depth.
     pub(super) fn arrival_spot(&mut self, dist: f32) -> Option<Vec3> {
         let back = -self.player.forward();
         let base = back.z.atan2(back.x);
-        for i in 0..10 {
+        for i in 0..20 {
             let spread = (self.rand() - 0.5) * 2.4 * (1.0 + i as f32 * 0.15);
             let a = base + spread;
             let d = dist * (0.9 + self.rand() * 0.25);
             let p = self.player.pos + Vec3::new(a.cos(), 0.0, a.sin()) * d;
             let h = self.snap.terrain.height(p.x, p.z);
-            if h > self.snap.terrain.water(p.x, p.z) + 0.2 && !self.player_sees(p) {
-                return Some(Vec3::new(p.x, h, p.z));
+            let wl = self.snap.terrain.water(p.x, p.z);
+            if (h > wl + 0.2 || i >= 10) && !self.player_sees(p) {
+                return Some(Vec3::new(p.x, if h > wl { h } else { self.player.pos.y.clamp(h, wl) }, p.z));
             }
         }
         None
@@ -863,7 +865,7 @@ impl Sim {
         let shuns = n.species.shuns.clone();
         let d = n.a.pos - self.player.pos;
         let gap = Vec3::new(d.x, 0.0, d.z).length() - n.a.dims.radius - crate::world::collide::PLAYER_RADIUS;
-        gap < WATCHED_REACH && self.shunned_at(self.player.pos, &shuns).is_none()
+        gap < WATCHED_REACH && d.y.abs() < 2.0 && self.shunned_at(self.player.pos, &shuns).is_none()
     }
 
     /// Its touch lands on `target`: a glow, a change to their needs, and
@@ -957,7 +959,7 @@ pub fn walker_species() -> crate::world::species::Species {
         "diet": { "plants": 0.0, "meat": 0.0 },
         "temper": { "bold": 1.0, "wary": 0.0, "playful": 0.0, "tame": 0.0 },
         "life": { "sleep": [7, 19] },
-        "move": { "walk": WALKER_WALK, "run": WALKER_RUN },
+        "move": { "walk": WALKER_WALK, "run": WALKER_RUN, "swim": WALKER_WALK * 1.5 },
         "active": "night", "want": "traveler", "shuns": ["light"], "moves_unseen": true, "breathes": false,
         "touch": { "hurt": 0.25 }
     });

@@ -59,7 +59,7 @@ pub fn phantom_species() -> crate::world::species::Species {
         "temper": { "bold": 1.0, "wary": 0.2, "playful": 0.3, "tame": 0.0 },
         "life": { "sleep": [7, 19] },
         "needs": { "hunger": 0.1, "fatigue": 0.1, "social": 0.1, "fun": 0.1, "curiosity": 0.5 },
-        "move": { "walk": 1.25, "run": 3.0 },
+        "move": { "walk": 1.25, "run": 3.0, "swim": 1.4 },
         "description": "a person, almost: too tall and too thin, skin like candle wax, eyes sunk dark; it smiles too long",
         "sounds": ["unhurried footsteps", "someone humming, off-key", "a soft laugh", "a long, pleased sigh"],
         "signs": [

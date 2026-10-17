@@ -1208,7 +1208,7 @@ impl App {
             if aboard {
                 // Driving: W/S throttle and brake, A/D and ←→ steer.
                 let steer = (strafe + turn).clamp(-1, 1) as f32;
-                // Flyers: Space up, c down; or, moving, the way you look.
+                // Flyers and submarines: Space up, c down; or, moving, the way you look.
                 let keys = self.held(' ') as i32 - self.held('c') as i32;
                 let climb = if keys != 0 { keys as f32 } else if fwd != 0 { (self.pitch * 2.0).clamp(-1.0, 1.0) } else { 0.0 };
                 self.sim.steer(ActorId::Player, fwd as f32, steer, climb, dt);
@@ -1548,7 +1548,8 @@ impl App {
                     _ if self.sim.player.aboard.is_some() => {
                         let name = self.sim.player.aboard.map(|v| self.sim.thing_name(v)).unwrap_or_default();
                         let kmh = self.sim.vehicle_speed(me).unwrap_or(0.0).abs() * 3.6;
-                        format!("driving the {name}: W/S speed and brake   A/D steer   e get out   {kmh:.0} km/h")
+                        let updown = if matches!(self.sim.vehicle_on(me).as_deref(), Some("under" | "air")) { "   Space/c up/down" } else { "" };
+                        format!("driving the {name}: W/S speed and brake   A/D steer{updown}   e get out   {kmh:.0} km/h")
                     }
                     _ if self.sim.player.riding.is_some() => {
                         let name = self.sim.player.riding.map(|m| self.sim.actor_name(m)).unwrap_or_default();

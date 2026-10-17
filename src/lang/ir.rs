@@ -247,9 +247,10 @@ impl Meta {
 }
 
 /// What a vehicle goes on.
-pub const DRIVE_ON: [&str; 3] = ["land", "water", "air"];
+pub const DRIVE_ON: [&str; 4] = ["land", "water", "under", "air"];
 
-/// How a vehicle moves: top speed (m/s), land, water or air, and what
+/// How a vehicle moves: top speed (m/s), land, water, under it (a
+/// submarine: from the bed up to the surface) or air, and what
 /// drives it, in a word: "legs" (pedals, a scooter), "oars" (a paddle, a
 /// pole), "wind" (a sail), "beast" (a horse or ox pulling it), "engine"
 /// (and anything else: magic, steam). Muscle tires the one driving and goes

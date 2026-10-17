@@ -98,6 +98,12 @@ impl Sim {
         Some(self.drives.get(&id).copied().unwrap_or(0.0))
     }
 
+    /// What the vehicle `who` is in goes on ("land", "water", "under", "air").
+    pub fn vehicle_on(&self, who: ActorId) -> Option<String> {
+        let id = self.actor(who)?.aboard?;
+        Some(self.snap.type_of(self.things.get(id)?.type_id)?.ct.meta.drive.as_ref()?.on.clone())
+    }
+
     /// Whether `who` steers what they are in (its driver's seat, and it moves).
     pub fn drives_it(&self, who: ActorId) -> bool {
         self.actor(who).is_some_and(|a| a.seat_no == 0 && a.aboard.and_then(|v| self.things.get(v)).and_then(|t| self.snap.type_of(t.type_id)).is_some_and(|ty| ty.ct.meta.drive.is_some()))
@@ -179,6 +185,7 @@ impl Sim {
         let how = match (seat, drive.on.as_str()) {
             (1.., _) => "a passenger: the driver steers",
             (_, "water") => "W/S row or sail, A/D steer",
+            (_, "under") => "W/S speed, A/D steer, Space up, c down (or look up or down while going)",
             (_, "air") => "W/S speed, A/D steer, Space up, c down (or look up or down while flying)",
             _ => "W/S speed and brake, A/D steer",
         };
@@ -246,7 +253,17 @@ impl Sim {
             }
             None => self.actor(who).map(|a| a.pos).unwrap_or_default(),
         };
-        if moves && self.snap.terrain.height(spot.x, spot.z) < self.snap.terrain.water(spot.x, spot.z) - MAX_WADE {
+        // Into deep water only the traveler (who swims off), or anyone from a
+        // submarine; out of one under the water, beside it at its depth.
+        let under = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)).and_then(|ty| ty.ct.meta.drive.as_ref()).is_some_and(|d| d.on == "under");
+        let deep = self.snap.terrain.height(spot.x, spot.z) < self.snap.terrain.water(spot.x, spot.z) - MAX_WADE;
+        let spot = if (deep && who == ActorId::Player) || under {
+            let at = self.actor(who).map(|a| a.pos.y).unwrap_or(spot.y);
+            Vec3::new(spot.x, at.max(spot.y), spot.z)
+        } else {
+            spot
+        };
+        if moves && deep && !under && who != ActorId::Player {
             return fail(format!("the water is too deep to get out of the {tname} here"));
         }
         if let Some(a) = self.actor_mut(who) {
@@ -254,7 +271,7 @@ impl Sim {
             a.seat_no = 0;
             a.pos = spot;
             a.vy = 0.0;
-            a.grounded = true;
+            a.grounded = !deep;
             a.alt = 0.0;
             a.support = None;
         }
@@ -366,7 +383,7 @@ impl Sim {
         // The next waypoint: a boat's route, worked out once.
         let mut aim = Vec2::new(dest.x, dest.z);
         let mut last_leg = true;
-        if drive.on == "water" {
+        if drive.on == "water" || drive.on == "under" {
             if !self.routes.contains_key(&who) {
                 let draft = ((ty.top - ty.bottom) * 0.25).clamp(0.1, 1.0);
                 let r = water_route(&self.snap.terrain, Vec2::new(pos.x, pos.z), aim, draft).unwrap_or_default();
@@ -414,7 +431,11 @@ impl Sim {
                 throttle = -0.5;
             }
         }
-        let climb = if drive.on == "air" { ((dest.y + 3.0 - pos.y) * 0.3).clamp(-1.0, 1.0) } else { 0.0 };
+        let climb = match drive.on.as_str() {
+            "air" => ((dest.y + 3.0 - pos.y) * 0.3).clamp(-1.0, 1.0),
+            "under" => ((dest.y - pos.y) * 0.3).clamp(-1.0, 1.0),
+            _ => 0.0,
+        };
         self.steer(who, throttle, (diff * 1.6).clamp(-1.0, 1.0), climb, dt);
         // Getting nowhere: run aground, blocked, or the water ends.
         let now = self.t;
@@ -444,7 +465,7 @@ impl Sim {
             t.height(p.x, p.y) < t.water(p.x, p.y) - MAX_WADE
         });
         let fits = |d: &Drive| match d.on.as_str() {
-            "water" => wet,
+            "water" | "under" => wet,
             "air" => true,
             _ => !wet && flat.length() > 60.0,
         };
@@ -535,14 +556,15 @@ impl Sim {
 
     /// Steer the vehicle `who` is in: `throttle` forward (−1 back … 1),
     /// `steer` right (−1 left … 1), and for a flyer `climb` (−1 down … 1
-    /// up; it hovers at 0). Land vehicles keep to the ground and can't turn standing
-    /// still; boats keep to the water; flyers climb over what is ahead.
+    /// up; it hovers at 0) or a submarine. Land vehicles keep to the ground
+    /// and can't turn standing still; boats keep to the water; submarines
+    /// keep in it, from its bed to its surface; flyers climb over what is ahead.
     pub fn steer(&mut self, who: ActorId, throttle: f32, steer: f32, climb: f32, dt: f32) {
         let Some(id) = self.actor(who).filter(|a| a.seat_no == 0).and_then(|a| a.aboard) else { return };
         let Some(t) = self.things.get(id).cloned() else { return };
         let Some(ty) = self.snap.type_of(t.type_id).cloned() else { return };
         let Some(drive) = ty.ct.meta.drive.clone() else { return };
-        let (water, air) = (drive.on == "water", drive.on == "air");
+        let (water, under, air) = (drive.on == "water", drive.on == "under", drive.on == "air");
         let power = self.drive_power(id, who);
         let max = (drive.speed * power).max(0.5);
         let b = ty.ct.meta.bounds;
@@ -567,7 +589,7 @@ impl Sim {
             v -= v.signum() * v.abs().min((1.0 + 0.25 * v.abs()) * dt);
         }
         v = v.clamp(-max * 0.35, max);
-        if water && ground_here > water_here - 0.3 {
+        if (water || under) && ground_here > water_here - 0.3 {
             v = v.clamp(-AGROUND, AGROUND);
         }
         // Muscle tires whoever works it.
@@ -602,7 +624,7 @@ impl Sim {
             let g = terrain.height(x, z);
             if airborne {
                 true
-            } else if water {
+            } else if water || under {
                 g < terrain.water(x, z) + 0.2
             } else {
                 g > terrain.water(x, z) - MAX_WADE
@@ -640,6 +662,10 @@ impl Sim {
         let bob = (self.t as f32 * 1.3 + id as f32).sin() * 0.04;
         let new_feet = if water {
             if g < wl - draft { wl - draft + bob } else { support.max(wl - draft) }
+        } else if under {
+            // Up or down as asked, between the bed (or what lies on it) and
+            // the surface, where it floats; let be, it holds its depth.
+            (feet + climb.clamp(-1.0, 1.0) * CLIMB * dt).min(wl - draft + bob).max(support)
         } else if air {
             // Up or down as asked, in place or moving; let be, it hovers.
             (feet + climb.clamp(-1.0, 1.0) * CLIMB * dt).max(support).min(g.max(wl) + 150.0)
@@ -647,10 +673,11 @@ impl Sim {
             // Down a slope at once; up only what it can roll over.
             support
         };
-        let afloat = water && g < wl - draft;
+        let afloat = (water || under) && g < wl - draft && new_feet > wl - draft - 0.2;
+        let dived = under && !afloat && new_feet > g + 0.3;
 
         // Lean with the ground under it (or into the turn in the air).
-        let tilt = if air && new_feet - g.max(wl) > 0.5 {
+        let tilt = if (air && new_feet - g.max(wl) > 0.5) || dived {
             let rise = (new_feet - feet) / (v.abs() * dt).max(0.05);
             Quat::from_rotation_x(-rise.atan().clamp(-0.4, 0.4)) * Quat::from_rotation_z(-steer * 0.25)
         } else if afloat {
@@ -679,7 +706,7 @@ impl Sim {
         if let Some(a) = self.actor_mut(who) {
             a.yaw += dyaw;
             a.moved = (to - from).length();
-            a.alt = (new_feet - g.max(wl)).max(0.0);
+            a.alt = (new_feet - if under { g } else { g.max(wl) }).max(0.0);
         }
         self.update_aboard();
     }
