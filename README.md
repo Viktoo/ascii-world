@@ -111,8 +111,8 @@ you every night, because you can make things out of nothing:
 
 | | Peaceful | Easy | Normal | Hard |
 |---|---|---|---|---|
-| night walkers | 0 | 1 | 1 | 2 |
-| phantoms | 0 | 1 | 1 | 2 |
+| night walkers | 0 | 1 | 2 | 3 |
+| phantoms | 0 | 1 | 2 | 3 |
 
 - **Night walkers** come out of the dark behind you at nightfall, move only while you
   aren't looking straight at them (the middle of your view; a little to the side they

@@ -35,7 +35,7 @@ fn send_phantoms_away(s: &mut Session) {
 fn the_dark_comes_at_dusk_hurts_you_and_leaves_at_dawn() {
     let w = world("dark", 7);
     let mut s = session(&w, 7, None);
-    s.sim.cfg.difficulty = 2;
+    s.sim.cfg.difficulty = 1;
     s.sim.player.pos = w.spawn;
     s.sim.player.yaw = 0.0;
     s.sim.t = before_dusk(1.0, 2.0);
@@ -45,7 +45,7 @@ fn the_dark_comes_at_dusk_hurts_you_and_leaves_at_dawn() {
     }
     assert!(s.sim.dark(), "night has fallen");
     let dark = the_dark(&s);
-    assert_eq!(dark.len(), 1, "one walker on normal: {:?}", of(&all, "dark_came"));
+    assert_eq!(dark.len(), 1, "one walker on easy: {:?}", of(&all, "dark_came"));
     assert_eq!(phantoms(&s).len(), 1, "and one phantom");
     send_phantoms_away(&mut s);
     let h = s.sim.cast.get(dark[0]).unwrap();
@@ -102,7 +102,7 @@ fn the_dark_comes_at_dusk_hurts_you_and_leaves_at_dawn() {
 fn the_dark_freezes_when_watched_even_up_close() {
     let w = world("dark close", 9);
     let mut s = session(&w, 9, None);
-    s.sim.cfg.difficulty = 2;
+    s.sim.cfg.difficulty = 1;
     s.sim.player.pos = w.spawn;
     s.sim.player.yaw = 0.0;
     s.sim.t = before_dusk(1.0, 2.0);
@@ -168,14 +168,14 @@ fn night_walkers_are_named_paced_and_placed_truly() {
     assert_eq!(s.sim.where_is(me + r * 30.0), "off to your right");
     assert_eq!(s.sim.where_is(me - r * 30.0), "off to your left");
     assert_eq!(s.sim.where_is(me + f * 30.0), "ahead of you, in the dark");
-    // On hard two come at dusk, and two phantoms.
+    // On hard three come at dusk, and three phantoms.
     s.sim.t = before_dusk(1.0, 2.0);
     for _ in 0..40 {
         s.step(0.1);
     }
     let dark = the_dark(&s);
-    assert_eq!(dark.len(), 2);
-    assert_eq!(phantoms(&s).len(), 2);
+    assert_eq!(dark.len(), 3);
+    assert_eq!(phantoms(&s).len(), 3);
     let n = s.sim.cast.get(dark[0]).unwrap();
     assert_eq!(n.species.name, "night walker");
     assert_eq!(s.sim.actor_name(ActorId::Npc(dark[0])), "the night walker");
