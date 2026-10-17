@@ -662,3 +662,152 @@ fn a_fall_from_a_roof_says_so() {
     let hurt: Vec<String> = events(&s.sim, "hurt").into_iter().map(|e| e.text).filter(|t| t.contains("fall")).collect();
     assert!(hurt.last().is_some_and(|t| t.contains("from the wooden hut")), "{hurt:?}");
 }
+
+/// Pictures of the dark's own, up close: a phantom and a night walker by
+/// day (to see their shape) and by night, standing (the phantom in a
+/// breastplate and cloak, holding a sword), then struck down and
+/// lying (look at them: frightening alive, flat on the ground dead).
+#[test]
+#[ignore]
+fn night_bodies_png() {
+    let dir = std::env::var("POCKET_PNG_DIR").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let w = world("night bodies", 7);
+    let sword = add_type(&w, &fixture("physics/sword.js"));
+    let plate = add_type(&w, &fixture("layers/breastplate.js"));
+    let cloak = add_type(&w, &fixture("layers/cloak.js"));
+    let mut s = session(&w, 7, None);
+    s.sim.cfg.difficulty = 2;
+    s.sim.player.pos = w.spawn;
+    s.sim.t = before_dusk(1.0, 2.0);
+    for _ in 0..40 {
+        s.step(0.1);
+    }
+    let (ph, wk) = (phantoms(&s)[0], the_dark(&s)[0]);
+    // Armed and armoured, as a phantom goes hunting.
+    {
+        let at = s.sim.cast.get(ph).unwrap().a.pos;
+        for ty in [plate, cloak] {
+            let id = s.sim.spawn_thing(ty, at + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
+            s.sim.wear(ActorId::Npc(ph), ActorId::Npc(ph), id).unwrap();
+        }
+        let sw = s.sim.spawn_thing(sword, at + Vec3::Y * 0.3, 0.0, 1.0, Default::default(), true).unwrap();
+        s.sim.hand_to(ActorId::Npc(ph), sw);
+    }
+    let gpu = crate::render::gpu::Gpu::new().ok();
+    let live = Arc::new(Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), gpu.clone(), live).unwrap();
+    let snap = model.snapshot().unwrap();
+    let t = snap.terrain.clone();
+    let at = Vec3::new(w.spawn.x + 6.0, 0.0, w.spawn.z + 6.0);
+    let g = |x: f32, z: f32| Vec3::new(x, t.height(x, z), z);
+    let spots = [(ph, g(at.x - 0.9, at.z)), (wk, g(at.x + 0.9, at.z))];
+    let place = |s: &mut Session| {
+        for (id, p) in spots {
+            let n = s.sim.cast.get_mut(id).unwrap();
+            n.a.pos = p;
+            n.a.yaw = std::f32::consts::PI;
+            n.plan.clear();
+            n.a.task = None;
+            n.a.motion = None;
+            n.think_at = f64::MAX;
+        }
+    };
+    for _ in 0..30 {
+        place(&mut s);
+        s.step(0.05);
+    }
+    place(&mut s);
+    let cam_at = |from: Vec3, to: Vec3| {
+        let eye = Vec3::new(from.x, t.height(from.x, from.z) + from.y, from.z);
+        let d = to - eye;
+        crate::render::Camera { pos: eye, yaw: d.x.atan2(d.z), pitch: (d.y / Vec3::new(d.x, 0.0, d.z).length()).atan(), fov_y: 0.8, roll: 0.0 }
+    };
+    let mid = g(at.x, at.z);
+    let front = cam_at(Vec3::new(at.x, 1.6, at.z - 4.5), mid + Vec3::Y * 1.1);
+    let face = |p: Vec3| cam_at(Vec3::new(p.x, 1.8, p.z - 1.3), p + Vec3::Y * 1.75);
+    s.sim.player.pos = g(at.x, at.z - 6.0);
+    let night = s.sim.t;
+    for (name, hour) in [("day", 0.45), ("night", -1.0)] {
+        s.sim.t = if hour < 0.0 { night } else { crate::render::sky::DAY_SECONDS * (s.sim.t / crate::render::sky::DAY_SECONDS).floor() + crate::render::sky::DAY_SECONDS * hour };
+        png_hd(&mut s, &snap, &gpu, front, &format!("{dir}/pocket-night-{name}-both.png"));
+        png_hd(&mut s, &snap, &gpu, face(spots[0].1), &format!("{dir}/pocket-night-{name}-phantom-face.png"));
+        png_hd(&mut s, &snap, &gpu, face(spots[1].1), &format!("{dir}/pocket-night-{name}-walker-face.png"));
+    }
+    s.sim.t = night;
+    for (id, p) in spots {
+        s.sim.kill(id, "struck down", None);
+        let _ = p;
+    }
+    s.sim.t += 3.0;
+    let side = cam_at(Vec3::new(at.x - 4.0, 1.4, at.z - 2.5), mid + Vec3::Y * 0.2);
+    let above = cam_at(Vec3::new(at.x, 2.6, at.z - 2.6), mid);
+    for (name, hour) in [("day", 0.45), ("night", -1.0)] {
+        s.sim.t = if hour < 0.0 { night + 3.0 } else { crate::render::sky::DAY_SECONDS * ((night / crate::render::sky::DAY_SECONDS).floor() + 1.0 + hour) };
+        png_hd(&mut s, &snap, &gpu, side, &format!("{dir}/pocket-night-{name}-dead-side.png"));
+        png_hd(&mut s, &snap, &gpu, above, &format!("{dir}/pocket-night-{name}-dead-above.png"));
+    }
+}
+
+/// As `png_of`, at 960×540.
+fn png_hd(s: &mut Session, snap: &Arc<crate::world::WorldSnapshot>, gpu: &Option<Arc<crate::render::gpu::Gpu>>, cam: crate::render::Camera, out: &str) {
+    let (pw, ph) = (960u32, 540u32);
+    let drawn = s.sim.draw_first_person(&cam, crate::render::VIEW_DIST);
+    let culled = crate::world::cull::cull(snap, &mut s.sim.cache, &cam, pw as f32 / ph as f32, &drawn.insts, &Default::default());
+    let light = crate::render::sky::lighting(s.sim.t, &snap.look.palette);
+    let sp = crate::render::SceneParams { terrain: &snap.terrain, palette: &snap.look.palette, camera: cam, width: pw, height: ph, pixel_aspect: 1.0, light, time: 1.0, frame: 0, shadows: true, lights: &drawn.lights, weather: Default::default() };
+    let globals = crate::render::build_globals(&sp, culled.insts.len(), culled.grid.as_ref());
+    let req = crate::render::FrameRequest { id: 1, width: pw, height: ph, globals, instances: culled.insts, grid: culled.grid, scene: snap.scene.clone(), terrain: snap.terrain.clone(), look: snap.look.clone() };
+    let mut handle = match gpu {
+        Some(g) => crate::render::gpu::spawn(g.clone()),
+        None => crate::render::cpu::spawn(),
+    };
+    handle.tx.send(crate::render::RenderMsg::Frame(Box::new(req))).unwrap();
+    let f = handle.rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    handle.shutdown();
+    let mut rgb = Vec::new();
+    for p in &f.pixels {
+        rgb.extend_from_slice(&crate::render::unpack(*p));
+    }
+    std::fs::write(out, crate::png::encode(f.width, f.height, &rgb)).unwrap();
+}
+
+/// Struck down, the dark's own lie flat on the ground, not caught mid-fall
+/// in their stoop: their dead pose straightens them, and their lights go out.
+#[test]
+fn the_dark_lies_flat_when_struck_down() {
+    let w = world("flat dead", 7);
+    let mut s = session(&w, 7, None);
+    s.sim.cfg.difficulty = 2;
+    s.sim.player.pos = w.spawn;
+    s.sim.t = before_dusk(1.0, 2.0);
+    for _ in 0..40 {
+        s.step(0.1);
+    }
+    for id in [phantoms(&s)[0], the_dark(&s)[0]] {
+        s.sim.kill(id, "struck down", Some(ActorId::Player));
+        let t = s.sim.things.live().find(|t| t.origin.remains == Some(id)).cloned().expect("a body is left");
+        let ty = s.sim.snap.type_of(t.type_id).unwrap().clone();
+        let g = super::super::render::thing_inst(&t, &ty, [0.0; 4]);
+        assert!(g.s1[0] < 0.0, "its stoop is straightened as its body says the dead lie");
+        // The highest point of the body, marched down from above.
+        let (c, r) = (g.center(), g.radius());
+        let ground = s.sim.snap.terrain.height(t.pos.x, t.pos.z);
+        let mut high = f32::MIN;
+        for i in 0..21 {
+            for j in 0..21 {
+                let x = c.x + r * ((i as f32 + 0.5) / 21.0 * 2.0 - 1.0);
+                let z = c.z + r * ((j as f32 + 0.5) / 21.0 * 2.0 - 1.0);
+                let mut y = c.y + r;
+                while y > c.y - r {
+                    if g.sdf(&ty.ct, Vec3::new(x, y, z)) < 0.01 {
+                        high = high.max(y);
+                        break;
+                    }
+                    y -= 0.02;
+                }
+            }
+        }
+        let name = s.sim.actor_name(ActorId::Npc(id));
+        assert!(high - ground < 0.7, "{name} lies flat: its highest point is {:.2} m up", high - ground);
+    }
+}

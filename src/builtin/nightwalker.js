@@ -1,14 +1,18 @@
 // Built-in night walker: the dark's own body. Too tall, hunched, all bone,
 // arms hanging nearly to the ground, legs that bend the wrong way, a long
-// faceless skull with two red eyes that glow. Faces +z.
+// faceless skull with two red eyes that glow, slit-narrow and sunk into it
+// (out when it dies); a knotted spine. Dead, the stoop goes out of it and it
+// lies flat. Faces +z.
 // Look: a = height (m), b = build (gaunt … thin), c = shade (black … soot),
 // d = eye glow. f = walk phase (radians).
 // Roles: s0/s1 = left/right arm raised sideways, s2/s3 = left/right arm
-// reaching forward, s4 = lean (more hunched), s5 = head down, s6 = crouch.
+// reaching forward, s4 = lean (more hunched; -0.5 straightens it), s5 = head
+// down, s6 = crouch. s10 = eyes shut (the eyes go out).
 export const meta = { name: "night walker", bounds: [1.1, 2.8, 1.3], tags: ["builtin", "body"],
   props: { mass: 60, alive: 1 },
   body: { height: 2.3, eye: 1.85, radius: 0.35, reach: 1.6, grip: [0.25, 0.4, 0.5],
           roles: ["raise", "reach", "lean", "head", "crouch"], gait: "biped", arms: true,
+          dead: { raise_l: 0.25, raise_r: 0.35, lean: -0.5, head: -0.6 },
           look: { height: [2.1, 2.6], build: [0.75, 1.0], shade: [0, 1], eyes: [0.7, 1] } } };
 
 export function sdf(x, y, z, k) {
@@ -31,7 +35,7 @@ export function sdf(x, y, z, k) {
     capsule(px, py, pz, 0.12 * w, 0.18, -0.12 - sw, 0.12 * w, 0.03, 0.1 - sw, 0.03)
   );
   // Hunched: the spine leans forward from the hip.
-  const lean = 0.5 + clamp(k.s4, -0.3, 0.6);
+  const lean = 0.5 + clamp(k.s4, -0.5, 0.6);
   const q = rotX(px, py - hip, pz, -lean);
   const spine = capsule(q.x, q.y, q.z, 0, 0, 0, 0, 0.72, 0, 0.07 * w);
   const ribs = ellipsoid(q.x, q.y - 0.5, q.z, 0.17 * w, 0.22, 0.11 * w);
@@ -40,8 +44,14 @@ export function sdf(x, y, z, k) {
   const hy = 0.86 - nod * 0.08;
   const hz = 0.2 + nod * 0.03;
   const neck = capsule(q.x, q.y, q.z, 0, 0.72, 0, 0, hy, hz - 0.08, 0.04);
-  const head = ellipsoid(q.x, q.y - hy, q.z - hz, 0.085, 0.1, 0.17);
-  const eyes = min(sphere(q.x - 0.045, q.y - hy - 0.02, q.z - hz - 0.13, 0.025), sphere(q.x + 0.045, q.y - hy - 0.02, q.z - hz - 0.13, 0.025));
+  let head = ellipsoid(q.x, q.y - hy, q.z - hz, 0.085, 0.1, 0.17);
+  // A ridge of brow over the eyes, and sockets under it.
+  head = smoothUnion(head, capsule(q.x, q.y - hy, q.z - hz, -0.055, 0.03, 0.115, 0.055, 0.03, 0.115, 0.016), 0.02);
+  head = smoothSubtract(head, ellipsoid(abs(q.x) - 0.042, q.y - hy - 0.0, q.z - hz - 0.14, 0.026, 0.014, 0.03), 0.006);
+  // Two slits of light deep in them, tipped in toward the middle.
+  const eyes = ellipsoid(abs(q.x) - 0.042, q.y - hy + 0.001 - (abs(q.x) - 0.042) * 0.35, q.z - hz - 0.122, 0.02, 0.006, 0.01);
+  // Knuckles of spine down the back.
+  const knots = sphere(q.x, q.y - clamp(round(q.y * 14) / 14, 0.07, 0.65), q.z + 0.055 * w, 0.022 * w);
   // Arms hang from the shoulders, nearly to the ground.
   const sy = hip + 0.68 * cos(lean);
   const sz = 0.68 * sin(lean);
@@ -69,7 +79,7 @@ export function sdf(x, y, z, k) {
     capsule(px, py, pz, rhx, rhy, rhz, rhx + 0.04, max(rhy - 0.2, 0.02), rhz + 0.06, 0.012),
     capsule(px, py, pz, rhx, rhy, rhz, rhx - 0.03, max(rhy - 0.2, 0.02), rhz + 0.08, 0.012)
   );
-  const torso = smoothUnion(spine, ribs, 0.05);
+  const torso = smoothUnion(smoothUnion(spine, ribs, 0.05), knots, 0.02);
   const upper = smoothUnion(torso, smoothUnion(neck, head, 0.03), 0.03);
   const body = smoothUnion(smoothUnion(upper, legs, 0.05), min(arms, claws), 0.03);
   return min(body, eyes) * h;
@@ -79,16 +89,19 @@ export function color(x, y, z, k) {
   const h = clamp(k.a, 2.1, 2.6) / 2.3;
   const crouch = clamp(k.s6, 0, 1);
   const hip = 1.05 - crouch * 0.45;
-  const lean = 0.5 + clamp(k.s4, -0.3, 0.6);
+  const lean = 0.5 + clamp(k.s4, -0.5, 0.6);
   const q = rotX(x / h, y / h - hip, z / h, -lean);
   const nod = clamp(k.s5, -1, 1);
   const hy = 0.86 - nod * 0.08;
   const hz = 0.2 + nod * 0.03;
   // The eyes are the only light on it.
-  const ex = abs(q.x) - 0.045;
-  const ey = q.y - hy - 0.02;
-  const ez = q.z - hz - 0.13;
-  if (ex * ex + ey * ey + ez * ez < 0.0016) {
+  const ex = abs(q.x) - 0.042;
+  const ey = q.y - hy + 0.001 - ex * 0.35;
+  const ez = q.z - hz - 0.122;
+  if ((ex * ex) / 0.0006 + (ey * ey) / 0.00007 + (ez * ez) / 0.00025 < 1) {
+    if (k.s10 > 0.5) {
+      return rgb(8, 6, 6);
+    }
     return glow(rgb(255, 26 + 30 * hash(k.seed), 14), clamp(k.d, 0.7, 1));
   }
   const v = 0.03 + 0.07 * clamp(k.c, 0, 1);

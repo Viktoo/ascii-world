@@ -35,11 +35,14 @@ impl Sim {
         let ty = self.snap.type_of(n.body_ty).or(figure)?.clone();
         let gait = ty.ct.meta.body.as_ref().map(|b| b.gait.clone()).unwrap_or_else(|| "biped".into());
         let a = &n.a;
-        // Its look, as it was drawn alive; limp, arms a little out.
+        // Its look, as it was drawn alive; limp, arms a little out, or
+        // lying as its body says the dead lie (a stoop straightened).
         let g = n.gpu(&ty);
         let params = [g.k0[0], g.k0[1], g.k0[2], g.k0[3], g.k1[0], g.k1[1], g.k1[2], g.k1[3]];
         let mut state = [0.0f32; 8];
-        if a.dims.arms {
+        if let Some(dead) = ty.ct.meta.body.as_ref().and_then(|b| b.dead) {
+            state = dead;
+        } else if a.dims.arms {
             state[L_RAISE] = 0.12;
             state[R_RAISE] = 0.3;
         }

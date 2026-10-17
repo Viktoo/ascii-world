@@ -408,11 +408,15 @@ pub struct Body {
     /// always half-raised. Added to every pose, so what it wears follows.
     #[serde(default)]
     pub rest: [f32; 8],
+    /// How it lies dead, per role (in ROLES order), if not as it stands:
+    /// a stoop straightened, so it lies flat once it has fallen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead: Option<[f32; 8]>,
 }
 
 impl Default for Body {
     fn default() -> Self {
-        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), usual: Vec::new(), from: None, rest: [0.0; 8] }
+        Body { height: 1.75, eye: 1.65, radius: 0.35, reach: 2.4, grip: [0.3, 1.0, 0.3], seat: None, roles: Vec::new(), gait: "biped".into(), flies: false, arms: false, look: Vec::new(), usual: Vec::new(), from: None, rest: [0.0; 8], dead: None }
     }
 }
 
