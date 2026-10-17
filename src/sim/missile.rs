@@ -16,6 +16,7 @@
 //!   until it comes the built-in `shot` flies in its place.
 
 use super::actions::{ActErr, Outcome, fail};
+#[cfg(test)]
 use super::physics::GRAVITY;
 use super::things::{Origin, StuckIn, ThingId};
 use super::tool::{Blow, MotionRun};
@@ -42,8 +43,8 @@ pub const TIP_R: f32 = 0.03;
 
 /// The way to send something off from `from` at `speed` so that it falls
 /// onto `to` (the flatter of the two arcs that do; as far as it goes when
-/// none does).
-pub fn aim(from: Vec3, to: Vec3, speed: f32) -> Vec3 {
+/// none does), where things fall at `g`.
+pub fn aim(from: Vec3, to: Vec3, speed: f32, g: f32) -> Vec3 {
     let d = to - from;
     let flat = glam::Vec2::new(d.x, d.z);
     let x = flat.length();
@@ -51,8 +52,8 @@ pub fn aim(from: Vec3, to: Vec3, speed: f32) -> Vec3 {
         return d.normalize_or(Vec3::Y);
     }
     let v2 = speed * speed;
-    let disc = v2 * v2 - GRAVITY * (GRAVITY * x * x + 2.0 * d.y * v2);
-    let up = if disc >= 0.0 { ((v2 - disc.sqrt()) / (GRAVITY * x)).atan() } else { std::f32::consts::FRAC_PI_4 };
+    let disc = v2 * v2 - g * (g * x * x + 2.0 * d.y * v2);
+    let up = if disc >= 0.0 { ((v2 - disc.sqrt()) / (g * x)).atan() } else { std::f32::consts::FRAC_PI_4 };
     let h = flat / x;
     Vec3::new(h.x * up.cos(), up.sin(), h.y * up.cos())
 }
@@ -325,7 +326,7 @@ impl Sim {
                 Some(n) => format!(", {n} left"),
                 None => String::new(),
             };
-            out.push(format!("it shoots {}{left}, out to about {:.0} m", plural(&l.ammo), (l.speed * l.speed / GRAVITY).min(600.0) * 0.5));
+            out.push(format!("it shoots {}{left}, out to about {:.0} m", plural(&l.ammo), (l.speed * l.speed / self.gravity()).min(600.0) * 0.5));
         }
         if let Some(b) = self.burst_of(id) {
             let lit = self.things.get(id).and_then(|t| t.shape.fuse_at).map(|f| format!(", LIT: it goes off in {:.0} s, throw it now", (f - self.t).max(0.0)));
@@ -481,7 +482,7 @@ impl Sim {
             _ => run.at,
         };
         let base = match target_at {
-            Some(p) => aim(tip, p, l.speed),
+            Some(p) => aim(tip, p, l.speed, self.gravity()),
             None => {
                 let pitch = if who == ActorId::Player { self.look_pitch } else { 0.05 };
                 let look = Vec3::new(me.yaw.sin() * pitch.cos(), pitch.sin(), me.yaw.cos() * pitch.cos());
@@ -589,7 +590,7 @@ mod tests {
     fn aim_drops_onto_the_mark() {
         // Fly the aimed shot and see where it comes down at the mark's distance.
         for (to, speed) in [(Vec3::new(30.0, 0.0, 0.0), 40.0), (Vec3::new(0.0, 5.0, 60.0), 55.0), (Vec3::new(-80.0, -3.0, 20.0), 400.0)] {
-            let d = aim(Vec3::ZERO, to, speed);
+            let d = aim(Vec3::ZERO, to, speed, GRAVITY);
             let v = d * speed;
             let flat = glam::Vec2::new(to.x, to.z).length();
             let t = flat / glam::Vec2::new(v.x, v.z).length();
@@ -597,7 +598,7 @@ mod tests {
             assert!((y - to.y).abs() < 0.05, "lands at {y} not {} ({to:?} at {speed})", to.y);
         }
         // Out of range: as far as it goes.
-        let d = aim(Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0), 30.0);
+        let d = aim(Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0), 30.0, GRAVITY);
         assert!((d.y - std::f32::consts::FRAC_PI_4.sin()).abs() < 1e-3);
     }
 

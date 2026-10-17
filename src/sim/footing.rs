@@ -170,7 +170,7 @@ impl Sim {
             }
         }
         if !grounded {
-            vy -= GRAVITY * dt;
+            vy -= self.gravity() * dt;
             let mut next = feet + vy * dt;
             if vy > 0.0 {
                 let head = next + cap.height;
@@ -210,6 +210,7 @@ impl Sim {
     fn land_hard(&mut self, id: ActorId, speed: f32) {
         let Some(a) = self.actor_mut(id) else { return };
         let perch = a.perch.take();
+        // What hurts is how fast they land: told as the drop it takes on Earth.
         let drop = speed * speed / (2.0 * GRAVITY);
         let over = drop - a.dims.height.max(1.0);
         if over <= 0.0 {

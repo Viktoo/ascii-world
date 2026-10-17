@@ -8,6 +8,7 @@
 //! seeded generator, so a seed and a scripted LLM replay the same history.
 
 pub mod actions;
+pub mod air;
 pub mod actor;
 pub mod behavior;
 pub mod burst;
@@ -930,6 +931,7 @@ impl Sim {
             self.step_night();
             self.tell_weather();
             self.feel_bodies(1.0);
+            self.breathe(1.0);
             self.step_fear();
             self.step_found_bodies();
             self.step_goals(1.0);

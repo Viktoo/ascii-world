@@ -63,6 +63,22 @@ pub struct Look {
     /// How many caves the hills hold, 0 … 1 (older worlds: a few).
     #[serde(default = "d_caves")]
     pub caves: f32,
+    /// How hard things fall, m/s² (Earth 9.81, the Moon 1.62).
+    #[serde(default = "d_gravity")]
+    pub gravity: f32,
+    /// How much breathable air there is out in the open, 0 (none: the
+    /// Moon, deep space) … 1 (Earth's). Fire needs it, sound carries in
+    /// it, and bodies that breathe suffocate without it.
+    #[serde(default = "d_air")]
+    pub air: f32,
+}
+
+fn d_gravity() -> f32 {
+    crate::sim::physics::GRAVITY
+}
+
+fn d_air() -> f32 {
+    1.0
 }
 
 fn d_caves() -> f32 {
@@ -73,9 +89,17 @@ fn d_rivers() -> f32 {
     0.6
 }
 
+impl Look {
+    /// Keep what genesis wrote in bounds.
+    pub fn sanitize(&mut self) {
+        self.gravity = if self.gravity.is_finite() { self.gravity.clamp(0.5, 30.0) } else { d_gravity() };
+        self.air = if self.air.is_finite() { self.air.clamp(0.0, 1.0) } else { d_air() };
+    }
+}
+
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0 }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0, gravity: d_gravity(), air: d_air() }
     }
 }
 

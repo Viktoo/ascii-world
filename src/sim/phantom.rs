@@ -68,7 +68,7 @@ pub fn phantom_species() -> crate::world::species::Species {
             "You smell candle smoke.",
             "Footsteps match yours, then stop."
         ],
-        "active": "night", "hostile": true,
+        "active": "night", "hostile": true, "breathes": false,
         "touch": { "hurt": 0.07 },
         "drive": "You are a phantom. You rise at dusk and fade at dawn, and you cannot truly die: struck down, you rise again the next night, remembering everything. You mean harm. Above all you want the traveler (the one who makes things out of nothing) hurt, and dead; anyone else you come upon you may hurt too, and you enjoy it. You are patient and cunning, not mad: arm yourself with whatever strikes (a blade, a club, a tool), put on whatever protects you, make one thing a night that helps your hunt, take from the dead and the sleeping, and use what you remember of past nights: where the traveler sleeps, what they fight with, what worked and what didn't. Speak little, softly, and never kindly."
     });
@@ -402,7 +402,7 @@ impl Sim {
         // Something that shoots, and the quarry in range: shoot from where it stands.
         let launch = self.held_tool(me).and_then(|(id, t)| t.launch.filter(|_| self.shots_left(id) != Some(0)));
         if let Some(l) = launch {
-            let range = (l.speed * l.speed / super::physics::GRAVITY * 0.5).min(SHOOT_FROM);
+            let range = (l.speed * l.speed / self.gravity() * 0.5).min(SHOOT_FROM);
             if d > reach && d < range {
                 if since >= BLOW_GAP.max(l.ready as f64 + 0.3) {
                     if let Some(n) = self.cast.get_mut(cid) {

@@ -202,6 +202,8 @@ pub struct Npc {
     pub props: Props,
     /// How much what is on their body hurts them right now (by its harm).
     pub pain: f32,
+    /// Breathes and has no air: suffocating (see `air`).
+    pub gasping: bool,
     /// When its touch last landed (it draws back for a while after).
     pub touched_at: f64,
     /// The dead whose bodies they have come upon (or saw die).
@@ -377,6 +379,7 @@ impl Cast {
             away: s.away,
             props: Vec::new(),
             pain: 0.0,
+            gasping: false,
             touched_at: f64::MIN,
             seen_dead: s.seen_dead.clone(),
             feared_at: f64::MIN,

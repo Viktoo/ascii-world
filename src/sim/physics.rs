@@ -11,6 +11,8 @@ use crate::world::Solid;
 use glam::{Quat, Vec3};
 use serde_json::json;
 
+/// Earth's pull (m/s²): a world's own is `Sim::gravity`. Muscles are
+/// built for this one: a jump leaves the ground as fast anywhere.
 pub const GRAVITY: f32 = 9.81;
 /// Below this impact speed (m/s) nothing gets hurt.
 pub const IMPACT_SAFE: f32 = 2.5;
@@ -62,6 +64,11 @@ fn body_dist(p: Vec3, feet: Vec3, height: f32) -> (f32, Vec3) {
 }
 
 impl Sim {
+    /// How hard things fall in this world (m/s²).
+    pub fn gravity(&self) -> f32 {
+        self.snap.look.gravity
+    }
+
     pub fn step_physics(&mut self, dt: f32) {
         self.update_held();
         let mut ids: Vec<(f32, ThingId)> = self
@@ -230,7 +237,8 @@ impl Sim {
         let old_pos = t.pos;
         // Not something anyone catches: a point, a shot, a thing that goes off.
         let missile = pointed || t.shot || ty.ct.meta.burst.is_some();
-        v.y -= GRAVITY * h;
+        let g = self.gravity();
+        v.y -= g * h;
         // Water: float if lighter than water, drag either way.
         // Inside a cave the sea doesn't reach.
         let wl = if c.y < WATER_LEVEL + 80.0 && !(self.snap.terrain.caves_near(c.x, c.z) && self.snap.terrain.void(c) < 0.0) { self.snap.terrain.water(c.x, c.z) } else { f32::MIN };
@@ -238,7 +246,7 @@ impl Sim {
             let vol = volume(&ty) * t.scale.powi(3);
             let density = mass / vol.max(1e-4);
             let depth = ((wl - c.y) / r.max(0.05)).min(1.0);
-            v.y += GRAVITY * depth * (1000.0 / density.max(50.0)).min(4.0) * h;
+            v.y += g * depth * (1000.0 / density.max(50.0)).min(4.0) * h;
             v *= 1.0 - (2.5 * h).min(0.5);
         }
         let mut p = c + v * h;

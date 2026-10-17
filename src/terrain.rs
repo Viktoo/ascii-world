@@ -3,7 +3,7 @@
 //! Mirrors `terrain_*` in `shaders/common.wgsl`. Nothing here is stored;
 //! everything is a pure function of the universe seed and the biome table.
 
-use crate::noise::{fbm2, lerp, ridged2, vnoise2};
+use crate::noise::{fbm2, h2, lerp, pcg, ridged2, u2f, vnoise2};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_BIOMES: usize = 6;
@@ -20,6 +20,10 @@ const CENTERS: [[f32; 2]; MAX_BIOMES] = [
     [0.8, 0.15],
     [0.5, 0.05],
 ];
+
+/// The cells craters are drawn in, big and small (m): one crater at most
+/// per cell, up to 0.45 of a cell across its rim (see `Terrain::craters`).
+pub const CRATER_CELLS: [f32; 2] = [140.0, 30.0];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Biome {
@@ -48,6 +52,10 @@ pub struct Biome {
     /// not named here use their kind's own (see `world::scatter::clump_of`).
     #[serde(default)]
     pub clump: std::collections::BTreeMap<String, f32>,
+    /// How pocked with craters it is: 0 none … 1 bowls everywhere, big and
+    /// small, rims overlapping (the Moon's highlands). See `Terrain::craters`.
+    #[serde(default)]
+    pub craters: f32,
 }
 
 fn d_amp() -> f32 {
@@ -130,6 +138,7 @@ fn base_biomes() -> Vec<Biome> {
             scatter: s(&[("tree", 0.25), ("bush", 0.5), ("rock", 0.15), ("grass", 3.0), ("flower", 0.9), ("tallgrass", 0.8)]),
             cliffs: 0.0,
             clump: Default::default(),
+            craters: 0.0,
         },
         Biome {
             name: "pine forest".into(),
@@ -141,6 +150,7 @@ fn base_biomes() -> Vec<Biome> {
             scatter: s(&[("pine", 1.4), ("tree", 0.3), ("rock", 0.2), ("bush", 0.3), ("grass", 1.0)]),
             cliffs: 0.15,
             clump: Default::default(),
+            craters: 0.0,
         },
         Biome {
             name: "highlands".into(),
@@ -152,6 +162,7 @@ fn base_biomes() -> Vec<Biome> {
             scatter: s(&[("rock", 0.6), ("pine", 0.2), ("grass", 0.8), ("tallgrass", 0.4)]),
             cliffs: 0.7,
             clump: Default::default(),
+            craters: 0.0,
         },
         Biome {
             name: "lakeshore".into(),
@@ -163,6 +174,7 @@ fn base_biomes() -> Vec<Biome> {
             scatter: s(&[("bush", 0.4), ("rock", 0.25), ("grass", 2.0), ("tree", 0.1), ("tallgrass", 1.2)]),
             cliffs: 0.0,
             clump: Default::default(),
+            craters: 0.0,
         },
         Biome {
             name: "heath".into(),
@@ -174,6 +186,7 @@ fn base_biomes() -> Vec<Biome> {
             scatter: s(&[("bush", 0.9), ("rock", 0.3), ("grass", 1.2), ("flower", 0.4)]),
             cliffs: 0.3,
             clump: Default::default(),
+            craters: 0.0,
         },
     ]
 }
@@ -382,6 +395,7 @@ impl Terrain {
             b.amp = b.amp.clamp(1.0, 60.0);
             b.rough = b.rough.clamp(0.0, 1.0);
             b.cliffs = if b.cliffs.is_finite() { b.cliffs.clamp(0.0, 1.0) } else { 0.0 };
+            b.craters = if b.craters.is_finite() { b.craters.clamp(0.0, 1.0) } else { 0.0 };
             for c in b.clump.values_mut() {
                 *c = if c.is_finite() { c.clamp(0.0, 1.0) } else { 0.5 };
             }
@@ -421,16 +435,18 @@ impl Terrain {
         let mut amp = 0.0;
         let mut rough = 0.0;
         let mut cliffs = 0.0;
+        let mut craters = 0.0;
         for (i, b) in self.biomes.iter().enumerate() {
             base += w[i] * b.base;
             amp += w[i] * b.amp;
             rough += w[i] * b.rough;
             cliffs += w[i] * b.cliffs;
+            craters += w[i] * b.craters;
         }
         let n = fbm2(x * 0.0045 + self.off[4], z * 0.0045 + self.off[5], self.seed.wrapping_add(101), 5);
         let r = ridged2(x * 0.0032 + self.off[5], z * 0.0032 + self.off[4], self.seed.wrapping_add(202), 3);
         let height = base + amp * lerp(n, r * 2.0 - 0.6, rough);
-        Sample { height: self.cliff(x, z, height, cliffs, amp).h }
+        Sample { height: self.craters(x, z, self.cliff(x, z, height, cliffs, amp).h, craters) }
     }
 
     /// Steps the rolling height `h` into ledges and rock faces where the land
@@ -469,24 +485,74 @@ impl Terrain {
         Cliff { h: h + k * (g - t) * st, k, t, w: wf }
     }
 
+    /// Pocks the height `h` with craters where the land has them (`cr`, the
+    /// biomes' blend). Twin of `craters_h` in `shaders/common.wgsl`; keep
+    /// the operation order identical.
+    ///
+    /// At two sizes the land is cut into cells, and a cell holds one crater
+    /// more often the higher `cr` (growing in as `cr` passes its draw, so
+    /// none starts at a step): a round bowl a fifth as deep as it is wide
+    /// across, with a raised rim that fades out on the land around it. Each
+    /// reaches less than a cell past its own, so the 3 × 3 cells round a
+    /// point hold every crater that touches it. Overlapping ones add up.
+    pub fn craters(&self, x: f32, z: f32, h: f32, cr: f32) -> f32 {
+        if cr < 0.01 {
+            return h;
+        }
+        let mut d = 0.0;
+        for k in 0..2u32 {
+            let cell = CRATER_CELLS[k as usize];
+            let (gx, gz) = ((x / cell).floor() as i32, (z / cell).floor() as i32);
+            for oz in -1..=1 {
+                for ox in -1..=1 {
+                    let (ix, iz) = (gx + ox, gz + oz);
+                    let hs = h2(ix, iz, self.seed.wrapping_add(510 + k));
+                    let a = ((cr - u2f(hs)) * 8.0).clamp(0.0, 1.0);
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    let cx = (ix as f32 + 0.15 + 0.7 * u2f(pcg(hs.wrapping_add(1)))) * cell;
+                    let cz = (iz as f32 + 0.15 + 0.7 * u2f(pcg(hs.wrapping_add(2)))) * cell;
+                    let r = cell * (0.18 + 0.27 * u2f(pcg(hs.wrapping_add(3))));
+                    let (dx, dz) = (x - cx, z - cz);
+                    let q = (dx * dx + dz * dz).sqrt() / r;
+                    if q >= 1.6 {
+                        continue;
+                    }
+                    let depth = r * 0.22 * a;
+                    if q < 1.0 {
+                        d -= depth * (1.0 - q * q);
+                    }
+                    let u = (q - 1.05) / 0.55;
+                    if u.abs() < 1.0 {
+                        let b = 1.0 - u * u;
+                        d += depth * 0.3 * b * b;
+                    }
+                }
+            }
+        }
+        h + d
+    }
+
     /// The ground's height at (x, z) (as `height`) and how much it lies at
     /// the foot of a rock face (0 … 1): where what falls off cliffs gathers
     /// (boulders, stones).
     pub fn height_and_foot(&self, x: f32, z: f32) -> (f32, f32) {
         let w = self.weights(x, z);
-        let (mut base, mut amp, mut rough, mut cliffs) = (0.0, 0.0, 0.0, 0.0);
+        let (mut base, mut amp, mut rough, mut cliffs, mut craters) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for (i, b) in self.biomes.iter().enumerate() {
             base += w[i] * b.base;
             amp += w[i] * b.amp;
             rough += w[i] * b.rough;
             cliffs += w[i] * b.cliffs;
+            craters += w[i] * b.craters;
         }
         let n = fbm2(x * 0.0045 + self.off[4], z * 0.0045 + self.off[5], self.seed.wrapping_add(101), 5);
         let r = ridged2(x * 0.0032 + self.off[5], z * 0.0032 + self.off[4], self.seed.wrapping_add(202), 3);
         let c = self.cliff(x, z, base + amp * lerp(n, r * 2.0 - 0.6, rough), cliffs, amp);
         let h = {
             let carve = self.carve.read();
-            let h = c.h + carve.ground.delta(x, z);
+            let h = self.craters(x, z, c.h, craters) + carve.ground.delta(x, z);
             if carve.index.is_empty() { h } else { carve.apply(x, z, h).0 }
         };
         // On the ledge just below a sheer face (a gully sheds nothing).

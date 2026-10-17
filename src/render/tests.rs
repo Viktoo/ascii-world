@@ -96,6 +96,42 @@ fn cliffs_agree_on_gpu_and_cpu() {
     assert!(worst <= 1e-3, "cliff parity: worst abs error {worst}");
 }
 
+/// Craters agree on the GPU and the CPU, bowls, rims and all: a land
+/// cratered everywhere, probed on a fine grid.
+#[test]
+fn craters_agree_on_gpu_and_cpu() {
+    let Ok(gpu) = Gpu::new() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let types = all_types();
+    let refs: Vec<(u32, &CompiledType)> = types.iter().map(|(i, t)| (*i, t)).collect();
+    let pipe = gpu.build_pipeline(&shader::assemble(&refs), 1).unwrap();
+    let mut biomes = default_biomes();
+    for (i, b) in biomes.iter_mut().enumerate() {
+        b.craters = 0.4 + 0.15 * i as f32;
+    }
+    let terrain = crate::terrain::Terrain::new(4321, biomes.clone());
+    let flat = crate::terrain::Terrain::new(4321, biomes.into_iter().map(|mut b| { b.craters = 0.0; b }).collect());
+    let mut pts = Vec::new();
+    let mut deepest = 0.0f32;
+    for j in 0..240 {
+        for i in 0..240 {
+            let (x, z) = (i as f32 * 2.5 - 300.0, j as f32 * 2.5 - 300.0);
+            deepest = deepest.max(flat.height(x, z) - terrain.height(x, z));
+            pts.push([x, 0.0, z, 0.0]);
+        }
+    }
+    assert!(deepest > 4.0, "craters this deep at most: {deepest}");
+    let out = gpu.probe(&pipe, &probe_globals(&terrain), 1, 0, &GpuInst::default(), &pts).unwrap();
+    let mut worst = 0.0f32;
+    for (p, g) in pts.iter().zip(&out) {
+        worst = worst.max((g[0] - terrain.height(p[0], p[2])).abs());
+    }
+    eprintln!("crater parity over {} points: worst error {worst:e}", pts.len());
+    assert!(worst <= 1e-3, "crater parity: worst abs error {worst}");
+}
+
 /// Cuts take the same pieces out on the GPU as on the CPU.
 #[test]
 fn cuts_agree_on_gpu_and_cpu() {

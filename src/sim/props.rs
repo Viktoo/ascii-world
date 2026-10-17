@@ -34,6 +34,7 @@ pub const P_FORCE: usize = 21;
 pub const P_MARK: usize = 22;
 pub const P_BODY: usize = 23;
 pub const P_KIND: usize = 24;
+pub const P_AIR: usize = 25;
 
 /// Act properties: what an action is doing right now, not what a thing is
 /// (`force` while someone works a tool). The engine sets them for a moment;
@@ -77,6 +78,7 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("mark", 0.0, "how much people aim thrown things at it, 0..1: a hoop or a goal 1, a bell to ring or a bucket to toss into 0.8, a fence post 0.2"),
     ("body", 0.0, "1 for a being's own body (people and creatures; set by the engine)"),
     ("kindness", 0.0, "how warmly someone is touching right now, 0..1: a hug, a gift handed over (set by actions; nothing has it by itself)"),
+    ("air", 0.0, "breathable air it gives whoever wears or holds it, or is inside it, 0..1, for a world with little or none of its own"),
 ];
 
 /// A threshold crossing worth telling ("the grass tuft caught fire").
@@ -194,6 +196,7 @@ fn builtin_scale(name: &str) -> &'static str {
         "fragile" => "stone 0, a clay pot 0.6, glass 0.9",
         "conducts" => "wood 0.05, stone 0.2, iron 0.8",
         "heat" => "0 for most things, a lantern 120, a stove 300, a forge 900",
+        "air" => "0 for most things, a space suit, a diving helmet or an air tank 1, a sealed habitat, dome or airship cabin 1",
         _ => "",
     }
 }

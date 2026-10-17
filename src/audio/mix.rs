@@ -88,6 +88,10 @@ pub enum Cmd {
     /// water (everything heard dull and low).
     Listener { pos: Vec3, yaw: f32, under: bool },
     Emitters(Vec<(u64, Vec3)>),
+    /// How much air the listener is in, 0..1: the world's sounds carry in
+    /// it and fade without it (words still come, as by radio; one's own
+    /// body is heard through itself).
+    Air(f32),
     Play(Box<Play>),
     /// Start, move or change an endless texture (0 drive: it fades and ends).
     /// `roar`: a low rumble under the grains (fire), 0..1. `gain`: how loud
@@ -306,6 +310,9 @@ pub struct Mixer {
     /// Under water: how far (0..1, eased) and the filters that dull it.
     under: f32,
     under_target: f32,
+    /// The air sounds carry in (0..1, eased; see `Cmd::Air`).
+    air: f32,
+    air_target: f32,
     muffle: [[OnePole; 2]; 2],
     /// How much of the room is heard.
     pub room_gain: f32,
@@ -341,6 +348,8 @@ impl Mixer {
             buf_r: vec![0.0; BLOCK],
             under: 0.0,
             under_target: 0.0,
+            air: 1.0,
+            air_target: 1.0,
             muffle: [[OnePole::new(sr, 380.0); 2]; 2],
             tmp: vec![(0.0, 0.0); BLOCK],
             water_key: WATER_KEY,
@@ -357,6 +366,7 @@ impl Mixer {
                 self.under_target = if under { 1.0 } else { 0.0 };
             }
             Cmd::Emitters(e) => self.emitters = e,
+            Cmd::Air(a) => self.air_target = a.clamp(0.0, 1.0),
             Cmd::Play(p) => self.play(*p),
             Cmd::Texture { key, at, mat, size, drive, roar, gain } => self.texture(key, at, mat, size, drive, roar, gain),
             Cmd::Ambience(a) => {
@@ -503,6 +513,9 @@ impl Mixer {
         let sr = self.sr;
         let dt = n as f32 / sr;
         self.clock += dt;
+        self.air += (self.air_target - self.air) * (dt * 2.0).min(1.0);
+        // Little air carries little sound; none, none at all.
+        let carry = self.air * self.air;
         self.chorus(dt);
         for x in self.buf_l[..n].iter_mut().chain(self.buf_r[..n].iter_mut()) {
             *x = 0.0;
@@ -589,7 +602,8 @@ impl Mixer {
                 }
                 continue;
             }
-            let pl = place(lis, yaw, v.pos, v.gain, sr);
+            let thin = if matches!(v.src, Gen::Clip(_)) { 1.0 } else { carry };
+            let pl = place(lis, yaw, v.pos, v.gain * thin, sr);
             let sp = &mut v.space;
             if sp.first {
                 sp.g = pl.g;
@@ -648,7 +662,7 @@ impl Mixer {
                 b.wind[1].set(sr, f * 1.07, 0.9);
             }
             if b.wind_lvl > 0.001 {
-                let w = b.wind_lvl * b.gust * 0.05;
+                let w = b.wind_lvl * b.gust * 0.05 * carry;
                 self.buf_l[k] += b.wind[0].bp(self.rng.bi()) * w;
                 self.buf_r[k] += b.wind[1].bp(self.rng.bi()) * w;
             }
