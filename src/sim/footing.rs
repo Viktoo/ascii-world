@@ -35,7 +35,37 @@ impl Sim {
     /// The capsule a body walks in now (crouching makes it shorter).
     pub fn capsule(&self, id: ActorId) -> Capsule {
         let Some(a) = self.actor(id) else { return Capsule::of(1.75, crate::world::collide::NPC_RADIUS) };
-        Capsule { radius: walk_radius(id, a), height: a.stand_height(), step: step_for(a.dims.height), swims: id == ActorId::Player }
+        let (swims, needs_water) = match id {
+            ActorId::Player => (true, 0.0),
+            ActorId::Npc(c) => match self.cast.get(c) {
+                Some(n) if n.species.water_only() => (true, (a.dims.height * 0.5).clamp(0.2, 3.0)),
+                // Any body that swims goes in, unless it shuns being wet.
+                Some(n) => (n.species.moves.swim > 0.0 && !n.species.shuns.iter().any(|p| p == "wet"), 0.0),
+                None => (false, 0.0),
+            },
+        };
+        Capsule { radius: walk_radius(id, a), height: a.stand_height(), step: step_for(a.dims.height), swims, needs_water }
+    }
+
+    /// Whether a body could be at `p`: a walker on dry land (at least
+    /// `margin` over the water), a creature of the water in water it fits
+    /// in, a swimmer either.
+    pub fn can_be_at(&self, id: ActorId, p: Vec3, margin: f32) -> bool {
+        let cap = self.capsule(id);
+        let t = &self.snap.terrain;
+        let wd = t.water(p.x, p.z) - t.height(p.x, p.z);
+        if cap.needs_water > 0.0 { wd >= cap.needs_water } else { cap.swims || wd < -margin }
+    }
+
+    /// How far under the surface a swimmer holds its eyes now: the traveler
+    /// as they swim (0); a creature somewhere in its species' depth, drifting
+    /// slowly up and down through it.
+    fn dive_of(&self, id: ActorId) -> f32 {
+        let ActorId::Npc(c) = id else { return 0.0 };
+        let Some(n) = self.cast.get(c) else { return 0.0 };
+        let [lo, hi] = n.species.depth;
+        let k = 0.5 + 0.5 * (self.t as f32 * 0.03 + c as f32 * 1.7).sin();
+        lo + (hi - lo) * k
     }
 
     /// Settle a body on its footing for `dt`: stand on what is under it,
@@ -54,7 +84,8 @@ impl Sim {
         // the ground itself did (a pit dug, a floor gone).
         if grounded && vy == 0.0 && a.moved < 1e-5 && crouch == want && id != ActorId::Player {
             let g = self.snap.terrain.floor(pos.x, pos.y + 0.3, pos.z);
-            if pos.y >= g - 0.01 && pos.y - g < 0.02 {
+            // (Under water, a swimmer rises from where it was set down.)
+            if pos.y >= g - 0.01 && pos.y - g < 0.02 && self.snap.terrain.water(pos.x, pos.z) < pos.y + a.dims.eye {
                 return;
             }
         }
@@ -85,8 +116,12 @@ impl Sim {
             let dry_cave = t.caves_near(pos.x, pos.z) && t.void(pos) < 0.0;
             let wl = if dry_cave { f32::MIN } else { t.water(pos.x, pos.z) };
             let float = wl + SWIM_EYE_OVER - eye;
-            if wl - ground > MAX_WADE * (full / 1.75) && pos.y < float + 0.3 {
-                let want = if swim > 0.0 { SWIM_UP } else if swim < 0.0 { -SWIM_DOWN } else { ((float - pos.y) * 1.2).clamp(-0.6, 0.5) };
+            // A fish swims in any water it fits in; others where they can't wade.
+            let deep = if cap.needs_water > 0.0 { wl - ground > cap.needs_water * 0.5 } else { wl - ground > MAX_WADE * (full / 1.75) };
+            if deep && pos.y < float + 0.3 {
+                // Let be, it rises to where it swims: the top, or its own depth.
+                let hold = float - self.dive_of(id);
+                let want = if swim > 0.0 { SWIM_UP } else if swim < 0.0 { -SWIM_DOWN } else { ((hold - pos.y) * 1.2).clamp(-SWIM_DOWN, 0.5) };
                 vy += (want - vy) * (dt * 3.0).min(1.0);
                 let mut feet = pos.y + vy * dt;
                 if feet > float {
@@ -203,6 +238,53 @@ impl Sim {
         }
     }
 
+    /// A creature of the water out of it (washed up, dug out, carried off)
+    /// suffers, flops, and works its way to the deepest water near. True
+    /// while it is stranded.
+    pub fn stranded_tick(&mut self, cid: i64, dt: f32) -> bool {
+        let id = ActorId::Npc(cid);
+        let need = self.capsule(id).needs_water;
+        let Some(a) = self.actor(id) else { return false };
+        if need <= 0.0 {
+            return false;
+        }
+        let (pos, carried, snap) = (a.pos, a.carried(), self.snap.clone());
+        let depth = |x: f32, z: f32| snap.terrain.water(x, z) - snap.terrain.height(x, z);
+        if depth(pos.x, pos.z) >= need * 0.5 {
+            return false;
+        }
+        let died = self.wound(id, dt / 90.0, id, "stranded out of the water");
+        if died {
+            self.kill(cid, "stranded out of the water, and died", None);
+            return true;
+        }
+        if carried {
+            return true;
+        }
+        // The way the water lies deepest, near.
+        let best = (0..8)
+            .flat_map(|k| [3.0f32, 6.0].map(|r| (k, r)))
+            .map(|(k, r)| {
+                let a = k as f32 / 8.0 * std::f32::consts::TAU;
+                let d = Vec3::new(a.cos(), 0.0, a.sin());
+                (d, depth(pos.x + d.x * r, pos.z + d.z * r))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        // A flop now and then.
+        let flop = (self.t * 1.3 + cid as f64).fract() < (dt as f64 * 1.3);
+        if let Some((d, _)) = best.filter(|b| b.1 > depth(pos.x, pos.z)) {
+            if let Some(a) = self.actor_mut(id) {
+                a.face(d, dt * 3.0);
+            }
+            self.walk(id, d * 0.5 * dt);
+        }
+        if flop {
+            let side = self.actor(id).map(|a| a.right()).unwrap_or(Vec3::X);
+            self.jolt(id, if cid % 2 == 0 { side } else { -side }, 0.3);
+        }
+        true
+    }
+
     /// Leaving the ground: remember what it stood on, if anything (a roof,
     /// a tree), so a bad landing can say where it fell from.
     fn note_perch(&mut self, id: ActorId) {
@@ -255,8 +337,10 @@ impl Sim {
         let hurt_k = 1.0 - 0.55 * hurt;
         let run = 1.0 + (run - 1.0) * (1.0 - hurt);
         let stagger = if a.jolt.is_some_and(|j| j.staggers(self.t)) { 0.25 } else { 1.0 };
-        // Swimming is slower than walking, and no faster for running.
-        let swim = if a.swimming { 0.55 / run } else { 1.0 };
+        // Swimming is slower than walking, and no faster for running; a
+        // creature that swims goes at its own swimming pace (`base_speeds`).
+        let own = matches!(id, ActorId::Npc(c) if self.cast.get(c).is_some_and(|n| n.species.moves.swim > 0.0));
+        let swim = if a.swimming && !own { 0.55 / run } else { 1.0 };
         run * (1.0 - 0.5 * a.crouch) * hurt_k * stagger * swim
     }
 

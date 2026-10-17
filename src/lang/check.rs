@@ -206,6 +206,7 @@ impl<'s> Cx<'s> {
         let mut hollow = None;
         let mut drive = None;
         let mut burst = None;
+        let mut grows = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -277,6 +278,10 @@ impl<'s> Cx<'s> {
                 "burst" => match &p.value {
                     Expression::ObjectExpression(b) => burst = self.meta_burst(b),
                     _ => self.err(p.span, "meta.burst must be an object { radius, hurt, push, crater, fire, fuse, impact }"),
+                },
+                "grows" => match &p.value {
+                    Expression::ObjectExpression(g) => grows = self.meta_grows(g),
+                    _ => self.err(p.span, "meta.grows must be an object { depth: [lo, hi], at: \"bed\" | \"surface\" }"),
                 },
                 "drive" => match &p.value {
                     Expression::ObjectExpression(d) => drive = self.meta_drive(d),
@@ -358,7 +363,7 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.tool.grip and tip must lie inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, drive, burst })
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, drive, burst, grows })
     }
 
     /// A key of a small meta object.
@@ -645,6 +650,37 @@ impl<'s> Cx<'s> {
         }
         b.push = push.unwrap_or(b.radius * 3.0);
         Some(b)
+    }
+
+    /// `meta.grows`: { depth: [lo, hi], at: "bed" | "surface" }
+    fn meta_grows(&mut self, o: &js::ObjectExpression) -> Option<Grows> {
+        let mut g = Grows { depth: [-0.35, -0.35], surface: false };
+        let mut depth = None;
+        for prop in o.properties.iter() {
+            let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
+            let Some(key) = self.obj_key(p, "meta.grows") else { continue };
+            match key.as_str() {
+                "depth" => match literal_nums(&p.value) {
+                    Some(v) if v.len() == 2 && v.iter().all(|x| x.is_finite() && (-1000.0..=1000.0).contains(x)) && v[0] <= v[1] => depth = Some([v[0], v[1]]),
+                    _ => self.err(p.span, "meta.grows.depth must be [lo, hi]: metres of water over the ground it grows in, lo <= hi (a negative lo: dry ground up to that high above the water)"),
+                },
+                "at" => match &p.value {
+                    Expression::StringLiteral(s) if matches!(s.value.as_str(), "bed" | "surface") => g.surface = s.value.as_str() == "surface",
+                    _ => self.err(p.span, "meta.grows.at is \"bed\" (standing on the ground under the water) or \"surface\" (floating on it)"),
+                },
+                _ => self.err(p.span, format!("unknown meta.grows key '{key}' (depth, at)")),
+            }
+        }
+        let Some(d) = depth else {
+            self.err(o.span, "meta.grows needs a depth [lo, hi]");
+            return None;
+        };
+        g.depth = d;
+        if g.surface && g.depth[1] <= 0.0 {
+            self.err(o.span, "meta.grows: a thing floating at the surface needs water (depth hi above 0)");
+            return None;
+        }
+        Some(g)
     }
 
     /// `meta.drive`: { speed, on, by }

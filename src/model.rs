@@ -1175,7 +1175,9 @@ impl WorldModel {
         // Commit to SQLite as one new version.
         let parent = self.current;
         // Characters live beside their houses, never inside them.
-        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(_, h)| self.clear_spot(dry_near(&terrain, *h), &placed)).collect()).unwrap_or_default();
+        // (Creatures that live in water keep the water they were put in.)
+        let wet = |p: &Persona| !p.species.is_empty() && self.species.get(&p.species).is_some_and(|s| s.water > 0.0);
+        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(p, h)| if wet(p) { *h } else { self.clear_spot(dry_near(&terrain, *h), &placed) }).collect()).unwrap_or_default();
         let region = req.region.as_ref();
         let res = self.db.tx(|tx| {
             let v = db::add_version(tx, parent, req.kind, &req.summary, None)?;

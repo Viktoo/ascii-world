@@ -62,7 +62,9 @@ changing the engine.
 - Earth worlds: humans plus animals like dogs, cats, horses, goats, deer, wolves.
 - Magic worlds: elves, orcs, giants, griffins, dragons… any number of species,
   some of which fly.
-- Not in scope: swarms, insects, fish under water, small birds.
+- Water life big enough to see (carp, seals, sharks, whales; small fish as a
+  school drawn as one body) lives by the `water` and `depth` axes below.
+- Not in scope: swarms, insects, small birds.
 
 ## Principles
 
@@ -184,7 +186,9 @@ reads only these.
 | `diet` | weights for plants, meat, and any property | what counts as food for them (`edible` × diet), and who is prey |
 | `social` | `solitary` · `pair` · `pack` · `herd` · `village` | who they seek out for company and how far they stray from their group |
 | `temper` | bold, wary, playful, tame (0–1) | fear and flight distance, play, how quickly they warm to others |
-| `move` | walk, run, fly, swim speeds | paths, flight, escaping |
+| `move` | walk, run, fly, swim speeds | paths, flight, escaping; any body with a swim speed swims, unless it `shuns` wet |
+| `water` | 0–1: 0 land, between both (otter, seal), 1 only water (fish) | where it wanders and starts; at 1 it never leaves its water, and stranded it suffers and flops back |
+| `depth` | [lo, hi] m under the surface | the depth it swims at, drifting through the band ([0, 0] at the top) |
 | `life` | sleep window, nocturnal | daily rhythm |
 | `needs` | how fast each need drifts | a dragon is rarely lonely, a dog often is |
 

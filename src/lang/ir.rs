@@ -211,6 +211,39 @@ pub struct Meta {
     /// (a grenade, a stick of dynamite, a powder keg, a shell, a firework).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst: Option<Burst>,
+    /// Where it grows when scattered over the land, by the water over the
+    /// ground (reeds at the edge, lilies on a pond, kelp in the sea).
+    /// None: on dry ground, clear of the water.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grows: Option<Grows>,
+}
+
+/// Where a scattered thing grows: `depth` [lo, hi] metres of water over the
+/// ground (a negative lo lets it grow on dry ground up to that high above
+/// the water), standing on the bed or floating at the surface.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Grows {
+    pub depth: [f32; 2],
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub surface: bool,
+}
+
+impl Grows {
+    /// Things that say nothing grow on dry ground, this far over the water.
+    pub const DRY: Grows = Grows { depth: [f32::NEG_INFINITY, -0.35], surface: false };
+
+    /// Whether it grows where the water stands `wd` metres over the ground
+    /// (negative: the ground is that far above the water).
+    pub fn fits(&self, wd: f32) -> bool {
+        wd >= self.depth[0] && wd <= self.depth[1]
+    }
+}
+
+impl Meta {
+    /// Where it grows (dry ground unless it says otherwise).
+    pub fn grows(&self) -> &Grows {
+        self.grows.as_ref().unwrap_or(&Grows::DRY)
+    }
 }
 
 /// What a vehicle goes on.
