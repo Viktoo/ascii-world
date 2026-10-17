@@ -711,7 +711,11 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
     let tw = (wl - ro.y) / rd.y;
     if (tw < t_hit && tw < tmax) {
       let pw = ro + rd * tw;
-      let depth = max(wl - terrain_height(pw.x, pw.z), 0.0);
+      // How deep what is seen lies: the bed, or something in the water over
+      // it (a fish, kelp), which shows through clearer the nearer the top.
+      var seen = terrain_height(pw.x, pw.z);
+      if (t_hit < 1e8) { seen = max(seen, (ro + rd * t_hit).y); }
+      let depth = max(wl - seen, 0.0);
       let tm = G.cam_pos.w;
       let rx = vnoise2(pw.x * 0.7 + tm * 0.35, pw.z * 0.7, 9u) - 0.5;
       let rz = vnoise2(pw.x * 0.7, pw.z * 0.7 - tm * 0.3, 10u) - 0.5;

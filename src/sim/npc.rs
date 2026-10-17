@@ -953,7 +953,7 @@ impl Sim {
                             let side = Vec3::new(-d.z, 0.0, d.x) * if tries == 0 { 3.0 } else { -6.0 } - d * 1.0;
                             let p = me + side;
                             // Close by, whatever blocks them is what they came to.
-                            (away.length() > 4.0 && self.snap.terrain.height(p.x, p.z) > self.snap.terrain.water(p.x, p.z) + 0.2).then(|| (Action::Goto { target: Target::Point(p.to_array()), run: false }, Action::Goto { target: target.clone(), run: *run }))
+                            (away.length() > 4.0 && self.can_be_at(who, p, 0.2)).then(|| (Action::Goto { target: Target::Point(p.to_array()), run: false }, Action::Goto { target: target.clone(), run: *run }))
                         }
                         _ => None,
                     };
@@ -997,6 +997,8 @@ impl Sim {
                 (s, s * 1.7)
             }
             ActorId::Npc(c) => match self.cast.get(c) {
+                // In the water, its own swimming pace (a dart to get away).
+                Some(n) if n.a.swimming && n.species.moves.swim > 0.0 => (n.species.moves.swim, n.species.moves.swim * 1.6),
                 Some(n) if !n.species.is_human() => (n.species.moves.walk.max(0.2), n.species.moves.run.max(n.species.moves.walk)),
                 _ => (NPC_WALK, NPC_RUN),
             },
@@ -1074,6 +1076,10 @@ impl Sim {
         n.needs.fun = (n.needs.fun + dt / 520.0 * (0.4 + tr.playful) * rate.fun).min(1.0);
         n.needs.curiosity = (n.needs.curiosity - dt / 400.0 / rate.curiosity.max(0.1)).max(0.0);
         // Held in someone's arms: still until it wants down.
+        // A fish out of water: nothing else matters to it.
+        if self.stranded_tick(cid, dt) && !self.cast.get(cid).is_some_and(|n| n.a.carried()) {
+            return;
+        }
         if self.carried_tick(cid, dt) {
             return;
         }
@@ -1352,15 +1358,24 @@ impl Sim {
         }
     }
 
-    /// Walk somewhere on dry land near home.
+    /// Go somewhere near home: on dry land, or in the water as much as the
+    /// species lives in it (an otter now on the bank, now in the river; a
+    /// fish only in the water).
     pub(super) fn wander(&mut self, cid: i64, home: Vec3, radius: f32) {
+        let who = ActorId::Npc(cid);
+        let wet = match self.cast.get_mut(cid) {
+            Some(n) => n.species.water > 0.0 && n.rand() < n.species.water,
+            None => return,
+        };
         for _ in 0..6 {
             let (a, r) = match self.cast.get_mut(cid) {
                 Some(n) => (n.rand() * std::f32::consts::TAU, 3.0 + n.rand() * radius),
                 None => return,
             };
             let p = home + Vec3::new(a.cos() * r, 0.0, a.sin() * r);
-            if self.snap.terrain.height(p.x, p.z) > self.snap.terrain.water(p.x, p.z) + 0.3 {
+            let t = &self.snap.terrain;
+            let in_water = t.height(p.x, p.z) < t.water(p.x, p.z) - 0.3;
+            if in_water == wet && (if wet { self.can_be_at(who, p, 0.3) } else { t.height(p.x, p.z) > t.water(p.x, p.z) + 0.3 }) {
                 self.plan(ActorId::Npc(cid), vec![Action::Goto { target: Target::Point([p.x, 0.0, p.z]), run: false }], "", false);
                 return;
             }

@@ -549,7 +549,7 @@ impl Sim {
         let sc = t.scale.max(0.05);
         let radius = (b[0].min(b[2]) * sc).clamp(0.2, 3.0);
         let height = ((ty.top - ty.bottom) * sc).max(0.3);
-        let cap = Capsule { radius, height, step: (height * 0.25).clamp(0.15, 0.6), swims: false };
+        let cap = Capsule { radius, height, step: (height * 0.25).clamp(0.15, 0.6), swims: false, needs_water: 0.0 };
         let feet = t.pos.y + ty.bottom * sc;
         let ground_here = self.snap.terrain.height(t.pos.x, t.pos.z);
         let water_here = self.snap.terrain.water(t.pos.x, t.pos.z);

@@ -219,7 +219,9 @@ impl Scene<'_> {
             let tw = (wl - ro.y) / rd.y;
             if tw < t_hit && tw < tmax {
                 let pw = ro + rd * tw;
-                let depth = (wl - self.terrain.height(pw.x, pw.z)).max(0.0);
+                // How deep what is seen lies: the bed, or something over it.
+                let seen = if t_hit < f32::MAX { self.terrain.height(pw.x, pw.z).max((ro + rd * t_hit).y) } else { self.terrain.height(pw.x, pw.z) };
+                let depth = (wl - seen).max(0.0);
                 let body = self.shade(pw, Vec3::Y, v3(self.g.water));
                 let under = col * Vec3::new(0.55, 0.75, 0.8);
                 let fres = 0.03 + 0.97 * (1.0 - (-rd.y).max(0.0)).powi(5);

@@ -572,7 +572,8 @@ fn body_names(db: &Db) -> std::collections::HashSet<String> {
 /// One line per species the universe has, for plans.
 fn species_list(db: &Db) -> String {
     let book = crate::world::species::SpeciesBook::load(&db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
-    book.list.iter().map(|s| format!("- {} ({}; body {}, {:?} mind, speech {:?})", s.name, if s.description.is_empty() { "people" } else { &s.description }, s.body, s.mind, s.speech).to_lowercase()).collect::<Vec<_>>().join("\n")
+    let lives = |s: &crate::world::species::Species| if s.water_only() { ", lives in water" } else if s.water > 0.0 { ", on land and in water" } else { "" };
+    book.list.iter().map(|s| format!("- {} ({}; body {}, {:?} mind, speech {:?}{})", s.name, if s.description.is_empty() { "people" } else { &s.description }, s.body, s.mind, s.speech, lives(s)).to_lowercase()).collect::<Vec<_>>().join("\n")
 }
 
 /// Generic bodies a species starts from: a species named with one gets its
@@ -1305,11 +1306,18 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // Creatures: herds, packs, pets, beasts. No voice or trade, just a
     // species, a home, maybe a name and a person they belong to.
     let mut n_creatures = 0;
+    let book = crate::world::species::SpeciesBook::load(&ctx.db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
     for c in plan.get("creatures").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
         let sp = s(c, "species").trim().to_lowercase();
         if sp.is_empty() || sp == "human" {
             continue;
         }
+        // Where it can live: dry land, its water, or either.
+        let (water, depth) = book.get(&sp).map(|x| (x.water, x.depth)).unwrap_or((0.0, [0.0, 0.0]));
+        let lives = |x: f32, z: f32| {
+            let wd = info.terrain.water(x, z) - info.terrain.height(x, z);
+            if water >= 0.95 { wd >= (depth[0] + 0.5).min(3.0) } else if water > 0.0 { wd > -1.5 } else { wd < -0.5 }
+        };
         let count = (f(c, "count", 1.0) as usize).clamp(1, 8);
         let names: Vec<String> = c.get("names").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|n| n.as_str().map(|s| s.trim().to_string())).collect()).unwrap_or_default();
         let owner = s(c, "owner");
@@ -1323,7 +1331,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             let a = i as f32 * 2.399;
             let mut home = Vec3::new(cx + a.cos() * (1.5 + i as f32), 0.0, cz + a.sin() * (1.5 + i as f32));
             for k in 0..30 {
-                if info.terrain.height(home.x, home.z) > info.terrain.water(home.x, home.z) + 0.5 {
+                if lives(home.x, home.z) {
                     break;
                 }
                 let b = k as f32 * 2.399;

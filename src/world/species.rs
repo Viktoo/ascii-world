@@ -233,6 +233,17 @@ pub struct Species {
     pub moves: Moves,
     #[serde(default)]
     pub life: Life,
+    /// How much it lives in water, 0..1: 0 on land (it may still swim
+    /// across, at the top), in between in both (an otter, a frog, a seal),
+    /// 1 only in water (a fish, a whale): it never leaves it, and stranded
+    /// it suffers.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub water: f32,
+    /// How deep it swims, [lo, hi] metres under the surface (a carp [0.3, 2],
+    /// a cod [5, 60]); [0, 0] at the top. Where the water is shallower it
+    /// keeps above the bed.
+    #[serde(default, skip_serializing_if = "is_surface")]
+    pub depth: [f32; 2],
     #[serde(default)]
     pub needs: NeedRates,
     /// Look ranges for this species (subsets of the body's slider ranges).
@@ -304,6 +315,14 @@ pub struct Species {
     pub comes_with: Vec<String>,
 }
 
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+fn is_surface(d: &[f32; 2]) -> bool {
+    *d == [0.0, 0.0]
+}
+
 fn is_always(a: &Active) -> bool {
     *a == Active::Always
 }
@@ -330,6 +349,17 @@ impl Species {
         }
         for v in [&mut self.moves.walk, &mut self.moves.run, &mut self.moves.fly, &mut self.moves.swim] {
             *v = if v.is_finite() { v.clamp(0.0, 40.0) } else { 0.0 };
+        }
+        u(&mut self.water);
+        for v in self.depth.iter_mut() {
+            *v = if v.is_finite() { v.clamp(0.0, 500.0) } else { 0.0 };
+        }
+        if self.depth[0] > self.depth[1] {
+            self.depth.swap(0, 1);
+        }
+        // What lives in water swims, whatever its numbers forgot.
+        if self.water > 0.0 && self.moves.swim <= 0.0 {
+            self.moves.swim = self.moves.walk.max(1.0);
         }
         self.moves.walk = self.moves.walk.max(0.3);
         self.moves.run = self.moves.run.max(self.moves.walk);
@@ -382,6 +412,10 @@ impl Species {
     }
     pub fn plural(&self) -> String {
         if self.plural.is_empty() { format!("{}s", self.name) } else { self.plural.clone() }
+    }
+    /// Lives only in water (a fish, a whale): it never leaves it.
+    pub fn water_only(&self) -> bool {
+        self.water >= 0.95
     }
     pub fn group(&self) -> bool {
         matches!(self.social, Social::Pack | Social::Herd)

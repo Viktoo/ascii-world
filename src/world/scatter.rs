@@ -212,6 +212,11 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
         .filter_map(|p| snap.type_of(p.type_id).map(|ty| (p.pos, ty.ct.meta.bounds[0].max(ty.ct.meta.bounds[2]) * p.scale + 1.5)))
         .collect();
     let cliffy = t.biomes.iter().any(|b| b.cliffs > 0.0);
+    // What of each tag grows where: on dry ground, at the water's edge, under
+    // it or floating on it (each type's `meta.grows`).
+    let grows: HashMap<&str, Vec<(u32, crate::lang::ir::Grows)>> =
+        snap.scatter.iter().map(|(tag, ids)| (tag.as_str(), ids.iter().filter_map(|id| snap.type_of(*id).map(|ty| (*id, ty.ct.meta.grows().clone()))).collect())).collect();
+    let water_over = |x: f32, z: f32, h: f32| t.water(x, z) - h;
     // One thing of `tag` at (x, z), named `id` (its hashes come from it too),
     // on ground `h` high (found here when not given). `extra`: cover filling
     // a quarter, by the ground of its cell's own item, which found the slope
@@ -219,16 +224,19 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
     // on a rock face, not in the field.
     let place = |id: (i32, i32), x: f32, z: f32, tag: &str, biome: &Biome, depth: f32, extra: Option<f32>, h: Option<f32>| -> Option<ScatterItem> {
         let (gx, gz) = id;
-        let cands = snap.scatter.get(tag).filter(|c| !c.is_empty())?;
+        let h = h.unwrap_or_else(|| t.height(x, z));
+        // Only the kinds that grow in this much water (or this far above it).
+        let wd = water_over(x, z, h);
+        let cands: Vec<&(u32, crate::lang::ir::Grows)> = grows.get(tag)?.iter().filter(|(_, g)| g.fits(wd)).collect();
+        if cands.is_empty() {
+            return None;
+        }
         // Most things in a stand are its leading kind; a few are not.
         let stand = stand_of(seed, tag, x, z);
         let lead = cands.len() > 1 && hseqf(seed, gx, gz, 9) < 0.75;
         let pick = if lead { ((stand * cands.len() as f32) as usize).min(cands.len() - 1) } else { (hseq(seed, gx, gz, 5) as usize) % cands.len() };
-        let ty = snap.type_of(cands[pick])?;
-        let h = h.unwrap_or_else(|| t.height(x, z));
-        if h < t.water(x, z) + 0.35 {
-            return None;
-        }
+        let (tid, g) = cands[pick];
+        let ty = snap.type_of(*tid)?;
         let big = tag != "grass";
         match extra {
             Some(by) if (h - by).abs() > 1.2 => return None,
@@ -259,7 +267,8 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
         } else {
             0.08
         };
-        let y = h - ty.bottom * scale - sink * scale;
+        // Floating, it rides on the water; else it stands on the ground (the bed).
+        let y = if g.surface { h + wd - ty.bottom * scale - 0.02 } else { h - ty.bottom * scale - sink * scale };
         let pseed = (u2f(hseq(seed, gx, gz, 8)) * 97.0).floor();
         // k.a: the stand's own look, shared across it; k.b: how deep in its patch.
         let k = [pseed, scale, stand, depth, 0.5, 0.5, 0.5, 0.5];
@@ -297,11 +306,14 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
             let mut acc = 0.0;
             let mut chosen: Option<(&String, f32)> = None;
             let fallen = cliffy && ["rock", "stone"].iter().any(|k| biome.scatter.get(*k).is_some_and(|d| *d > 0.0));
-            let (h, foot) = if fallen { let (h, f) = t.height_and_foot(x, z); (Some(h), f) } else { (None, 0.0) };
+            let (h, foot) = if fallen { let (h, f) = t.height_and_foot(x, z); (h, f) } else { (t.height(x, z), 0.0) };
+            let h = Some(h);
+            // Only what grows here, wet or dry, shares the cell.
+            let wd = water_over(x, z, h.unwrap_or(0.0));
             let here: Vec<(&String, f32, f32)> = biome
                 .scatter
                 .iter()
-                .filter(|(_, d)| **d > 0.0)
+                .filter(|(tag, d)| **d > 0.0 && grows.get(tag.as_str()).is_some_and(|c| c.iter().any(|(_, g)| g.fits(wd))))
                 .map(|(tag, dens)| {
                     let (d, depth) = density_at(seed, biome, tag, *dens, x, z, foot);
                     (tag, d, depth)
@@ -318,7 +330,6 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
             }
             let Some((tag, depth)) = chosen else { continue };
             let cover = is_cover(tag);
-            let h = if cover { Some(h.unwrap_or_else(|| t.height(x, z))) } else { h };
             let Some(item) = place((gx, gz), x, z, tag, biome, depth, None, h) else { continue };
             out.push(item);
             // In the thick of a field, cover fills the cell's other quarters.

@@ -32,12 +32,15 @@ pub struct Capsule {
     pub step: f32,
     /// Goes into water too deep to wade, and swims there.
     pub swims: bool,
+    /// Lives only in water: it keeps where the water is at least this deep
+    /// (0: anywhere it can go). Stranded, it can still go deeper.
+    pub needs_water: f32,
 }
 
 impl Capsule {
     /// A body of this height and radius, standing.
     pub fn of(height: f32, radius: f32) -> Capsule {
-        Capsule { radius, height, step: step_for(height), swims: false }
+        Capsule { radius, height, step: step_for(height), swims: false, needs_water: 0.0 }
     }
 }
 
@@ -221,7 +224,18 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
     let wl = terrain.water(start.x, start.y);
     let out = wl + 0.9;
     let afloat = b.swims && feet < out && [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.0, 0.0)].iter().any(|(dx, dz)| terrain.height(start.x + dx, start.y + dz) < wl - 0.05);
-    let water_ok = |q: Vec2| if b.swims { !afloat || terrain.height(q.x, q.y) < out.max(feet + b.step) } else { wadeable(terrain, q.x, q.y) };
+    let here = wl - terrain.height(start.x, start.y);
+    let water_ok = |q: Vec2| {
+        if b.needs_water > 0.0 {
+            // A fish keeps to its water; stranded, it never goes shallower.
+            let there = terrain.water(q.x, q.y) - terrain.height(q.x, q.y);
+            there >= b.needs_water || there >= here
+        } else if b.swims {
+            !afloat || terrain.height(q.x, q.y) < out.max(feet + b.step)
+        } else {
+            wadeable(terrain, q.x, q.y)
+        }
+    };
     let passable = |q: Vec2| water_ok(q) && (afloat || !too_steep(terrain, start, q, feet)) && !cave_wall(terrain, q, feet, b);
     let mut p = Vec2::new(from.x + delta.x, from.z + delta.z);
     if !passable(p) {
