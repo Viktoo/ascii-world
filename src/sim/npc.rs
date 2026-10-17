@@ -722,6 +722,8 @@ impl Sim {
             ActorId::Player => {
                 self.player_plan = actions.into();
             }
+            // Other travelers are moved by their own players.
+            ActorId::Traveler(_) => {}
             ActorId::Npc(c) => {
                 if let Some(n) = self.cast.get_mut(c) {
                     n.plan = actions.into();
@@ -736,6 +738,7 @@ impl Sim {
     fn plan_mut(&mut self, who: ActorId) -> Option<&mut VecDeque<Action>> {
         match who {
             ActorId::Player => Some(&mut self.player_plan),
+            ActorId::Traveler(_) => None,
             ActorId::Npc(c) => self.cast.get_mut(c).map(|n| &mut n.plan),
         }
     }
@@ -995,7 +998,7 @@ impl Sim {
 
     fn base_speeds(&self, who: ActorId) -> (f32, f32) {
         match who {
-            ActorId::Player => {
+            ActorId::Player | ActorId::Traveler(_) => {
                 let s = PLAYER_SPEED * (self.player.dims.height / 1.75).sqrt();
                 (s, s * 1.7)
             }
@@ -1683,7 +1686,7 @@ impl Sim {
             }
             let doing = match o {
                 ActorId::Npc(c) => self.cast.get(c).map(|x| x.doing.clone()).unwrap_or_default(),
-                ActorId::Player => "the traveler".into(),
+                ActorId::Player | ActorId::Traveler(_) => "the traveler".into(),
             };
             people.push(format!("{} ({d:.0} m, {rel}{}{})", self.actor_name(o), if doing.is_empty() { "" } else { ", " }, doing));
         }

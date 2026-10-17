@@ -43,7 +43,7 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
         Request::Create { id, by, text, target, yaw, view } => {
             let by = match by {
                 ActorId::Npc(c) => Some((c, sim.actor_name(by))),
-                ActorId::Player => None,
+                ActorId::Player | ActorId::Traveler(_) => None,
             };
             brain.send(Cmd::Create { id: Some(id), by, text, view: *view, target, yaw });
             true
@@ -466,7 +466,7 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
         *by_kind.entry(e.kind.clone()).or_insert(0) += 1;
     }
     let species_of = |a: ActorId| match a {
-        ActorId::Player => Some("human".to_string()),
+        ActorId::Player | ActorId::Traveler(_) => Some("human".to_string()),
         ActorId::Npc(c) => sim.cast.get(c).map(|n| n.species.name.clone()),
     };
     let cross = events
@@ -668,7 +668,7 @@ pub fn act_once(s: &mut Session, who: ActorId, action: super::Action, run: f32) 
         s.step(dt);
         t += dt;
         let busy = s.sim.actor(who).is_some_and(|a| a.task.is_some()) || match who {
-            ActorId::Player => !s.sim.player_plan.is_empty(),
+            ActorId::Player | ActorId::Traveler(_) => !s.sim.player_plan.is_empty(),
             ActorId::Npc(c) => s.sim.cast.get(c).is_some_and(|n| !n.plan.is_empty()),
         };
         if !busy && t >= run.min(1.0) && s.outstanding == 0 && pending.is_none() {

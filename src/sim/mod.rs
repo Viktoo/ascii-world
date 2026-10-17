@@ -51,6 +51,7 @@ pub mod social;
 pub mod surprise;
 pub mod things;
 pub mod tool;
+pub mod travelers;
 pub mod vehicle;
 pub mod weather;
 
@@ -76,27 +77,46 @@ use things::{ThingId, Things};
 
 pub use actions::{Action, ActErr};
 
-/// Who acts: the player or a character (by character id).
+/// Who acts: the player, another traveler, or a character (by character id).
+///
+/// `Player` is the traveler this game plays: on the host, the world's
+/// own traveler (number 0); on a guest's copy, the guest. The other
+/// travelers in the world are `Traveler(number)` (see `travelers`): on the
+/// host its guests (1, 2, …), on a guest's copy the host (0) and the
+/// other guests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActorId {
     Player,
+    Traveler(u8),
     Npc(i64),
 }
 
+/// The code of traveler 0 seen from a guest's copy (the host); never kept.
+const HOST_SEEN_BY_GUEST: i64 = -256;
+
 impl ActorId {
-    /// A stable number: 0 for the player, the character id otherwise.
+    /// A stable number: 0 for the player, -n for traveler n, the character
+    /// id otherwise.
     pub fn code(self) -> i64 {
         match self {
             ActorId::Player => 0,
+            ActorId::Traveler(0) => HOST_SEEN_BY_GUEST,
+            ActorId::Traveler(n) => -(n as i64),
             ActorId::Npc(i) => i,
         }
     }
     pub fn from_code(c: i64) -> ActorId {
-        if c == 0 { ActorId::Player } else { ActorId::Npc(c) }
+        match c {
+            0 => ActorId::Player,
+            HOST_SEEN_BY_GUEST => ActorId::Traveler(0),
+            c if c < 0 && c > -256 => ActorId::Traveler((-c) as u8),
+            c => ActorId::Npc(c),
+        }
     }
     pub fn key(self) -> String {
         match self {
             ActorId::Player => "player".into(),
+            ActorId::Traveler(n) => format!("player:{n}"),
             ActorId::Npc(i) => format!("npc:{i}"),
         }
     }
@@ -105,7 +125,14 @@ impl ActorId {
         if s.eq_ignore_ascii_case("player") || s == "you" || s == "0" {
             return Some(ActorId::Player);
         }
+        if let Some(n) = s.strip_prefix("player:") {
+            return n.parse::<u8>().ok().map(ActorId::Traveler);
+        }
         s.trim_start_matches("npc:").parse::<i64>().ok().filter(|i| *i > 0).map(ActorId::Npc)
+    }
+    /// A traveler (the player or another), not a character.
+    pub fn is_traveler(self) -> bool {
+        matches!(self, ActorId::Player | ActorId::Traveler(_))
     }
 }
 
@@ -113,6 +140,7 @@ impl Serialize for ActorId {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
             ActorId::Player => s.serialize_str("player"),
+            ActorId::Traveler(_) => s.serialize_str(&self.key()),
             ActorId::Npc(i) => s.serialize_i64(*i),
         }
     }
@@ -327,6 +355,8 @@ pub struct Sim {
     pub player: Actor,
     /// What the traveler chose about their own body (see `hands`).
     pub own: hands::OwnBody,
+    /// The other travelers here, playing together (see `travelers`).
+    pub travelers: BTreeMap<u8, travelers::Traveler>,
     pub cast: Cast,
     pub things: Things,
     pub field: env::Field,
@@ -427,6 +457,7 @@ impl Sim {
             t,
             player: Actor::new(player_pos, player_yaw),
             own: Default::default(),
+            travelers: BTreeMap::new(),
             cast: Cast::default(),
             things: Things::default(),
             field: env::Field::default(),
@@ -549,6 +580,7 @@ impl Sim {
     pub fn actor(&self, id: ActorId) -> Option<&Actor> {
         match id {
             ActorId::Player => Some(&self.player),
+            ActorId::Traveler(n) => self.travelers.get(&n).map(|t| &t.a),
             ActorId::Npc(c) => self.cast.get(c).map(|n| &n.a),
         }
     }
@@ -556,12 +588,14 @@ impl Sim {
     pub fn actor_mut(&mut self, id: ActorId) -> Option<&mut Actor> {
         match id {
             ActorId::Player => Some(&mut self.player),
+            ActorId::Traveler(n) => self.travelers.get_mut(&n).map(|t| &mut t.a),
             ActorId::Npc(c) => self.cast.get_mut(c).map(|n| &mut n.a),
         }
     }
 
     pub fn actor_ids(&self) -> Vec<ActorId> {
         let mut v = vec![ActorId::Player];
+        v.extend(self.travelers.keys().map(|n| ActorId::Traveler(*n)));
         v.extend(self.cast.npcs.iter().filter(|n| n.here()).map(|n| ActorId::Npc(n.def.id)));
         v
     }
@@ -569,6 +603,7 @@ impl Sim {
     pub fn actor_name(&self, id: ActorId) -> String {
         match id {
             ActorId::Player => "the traveler".into(),
+            ActorId::Traveler(n) => self.travelers.get(&n).map(|t| t.name.clone()).unwrap_or_else(|| "a traveler".into()),
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.name().to_string()).unwrap_or_else(|| "someone".into()),
         }
     }

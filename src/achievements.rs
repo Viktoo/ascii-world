@@ -80,7 +80,7 @@ pub const ALL: &[Def] = &[
     a("not_for_long", "The dark", "Not for Long", "Strike down a phantom. It will remember.", Gold),
         a("life_goes_on", "Emergence", "Life Goes On", "Be gone a whole day and come back to a birth, a fire or something new.", Gold),
     a("nobody_touched_it", "Emergence", "Nobody Touched It", "A character makes something new for their own reasons.", Gold),
-    a("pocket_universe", "Emergence", "Pocket Universe", "Earn every challenge.", Diamond),
+    a("pocket_universe", "Emergence", "Infinite Pocket", "Earn every challenge.", Diamond),
 ];
 
 pub fn def(id: &str) -> Option<&'static Def> {

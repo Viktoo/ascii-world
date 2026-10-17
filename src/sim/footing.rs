@@ -25,7 +25,7 @@ const CROUCH_RATE: f32 = 5.0;
 /// other bodies their own.
 pub fn walk_radius(id: ActorId, a: &super::actor::Actor) -> f32 {
     match id {
-        ActorId::Player => crate::world::collide::PLAYER_RADIUS,
+        ActorId::Player | ActorId::Traveler(_) => crate::world::collide::PLAYER_RADIUS,
         ActorId::Npc(_) if a.dims.arms => crate::world::collide::NPC_RADIUS,
         ActorId::Npc(_) => a.dims.radius.clamp(0.12, 4.0),
     }
@@ -36,7 +36,7 @@ impl Sim {
     pub fn capsule(&self, id: ActorId) -> Capsule {
         let Some(a) = self.actor(id) else { return Capsule::of(1.75, crate::world::collide::NPC_RADIUS) };
         let (swims, needs_water) = match id {
-            ActorId::Player => (true, 0.0),
+            ActorId::Player | ActorId::Traveler(_) => (true, 0.0),
             ActorId::Npc(c) => match self.cast.get(c) {
                 Some(n) if n.species.water_only() => (true, (a.dims.height * 0.5).clamp(0.2, 3.0)),
                 // Any body that swims goes in, unless it shuns being wet.
@@ -346,7 +346,7 @@ impl Sim {
         let run = if a.running && a.crouch < 0.3 { 1.7 } else { 1.0 };
         let hurt = match id {
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.hurt()).unwrap_or(0.0),
-            ActorId::Player => 0.0,
+            ActorId::Player | ActorId::Traveler(_) => 0.0,
         };
         // Hurt badly, a run is no more than a hobble.
         let hurt_k = 1.0 - 0.55 * hurt;

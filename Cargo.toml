@@ -11,6 +11,7 @@ cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 crossterm = "0.29.0"
 dirs = "7.0.0"
+flate2 = "1"
 fontdue = "0.9"
 futures-util = "0.3.34"
 glam = "0.33.11"
@@ -24,14 +25,16 @@ oxc_span = "0.152.0"
 oxc_syntax = "0.152.0"
 parking_lot = "0.12.5"
 pollster = "1.0.1"
+postcard = { version = "1", features = ["use-std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json", "http2"] }
 rsworld = "0.1.0"
 rsworld-sys = "0.1.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "serialize"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 signal-hook = "0.4.4"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 wgpu = "30.0.1"
 whisper-rs = { version = "0.16", features = ["metal"] }
 winit = "0.30.13"

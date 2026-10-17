@@ -35,7 +35,7 @@ impl Sim {
     /// Whether a body can work a hinge: hands, or a mind and the size to push one.
     pub fn can_work_hinges(&self, who: ActorId) -> bool {
         match who {
-            ActorId::Player => true,
+            ActorId::Player | ActorId::Traveler(_) => true,
             ActorId::Npc(c) => self.cast.get(c).is_some_and(|n| {
                 n.a.dims.arms || (n.species.mind != crate::world::species::Mind::Instinct && n.a.dims.height >= 0.7)
             }),

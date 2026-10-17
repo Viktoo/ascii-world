@@ -395,7 +395,7 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Opti
     let (w, h) = (scr.w, scr.h);
     blank(scr);
     let cx = w as f32 / 2.0;
-    scr.title(cx, 2.6, "Pocket Universe", 2.8, ACCENT);
+    scr.title(cx, 2.6, "Infinite Pocket", 2.8, ACCENT);
     scr.center_text(cx, 5, "your worlds", DIM);
     let cw = (w as usize).saturating_sub(10).clamp(20, 96).min(w as usize);
     let x0 = ((w as usize - cw) / 2) as u16;
@@ -429,6 +429,8 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Opti
         scr.text(x0 + 2, y + 2, &clip(&stats, width), DIM, BG, false);
     }
     let fy = h.saturating_sub(2);
+    let build = crate::db::build_name();
+    scr.text(w.saturating_sub(build.chars().count() as u16 + 2), 1, &build, DIM, BG, false);
     scr.center_text(cx, fy.saturating_sub(1), &clip("Drop a .pocket file here to add a world someone shared", w.saturating_sub(4) as usize), DIM);
     if let Some(n) = note {
         scr.center_text(cx, fy, &clip(n, w.saturating_sub(4) as usize), ACCENT);
@@ -443,14 +445,15 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Opti
     }
 }
 
-/// Your worlds: open one, start a new one, or delete one.
-pub fn pick(win: &mut Win) -> Choice {
+/// Your worlds: open one, start a new one, or delete one. `note`: a line
+/// to show first (why a game together ended).
+pub fn pick(win: &mut Win, note: Option<String>) -> Choice {
     let mut list = worlds();
     let (w, h, _) = win.grid();
     let mut scr = Screen::new(w, h, true);
     let mut sel = 0usize;
     let mut deleting = false;
-    let mut note: Option<String> = None;
+    let mut note = note;
     loop {
         fit(win, &mut scr);
         draw(&mut scr, &list, sel, deleting, note.as_deref());
@@ -547,7 +550,7 @@ fn draw_share(scr: &mut Screen, wd: &World, st: &Sharing) {
             (format!("In {}", p.parent().map(|d| d.display().to_string()).unwrap_or_default()), DIM),
             (String::new(), TEXT),
             ("Send it however you like: a chat, an email, GitHub.".into(), DIM),
-            ("To play it, they drop it on the Pocket Universe window".into(), DIM),
+            ("To play it, they drop it on the Infinite Pocket window".into(), DIM),
             ("while it shows their worlds.".into(), DIM),
         ],
         Sharing::Failed(e) => vec![("The copy couldn't be made:".into(), TEXT), (e.clone(), DIM)],

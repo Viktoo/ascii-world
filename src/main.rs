@@ -1,4 +1,4 @@
-//! Pocket Universe: an infinite, colour 3D world in your terminal.
+//! Infinite Pocket: an infinite, colour 3D world in your terminal.
 
 mod achievements;
 mod audio;
@@ -12,6 +12,7 @@ mod lang;
 mod llm;
 mod log;
 mod model;
+mod net;
 mod noise;
 mod pace;
 mod picker;
@@ -40,7 +41,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "Pocket Universe — an infinite 3D world, made from words
+const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
 
   pocket [FILE]                          open the game: FILE, or your last universe
   pocket list                            start on your worlds (open one, or start a new one)
@@ -48,6 +49,10 @@ const USAGE: &str = "Pocket Universe — an infinite 3D world, made from words
                                          start on the new-world screen: check or edit the
                                          prompt (a random one if none given), then step in
   pocket prompts [--sample N]            print N random prompts (default 20)
+  pocket host [FILE] [--port 7777] [--code CODE]
+                                         open a world (or your last) for others to join
+  pocket join ADDRESS CODE               join someone's world: their address (192.168.1.20:7777,
+                                         or an ngrok https URL) and the code they gave you
 
   Any of the above with --shot OUT.png [--size 1600x1000] [--scale 2] [--after SECS] [--keys esc,down] [--keys-at SECS]
   runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
@@ -109,6 +114,20 @@ fn run(args: Vec<String>) -> Result<()> {
             session(Start::New(given), Some(n), flag(&args, "--out").map(PathBuf::from), shot)
         }
         Some("list") | Some("ls") => session(Start::List, None, None, shot),
+        Some("host") => {
+            let port = flag(&args, "--port").map(|p| p.parse::<u16>().context("--port takes a number")).transpose()?.unwrap_or(net::PORT);
+            let path = match args.get(1).filter(|a| !a.starts_with("--")) {
+                Some(p) => PathBuf::from(p),
+                None => picker::last().or_else(|| picker::worlds().into_iter().next().map(|w| w.path)).context("no world to host: make one first")?,
+            };
+            let code = flag(&args, "--code").or_else(|| std::env::var("POCKET_HOST_CODE").ok()).unwrap_or_else(net::new_code);
+            session(Start::Host(path, port, code), None, None, shot)
+        }
+        Some("join") => {
+            let addr = args.get(1).filter(|a| !a.starts_with("--")).context("usage: pocket join ADDRESS CODE")?.clone();
+            let code = args.get(2).filter(|a| !a.starts_with("--")).context("usage: pocket join ADDRESS CODE (the host's code)")?.clone();
+            session(Start::Join(addr, code), None, None, shot)
+        }
         Some("prompts") => {
             let n = flag(&args, "--sample").and_then(|n| n.parse().ok()).unwrap_or(20);
             for p in random_world::sample(n) {
@@ -181,7 +200,14 @@ fn load(path: &Path) -> Result<Loaded> {
 }
 
 fn load_with(path: &Path, quick: bool) -> Result<Loaded> {
-    let db = db::Db::open(path)?;
+    let t0 = Instant::now();
+    let l = load_db(db::Db::open(path)?, quick)?;
+    log::info(format!("loaded {} (v{}, {} types, {} instances) in {:.0} ms", path.display(), l.snap.version, l.snap.scene.types.len(), l.snap.instances.len(), t0.elapsed().as_secs_f64() * 1000.0));
+    Ok(l)
+}
+
+/// A world (on disk, or held in memory) made ready to play or look at.
+fn load_db(db: Arc<db::Db>, quick: bool) -> Result<Loaded> {
     let gpu = match render::gpu::Gpu::new() {
         Ok(g) => Some(g),
         Err(e) => {
@@ -195,7 +221,7 @@ fn load_with(path: &Path, quick: bool) -> Result<Loaded> {
     let partial = quick && model.active_type_count() > QUICK_START_TYPES;
     let snap = if partial { model.snapshot_base() } else { model.snapshot() };
     let snap = snap.map_err(|d| anyhow::anyhow!("building the world shader failed: {}", lang::format_diags(&d)))?;
-    log::info(format!("loaded {} (v{}, {} types, {} instances) in {:.0} ms", path.display(), snap.version, snap.scene.types.len(), snap.instances.len(), t0.elapsed().as_secs_f64() * 1000.0));
+    crate::log::info(format!("world built in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0));
     Ok(Loaded { db, gpu, model, snap, live, partial })
 }
 
@@ -207,6 +233,10 @@ enum Start {
     New(Option<String>),
     Create(String),
     Play(PathBuf, bool),
+    /// Open a world for others to join, on a port, with a code.
+    Host(PathBuf, u16, String),
+    /// Join someone's world: their address and code.
+    Join(String, String),
 }
 
 /// The game: one window, moving between your worlds, a new world, and play,
@@ -219,6 +249,8 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
         None => window::Win::open()?,
     };
     let stop = win.stop.clone();
+    // A line for the worlds list (why a game together ended).
+    let mut note: Option<String> = None;
     loop {
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             break;
@@ -229,7 +261,7 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                 Some(p) => Start::Play(p, false),
                 None => Start::New(None),
             },
-            Start::List => match picker::pick(&mut win) {
+            Start::List => match picker::pick(&mut win, note.take()) {
                 picker::Choice::Open(p) => Start::Play(p, false),
                 picker::Choice::New(prompt) => Start::Create(prompt),
                 picker::Choice::Quit => break,
@@ -247,27 +279,47 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                 }
                 Start::Play(path, true)
             }
-            Start::Play(path, fresh) => {
-                if play(&mut win, &path, fresh, remember, &stop)? {
+            Start::Play(path, fresh) => match play(&mut win, &path, fresh, remember, None, &stop)? {
+                (true, why) => {
+                    note = why;
                     Start::List
-                } else {
-                    break;
                 }
-            }
+                (false, _) => break,
+            },
+            Start::Host(path, port, code) => match play(&mut win, &path, false, remember, Some((port, code)), &stop)? {
+                (true, why) => {
+                    note = why;
+                    Start::List
+                }
+                (false, _) => break,
+            },
+            Start::Join(addr, code) => match join(&mut win, &addr, &code, &stop) {
+                Ok((true, why)) => {
+                    note = why;
+                    Start::List
+                }
+                Ok((false, _)) => break,
+                Err(e) => {
+                    log::info(format!("joining {addr}: {e:#}"));
+                    note = Some(format!("Couldn't join: {e}"));
+                    Start::List
+                }
+            },
         };
     }
     win.finish()
 }
 
-/// Play one world in the window; true when the player went back to their worlds.
-fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, stop: &AtomicBool) -> Result<bool> {
+/// Play one world in the window (hosting it on `host`, a port, if given);
+/// true when the player went back to their worlds, and why if not by choice.
+fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: Option<(u16, String)>, stop: &AtomicBool) -> Result<(bool, Option<String>)> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if remember {
         let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
     }
     let name = picker::worlds().into_iter().find(|w| w.path == path).map(|w| w.name).unwrap_or_else(|| "a new world".into());
     picker::notice(win, &name, "opening…");
-    win.set_title(&format!("{name} · Pocket Universe"));
+    win.set_title(&format!("{name} · Infinite Pocket"));
     let l = load_with(&path, true)?;
     let llm = llm::Llm::from_env(l.db.clone());
     let genesis = fresh || l.db.kv_get("genesis").is_none();
@@ -278,6 +330,14 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, stop: &
         None => render::cpu::spawn(),
     };
     let (cols, rows, _) = win.grid();
+    let together = match host {
+        Some((port, code)) => {
+            let (me, _) = settings::Settings::load().player();
+            let h = net::host::Host::start(port, code)?;
+            Some(app::together::Together::Host(app::together::Hosting::new(h, path.clone(), name.clone(), me)))
+        }
+        None => None,
+    };
     let mut app = app::App::new(app::Setup {
         db: l.db.clone(),
         brain,
@@ -289,17 +349,69 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, stop: &
         size: (cols, rows),
         llm,
         genesis,
+        together,
     });
     app.start_loading();
     let r = window::play(win, &mut app, stop);
     app.shutdown();
-    win.set_title("Pocket Universe");
+    win.set_title("Infinite Pocket");
     if win.is_shot() {
         println!("{}", app.stats_line());
     }
     r?;
     log::info(format!("saved {}", path.display()));
-    Ok(app.to_worlds)
+    Ok((app.to_worlds, app.left_because.take()))
+}
+
+/// Join someone's world and play in it until it ends; as `play`.
+fn join(win: &mut window::Win, addr: &str, code: &str, stop: &AtomicBool) -> Result<(bool, Option<String>)> {
+    let (me, token) = settings::Settings::load().player();
+    picker::notice(win, "Joining", "connecting…");
+    let mut last = Instant::now() - Duration::from_secs(1);
+    let joined = net::guest::join(addr, code, &me, &token, |_, what| {
+        if last.elapsed() > Duration::from_millis(100) {
+            last = Instant::now();
+            picker::notice(win, "Joining", what);
+        }
+    })?;
+    let world = joined.welcome.world.clone();
+    picker::notice(win, &world, "opening…");
+    win.set_title(&format!("{world} · Infinite Pocket"));
+    let db = db::Db::from_bytes(&joined.world)?;
+    net::guest::as_guest(&db, &joined.welcome)?;
+    let l = load_db(db, true)?;
+    let (etx, erx) = crossbeam_channel::unbounded();
+    // The host's world: no words of one's own here (the host's LLM answers).
+    let brain = brain::Brain::start(l.model, None, etx, l.partial);
+    let render = match &l.gpu {
+        Some(g) => render::gpu::spawn(g.clone()),
+        None => render::cpu::spawn(),
+    };
+    let (cols, rows, _) = win.grid();
+    let guesting = app::together::Guesting::new(joined.link, &joined.welcome, joined.roster.clone());
+    let mut app = app::App::new(app::Setup {
+        db: l.db.clone(),
+        brain,
+        events: erx,
+        render,
+        snap: l.snap,
+        live: l.live,
+        truecolor: true,
+        size: (cols, rows),
+        llm: None,
+        genesis: false,
+        together: Some(app::together::Together::Guest(guesting)),
+    });
+    app.arrive_as_guest(&joined.welcome, joined.roster);
+    app.start_loading();
+    let r = window::play(win, &mut app, stop);
+    app.shutdown();
+    win.set_title("Infinite Pocket");
+    if win.is_shot() {
+        println!("{}", app.stats_line());
+    }
+    r?;
+    Ok((app.to_worlds, app.left_because.take()))
 }
 
 fn parse_at(args: &[String]) -> Result<(f32, f32, f32)> {
@@ -508,7 +620,7 @@ fn bench(args: &[String]) -> Result<()> {
         None => render::cpu::spawn(),
     };
     let backend = render.backend.clone();
-    let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, truecolor: true, size: (w, h), llm, genesis: false });
+    let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, truecolor: true, size: (w, h), llm, genesis: false, together: None });
     app.noclip = true;
     let start = app.pos();
     let stop = AtomicBool::new(false);

@@ -1,5 +1,7 @@
 //! Puts the git commit the game is built from into it (`POCKET_COMMIT`), so
-//! a world can say which build made it and which last opened it.
+//! a world can say which build made it and which last opened it, and the
+//! release it is (`POCKET_RELEASE`: `0.1.0` for a clean build at tag
+//! `v0.1.0`, otherwise `dev`).
 
 use std::process::Command;
 
@@ -17,10 +19,17 @@ fn main() {
         None => "unknown".into(),
     };
     println!("cargo:rustc-env=POCKET_COMMIT={commit}");
+    // The release: the version, when the build is a clean one of its tag
+    // (`v0.1.0`); any other build is "dev".
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let tagged = git(&["tag", "--points-at", "HEAD"]).is_some_and(|t| t.lines().any(|l| l.trim() == format!("v{version}")));
+    let release = if tagged && !commit.ends_with("-dirty") && commit != "unknown" { version } else { "dev".into() };
+    println!("cargo:rustc-env=POCKET_RELEASE={release}");
     // Again when the commit or the code changes.
     if let (Some(dir), Some(common)) = (git(&["rev-parse", "--git-dir"]), git(&["rev-parse", "--git-common-dir"])) {
         println!("cargo:rerun-if-changed={dir}/HEAD");
         println!("cargo:rerun-if-changed={dir}/index");
+        println!("cargo:rerun-if-changed={common}/refs/tags");
         println!("cargo:rerun-if-changed={common}/packed-refs");
         if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
             println!("cargo:rerun-if-changed={common}/{r}");

@@ -171,7 +171,7 @@ impl Sim {
         let worn: f32 = self.worn_by(who).iter().filter_map(|id| self.things.get(*id)).map(|t| t.props.get(P_PROTECT).copied().unwrap_or(0.0)).sum();
         let own = match who {
             ActorId::Npc(c) => self.cast.get(c).and_then(|n| n.props.get(P_PROTECT).copied()).unwrap_or(0.0),
-            ActorId::Player => 0.0,
+            ActorId::Player | ActorId::Traveler(_) => 0.0,
         };
         (worn + own).clamp(0.0, MAX_PROTECT)
     }
@@ -211,6 +211,7 @@ impl Sim {
                 }
                 false
             }
+            ActorId::Traveler(n) => self.wound_traveler(n, hurt, by, how),
             ActorId::Npc(c) => {
                 // The dark's own can always be struck down; others only where things die.
                 let dark = self.cast.get(c).is_some_and(|n| n.species.touch.harms() || n.species.hostile);
@@ -753,7 +754,7 @@ impl Sim {
                         && match want {
                             "anyone" => self.cast.get(cid).map(|n| &n.species.name) != match o {
                                 ActorId::Npc(c) => self.cast.get(*c).map(|m| &m.species.name),
-                                ActorId::Player => None,
+                                ActorId::Player | ActorId::Traveler(_) => None,
                             },
                             sp => matches!(o, ActorId::Npc(c) if self.cast.get(*c).is_some_and(|m| m.species.name == sp)),
                         }

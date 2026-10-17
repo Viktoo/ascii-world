@@ -383,6 +383,8 @@ impl App {
                 lines.push((l, DIM, false));
             }
             lines.push(blank.clone());
+            lines.push((format!("Infinite Pocket {}", crate::db::build_name()), DIM, false));
+            lines.push(blank.clone());
             lines.push(("Keys".into(), HEAD, false));
             for l in [
                 "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · click: mouse look",

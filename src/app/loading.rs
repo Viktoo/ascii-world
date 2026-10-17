@@ -703,7 +703,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let brain = Brain::start(model, Some(llm.clone()), tx, false);
         let render = crate::render::cpu::spawn();
-        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (110, 36), llm: Some(llm), genesis: true });
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (110, 36), llm: Some(llm), genesis: true, together: None });
         app.start_loading();
         assert!(app.loading.is_some(), "a new world starts behind the loading screen");
         let needed = app.settle_regions();
@@ -760,7 +760,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let brain = Brain::start(model, Some(llm.clone()), tx, false);
         let render = crate::render::cpu::spawn();
-        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (110, 36), llm: Some(llm), genesis: true });
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (110, 36), llm: Some(llm), genesis: true, together: None });
         app.start_loading();
         let screen = |a: &mut App| {
             a.compose_loading();

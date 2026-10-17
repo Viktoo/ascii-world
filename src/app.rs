@@ -27,6 +27,7 @@ mod journal;
 mod loading;
 mod ears;
 mod menu;
+pub mod together;
 mod voices;
 mod work;
 
@@ -257,6 +258,10 @@ pub struct App {
     auto_at: Instant,
     /// Where auto detail last fell behind: it stays below that a while.
     auto_ceiling: Option<(f32, Instant)>,
+    /// Playing together: hosting this world, or a guest in someone's.
+    pub together: Option<together::Together>,
+    /// Why a game together ended (shown on the worlds list).
+    pub left_because: Option<String>,
 }
 
 pub struct Setup {
@@ -270,6 +275,8 @@ pub struct Setup {
     pub size: (u16, u16),
     pub llm: Option<Arc<crate::llm::Llm>>,
     pub genesis: bool,
+    /// Hosting, or a guest (whose world this is, held only in memory).
+    pub together: Option<together::Together>,
 }
 
 impl App {
@@ -364,6 +371,8 @@ impl App {
             auto_lines: 240.0,
             auto_at: Instant::now(),
             auto_ceiling: None,
+            together: s.together,
+            left_because: None,
         };
         app.sync_sound();
         app.sync_ears();
@@ -372,6 +381,7 @@ impl App {
         app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use or pick up, g grab/drop, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
+            None if app.is_guest() => {}
             None => {
                 app.llm_note = Some("no LLM key: story & dialogue off".into());
                 app.say(None, "No LLM configured (set ANTHROPIC_API_KEY or POCKET_LLM_BASE_URL): the land is here, but its stories and people are not.", DIM);
@@ -1253,9 +1263,15 @@ impl App {
         let k = if self.sim.player.grounded { (dt * 10.0).min(1.0) } else { 1.0 };
         self.cam_y += (eye - self.cam_y) * k;
 
-        // The living world.
+        // The living world (a guest's is the host's: only their own body
+        // moves here).
         let t0 = Instant::now();
-        self.sim.step(dt);
+        if self.is_guest() {
+            self.sim.step_guest(dt);
+        } else {
+            self.sim.step(dt);
+        }
+        self.together_tick();
         slow("sim step", t0, || format!("{} active cells, {} things, {} characters", self.sim.field.active(), self.sim.things.map.len(), self.sim.cast.npcs.len()));
         for r in self.sim.drain_requests() {
             if self.budget_paused && !matches!(r, crate::sim::Request::Witness { .. }) {
@@ -1654,6 +1670,9 @@ impl App {
         let mut right = String::new();
         if let Some(n) = &self.llm_note {
             right = n.clone();
+        }
+        if let Some(t) = self.together_line() {
+            right = t;
         }
         if self.budget_paused {
             right = "budget reached: generation paused (Esc to change)".into();
@@ -2302,6 +2321,7 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        self.together_end();
         if let Some(o) = self.sound.take() {
             o.send(crate::audio::mix::Cmd::Clear);
         }
@@ -2604,7 +2624,7 @@ mod tests {
             Some(g) => crate::render::gpu::spawn(g.clone()),
             None => crate::render::cpu::spawn(),
         };
-        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false });
+        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false, together: None });
         (app, db, gpu)
     }
 
@@ -2624,7 +2644,7 @@ mod tests {
         let snap = model.snapshot().unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
         let brain = Brain::start(model, None, tx, false);
-        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false });
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false, together: None });
         app.open_menu(false);
         app.on_key(key(KeyCode::Char('3'), KeyEventKind::Press));
         for _ in 0..3 {

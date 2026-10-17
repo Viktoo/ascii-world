@@ -263,7 +263,7 @@ impl Sim {
     fn goal_state(&mut self, g: &Goal) -> Option<bool> {
         let me = ActorId::Npc(g.owner);
         let alive = |s: &Sim, a: ActorId| match a {
-            ActorId::Player => true,
+            ActorId::Player | ActorId::Traveler(_) => true,
             ActorId::Npc(c) => s.cast.get(c).is_some_and(|n| !n.dead),
         };
         if !alive(self, me) {

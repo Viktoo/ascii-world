@@ -16,14 +16,14 @@ impl Sim {
     pub fn can_fly(&self, who: ActorId) -> bool {
         match who {
             ActorId::Npc(c) => self.cast.get(c).is_some_and(|n| n.a.dims.flies && n.species.moves.fly > 0.0),
-            ActorId::Player => false,
+            ActorId::Player | ActorId::Traveler(_) => false,
         }
     }
 
     pub fn fly_speed(&self, who: ActorId) -> f32 {
         match who {
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.species.moves.fly).unwrap_or(0.0),
-            ActorId::Player => 0.0,
+            ActorId::Player | ActorId::Traveler(_) => 0.0,
         }
     }
 

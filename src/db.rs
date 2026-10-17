@@ -162,7 +162,8 @@ impl Db {
         Self::configure(&conn)?;
         conn.execute("INSERT INTO universe(id, seed, bible, palette, created_at) VALUES (1, ?1, ?2, ?3, ?4)", params![seed as i64, bible, look_json, now()])?;
         kv_set(&conn, "made_with", COMMIT)?;
-        kv_set(&conn, "last_opened_with", COMMIT)?;
+        kv_set(&conn, "made_with_release", RELEASE)?;
+        mark_opened(&conn)?;
         Ok(Arc::new(Db { conn: Mutex::new(conn) }))
     }
 
@@ -172,7 +173,17 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         Self::configure(&conn)?;
-        kv_set(&conn, "last_opened_with", COMMIT)?;
+        mark_opened(&conn)?;
+        Ok(Arc::new(Db { conn: Mutex::new(conn) }))
+    }
+
+    /// A world held only in memory (a guest's copy of the host's world):
+    /// read and written like any other, gone when let go.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Arc<Db>> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, bytes, bytes.len(), false).context("not a world")?;
+        conn.query_row("SELECT 1 FROM universe WHERE id = 1", [], |_| Ok(())).context("not a world")?;
+        Self::configure(&conn)?;
         Ok(Arc::new(Db { conn: Mutex::new(conn) }))
     }
 
@@ -440,6 +451,21 @@ pub fn creations(c: &Connection) -> Result<Vec<CreationRow>> {
 /// committed). A world keeps the one that made it (kv `made_with`, absent in
 /// worlds older than this) and the one that last opened it (`last_opened_with`).
 pub const COMMIT: &str = env!("POCKET_COMMIT");
+
+/// The release this game is (`0.1.0`), or `dev` for a build that isn't a
+/// clean one of its tag. A world keeps the release that made it
+/// (`made_with_release`) and that last opened it (`last_opened_with_release`).
+pub const RELEASE: &str = env!("POCKET_RELEASE");
+
+/// How this build is called to players: the release, or `dev` and the commit.
+pub fn build_name() -> String {
+    if RELEASE == "dev" { format!("dev {COMMIT}") } else { RELEASE.to_string() }
+}
+
+fn mark_opened(c: &Connection) -> Result<()> {
+    kv_set(c, "last_opened_with", COMMIT)?;
+    kv_set(c, "last_opened_with_release", RELEASE)
+}
 
 pub fn kv_set(c: &Connection, key: &str, value: &str) -> Result<()> {
     c.execute("INSERT INTO kv(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value])?;

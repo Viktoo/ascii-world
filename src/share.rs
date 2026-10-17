@@ -77,7 +77,7 @@ pub fn check(path: &Path) -> Result<()> {
     c.query_row("SELECT 1 FROM universe WHERE id = 1", [], |_| Ok(())).map_err(|_| anyhow::anyhow!("not a world file"))?;
     let format: i64 = kv(&c, "format").ok().flatten().and_then(|s| s.parse().ok()).unwrap_or(1);
     if format > FORMAT {
-        anyhow::bail!("made by a newer Pocket Universe: update the game to open it");
+        anyhow::bail!("made by a newer Infinite Pocket: update the game to open it");
     }
     Ok(())
 }

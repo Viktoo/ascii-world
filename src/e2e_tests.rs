@@ -35,7 +35,7 @@ fn script(sys: &str, msgs: &[Msg], db: &Db, calls: &Mutex<Calls>) -> String {
         };
     }
     let lighthouse = fixture("good/lighthouse.js");
-    if sys.contains("You are a character in Pocket Universe") {
+    if sys.contains("You are a character in Infinite Pocket") {
         note!("dialogue");
         return if sys.contains("The traveler said") {
             "Ah, you came back. Did you find the keeper?".into()

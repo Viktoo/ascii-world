@@ -220,6 +220,11 @@ impl Sim {
                 let b = self.own_body_type()?.ct.meta.body.clone()?;
                 b.slider(name).map(|i| self.own_sliders()[i])
             }
+            ActorId::Traveler(n) => {
+                let t = self.travelers.get(&n)?;
+                let b = self.own_body_type()?.ct.meta.body.clone()?;
+                b.slider(name).map(|i| self.sliders_of(&t.own, &t.a.dims)[i])
+            }
             ActorId::Npc(c) => {
                 let n = self.cast.get(c)?;
                 let b = self.snap.type_of(n.body_ty)?.ct.meta.body.clone()?;
@@ -232,6 +237,7 @@ impl Sim {
     fn kept_look(&self, who: ActorId) -> LookMap {
         match who {
             ActorId::Player => self.own.look.clone(),
+            ActorId::Traveler(n) => self.travelers.get(&n).map(|t| t.own.look.clone()).unwrap_or_default(),
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.def.persona.look.clone()).unwrap_or_default(),
         }
     }
@@ -243,6 +249,18 @@ impl Sim {
                     self.own.look.remove(k);
                 }
                 self.set_own_look(&set);
+            }
+            ActorId::Traveler(n) => {
+                if let Some(t) = self.travelers.get_mut(&n) {
+                    for k in drop {
+                        t.own.look.remove(k);
+                    }
+                    for (k, v) in set {
+                        if v.is_finite() {
+                            t.own.look.insert(k.trim().to_lowercase(), v);
+                        }
+                    }
+                }
             }
             ActorId::Npc(c) => self.change_persona(c, |p| {
                 for k in drop {

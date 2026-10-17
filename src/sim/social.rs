@@ -866,7 +866,7 @@ impl Sim {
     pub fn ready_to_catch(&mut self, who: ActorId, from: ActorId, secs: f64) {
         let t = self.t;
         let willing = match who {
-            ActorId::Player => true,
+            ActorId::Player | ActorId::Traveler(_) => true,
             ActorId::Npc(c) => {
                 let in_game = self.social.joint_of(who).is_some_and(|j| j.has(from));
                 let n = self.cast.get(c);
@@ -953,7 +953,7 @@ impl Sim {
             return Err(ActErr::Fail(format!("{oname} is busy")));
         }
         match other {
-            ActorId::Player => {
+            ActorId::Player | ActorId::Traveler(_) => {
                 self.propose(who, other, &k.name(), None)?;
                 Ok(Outcome::ok(format!("{name} offers {oname} a {}", k.name().replace('_', " "))))
             }

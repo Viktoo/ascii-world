@@ -319,6 +319,14 @@ impl Sim {
                 }
             }
         }
+        // The other travelers, in what they wear.
+        for (id, g) in self.draw_travelers(cam, view, hover_actor) {
+            for t in worn.get(&id).map(|v| v.as_slice()).unwrap_or(&[]) {
+                let (Some(body), Some(ty)) = (self.own_body_type(), self.snap.type_of(t.type_id)) else { continue };
+                insts.push(self.worn_inst(&g, body, ty, look(&t.props)));
+            }
+            insts.push(g);
+        }
         // The traveler's own body, seen from inside, in what they wear.
         let own = eye.and_then(|c| self.own_view(c));
         if let Some(v) = &own {
