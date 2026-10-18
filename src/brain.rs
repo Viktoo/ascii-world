@@ -117,14 +117,19 @@ struct Ctx {
 }
 
 pub struct Brain {
-    tx: mpsc::UnboundedSender<Cmd>,
+    tx: mpsc::UnboundedSender<(Cmd, Option<u8>)>,
     _rt: tokio::runtime::Runtime,
     pub has_llm: bool,
 }
 
 impl Brain {
     pub fn send(&self, c: Cmd) {
-        let _ = self.tx.send(c);
+        let _ = self.tx.send((c, None));
+    }
+
+    /// Send a command made for guest `payer` (what it costs is theirs to spend).
+    pub fn send_as(&self, c: Cmd, payer: Option<u8>) {
+        let _ = self.tx.send((c, payer));
     }
 
     /// Start the committer thread and the async runtime. `model` moves to the committer.
@@ -153,7 +158,7 @@ impl Brain {
             })
             .expect("spawn committer");
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).max_blocking_threads(4).thread_stack_size(8 << 20).enable_all().build().expect("tokio runtime");
-        let (tx, mut rx) = mpsc::unbounded_channel::<Cmd>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<(Cmd, Option<u8>)>();
         let has_llm = llm.is_some();
         let decider = crate::decider::from_env(llm.clone(), universe.clone());
         let ev2 = events.clone();
@@ -161,7 +166,7 @@ impl Brain {
         let mem_db = db.clone();
         rt.spawn(async move {
             let ctx = llm.map(|llm| Ctx { llm, db, prompt, universe, commit: commit2.clone(), events: ev2.clone(), decider, regions: Arc::new(Semaphore::new(2)) });
-            while let Some(cmd) = rx.recv().await {
+            while let Some((cmd, payer)) = rx.recv().await {
                 // Commands that need no model.
                 match cmd {
                     Cmd::Undo => {
@@ -221,7 +226,7 @@ impl Brain {
                     }
                     continue;
                 };
-                tokio::spawn(run(ctx, cmd));
+                tokio::spawn(crate::llm::PAYER.scope(payer, run(ctx, cmd)));
             }
         });
         Brain { tx, _rt: rt, has_llm }

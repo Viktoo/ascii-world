@@ -634,7 +634,7 @@ impl App {
                         self.sim.animal_answers(id);
                         return;
                     }
-                    if !self.brain.has_llm {
+                    if !self.brain.has_llm && !self.is_guest() {
                         self.say(None, &format!("{name} looks at you, but words need an LLM key."), DIM);
                         return;
                     }
@@ -940,6 +940,8 @@ impl App {
         }
         match lc.as_str() {
             "" => {}
+            // Playing together: words for everyone here.
+            "say" if self.together.is_some() && !rest.is_empty() => self.say_to_all(rest.to_string()),
             "help" | "?" => {
                 for l in [
                     "/ <anything> — do or make anything, at what the middle of the view points at:",
@@ -1056,7 +1058,18 @@ impl App {
 
     fn send_talk(&mut self, cid: i64, text: String) {
         let text = text.trim().to_string();
-        if text.is_empty() || self.replying.is_some() || self.over_budget() {
+        if text.is_empty() || self.replying.is_some() {
+            return;
+        }
+        // A guest's words go to the host's world (whose LLM answers).
+        if let Some(together::Together::Guest(g)) = &self.together {
+            g.talk(cid, text.clone());
+            self.say(Some("you"), &text, ACCENT);
+            self.conv.entry(cid).or_default().push((true, text));
+            self.replying = Some(cid);
+            return;
+        }
+        if self.over_budget() {
             return;
         }
         self.say(Some("you"), &text, ACCENT);
@@ -1073,6 +1086,10 @@ impl App {
 
     fn on_event(&mut self, ev: Event) {
         if self.loading_event(&ev) {
+            return;
+        }
+        // Guests hear what is said, and a reply to one of them is theirs.
+        if self.share_event(&ev) {
             return;
         }
         match ev {
@@ -1121,14 +1138,15 @@ impl App {
                         let h = self.conv.entry(cid).or_default();
                         let said = h.last().filter(|x| x.0).map(|x| x.1.clone());
                         h.push((false, reply.clone()));
-                        // What was asked may now be done, not only talked about.
-                        if let Some(said) = said.filter(|_| self.replying == Some(cid)) {
+                        // What was asked may now be done, not only talked about
+                        // (in the host's world, by the host's game).
+                        if let Some(said) = said.filter(|_| self.replying == Some(cid) && !self.is_guest()) {
                             self.sim.asked(cid, &said, reply.trim());
                         }
                     }
                 }
                 if let Some(line) = self.sim_talk.remove(&cid) {
-                    if ok {
+                    if ok && !self.is_guest() {
                         self.sim.npc_said(cid, line.trim());
                     }
                 }

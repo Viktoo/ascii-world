@@ -25,6 +25,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Who pays for what an actor asks for: a guest for their own.
+fn payer(a: ActorId) -> Option<u8> {
+    match a {
+        ActorId::Traveler(n) => Some(n),
+        _ => None,
+    }
+}
+
 /// Send a simulation request to the brain. Returns true if an answer will come.
 pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
     match req {
@@ -37,15 +45,16 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             false
         }
         Request::Interpret { id, actor, text, context } => {
-            brain.send(Cmd::Interpret { id, actor: sim.actor_name(actor), text, context });
+            brain.send_as(Cmd::Interpret { id, actor: sim.actor_name(actor), text, context }, payer(actor));
             true
         }
         Request::Create { id, by, text, target, yaw, view } => {
+            let payer = payer(by);
             let by = match by {
                 ActorId::Npc(c) => Some((c, sim.actor_name(by))),
                 ActorId::Player | ActorId::Traveler(_) => None,
             };
-            brain.send(Cmd::Create { id: Some(id), by, text, view: *view, target, yaw });
+            brain.send_as(Cmd::Create { id: Some(id), by, text, view: *view, target, yaw }, payer);
             true
         }
         Request::Chat { a, b, context } => {

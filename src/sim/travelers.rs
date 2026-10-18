@@ -25,6 +25,8 @@ pub struct Traveler {
     pub fallen_at: f64,
     /// A touch's glow on them (fades).
     pub glow: f32,
+    /// The being they are talking with (it stands and faces them).
+    pub talking_to: Option<i64>,
 }
 
 /// How long one who fell lies before they get up at the world's beginning
@@ -55,7 +57,7 @@ impl Sim {
     pub fn add_traveler(&mut self, no: u8, name: &str, look: &LookMap, pos: Vec3, yaw: f32) {
         let mut a = Actor::new(pos, yaw);
         a.dims = self.player.dims;
-        let t = Traveler { no, name: name.to_string(), a, own: OwnBody { look: look.clone() }, pitch: 0.0, wounds: 0.0, hurt_at: 0.0, fallen: None, fallen_at: 0.0, glow: 0.0 };
+        let t = Traveler { no, name: name.to_string(), a, own: OwnBody { look: look.clone() }, pitch: 0.0, wounds: 0.0, hurt_at: 0.0, fallen: None, fallen_at: 0.0, glow: 0.0, talking_to: None };
         self.travelers.insert(no, t);
         let who = ActorId::Traveler(no);
         for mut th in self.stowed.remove(&no).unwrap_or_default() {

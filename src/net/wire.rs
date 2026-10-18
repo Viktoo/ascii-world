@@ -32,6 +32,12 @@ pub enum Up {
     /// They do something (an action, as JSON, naming actors as the guest
     /// knows them).
     Act(String),
+    /// They say something to someone (a being's id).
+    Talk { cid: i64, text: String },
+    /// Who they are talking with now (the being stands and faces them).
+    Talking(Option<i64>),
+    /// Something said to everyone ("/say").
+    Say(String),
     /// Leaving.
     Bye,
 }
@@ -70,6 +76,10 @@ pub enum Down {
     /// How what they did went (`verb` as the action's; the message names
     /// them by name).
     Acted { verb: String, ok: bool, msg: String, thing: bool },
+    /// A being's reply as it comes (to whoever spoke; everyone hears it).
+    Token { cid: i64, text: String },
+    /// The reply is done (`ok` false: none came).
+    ReplyDone { cid: i64, ok: bool },
     /// Sounds near the guest, to be heard where they are.
     Heard(Vec<Sound>),
     /// The host is leaving or closed the game.

@@ -1104,13 +1104,18 @@ impl Sim {
         if self.carried_tick(cid, dt) {
             return;
         }
-        // Talking with the player: stand and face them.
-        if self.talking_to == Some(cid) {
+        // Talking with a traveler: stand and face them.
+        let talker = if self.talking_to == Some(cid) {
+            Some((player, "the traveler".to_string()))
+        } else {
+            self.travelers.values().find(|t| t.talking_to == Some(cid)).map(|t| (t.a.pos, t.name.clone()))
+        };
+        if let Some((at, who)) = talker {
             if let Some(n) = self.cast.get_mut(cid) {
                 n.a.task = None;
                 n.a.asleep = false;
-                n.a.face(player - n.a.pos, dt * 4.0);
-                n.doing = "talking with the traveler".into();
+                n.a.face(at - n.a.pos, dt * 4.0);
+                n.doing = format!("talking with {who}");
                 n.needs.social = (n.needs.social - dt / 60.0).max(0.0);
             }
             let held_big = self.held_size(ActorId::Npc(cid));

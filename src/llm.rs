@@ -81,6 +81,14 @@ pub struct Llm {
     pub spent: Mutex<f64>,
     /// Spending cap for this session (POCKET_BUDGET_USD, or the settings screen).
     pub budget: Mutex<Option<f64>>,
+    /// What was spent for each guest this session (see `PAYER`).
+    pub spent_by: Mutex<std::collections::HashMap<u8, f64>>,
+}
+
+tokio::task_local! {
+    /// The guest (traveler number) a request is made for, when it is one:
+    /// what it costs counts against what they may spend.
+    pub static PAYER: Option<u8>;
 }
 
 /// (input, output, cache read) USD per million tokens. `prompt` is the
@@ -99,6 +107,8 @@ fn price(model: &str, prompt: u64) -> (f64, f64, f64) {
         m if m.starts_with("claude-haiku-5-5") && prompt > 100_000 => (0.50, 2.50, 0.05),
         m if m.starts_with("claude-haiku-5-5") => (0.10, 0.50, 0.01),
         m if m.starts_with("claude-haiku") => (1.0, 5.0, 0.10),
+        // The tests' scripted model costs something, to count.
+        "script" => (1.0, 5.0, 0.10),
         _ => (0.0, 0.0, 0.0),
     }
 }
@@ -152,12 +162,12 @@ impl Llm {
         let models = [default_model(Role::Builder), default_model(Role::Character), default_model(Role::Decider), default_model(Role::Summarizer)];
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(600)).build().ok()?;
         let budget = crate::settings::Settings::load().budget();
-        Some(Arc::new(Llm { http, provider, models, db, spent: Mutex::new(0.0), budget: Mutex::new(budget) }))
+        Some(Arc::new(Llm { http, provider, models, db, spent: Mutex::new(0.0), budget: Mutex::new(budget), spent_by: Default::default() }))
     }
 
     #[cfg(test)]
     pub fn scripted(db: Arc<Db>, f: Script) -> Arc<Llm> {
-        Arc::new(Llm { http: reqwest::Client::new(), provider: Provider::Script(f), models: std::array::from_fn(|_| "script".to_string()), db, spent: Mutex::new(0.0), budget: Mutex::new(None) })
+        Arc::new(Llm { http: reqwest::Client::new(), provider: Provider::Script(f), models: std::array::from_fn(|_| "script".to_string()), db, spent: Mutex::new(0.0), budget: Mutex::new(None), spent_by: Default::default() })
     }
 
     pub fn model(&self, r: Role) -> &str {
@@ -173,6 +183,11 @@ impl Llm {
         }
     }
 
+    /// What guest `n` has spent this session.
+    pub fn spent_for(&self, n: u8) -> f64 {
+        self.spent_by.lock().get(&n).copied().unwrap_or(0.0)
+    }
+
     pub fn over_budget(&self) -> bool {
         self.budget.lock().is_some_and(|b| *self.spent.lock() >= b)
     }
@@ -181,6 +196,9 @@ impl Llm {
         let (pi, po, pc) = price(model, u.input + u.cache_read + u.cache_write);
         let cost = (u.input as f64 * pi + u.cache_write as f64 * pi * 1.25 + u.cache_read as f64 * pc + u.output as f64 * po) / 1e6;
         *self.spent.lock() += cost;
+        if let Ok(Some(n)) = PAYER.try_with(|p| *p) {
+            *self.spent_by.lock().entry(n).or_default() += cost;
+        }
         let _ = self.db.add_usage(purpose, u.input + u.cache_read + u.cache_write, u.output, cost);
     }
 

@@ -26,6 +26,9 @@ const BEHIND: Duration = Duration::from_millis(110);
 /// The farthest a guest may move between two of their messages (m): more
 /// is put back.
 const MAX_STEP: f32 = 25.0;
+/// How many slow things (deeds in words, makings, replies) a guest may have
+/// under way at once.
+const GUEST_AT_ONCE: usize = 3;
 
 pub enum Together {
     Host(Hosting),
@@ -44,6 +47,10 @@ pub struct Hosting {
     roster_dirty: bool,
     /// Keeps every guest's copy of the world's own tables the same.
     watch: crossbeam_channel::Sender<Watch>,
+    /// Beings answering a guest now: who asked, and what.
+    talks: HashMap<i64, (TravelerNo, String)>,
+    /// Each guest's talk with each being (theirs, the being's), for the next reply.
+    convs: HashMap<(TravelerNo, i64), Vec<(bool, String)>>,
 }
 
 struct Guest {
@@ -71,6 +78,8 @@ pub struct Guesting {
     look: crate::world::species::LookMap,
     /// Our own name in the host's world.
     me: String,
+    /// Who we last told the host we talk with.
+    talking: Option<i64>,
 }
 
 impl Hosting {
@@ -78,7 +87,7 @@ impl Hosting {
         let (watch, rx) = crossbeam_channel::unbounded();
         let p = path.clone();
         let _ = std::thread::Builder::new().name("host-rows".into()).spawn(move || crate::net::rows::watch(p, rx));
-        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false, watch }
+        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false, watch, talks: HashMap::new(), convs: HashMap::new() }
     }
 
     /// How many are here besides the host.
@@ -93,12 +102,22 @@ impl Hosting {
 
 impl Guesting {
     pub fn new(link: Link<Down, Up>, w: &Welcome, roster: Vec<Traveler>) -> Guesting {
-        Guesting { link, you: w.you, host: w.host.clone(), roster, heard: HashMap::new(), last_sent: Instant::now(), look: w.look.clone(), me: w.name.clone() }
+        Guesting { link, you: w.you, host: w.host.clone(), roster, heard: HashMap::new(), last_sent: Instant::now(), look: w.look.clone(), me: w.name.clone(), talking: None }
     }
 
     /// Do something in the host's world.
     pub fn act(&self, json: String) {
         self.link.send(Up::Act(json));
+    }
+
+    /// Say something to a being in the host's world.
+    pub fn talk(&self, cid: i64, text: String) {
+        self.link.send(Up::Talk { cid, text });
+    }
+
+    /// Say something to everyone.
+    pub fn say(&self, text: String) {
+        self.link.send(Up::Say(text));
     }
 
     /// The host's name, as they gave it.
@@ -136,9 +155,18 @@ impl App {
         }
         // What each guest says.
         let mut gone = Vec::new();
+        let mut talks = Vec::new();
+        let mut said = Vec::new();
         for (&no, g) in &h.guests {
             for m in g.link.drain() {
                 match m {
+                    Up::Talk { cid, text } => talks.push((no, cid, text)),
+                    Up::Talking(cid) => {
+                        if let Some(t) = self.sim.travelers.get_mut(&no) {
+                            t.talking_to = cid;
+                        }
+                    }
+                    Up::Say(text) => said.push((g.name.clone(), text)),
                     Up::Me(b) => self.guest_moved(no, b, g),
                     Up::Look(look) => {
                         if let Some(t) = self.sim.travelers.get_mut(&no) {
@@ -158,8 +186,19 @@ impl App {
                 h.roster_dirty = true;
             }
         }
+        for (no, cid, text) in talks {
+            self.guest_talks(h, no, cid, text);
+        }
+        for (who, text) in said {
+            self.say(Some(&who), &text, ACCENT);
+            for g in h.guests.values().filter(|g| g.told_ready && g.name != who) {
+                g.link.send(Down::Note(wire::Note::Line { id: None, who: who.clone(), text: text.clone() }));
+            }
+        }
         for no in gone {
             if let Some(g) = h.guests.remove(&no) {
+                h.talks.retain(|_, (n, _)| *n != no);
+                h.convs.retain(|(n, _), _| *n != no);
                 let _ = h.watch.send(Watch::Remove(no));
                 self.save_guest(no, &g);
                 self.sim.remove_traveler(no);
@@ -343,6 +382,111 @@ impl App {
         (at, face.x.atan2(face.z))
     }
 
+    /// Whether guest `no` may have the host's LLM do more for them now: not
+    /// past what the host lets each guest spend, and not too much at once.
+    /// The reason when not.
+    fn guest_may(&self, no: TravelerNo, talks: &HashMap<i64, (TravelerNo, String)>) -> Result<(), String> {
+        let Some(llm) = self.llm.as_ref() else { return Err("the host's world has no LLM: you can walk, look and take things".into()) };
+        if self.budget_paused || llm.over_budget() {
+            return Err("the host's budget is spent for now".into());
+        }
+        let limit = self.settings.guest_budget_usd;
+        if llm.spent_for(no) >= limit {
+            return Err(format!("the host's limit for you (${limit:.2}) is spent: you can still walk, look and take things"));
+        }
+        let busy = self.sim.work().iter().filter(|w| w.who == Some(ActorId::Traveler(no))).count() + talks.values().filter(|(n, _)| *n == no).count();
+        if busy >= GUEST_AT_ONCE {
+            return Err("wait for what you are doing to come first".into());
+        }
+        Ok(())
+    }
+
+    /// A guest says something to a being: it answers them (the host's LLM,
+    /// on what the guest may spend), and everyone near hears both.
+    fn guest_talks(&mut self, h: &mut Hosting, no: TravelerNo, cid: i64, text: String) {
+        let Some(g) = h.guests.get(&no) else { return };
+        let refuse = |why: String| {
+            g.link.send(Down::Note(wire::Note::Info(format!("({why})"))));
+            g.link.send(Down::ReplyDone { cid, ok: false });
+        };
+        if let Err(why) = self.guest_may(no, &h.talks) {
+            return refuse(why);
+        }
+        let name = self.sim.actor_name(ActorId::Npc(cid));
+        if h.talks.contains_key(&cid) || self.replying == Some(cid) {
+            return refuse(format!("{name} is answering someone else"));
+        }
+        let me = g.name.clone();
+        let text: String = text.chars().take(600).collect();
+        self.say(Some(&me), &text, ACCENT);
+        for (n, o) in &h.guests {
+            if *n != no && o.told_ready {
+                o.link.send(Down::Note(wire::Note::Line { id: None, who: me.clone(), text: text.clone() }));
+            }
+        }
+        let at = self.sim.travelers.get(&no).map(|t| t.a.pos);
+        self.sim.event("said", Some(ActorId::Traveler(no)), Some(ActorId::Npc(cid).key()), format!("{me} said to {name}: \"{text}\""), at, serde_json::json!({ "text": text }));
+        let context = self.guest_talk_context(no);
+        let history = h.convs.get(&(no, cid)).cloned().unwrap_or_default();
+        h.convs.entry((no, cid)).or_default().push((true, text.clone()));
+        h.talks.insert(cid, (no, text.clone()));
+        self.brain.send_as(crate::brain::Cmd::Talk { cid, text, context, history }, Some(no));
+    }
+
+    /// What a being is told of the moment when a guest speaks to it.
+    fn guest_talk_context(&self, no: TravelerNo) -> String {
+        let Some(t) = self.sim.travelers.get(&no) else { return String::new() };
+        let p = t.a.pos;
+        let place = self.snap.region_name(crate::world::region_of(p.x, p.z)).map(str::to_string).unwrap_or_else(|| "the open land".into());
+        let held = t.a.held.map(|h| format!(" {} is holding {}.", t.name, crate::sim::actions::the(&self.sim.thing_name(h)))).unwrap_or_default();
+        format!("It is {} in {place}. Speaking with you now is {}, another traveler (not the one your memories call the traveler).{held}", crate::render::sky::time_label(self.sim.t), t.name)
+    }
+
+    /// What the brain says, as the guests should hear it. True when it was
+    /// a reply to a guest, wholly handled here.
+    pub(super) fn share_event(&mut self, ev: &crate::brain::Event) -> bool {
+        use crate::brain::Event;
+        let Some(Together::Host(h)) = self.together.as_mut() else { return false };
+        match ev {
+            Event::Token { cid, text } => {
+                for g in h.guests.values().filter(|g| g.told_ready) {
+                    g.link.send(Down::Token { cid: *cid, text: text.clone() });
+                }
+                false
+            }
+            Event::ReplyDone { cid, ok } => {
+                for g in h.guests.values().filter(|g| g.told_ready) {
+                    g.link.send(Down::ReplyDone { cid: *cid, ok: *ok });
+                }
+                let Some((no, _)) = h.talks.remove(cid) else { return false };
+                // Theirs: the reply goes into their talk, not the host's.
+                let (cid, ok) = (*cid, *ok);
+                let reply = self.log.iter_mut().rev().find(|l| l.streaming == Some(cid)).map(|l| {
+                    l.streaming = None;
+                    l.text.clone()
+                });
+                if let Some(Together::Host(h)) = self.together.as_mut() {
+                    let c = h.convs.entry((no, cid)).or_default();
+                    match (ok, reply) {
+                        (true, Some(r)) => c.push((false, r)),
+                        _ => {
+                            c.pop();
+                        }
+                    }
+                }
+                self.voice_reply_done(cid, ok);
+                if let Some(line) = self.sim_talk.remove(&cid) {
+                    if ok {
+                        self.sim.npc_said(cid, line.trim());
+                    }
+                }
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// A guest does something: done as them, and they are told how it went.
     fn guest_acts(&mut self, no: TravelerNo, json: &str, g: &Guest) {
         let a = serde_json::from_str::<serde_json::Value>(json).map(|mut v| {
@@ -355,6 +499,13 @@ impl App {
             return;
         };
         let verb = a.verb().to_string();
+        // A deed in words is the host's LLM's work: within what they may spend.
+        if verb == "do" {
+            if let Err(why) = self.guest_may(no, &HashMap::new()) {
+                g.link.send(Down::Acted { verb, ok: false, msg: why, thing: false });
+                return;
+            }
+        }
         let r = self.sim.act(ActorId::Traveler(no), a);
         let (ok, msg, thing) = match r {
             Ok(o) => (o.ok, o.msg, o.thing.is_some()),
@@ -413,6 +564,8 @@ impl App {
                     Err(e) => crate::log::error(format!("taking in the host's world: {e:#}")),
                 },
                 Down::Own { wounds, fallen, glow } => self.sim.take_own(wounds, fallen, glow),
+                Down::Token { cid, text } => self.on_event(crate::brain::Event::Token { cid, text }),
+                Down::ReplyDone { cid, ok } => self.on_event(crate::brain::Event::ReplyDone { cid, ok }),
                 Down::Acted { verb, ok, msg, thing } => {
                     let told = matches!(verb.as_str(), "use" | "do" | "eat" | "answer" | "give" | "gesture" | "propose" | "pet" | "ride" | "dismount") || (matches!(verb.as_str(), "hold" | "drop") && !thing);
                     if !ok {
@@ -454,6 +607,11 @@ impl App {
             let b = between(q, at);
             b.onto(&mut t.a);
             t.pitch = b.pitch;
+        }
+        // Who we talk with, for them to face us (at once: before the words).
+        if g.talking != self.sim.talking_to {
+            g.talking = self.sim.talking_to;
+            g.link.send(Up::Talking(g.talking));
         }
         if g.last_sent.elapsed() >= BODY_EVERY {
             g.last_sent = now;
@@ -541,6 +699,24 @@ impl App {
             let host = g.host_name();
             self.together = Some(Together::Guest(g));
             self.say(None, &format!("You're in {host}'s world. They keep it, and its words come from them."), ACCENT);
+        }
+    }
+
+    /// Something said to everyone playing ("/say").
+    pub(super) fn say_to_all(&mut self, text: String) {
+        let text: String = text.chars().take(400).collect();
+        match &self.together {
+            Some(Together::Guest(g)) => {
+                g.say(text.clone());
+                self.say(Some("you"), &text, ACCENT);
+            }
+            Some(Together::Host(h)) => {
+                for g in h.guests.values().filter(|g| g.told_ready) {
+                    g.link.send(Down::Note(wire::Note::Line { id: None, who: h.name.clone(), text: text.clone() }));
+                }
+                self.say(Some("you"), &text, ACCENT);
+            }
+            None => {}
         }
     }
 
@@ -663,14 +839,26 @@ mod tests {
     use crate::model::{Live, WorldModel};
     use parking_lot::Mutex;
 
-    /// A game on `db` (no LLM, drawn on the CPU), hosting or a guest.
-    fn game(db: Arc<Db>, together: Option<Together>) -> App {
+    /// A game on `db` (drawn on the CPU), hosting or a guest, with an LLM
+    /// that always says the same.
+    fn game(db: Arc<Db>, together: Option<Together>, llm: bool) -> App {
         let live = Arc::new(Mutex::new(Live::default()));
         let mut model = WorldModel::load(db.clone(), None, live.clone()).unwrap();
         let snap = model.snapshot().unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
-        let brain = crate::brain::Brain::start(model, None, tx, false);
-        App::new(super::super::Setup { db, brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (100, 34), llm: None, genesis: false, together, seed: None })
+        let llm = llm.then(|| crate::llm::Llm::scripted(db.clone(), Arc::new(|sys: &str, _: &[crate::llm::Msg]| if sys.contains("You are a character") { "Welcome, stranger.".into() } else { "{}".into() })));
+        let brain = crate::brain::Brain::start(model, llm.clone(), tx, false);
+        App::new(super::super::Setup { db, brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (100, 34), llm, genesis: false, together, seed: None })
+    }
+
+    /// Tick both, and take in what each one's brain says.
+    fn tick_both(games: &mut [&mut App]) {
+        for g in games.iter_mut() {
+            g.tick(1.0 / 60.0);
+            while let Ok(ev) = g.events.try_recv() {
+                g.on_event(ev);
+            }
+        }
     }
 
     /// Tick until `done`, or fail after a while.
@@ -678,15 +866,17 @@ mod tests {
         let t0 = Instant::now();
         while !done(games) {
             assert!(t0.elapsed() < Duration::from_secs(15), "waited too long for {what}");
-            for g in games.iter_mut() {
-                g.tick(1.0 / 60.0);
-            }
+            tick_both(games);
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
     /// A world with someone in it, hosted, and a guest joined to it.
     fn pair(tag: &str, port: u16) -> (App, App, PathBuf) {
+        pair_with(tag, port, false)
+    }
+
+    fn pair_with(tag: &str, port: u16, llm: bool) -> (App, App, PathBuf) {
         let path = std::env::temp_dir().join(format!("pocket-together-{tag}-{}.pocket", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let db = Db::create(&path, 4242, "a quiet test valley", &serde_json::to_string(&crate::world::Look::default()).unwrap()).unwrap();
@@ -704,7 +894,7 @@ mod tests {
         .unwrap();
         let host = Host::start(port, "lime-otter-42".into()).unwrap();
         let addr = format!("127.0.0.1:{}", host.port);
-        let mut h = game(db, Some(Together::Host(Hosting::new(host, path.clone(), "Test Vale".into(), "Hal".into()))));
+        let mut h = game(db, Some(Together::Host(Hosting::new(host, path.clone(), "Test Vale".into(), "Hal".into()))), llm);
 
         // The guest joins on another thread while the host's game runs.
         let joining = std::thread::spawn(move || crate::net::guest::join(&addr, "lime-otter-42", "Bea", "tok-bea", |_, _| {}));
@@ -718,7 +908,7 @@ mod tests {
         assert_eq!(j.welcome.you, 1);
         let gdb = Db::from_bytes(&j.world).unwrap();
         crate::net::guest::as_guest(&gdb, &j.welcome).unwrap();
-        let mut g = game(gdb, Some(Together::Guest(Guesting::new(j.link, &j.welcome, j.roster.clone()))));
+        let mut g = game(gdb, Some(Together::Guest(Guesting::new(j.link, &j.welcome, j.roster.clone()))), false);
         g.arrive_as_guest(&j.welcome, j.roster);
         assert!(g.is_guest());
         (h, g, path)
@@ -796,9 +986,6 @@ mod tests {
             crate::db::add_instance(tx, lh as i64, v, at.x + 6.0, at.y, at.z, 0.0, 1.0, &[0.5; 8])
         }).unwrap();
         until(&mut [&mut h, &mut g], "the guest's world to have the cairn", |gs| {
-            while let Ok(ev) = gs[1].events.try_recv() {
-                gs[1].on_event(ev);
-            }
             gs[1].snap.instances.iter().any(|p| p.id == placed)
         });
         // The host says something to the world: the guest hears it, the host by name.
@@ -831,5 +1018,35 @@ mod tests {
         assert!((between(&q, t0 + Duration::from_millis(50)).pos[0] - 5.0).abs() < 0.01);
         assert_eq!(between(&q, t0 + Duration::from_secs(1)).pos[0], 10.0);
         assert_eq!(between(&q, t0.checked_sub(Duration::from_secs(1)).unwrap_or(t0)).pos[0], 0.0);
+    }
+
+    #[test]
+    fn a_guest_talks_on_what_the_host_lets_them_spend() {
+        let port = 47000 + (std::process::id() % 1000) as u16 * 7 % 9000;
+        let (mut h, mut g, path) = pair_with("talk", port, true);
+        until(&mut [&mut h, &mut g], "the guest to be in", |gs| gs[1].sim.travelers.contains_key(&0));
+        let mara = h.sim.cast.npcs[0].def.id;
+        // Bea goes up to Mara.
+        let by = g.sim.cast.get(mara).unwrap().a.pos + Vec3::new(1.5, 0.0, 0.0);
+        g.sim.player.pos = by;
+        h.sim.travelers.get_mut(&1).unwrap().a.pos = by;
+        h.sim.cast.get_mut(mara).unwrap().think_at = f64::MAX;
+        g.set_mode(super::super::Mode::Talk(mara));
+        g.sim.talking_to = Some(mara);
+        g.send_talk(mara, "Hello there".into());
+        until(&mut [&mut h, &mut g], "Mara's answer to reach the guest", |gs| gs[1].log.iter().any(|l| l.text.contains("Welcome, stranger")) && gs[1].replying.is_none());
+        assert!(h.log.iter().any(|l| l.speaker.as_deref() == Some("Bea") && l.text == "Hello there"), "the host heard Bea");
+        assert!(h.log.iter().any(|l| l.text.contains("Welcome, stranger")), "and Mara's answer");
+        assert!(h.conv.get(&mara).is_none_or(|c| c.is_empty()), "Bea's talk isn't the host's");
+        assert_eq!(h.sim.travelers[&1].talking_to, Some(mara), "Mara knows who she talks with");
+        let spent = h.llm.as_ref().unwrap().spent_for(1);
+        assert!(spent > 0.0, "what it cost is counted as Bea's");
+        // Past what the host lets a guest spend: told so, plainly.
+        h.settings.guest_budget_usd = spent * 0.5;
+        g.send_talk(mara, "And again?".into());
+        until(&mut [&mut h, &mut g], "the guest to be told", |gs| gs[1].log.iter().any(|l| l.text.contains("limit for you")) && gs[1].replying.is_none());
+        g.shutdown();
+        h.shutdown();
+        let _ = std::fs::remove_file(&path);
     }
 }
