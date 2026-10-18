@@ -54,6 +54,8 @@ pub struct Hosting {
     tunnel: Option<crate::net::ngrok::Tunnel>,
     /// The tunnel's state last told in the log.
     told_tunnel: Option<crate::net::ngrok::State>,
+    /// Guests sent away (by token): not let back in while this hosting lasts.
+    sent_away: std::collections::HashSet<String>,
     /// Each guest's talk with each being (theirs, the being's), for the next reply.
     convs: HashMap<(TravelerNo, i64), Vec<(bool, String)>>,
 }
@@ -100,7 +102,7 @@ impl Hosting {
         let (watch, rx) = crossbeam_channel::unbounded();
         let p = path.clone();
         let _ = std::thread::Builder::new().name("host-rows".into()).spawn(move || crate::net::rows::watch(p, rx));
-        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false, watch, talks: HashMap::new(), convs: HashMap::new(), _beacon: beacon, told_tunnel: (internet && tunnel.is_none()).then(|| crate::net::ngrok::State::Failed(String::new())), tunnel }
+        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false, watch, talks: HashMap::new(), convs: HashMap::new(), _beacon: beacon, sent_away: Default::default(), told_tunnel: (internet && tunnel.is_none()).then(|| crate::net::ngrok::State::Failed(String::new())), tunnel }
     }
 
     /// Where guests join: the public address when there is one, else this
@@ -367,6 +369,11 @@ impl App {
         let Arrival { hello, link, from } = a;
         // The host playing in their own world from another window.
         let token = if hello.token == self.settings.player().1 { format!("{}+", hello.token) } else { hello.token.clone() };
+        if h.sent_away.contains(&token) {
+            link.send(Down::Refused(format!("{} sent you away from this world for now.", h.name)));
+            link.close();
+            return;
+        }
         let known = self.db.travelers();
         let row = known.iter().find(|r| r.token == token).cloned();
         let Some(no) = row.as_ref().map(|r| r.no).or_else(|| (1..=u8::MAX).find(|n| !known.iter().any(|r| r.no == *n))) else {
@@ -795,6 +802,30 @@ impl App {
         };
         let copied = matches!(self.together, Some(Together::Host(_))) && arboard::Clipboard::new().and_then(|mut c| c.set_text(line.clone())).is_ok();
         self.say(None, &if copied { format!("Copied: {line}. Whoever joins presses J on their worlds list and pastes it.") } else { line }, ACCENT);
+    }
+
+    /// The host sends a guest away ("/kick NAME"): they leave the world at
+    /// once (kept as they were, as on any leaving) and can't come back
+    /// while this hosting lasts.
+    pub(super) fn send_away(&mut self, name: &str) {
+        let Some(Together::Host(h)) = self.together.as_mut() else {
+            self.say(None, "Only the host can send someone away.", DIM);
+            return;
+        };
+        let want = name.trim().to_lowercase();
+        let found = h.guests.iter().find(|(_, g)| g.name.to_lowercase() == want).or_else(|| h.guests.iter().find(|(_, g)| g.name.to_lowercase().starts_with(&want))).map(|(n, g)| (*n, g.name.clone()));
+        let Some((no, who)) = found.filter(|_| !want.is_empty()) else {
+            let names = h.names();
+            let here = if names.is_empty() { "nobody else is here".to_string() } else { format!("here: {}", names.join(", ")) };
+            self.say(None, &format!("No guest called {name} ({here})."), DIM);
+            return;
+        };
+        if let Some(g) = h.guests.get(&no) {
+            h.sent_away.insert(g.token.clone());
+            g.link.send(Down::Bye(format!("{} sent you away from this world.", h.name)));
+            g.link.close();
+        }
+        self.say(None, &format!("You sent {who} away; they can't come back until you host again."), DIM);
     }
 
     /// Something said to everyone playing ("/say").
@@ -1226,6 +1257,36 @@ mod tests {
         assert!(h.log.iter().any(|l| l.text.contains("dog barks")), "the host hears it");
         assert!(!h.log.iter().any(|l| l.text.contains("Mara waves")), "the host doesn't hear what is far from them");
         assert!(h.log.iter().any(|l| l.text.contains("The bridge gives way under Bea")), "but is told of the bridge, far off");
+        g.shutdown();
+        h.shutdown();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_host_sends_a_guest_away() {
+        let port = 53000 + (std::process::id() % 1000) as u16 * 7 % 9000;
+        let (mut h, mut g, path) = pair("kick", port);
+        until(&mut [&mut h, &mut g], "the guest to be in", |gs| gs[1].sim.travelers.contains_key(&0));
+        h.send_away("nobody");
+        assert!(h.log.iter().any(|l| l.text.contains("No guest called nobody (here: Bea)")));
+        h.send_away("be");
+        until(&mut [&mut h, &mut g], "Bea to be gone", |gs| !gs[0].sim.travelers.contains_key(&1) && gs[1].quit);
+        assert_eq!(g.left_because.as_deref(), Some("Hal sent you away from this world."));
+        assert!(g.to_worlds, "back to her worlds, told why");
+        // She can't come back while this hosting lasts.
+        let addr = match &h.together {
+            Some(Together::Host(x)) => format!("127.0.0.1:{}", x.host.port),
+            _ => unreachable!(),
+        };
+        let again = std::thread::spawn(move || crate::net::guest::join(&addr, "lime-otter-42", "Bea", "tok-bea", |_, _| {}).err().map(|e| e.to_string()));
+        let t0 = Instant::now();
+        while !again.is_finished() {
+            assert!(t0.elapsed() < Duration::from_secs(15));
+            h.tick(1.0 / 60.0);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let why = again.join().unwrap().expect("turned away");
+        assert!(why.contains("sent you away"), "{why}");
         g.shutdown();
         h.shutdown();
         let _ = std::fs::remove_file(&path);

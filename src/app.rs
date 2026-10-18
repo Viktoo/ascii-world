@@ -947,8 +947,8 @@ impl App {
         match lc.as_str() {
             "" => {}
             // Playing together: words for everyone here.
-            "say" if self.together.is_some() && !rest.is_empty() => self.say_to_all(rest.to_string()),
             "invite" if self.together.is_some() => self.copy_invite(),
+            "kick" if self.together.is_some() => self.send_away(rest),
             "name" if !rest.is_empty() => {
                 let name: String = rest.chars().filter(|c| !c.is_control()).take(24).collect();
                 self.settings.name = name.trim().to_string();
@@ -968,6 +968,7 @@ impl App {
                     "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings (q there quits)",
                     "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
+                    "Playing together: /say TEXT is heard by everyone playing · /invite (or F5) copies the address and code · /name NAME · host: /kick NAME sends a guest away",
                 ] {
                     self.say(None, l, DIM);
                 }
@@ -1014,7 +1015,12 @@ impl App {
             "yes" if rest.is_empty() => self.player_act(Action::Answer { yes: true, to: None }),
             "no" if rest.is_empty() => self.player_act(Action::Answer { yes: false, to: None }),
             "say" | "shout" if !rest.is_empty() => {
-                self.say(Some("you"), rest, ACCENT);
+                // Out loud: the people here hear it, and so does everyone playing.
+                if self.together.is_some() {
+                    self.say_to_all(rest.to_string());
+                } else {
+                    self.say(Some("you"), rest, ACCENT);
+                }
                 let to = self.person("");
                 self.player_act(Action::Say { text: rest.to_string(), to });
             }
@@ -1647,7 +1653,7 @@ impl App {
                         let g = if self.sim.mind_of(ActorId::Npc(*id)) != crate::world::species::Mind::Sapient { "   g pick up" } else { "" };
                         format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
                     }
-                    (None, Some(p), None) if matches!(p.target, Target::Actor(ActorId::Traveler(_))) => format!("{}: /say to talk to everyone   / do anything   F2 inspect", p.name),
+                    (None, Some(p), None) if matches!(p.target, Target::Actor(ActorId::Traveler(_))) => format!("{}: /say to talk to everyone   / do anything{}   F2 inspect", p.name, if self.is_guest() { "" } else { "   /kick to send away" }),
                     (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.sim.target_seats(&p.target) => format!("{}: e sit   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),

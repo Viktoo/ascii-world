@@ -301,7 +301,11 @@ achievements, kicking a guest, guest voices heard by others.
 - **Who pays**: each LLM request carries the guest it is for (a tokio task
   local), so its cost counts against what that guest may spend. Requests a
   guest's deed sets off later (a new kind of thing to write) are the host's.
-- **Talk between players**: `/say` (not in the first design).
+- **Talk between players**: `/say` (not in the first design): heard by
+  everyone playing, and out loud by the people near.
+- **Sending a guest away**: the host's `/kick NAME` (a start of the name
+  will do). The guest goes back to their worlds told why, kept as they were,
+  and can't come back until the host hosts again.
 - **Driving and riding**: a guest gets in or mounts by a deed like any
   other; then their keys go to the host as steering (20 times a second at
   most), the host moves the vehicle or mount, and the guest is carried where
@@ -319,5 +323,4 @@ Not yet:
 
 - Guests earn no achievements (on purpose: they are checked from what
   happens, which only the host's game has; sending it all wasn't worth it).
-- Nobody can be sent away by the host yet.
 - The ngrok tunnel was tested against its log format, not live.
