@@ -306,15 +306,10 @@ impl Sim {
         self.viewers().iter().any(|v| self.in_view(v, p, 0.0, 1.1))
     }
 
-    /// Whether the traveler is looking at a body at `p`, `r` wide: any of
-    /// it in the middle of the view. The outer part on each side doesn't
-    /// count, so what moves unseen can still creep in from the edge of the eye.
-    pub fn player_watches(&self, p: Vec3, r: f32) -> bool {
-        self.in_view(&self.viewers()[0], p, r, WATCHING)
-    }
-
     /// Who is looking at a body at `p`, `r` wide (any traveler on their
-    /// feet), and where they are.
+    /// feet), and where they are: any of it in the middle of their view. The
+    /// outer part on each side doesn't count, so what moves unseen can still
+    /// creep in from the edge of the eye.
     pub fn watched_by(&self, p: Vec3, r: f32) -> Option<(ActorId, Vec3)> {
         self.viewers().into_iter().find(|v| !self.traveler_fallen(v.0) && self.in_view(v, p, r, WATCHING)).map(|v| (v.0, v.1))
     }

@@ -29,6 +29,9 @@ pub enum Up {
     Me(Body),
     /// They changed how they look.
     Look(BTreeMap<String, f32>),
+    /// They do something (an action, as JSON, naming actors as the guest
+    /// knows them).
+    Act(String),
     /// Leaving.
     Bye,
 }
@@ -54,6 +57,21 @@ pub enum Down {
     Place(Body),
     /// A line for the log.
     Say(String),
+    /// The live world near the guest: what changed since last sent.
+    World(Box<WorldNear>),
+    /// Rows of the world's own tables (types, buildings, regions, people,
+    /// species…) changed by the host: the guest keeps them and, when
+    /// `rebuild`, makes its world anew from them.
+    Rows { tables: Vec<Rows>, rebuild: bool },
+    /// The guest's own lot: how hurt, fallen or not, glowing.
+    Own { wounds: f32, fallen: bool, glow: f32 },
+    /// Something for the log, as it is said to this guest.
+    Note(Note),
+    /// How what they did went (`verb` as the action's; the message names
+    /// them by name).
+    Acted { verb: String, ok: bool, msg: String, thing: bool },
+    /// Sounds near the guest, to be heard where they are.
+    Heard(Vec<Sound>),
     /// The host is leaving or closed the game.
     Bye(String),
 }
@@ -63,6 +81,8 @@ pub struct Welcome {
     pub you: TravelerNo,
     /// The world's name, as the host's worlds list shows it.
     pub world: String,
+    /// The guest's name, as the host's world knows them.
+    pub name: String,
     /// The host's name.
     pub host: String,
     /// The world's file, before deflating, and deflated (for progress).
@@ -75,6 +95,8 @@ pub struct Welcome {
     pub wounds: f32,
     /// The host's game time.
     pub t: f64,
+    /// The host's world's seed for this session (people look the same by it).
+    pub seed: u64,
 }
 
 /// Someone in the world.
@@ -99,6 +121,151 @@ pub struct Body {
     pub crouch: f32,
     pub alt: f32,
     pub flags: u8,
+}
+
+/// A thing as the guest draws it: everything once (and again when it
+/// changes), its motion often.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ThingFull {
+    pub id: i64,
+    pub type_id: u32,
+    pub scale: f32,
+    pub params: [f32; 8],
+    pub look: Vec<f32>,
+    pub props: Vec<f32>,
+    /// Who holds, holds with, or wears it (the host's actor codes).
+    pub holder: Option<i64>,
+    pub co_holder: Option<i64>,
+    pub worn: Option<i64>,
+    pub anchored: bool,
+    pub point_first: bool,
+    pub born: f64,
+    /// Where it came from and its shape (cuts, joint), as the world keeps them.
+    pub origin: String,
+    pub shape: String,
+    pub m: ThingMove,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ThingMove {
+    pub id: i64,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub yaw: f32,
+    pub state: [f32; 8],
+    /// Lying tilted (x, y, z, w), or [0; 4] upright.
+    pub tilt: [f32; 4],
+    pub asleep: bool,
+}
+
+/// A being, once (and when it changes): who they are.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct NpcFull {
+    pub id: i64,
+    pub persona: String,
+    pub home: [f32; 3],
+    pub version: i64,
+    pub props: Vec<f32>,
+    pub m: NpcMove,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct NpcMove {
+    pub id: i64,
+    pub body: Body,
+    pub growth: f32,
+    /// Away (out of its hours), dead, being talked with.
+    pub away: bool,
+    pub dead: bool,
+    pub held: Option<i64>,
+}
+
+/// A scatter cell that is alive with something (burning, wet, charred).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CellState {
+    pub at: (i32, i32),
+    pub type_id: u32,
+    pub pos: [f32; 3],
+    pub size: f32,
+    pub small: bool,
+    pub water: bool,
+    pub active: bool,
+    pub props: Vec<f32>,
+}
+
+/// What changed near a guest since the last time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct WorldNear {
+    pub t: f64,
+    pub things: Vec<ThingFull>,
+    pub moved: Vec<ThingMove>,
+    pub things_gone: Vec<i64>,
+    pub npcs: Vec<NpcFull>,
+    pub npcs_moved: Vec<NpcMove>,
+    pub npcs_props: Vec<(i64, Vec<f32>)>,
+    pub npcs_gone: Vec<i64>,
+    pub cells: Vec<CellState>,
+    pub cells_gone: Vec<(i32, i32)>,
+    /// Scatter cells used up (eaten, burnt), and when, when that changed.
+    pub spent: Option<Vec<((i32, i32), f64)>>,
+    /// Flashes where something appeared, and blasts (where, when, how far).
+    pub flashes: Vec<([f32; 3], f64)>,
+    pub blasts: Vec<([f32; 3], f64, f32)>,
+    /// Where things are being conjured now (and whether by this guest),
+    /// when that changed.
+    pub conjuring: Option<Vec<([f32; 3], bool)>>,
+    /// The weather's state (JSON), when it changed.
+    pub weather: Option<String>,
+}
+
+/// A table's changed rows (whole rows, by column) and gone keys.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Rows {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Val>>,
+    /// Keys (the table's key columns) of rows that are gone.
+    pub gone: Vec<Vec<Val>>,
+}
+
+/// One value in a row.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Val {
+    Null,
+    Int(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+/// A log line for one guest.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Note {
+    /// Someone speaks (`id` the host's actor code, when a being), with the
+    /// voice's tone for the guest's own voices.
+    Line { id: Option<i64>, who: String, text: String },
+    Info(String),
+    Ambient(String),
+    Notable(String),
+    Made(String),
+    Far { text: String, at: [f32; 3], made: bool },
+    Incident { id: u32, text: String, at: [f32; 3], near: bool },
+    Effect(String),
+}
+
+/// A sound, where it is and who made it (the host's actor code).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Sound {
+    pub at: [f32; 3],
+    pub from: Option<i64>,
+    pub what: Heard,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Heard {
+    /// A call, as JSON parts.
+    Call { call: String, mass: f32, pitch: f32, gain: f32 },
+    Hit { mat: [f32; 4], mass: f32, speed: f32, by: Option<([f32; 4], f32)> },
 }
 
 pub const RUNNING: u8 = 1;
@@ -166,7 +333,7 @@ mod tests {
     fn messages_go_through_whole() {
         let mut look = BTreeMap::new();
         look.insert("skin".to_string(), 0.4);
-        let m = Down::Welcome(Welcome { you: 2, world: "a bay".into(), host: "Hal".into(), bytes: 10, packed: 5, body: Body { pos: [1.0, 2.0, 3.0], flags: RUNNING | GROUNDED, ..Default::default() }, look, wounds: 0.0, t: 12.5 });
+        let m = Down::Welcome(Welcome { you: 2, world: "a bay".into(), name: "Ana".into(), host: "Hal".into(), bytes: 10, packed: 5, body: Body { pos: [1.0, 2.0, 3.0], flags: RUNNING | GROUNDED, ..Default::default() }, look, wounds: 0.0, t: 12.5, seed: 1 });
         let back: Down = crate::net::decode(&crate::net::encode(&m)).unwrap();
         assert_eq!(back, m);
     }

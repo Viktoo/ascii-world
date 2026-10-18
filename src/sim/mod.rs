@@ -31,6 +31,7 @@ pub mod inspect;
 pub mod interp;
 pub mod joint;
 pub mod life;
+pub mod mirror;
 pub mod missile;
 pub mod motion;
 pub mod needs;
@@ -129,10 +130,6 @@ impl ActorId {
             return n.parse::<u8>().ok().map(ActorId::Traveler);
         }
         s.trim_start_matches("npc:").parse::<i64>().ok().filter(|i| *i > 0).map(ActorId::Npc)
-    }
-    /// A traveler (the player or another), not a character.
-    pub fn is_traveler(self) -> bool {
-        matches!(self, ActorId::Player | ActorId::Traveler(_))
     }
 }
 
@@ -359,6 +356,8 @@ pub struct Sim {
     pub travelers: BTreeMap<u8, travelers::Traveler>,
     /// What travelers who aren't here hold and wear, kept for them.
     pub stowed: BTreeMap<u8, Vec<things::Thing>>,
+    /// A guest's copy of the host's world (see `mirror`).
+    pub mirror: mirror::Mirror,
     pub cast: Cast,
     pub things: Things,
     pub field: env::Field,
@@ -461,6 +460,7 @@ impl Sim {
             own: Default::default(),
             travelers: BTreeMap::new(),
             stowed: BTreeMap::new(),
+            mirror: Default::default(),
             cast: Cast::default(),
             things: Things::default(),
             field: env::Field::default(),

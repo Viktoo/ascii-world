@@ -350,6 +350,7 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
         llm,
         genesis,
         together,
+        seed: None,
     });
     app.start_loading();
     let r = window::play(win, &mut app, stop);
@@ -401,6 +402,7 @@ fn join(win: &mut window::Win, addr: &str, code: &str, stop: &AtomicBool) -> Res
         llm: None,
         genesis: false,
         together: Some(app::together::Together::Guest(guesting)),
+        seed: Some(joined.welcome.seed),
     });
     app.arrive_as_guest(&joined.welcome, joined.roster);
     app.start_loading();
@@ -620,7 +622,7 @@ fn bench(args: &[String]) -> Result<()> {
         None => render::cpu::spawn(),
     };
     let backend = render.backend.clone();
-    let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, truecolor: true, size: (w, h), llm, genesis: false, together: None });
+    let mut app = app::App::new(app::Setup { db: l.db.clone(), brain, events: erx, render, snap: l.snap, live: l.live, truecolor: true, size: (w, h), llm, genesis: false, together: None, seed: None });
     app.noclip = true;
     let start = app.pos();
     let stop = AtomicBool::new(false);

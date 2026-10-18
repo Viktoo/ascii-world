@@ -121,11 +121,11 @@ fn greet(sock: std::net::TcpStream, from: String, code: &str, tx: &Sender<Arriva
 /// The world as a guest gets it: the file as it is now (the game saves
 /// first), less what is only the host's (what it cost them, the world's
 /// own id), deflated. Nothing is left on disk.
-pub fn guest_copy(src: &Path) -> Result<(Vec<u8>, u64)> {
+pub fn guest_copy(src: &Path) -> Result<(Vec<u8>, u64, super::rows::Snapshot)> {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let out: PathBuf = std::env::temp_dir().join(format!("pocket-guest-copy-{}-{}.pocket", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     let _ = std::fs::remove_file(&out);
-    let made = (|| -> Result<Vec<u8>> {
+    let made = (|| -> Result<(Vec<u8>, super::rows::Snapshot)> {
         let c = rusqlite::Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         c.execute("VACUUM INTO ?1", [out.to_string_lossy()])?;
         drop(c);
@@ -134,15 +134,17 @@ pub fn guest_copy(src: &Path) -> Result<(Vec<u8>, u64)> {
         c.execute("DELETE FROM kv WHERE key = 'world_id'", [])?;
         // Who each guest is stays with the host.
         c.execute("UPDATE travelers SET token = 'traveler-' || no", [])?;
+        // What the guest has of the world's own tables, to keep it the same from.
+        let (had, _) = super::rows::read(&c)?;
         drop(c);
-        Ok(std::fs::read(&out)?)
+        Ok((std::fs::read(&out)?, had))
     })();
     let _ = std::fs::remove_file(&out);
-    let raw = made.context("copy the world")?;
+    let (raw, had) = made.context("copy the world")?;
     let size = raw.len() as u64;
     let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
     z.write_all(&raw)?;
-    Ok((z.finish()?, size))
+    Ok((z.finish()?, size, had))
 }
 
 /// The pieces a world is sent in.
@@ -176,8 +178,8 @@ mod tests {
 
     /// What a game would do with an arrival: the world, in pieces.
     fn welcome(a: &Arrival, path: &Path) {
-        let (packed, bytes) = guest_copy(path).unwrap();
-        a.link.send(Down::Welcome(Welcome { you: 2, world: "a quiet bay".into(), host: "Hal".into(), bytes, packed: packed.len() as u64, body: Body { pos: [5.0, 0.0, 6.0], ..Default::default() }, look: Default::default(), wounds: 0.2, t: 300.0 }));
+        let (packed, bytes, _) = guest_copy(path).unwrap();
+        a.link.send(Down::Welcome(Welcome { you: 2, world: "a quiet bay".into(), name: "Ana".into(), host: "Hal".into(), bytes, packed: packed.len() as u64, body: Body { pos: [5.0, 0.0, 6.0], ..Default::default() }, look: Default::default(), wounds: 0.2, t: 300.0, seed: 1 }));
         for c in packed.chunks(1000) {
             a.link.send(Down::WorldChunk(c.to_vec()));
         }

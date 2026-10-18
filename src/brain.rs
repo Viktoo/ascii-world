@@ -49,6 +49,9 @@ pub enum Cmd {
     /// Read people's look (face, hair, clothes) from their words. Answered
     /// by `Event::Dressed`.
     Dress { people: Vec<(i64, String)> },
+    /// Make the world anew from its tables (a guest's copy, changed by the
+    /// host). Answered by `Event::Flip`.
+    Reload,
 }
 
 pub enum Event {
@@ -80,6 +83,7 @@ pub enum Event {
 
 enum CMsg {
     Commit(Box<CommitRequest>, oneshot::Sender<Result<CommitOk, Vec<Diag>>>),
+    Reload,
     Undo(oneshot::Sender<Result<(Arc<WorldSnapshot>, String), String>>),
     History(oneshot::Sender<Vec<String>>),
     Info((i32, i32), oneshot::Sender<Info>),
@@ -145,7 +149,7 @@ impl Brain {
                         Err(d) => crate::log::error(format!("full world shader failed: {}", format_diags(&d))),
                     }
                 }
-                committer(model, ctx_rx)
+                committer(model, ctx_rx, ev_c)
             })
             .expect("spawn committer");
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).max_blocking_threads(4).thread_stack_size(8 << 20).enable_all().build().expect("tokio runtime");
@@ -181,6 +185,10 @@ impl Brain {
                     // Memories need no model.
                     Cmd::Witness { cid, text, importance } => {
                         let _ = mem_db.add_memory(cid, crate::db::now(), &text, importance);
+                        continue;
+                    }
+                    Cmd::Reload => {
+                        let _ = commit2.send(CMsg::Reload);
                         continue;
                     }
                     Cmd::History => {
@@ -220,9 +228,17 @@ impl Brain {
     }
 }
 
-fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>) {
+fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>, events: crossbeam_channel::Sender<Event>) {
     while let Ok(m) = rx.recv() {
         match m {
+            CMsg::Reload => {
+                match model.reload() {
+                    Ok(snap) => {
+                        let _ = events.send(Event::Flip { snap, region: None });
+                    }
+                    Err(e) => crate::log::error(format!("making the world anew: {e:#}")),
+                }
+            }
             CMsg::Commit(req, reply) => {
                 let r = model.commit(*req);
                 let _ = reply.send(r);
@@ -275,6 +291,8 @@ impl Ctx {
 
 async fn run(ctx: Ctx, cmd: Cmd) {
     match cmd {
+        // Answered on the committer, before any LLM.
+        Cmd::Reload => {}
         Cmd::Genesis => {
             let _ = ctx.events.send(Event::Building(1));
             if let Err(e) = genesis(&ctx).await {

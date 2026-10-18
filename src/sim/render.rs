@@ -215,6 +215,11 @@ impl Sim {
     /// the overlay, for the static world's own drawing).
     fn work_marks(&self) -> Marks {
         let mut m = Marks::default();
+        // A guest's copy: the host says what is being conjured.
+        if self.mirror.on {
+            m.conjures = self.mirror.conjuring.clone();
+            return m;
+        }
         for w in self.work() {
             if w.appears {
                 if let Some(at) = w.at {

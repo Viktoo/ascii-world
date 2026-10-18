@@ -11,6 +11,7 @@
 
 pub mod guest;
 pub mod host;
+pub mod rows;
 pub mod wire;
 
 use anyhow::Result;

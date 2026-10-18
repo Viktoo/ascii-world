@@ -277,6 +277,9 @@ pub struct Setup {
     pub genesis: bool,
     /// Hosting, or a guest (whose world this is, held only in memory).
     pub together: Option<together::Together>,
+    /// The world's seed for this session (a guest takes the host's, so
+    /// people look the same to both).
+    pub seed: Option<u64>,
 }
 
 impl App {
@@ -286,7 +289,7 @@ impl App {
             Some(p) => (crate::model::afloat(&s.snap.terrain, Vec3::new(p.x, 0.0, p.z)), p.yaw, p.t_game),
             None => (s.snap.spawn, 0.0, 0.33 * sky::DAY_SECONDS),
         };
-        let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
+        let seed = s.seed.unwrap_or_else(|| s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17));
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
         sim.has_llm = s.brain.has_llm;
         let achievements = crate::achievements::Tracker::load(&s.db, &sim);
@@ -650,6 +653,12 @@ impl App {
     fn player_act(&mut self, a: Action) {
         let verb = a.verb();
         self.sim.look_pitch = self.pitch;
+        // A guest's deeds are done in the host's world.
+        if let Some(together::Together::Guest(g)) = &self.together {
+            g.act(together::action_json(&a));
+            self.dirty = true;
+            return;
+        }
         match self.sim.act(ActorId::Player, a) {
             Ok(o) => {
                 // Things picked up show in the hand; a being in the arms is told.
@@ -948,6 +957,7 @@ impl App {
                     self.say(None, l, DIM);
                 }
             }
+            "undo" if self.is_guest() => self.say(None, "Only the host can undo in their world.", DIM),
             "undo" => {
                 self.brain.send(Cmd::Undo);
                 let got = self.achievements.grant("fresh_start");
@@ -1170,6 +1180,13 @@ impl App {
         let terrain_changed = render::terrain_epoch(&snap.terrain) != render::terrain_epoch(&self.snap.terrain);
         self.snap = snap.clone();
         self.sim.flip(snap);
+        if self.is_guest() {
+            // The made ground on the land made anew; and what waited for its kind.
+            if terrain_changed {
+                crate::sim::persist::apply_made_ground(&mut self.sim);
+            }
+            self.sim.mirror_pending();
+        }
         self.unstick();
         if terrain_changed {
             // The land reshaped itself; don't leave the player under water.
@@ -1279,9 +1296,12 @@ impl App {
             }
             crate::sim::headless::forward(&self.sim, &self.brain, r);
         }
-        for n in self.sim.drain_notes() {
+        let notes = self.sim.drain_notes();
+        self.share_notes(&notes);
+        for n in notes {
             self.tell(n);
         }
+        self.share_sounds();
         self.hear(dt);
         self.mouths();
         self.ears_frame();
@@ -1290,8 +1310,11 @@ impl App {
             self.dirty = true;
         }
         self.update_work();
-        let got = self.achievements.update(&self.sim);
-        self.announce(got);
+        // A guest's achievements wait (the world isn't theirs).
+        if !self.is_guest() {
+            let got = self.achievements.update(&self.sim);
+            self.announce(got);
+        }
         if !self.toasts.is_empty() {
             self.dirty = true;
         }
@@ -1588,6 +1611,7 @@ impl App {
                         let g = if self.sim.mind_of(ActorId::Npc(*id)) != crate::world::species::Mind::Sapient { "   g pick up" } else { "" };
                         format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
                     }
+                    (None, Some(p), None) if matches!(p.target, Target::Actor(ActorId::Traveler(_))) => format!("{}: /say to talk to everyone   / do anything   F2 inspect", p.name),
                     (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.sim.target_seats(&p.target) => format!("{}: e sit   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),
@@ -2361,8 +2385,14 @@ const RAMP: &[u8] = b" .:-=+*#%@";
 /// A message about the traveler, said to them: "the traveler pets Mog" →
 /// "You pet Mog", "Mog nips the traveler's hand" → "Mog nips your hand".
 fn you(msg: &str) -> String {
-    let s = msg.replace("the traveler's", "your");
-    let s = match s.strip_prefix("the traveler ") {
+    you_as(msg, "the traveler")
+}
+
+/// A message about `name` said to them: "Bea picks up the stone" → "You
+/// pick up the stone".
+fn you_as(msg: &str, name: &str) -> String {
+    let s = msg.replace(&format!("{name}'s"), "your");
+    let s = match s.strip_prefix(&format!("{name} ")) {
         Some(rest) => {
             let (verb, tail) = rest.split_once(' ').unwrap_or((rest, ""));
             let verb = match verb {
@@ -2380,7 +2410,7 @@ fn you(msg: &str) -> String {
         }
         None => s,
     };
-    let s = s.replace(" the traveler", " you");
+    let s = s.replace(&format!(" {name}"), " you");
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().chain(c).collect(),
@@ -2625,7 +2655,7 @@ mod tests {
             Some(g) => crate::render::gpu::spawn(g.clone()),
             None => crate::render::cpu::spawn(),
         };
-        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false, together: None });
+        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false, together: None, seed: None });
         (app, db, gpu)
     }
 
@@ -2645,7 +2675,7 @@ mod tests {
         let snap = model.snapshot().unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
         let brain = Brain::start(model, None, tx, false);
-        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false, together: None });
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false, together: None, seed: None });
         app.open_menu(false);
         app.on_key(key(KeyCode::Char('3'), KeyEventKind::Press));
         for _ in 0..3 {
