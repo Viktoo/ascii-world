@@ -49,6 +49,7 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
                                          start on the new-world screen: check or edit the
                                          prompt (a random one if none given), then step in
   pocket prompts [--sample N]            print N random prompts (default 20)
+  pocket version                         this build: its release (0.1.0) or dev and its commit
   pocket host [FILE] [--port 7777] [--code CODE] [--ngrok]
                                          open a world (or your last) for others to join
                                          (--ngrok: from anywhere, through an ngrok tunnel)
@@ -104,6 +105,10 @@ fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("-h") | Some("--help") | Some("help") => {
             println!("{USAGE}");
+            Ok(())
+        }
+        Some("version") | Some("--version") | Some("-V") => {
+            println!("{}", db::build_name());
             Ok(())
         }
         Some("new") => {

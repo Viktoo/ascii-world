@@ -435,6 +435,10 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Opti
     let fy = h.saturating_sub(2);
     let build = crate::db::build_name();
     scr.text(w.saturating_sub(build.chars().count() as u16 + 2), 1, &build, DIM, BG, false);
+    if let Some(n) = crate::net::update::newer() {
+        let line = clip(&format!("{} is out: {}", n.version, n.url.trim_start_matches("https://")), w.saturating_sub(4) as usize);
+        scr.text(w.saturating_sub(line.chars().count() as u16 + 2), 2, &line, ACCENT, BG, false);
+    }
     scr.center_text(cx, fy.saturating_sub(1), &clip("Drop a .pocket file here to add a world someone shared", w.saturating_sub(4) as usize), DIM);
     if let Some(n) = note {
         scr.center_text(cx, fy, &clip(n, w.saturating_sub(4) as usize), ACCENT);
@@ -452,6 +456,7 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Opti
 /// Your worlds: open one, start a new one, or delete one. `note`: a line
 /// to show first (why a game together ended).
 pub fn pick(win: &mut Win, note: Option<String>) -> Choice {
+    crate::net::update::ask();
     let mut list = worlds();
     let (w, h, _) = win.grid();
     let mut scr = Screen::new(w, h, true);

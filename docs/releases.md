@@ -8,7 +8,8 @@ files and the command stays `pocket`.
 The `version` in `Cargo.toml` is the release. A build is that release when it
 is a clean build of the commit tagged `v<version>`; any other build is `dev`
 (`build.rs` sets `POCKET_RELEASE`, read as `db::RELEASE`). Players see
-`0.1.0`, or `dev <commit>`, on the worlds list and in the settings menu.
+`0.1.0`, or `dev <commit>`, on the worlds list and in the settings menu; `pocket version`
+prints it.
 
 A world keeps the release and commit that made it (`made_with_release`,
 `made_with`) and that last opened it (`last_opened_with_release`,
@@ -33,9 +34,13 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The `release` workflow (`.github/workflows/release.yml`) builds
-`Infinite Pocket.app` for Apple Silicon on the tag, zips it, and attaches it
-to a GitHub release for that tag.
+The `release` workflow (`.github/workflows/release.yml`) checks the tag is
+Cargo.toml's version, builds on the tag, checks `pocket version` says the
+same, bundles `Infinite Pocket.app` for Apple Silicon
+(`scripts/bundle-macos.sh`, which also works locally after
+`cargo build --release`: `dist/Infinite-Pocket-<version>-macos-arm64.zip`),
+and attaches the zip to a GitHub release of the tag, with notes on opening an
+unsigned app and the commits since the last release.
 
 ## Opening an unsigned build
 
@@ -45,9 +50,11 @@ again; after that it opens normally.
 
 ## Updates
 
-On start the worlds list asks GitHub once for the latest release and says
-when a newer one is out (settings: "Check for updates"). It never updates
-by itself.
+On start a release build's worlds list asks GitHub once for the latest
+release of `Viktoo/ascii-world` (`net::update::REPO`) and says when a newer
+one is out, with its link (settings: "Tell me of new releases"). Dev builds
+don't ask. It never updates by itself. A private repository answers no one,
+so this needs the releases to be public.
 
 ## Later
 
