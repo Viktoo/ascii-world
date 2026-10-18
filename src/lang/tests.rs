@@ -440,3 +440,26 @@ fn meta_sound_is_read_and_checked() {
         assert!(d.iter().any(|x| x.msg.contains("meta.sound")), "{bad}: {}", format_diags(&d));
     }
 }
+
+/// A flat triangle and a tapering cone measure true distances (on the CPU;
+/// the GPU's twins are checked by the kitchen sink's parity), and types
+/// saved before them that named a local so still compile.
+#[test]
+fn triangles_and_cones() {
+    let src = r#"
+export const meta = { name: "ear", bounds: [1, 1, 1], tags: ["prop"] };
+export function sdf(x, y, z, k) {
+  return min(triangle(x, y, z, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02), cone(x - 3, y, z, 0, 0, 0, 0, 2, 0, 0.5, 0.1));
+}
+export function color(x, y, z, k) { const cone = 2; return rgb(cone, 2, 3); }
+"#;
+    let t = compile(src).unwrap_or_else(|d| panic!("{}", format_diags(&d)));
+    let k = default_k(0.0);
+    let d = |p: [f32; 3]| t.sdf(p, &k);
+    assert!((d([0.2, 0.2, 0.5]) - 0.48).abs() < 1e-4, "over its face: {}", d([0.2, 0.2, 0.5]));
+    assert!((d([-0.5, 0.5, 0.0]) - 0.48).abs() < 1e-4, "off its edge: {}", d([-0.5, 0.5, 0.0]));
+    assert!((d([3.0, -1.0, 0.0]) - 0.5).abs() < 1e-4, "under the wide end: {}", d([3.0, -1.0, 0.0]));
+    assert!((d([3.0, 3.0, 0.0]) - 0.9).abs() < 1e-4, "over the point: {}", d([3.0, 3.0, 0.0]));
+    assert!(d([3.0, 1.0, 0.0]) < -0.25, "inside, about 0.3 across halfway");
+    assert!(d([3.45, 1.9, 0.0]) > 0.0, "it narrows toward the top");
+}

@@ -7,7 +7,6 @@ use super::{ACCENT, App, DIM, TEXT, speaker_color};
 use crate::brain::Event;
 use crate::pace::Task;
 use crate::term::Cell;
-use crate::terrain::WATER_LEVEL;
 use crate::world::species::Mind;
 use crate::world::{REGION, region_of};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -78,6 +77,8 @@ struct MapCache {
 #[derive(Clone, Copy)]
 struct Ground {
     h: f32,
+    /// The water's surface there (the sea's, or a pond's).
+    water: f32,
     color: [u8; 3],
     steep: bool,
     /// Trees per map cell, from the biome's scatter.
@@ -483,7 +484,7 @@ impl App {
                     let color = [c.x, c.y, c.z].map(|v| (v * shade * 255.0).clamp(0.0, 255.0) as u8);
                     let b = &terrain.biomes[terrain.biome_at(q.x, q.z)];
                     let density = crate::world::scatter::trees_at(&terrain, b, q.x, q.z);
-                    cells.push(Ground { h, color, steep: n.y < 0.8, trees: density * sx * sz / 100.0 });
+                    cells.push(Ground { h, water: terrain.water(q.x, q.z), color, steep: n.y < 0.8, trees: density * sx * sz / 100.0 });
                 }
             }
             l.map = Some(MapCache { key, cells });
@@ -520,9 +521,9 @@ impl App {
                 } else if e > reach - 0.07 {
                     let k = (hash01(i as u32, j as u32, frame) * 4.0) as usize;
                     (['·', ':', '+', '*'][k.min(3)], mix(FOG, ACCENT, 0.55))
-                } else if g.h < WATER_LEVEL {
+                } else if g.h < g.water {
                     let wave = (i as f32 * 0.7 + j as f32 * 1.3 - t * 1.6).sin();
-                    let deep = 1.0 - ((WATER_LEVEL - g.h) / 10.0).min(0.45);
+                    let deep = 1.0 - ((g.water - g.h) / 10.0).min(0.45);
                     (if wave > 0.55 { '≈' } else { '~' }, scale(water, (0.6 + 0.2 * wave) * deep))
                 } else if hash01(i as u32, j as u32, 2) < (g.trees * 0.35).min(0.3) {
                     ('♣', scale(g.color, 1.15))

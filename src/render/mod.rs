@@ -490,7 +490,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         sun_col: v4(l.sun_col, l.night),
         sky_zen: v4(l.zenith, pal.fog * w.fog * (1.0 + 0.8 * w.falls)),
         sky_hor: v4(l.horizon, l.ambient),
-        water: v4(rgbv(pal.water), crate::terrain::WATER_LEVEL),
+        water: v4(rgbv(pal.water), t.sea),
         rock: v4(rgbv(pal.rock), 0.0),
         sand: v4(rgbv(pal.sand), 0.0),
         snow: v4(rgbv(pal.snow), 0.0),

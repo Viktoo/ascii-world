@@ -552,3 +552,46 @@ fn underwater_png() {
     png_of(&mut s, &snap, &gpu, cam(-0.9, 0.0), &format!("{dir}/pocket-swim-under.png"));
     png_of(&mut s, &snap, &gpu, cam(-1.2, 0.9), &format!("{dir}/pocket-swim-up.png"));
 }
+
+/// Water in dug ground, in a land with no sea and ground water 1.5 m down:
+/// a pit dug past it fills up to it, a shallow one stays dry, and a pond
+/// dug to be filled holds water to its brim (on whatever height it is),
+/// none of it running out over the land round it.
+#[test]
+fn dug_ground_fills_from_the_ground_water_or_to_its_brim() {
+    use crate::sim::interp::{GroundFx, InterpEffect, PendingInterp};
+    let look = crate::world::Look { name: "Dry".into(), sea: None, groundwater: Some(1.5), ..Default::default() };
+    let w = world_with("groundwater", 84, look);
+    let mut s = session(&w, 84, None);
+    let t = s.sim.snap.terrain.clone();
+    assert_eq!(t.water(w.spawn.x, w.spawn.z), crate::ground::NO_WATER, "no sea");
+    let mut dig = |s: &mut Session, p: Vec3, g: GroundFx| {
+        s.sim.player.pos = p - Vec3::X * 16.0;
+        let pi = PendingInterp { actor: ActorId::Player, text: "dig".into(), held: None, target: Some(Target::Point(p.to_array())), hit: None, key: String::new(), at: 0.0, aim: None };
+        s.sim.apply_interp(&pi, &InterpEffect { narration: "Dug.".into(), ground: vec![g], ..Default::default() });
+    };
+    let wet = |p: Vec3| t.water(p.x, p.z) - t.height(p.x, p.z);
+    // Level spots, high or low (nothing is under a sea here).
+    let level = |d: f32, a: f32| {
+        (0..64).map(|k| a + k as f32 * 0.4).map(|a| w.spawn + Vec3::new(a.cos(), 0.0, a.sin()) * d).find(|p| t.normal(p.x, p.z).y > 0.985).expect("a level spot")
+    };
+
+    let deep = level(30.0, 0.3);
+    let raw = t.raw_height(deep.x, deep.z);
+    dig(&mut s, deep, GroundFx { depth_m: 3.0, wide_m: 6.0, ..Default::default() });
+    assert!((t.water(deep.x, deep.z) - (raw - 1.5)).abs() < 0.2, "up to the ground water: {} under {raw}", t.water(deep.x, deep.z));
+
+    let shallow = level(30.0, 2.5);
+    dig(&mut s, shallow, GroundFx { depth_m: 1.0, wide_m: 6.0, ..Default::default() });
+    assert!(wet(shallow) < 0.0, "above it, dry: {}", wet(shallow));
+
+    let pond = level(70.0, 4.5);
+    dig(&mut s, pond, GroundFx { depth_m: 1.2, wide_m: 14.0, fill: true, ..Default::default() });
+    assert!(wet(pond) > 0.5, "the pond holds water: {}", wet(pond));
+    assert!(t.water(pond.x, pond.z) > t.raw_height(pond.x, pond.z) - 1.0, "to near its brim");
+    for k in 0..16 {
+        let a = k as f32 * std::f32::consts::TAU / 16.0;
+        let q = pond + Vec3::new(a.cos(), 0.0, a.sin()) * 14.0;
+        assert!(wet(q) < 0.0, "none out over the land at {k}: {}", wet(q));
+    }
+}

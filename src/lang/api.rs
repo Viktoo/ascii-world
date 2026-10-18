@@ -41,6 +41,8 @@ pub enum Api {
     Plane,
     PlaneY,
     Ellipsoid,
+    Triangle,
+    Cone,
     Union,
     SmoothUnion,
     Subtract,
@@ -82,7 +84,7 @@ pub enum Api {
 
 /// Names the model may call. Variadic/overloaded names resolve in `resolve`.
 pub const NAMES: &[&str] = &[
-    "sphere", "box", "roundBox", "cylinder", "cappedCone", "capsule", "torus", "plane", "ellipsoid",
+    "sphere", "box", "roundBox", "cylinder", "cappedCone", "capsule", "torus", "plane", "ellipsoid", "triangle", "cone",
     "union", "smoothUnion", "subtract", "smoothSubtract", "intersect", "rotX", "rotY", "rotZ",
     "noise3", "hash", "rgb", "vec3", "hsv", "glow", "mix", "abs", "min", "max", "clamp", "floor", "ceil", "round",
     "fract", "sin", "cos", "tan", "atan2", "sqrt", "pow", "exp", "sign", "step", "smoothstep",
@@ -132,6 +134,8 @@ pub fn resolve(name: &str, args: &[Ty]) -> Result<Resolved, String> {
         "plane" if n == 4 => need(PlaneY, 4),
         "plane" => need(Plane, 7).map_err(|_| "plane() takes (x,y,z,h) or (x,y,z,nx,ny,nz,d)".into()),
         "ellipsoid" => need(Ellipsoid, 6),
+        "triangle" => need(Triangle, 13).map_err(|_| "triangle() takes (x,y,z, ax,ay,az, bx,by,bz, cx,cy,cz, r): three corners and a thickness".into()),
+        "cone" => need(Cone, 11).map_err(|_| "cone() takes (x,y,z, ax,ay,az, bx,by,bz, ra, rb): from a (radius ra) to b (radius rb)".into()),
         "smoothUnion" => need(SmoothUnion, 3),
         "subtract" => need(Subtract, 2),
         "smoothSubtract" => need(SmoothSubtract, 3),
@@ -223,6 +227,8 @@ pub fn arg_width(api: Api) -> usize {
         Plane => 7,
         PlaneY => 4,
         Ellipsoid => 6,
+        Triangle => 13,
+        Cone => 11,
         Union | Subtract | Intersect | Min | Max | Atan2 | Pow | Step | Length2 | Mod => 2,
         SmoothUnion | SmoothSubtract | Clamp | Smoothstep | Length3 | Noise3 | Hash | Rgb | Vec3 | Hsv | Mix => 3,
         RotX | RotY | RotZ | Glow => 4,
@@ -245,6 +251,8 @@ pub fn wgsl_name(api: Api) -> &'static str {
         Plane => "api_plane",
         PlaneY => "api_plane_y",
         Ellipsoid => "api_ellipsoid",
+        Triangle => "api_triangle",
+        Cone => "api_cone",
         Union => "min",
         SmoothUnion => "api_smooth_union",
         Subtract => "api_subtract",
@@ -351,6 +359,8 @@ pub fn eval(api: Api, a: &[f32], out: &mut [f32; 3]) {
             let k1 = len3(g(0) / (rx * rx), g(1) / (ry * ry), g(2) / (rz * rz)).max(1e-6);
             k0 * (k0 - 1.0) / k1
         }
+        Triangle => sd_triangle([g(0), g(1), g(2)], [g(3), g(4), g(5)], [g(6), g(7), g(8)], [g(9), g(10), g(11)]) - g(12),
+        Cone => sd_cone([g(0), g(1), g(2)], [g(3), g(4), g(5)], [g(6), g(7), g(8)], g(9), g(10)),
         Union | Min => g(0).min(g(1)),
         Intersect | Max => fmax(g(0), g(1)),
         SmoothUnion => {
@@ -495,6 +505,71 @@ fn sd_capped_cone(x: f32, y: f32, z: f32, h: f32, r1: f32, r2: f32) -> f32 {
     s * (cax * cax + cay * cay).min(cbx * cbx + cby * cby).sqrt()
 }
 
+type V3 = [f32; 3];
+fn sub3(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot3(a: V3, b: V3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross3(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+fn scale3(a: V3, k: f32) -> V3 {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+/// As WGSL's sign (0 at 0).
+fn sgn(x: f32) -> f32 {
+    if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// Distance to the triangle a b c (no thickness).
+fn sd_triangle(p: V3, a: V3, b: V3, c: V3) -> f32 {
+    let (ba, pa, cb, pb, ac, pc) = (sub3(b, a), sub3(p, a), sub3(c, b), sub3(p, b), sub3(a, c), sub3(p, c));
+    let nor = cross3(ba, ac);
+    let s = sgn(dot3(cross3(ba, nor), pa)) + sgn(dot3(cross3(cb, nor), pb)) + sgn(dot3(cross3(ac, nor), pc));
+    let edge = |e: V3, q: V3| {
+        let t = clampf(dot3(e, q) / dot3(e, e).max(1e-8), 0.0, 1.0);
+        let d = sub3(scale3(e, t), q);
+        dot3(d, d)
+    };
+    let d2 = if s < 2.0 { edge(ba, pa).min(edge(cb, pb)).min(edge(ac, pc)) } else { dot3(nor, pa) * dot3(nor, pa) / dot3(nor, nor).max(1e-12) };
+    d2.sqrt()
+}
+
+/// A round cone: a sphere of radius ra at a, rb at b, and the taper between.
+fn sd_cone(p: V3, a: V3, b: V3, ra: f32, rb: f32) -> f32 {
+    let ba = sub3(b, a);
+    let pa = sub3(p, a);
+    let l2 = dot3(ba, ba).max(1e-8);
+    let rr = ra - rb;
+    // One end's ball holds the other: only the bigger ball.
+    if rr * rr >= l2 {
+        return (dot3(pa, pa).sqrt() - ra).min(dot3(sub3(p, b), sub3(p, b)).sqrt() - rb);
+    }
+    let a2 = l2 - rr * rr;
+    let il2 = 1.0 / l2;
+    let y = dot3(pa, ba);
+    let z = y - l2;
+    let q = sub3(scale3(pa, l2), scale3(ba, y));
+    let x2 = dot3(q, q);
+    let (y2, z2) = (y * y * l2, z * z * l2);
+    let k = sgn(rr) * rr * rr * x2;
+    if sgn(z) * a2 * z2 > k {
+        return (x2 + z2).sqrt() * il2 - rb;
+    }
+    if sgn(y) * a2 * y2 < k {
+        return (x2 + y2).sqrt() * il2 - ra;
+    }
+    ((x2 * a2 * il2).sqrt() + y * rr) * il2 - ra
+}
+
 /// WGSL twins of everything in `eval`.
 pub const API_WGSL: &str = r#"
 fn api_len2(a: f32, b: f32) -> f32 { return sqrt(a * a + b * b); }
@@ -556,6 +631,37 @@ fn api_ellipsoid(x: f32, y: f32, z: f32, rx: f32, ry: f32, rz: f32) -> f32 {
   let k0 = api_len3(x / rx, y / ry, z / rz);
   let k1 = max(api_len3(x / (rx * rx), y / (ry * ry), z / (rz * rz)), 1e-6);
   return k0 * (k0 - 1.0) / k1;
+}
+fn api_triangle(x: f32, y: f32, z: f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32, cx: f32, cy: f32, cz: f32, r: f32) -> f32 {
+  let p = vec3f(x, y, z); let a = vec3f(ax, ay, az); let b = vec3f(bx, by, bz); let c = vec3f(cx, cy, cz);
+  let ba = b - a; let pa = p - a; let cb = c - b; let pb = p - b; let ac = a - c; let pc = p - c;
+  let nor = cross(ba, ac);
+  let s = sign(dot(cross(ba, nor), pa)) + sign(dot(cross(cb, nor), pb)) + sign(dot(cross(ac, nor), pc));
+  var d2 = 0.0;
+  if (s < 2.0) {
+    let e1 = ba * api_clamp(dot(ba, pa) / max(dot(ba, ba), 1e-8), 0.0, 1.0) - pa;
+    let e2 = cb * api_clamp(dot(cb, pb) / max(dot(cb, cb), 1e-8), 0.0, 1.0) - pb;
+    let e3 = ac * api_clamp(dot(ac, pc) / max(dot(ac, ac), 1e-8), 0.0, 1.0) - pc;
+    d2 = min(min(dot(e1, e1), dot(e2, e2)), dot(e3, e3));
+  } else {
+    d2 = dot(nor, pa) * dot(nor, pa) / max(dot(nor, nor), 1e-12);
+  }
+  return sqrt(d2) - r;
+}
+fn api_cone(x: f32, y0: f32, z0: f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32, ra: f32, rb: f32) -> f32 {
+  let p = vec3f(x, y0, z0); let a = vec3f(ax, ay, az); let b = vec3f(bx, by, bz);
+  let ba = b - a; let pa = p - a;
+  let l2 = max(dot(ba, ba), 1e-8);
+  let rr = ra - rb;
+  if (rr * rr >= l2) { return min(length(pa) - ra, length(p - b) - rb); }
+  let a2 = l2 - rr * rr; let il2 = 1.0 / l2;
+  let y = dot(pa, ba); let z = y - l2;
+  let q = pa * l2 - ba * y;
+  let x2 = dot(q, q); let y2 = y * y * l2; let z2 = z * z * l2;
+  let k = sign(rr) * rr * rr * x2;
+  if (sign(z) * a2 * z2 > k) { return sqrt(x2 + z2) * il2 - rb; }
+  if (sign(y) * a2 * y2 < k) { return sqrt(x2 + y2) * il2 - ra; }
+  return (sqrt(x2 * a2 * il2) + y * rr) * il2 - ra;
 }
 fn api_smooth_union(a: f32, b: f32, k0: f32) -> f32 {
   let k = max(k0, 1e-4);

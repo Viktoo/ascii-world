@@ -731,9 +731,179 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// The water a hollow holds when it is filled at `at`: it rises from the
+/// hollow's bottom over the ground joined to it until it would spill over
+/// the lowest point of its rim, or reaches `up_to` (the ground water's
+/// level, say), whichever is lower. Looked for within `reach` of `at` (a
+/// hollow open past that spills there). An edit laying that water over the
+/// ground it covers, or None if none would stand there.
+pub fn basin(height: &dyn Fn(f32, f32) -> f32, at: [f32; 2], up_to: f32, reach: f32) -> Option<Edit> {
+    use std::cmp::Reverse;
+    let reach = if reach.is_finite() { reach.clamp(2.0, 300.0) } else { 2.0 };
+    let step = (reach / 80.0).max(CELL);
+    let n = (2.0 * reach / step).ceil() as i32 + 1;
+    let o = [at[0] - reach, at[1] - reach];
+    let pos = |i: i32, j: i32| [o[0] + i as f32 * step, o[1] + j as f32 * step];
+    let id = |i: i32, j: i32| (j * n + i) as usize;
+    let h: Vec<f32> = (0..n * n).map(|k| pos(k % n, k / n)).map(|p| height(p[0], p[1])).collect();
+    let rim = |i: i32, j: i32| i <= 0 || j <= 0 || i >= n - 1 || j >= n - 1;
+    // Down to the hollow's bottom first (the deed may point at its side).
+    let (mut i, mut j) = (n / 2, n / 2);
+    loop {
+        let lower = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)].iter().map(|d| (i + d.0, j + d.1)).filter(|q| !rim(q.0, q.1)).min_by(|a, b| h[id(a.0, a.1)].total_cmp(&h[id(b.0, b.1)]));
+        match lower {
+            Some(q) if h[id(q.0, q.1)] < h[id(i, j)] => (i, j) = q,
+            _ => break,
+        }
+    }
+    let start = id(i, j);
+    if !(h[start] < up_to) {
+        return None;
+    }
+    // Then the water rises over the lowest ground next to it, one cell at
+    // a time, until the next lies lower than it already stands (past the
+    // lip: it would run out), the hollow opens past `reach`, or it would
+    // rise past `up_to`.
+    let key = |v: f32| Reverse((v * 1000.0) as i64);
+    let mut seen = vec![false; h.len()];
+    let mut heap = std::collections::BinaryHeap::new();
+    heap.push((key(h[start]), start));
+    seen[start] = true;
+    let mut level = h[start];
+    while let Some((_, c)) = heap.pop() {
+        let (ci, cj) = (c as i32 % n, c as i32 / n);
+        if h[c] >= up_to {
+            level = up_to;
+            break;
+        }
+        if h[c] < level - 0.01 || rim(ci, cj) {
+            // Full to its brim, a little under where it would run out.
+            level -= 0.1;
+            break;
+        }
+        level = level.max(h[c]);
+        for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let q = id(ci + di, cj + dj);
+            if !seen[q] {
+                seen[q] = true;
+                heap.push((key(h[q]), q));
+            }
+        }
+    }
+    // The ground under it joined to the bottom.
+    let mut wet = vec![false; h.len()];
+    let mut todo = vec![start];
+    wet[start] = h[start] < level;
+    while let Some(c) = todo.pop() {
+        let (ci, cj) = (c as i32 % n, c as i32 / n);
+        for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (qi, qj) = (ci + di, cj + dj);
+            if rim(qi, qj) {
+                continue;
+            }
+            let q = id(qi, qj);
+            if !wet[q] && h[q] < level {
+                wet[q] = true;
+                todo.push(q);
+            }
+        }
+    }
+    if !wet[start] {
+        return None;
+    }
+    // Its outline, laid a half cell out so it meets the shore.
+    let ring = outline(&wet, n);
+    let shape = if ring.len() < 3 {
+        Shape::Disc { c: pos(i, j), r: step }
+    } else {
+        let mut pts: Vec<[f32; 2]> = ring.iter().map(|&(i, j)| pos(i, j)).collect();
+        pts.push(pts[0]);
+        let mut pts = simplify(&pts, step * 0.6);
+        pts.pop();
+        if pts.len() < 3 { Shape::Disc { c: pos(i, j), r: step } } else { Shape::Area { pts } }
+    };
+    Some(Edit { kind: "water".into(), name: String::new(), shape, mode: Mode::Paint, to: Height::At(0.0), edge: step, color: None, rim: None, water: Some(Height::At(level)) })
+}
+
+/// The cells round the edge of a joined patch of `mask` (n × n), in order.
+fn outline(mask: &[bool], n: i32) -> Vec<(i32, i32)> {
+    const D: [(i32, i32); 8] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)];
+    let inside = |i: i32, j: i32| i >= 0 && j >= 0 && i < n && j < n && mask[(j * n + i) as usize];
+    let Some(s) = mask.iter().position(|w| *w) else { return Vec::new() };
+    let s = (s as i32 % n, s as i32 / n);
+    let mut out = vec![s];
+    // Nothing lies before the first cell in its row, nor in the rows above.
+    let (mut p, mut back) = (s, 4);
+    let mut first = None;
+    for _ in 0..4 * n * n {
+        let Some(d) = (1..=8).map(|k| (back + k) % 8).find(|&d| inside(p.0 + D[d].0, p.1 + D[d].1)) else { break };
+        let q = (p.0 + D[d].0, p.1 + D[d].1);
+        if p == s && first == Some(q) {
+            break;
+        }
+        first.get_or_insert(q);
+        if q != s {
+            out.push(q);
+        }
+        p = q;
+        back = (d + 4) % 8;
+    }
+    out
+}
+
+/// A line with the points that add little to it (within `tol`) left out.
+fn simplify(pts: &[[f32; 2]], tol: f32) -> Vec<[f32; 2]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut keep = vec![false; pts.len()];
+    keep[0] = true;
+    keep[pts.len() - 1] = true;
+    let mut todo = vec![(0, pts.len() - 1)];
+    while let Some((a, b)) = todo.pop() {
+        let (pa, pb) = (pts[a], pts[b]);
+        let e = [pb[0] - pa[0], pb[1] - pa[1]];
+        let l2 = (e[0] * e[0] + e[1] * e[1]).max(1e-9);
+        let far = (a + 1..b)
+            .map(|k| {
+                let w = [pts[k][0] - pa[0], pts[k][1] - pa[1]];
+                let t = ((w[0] * e[0] + w[1] * e[1]) / l2).clamp(0.0, 1.0);
+                (k, (w[0] - e[0] * t).powi(2) + (w[1] - e[1] * t).powi(2))
+            })
+            .max_by(|x, y| x.1.total_cmp(&y.1));
+        if let Some((k, _)) = far.filter(|f| f.1 > tol * tol) {
+            keep[k] = true;
+            todo.push((a, k));
+            todo.push((k, b));
+        }
+    }
+    pts.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bowl dug into a slope fills to the lowest point of its rim (on the
+    /// downhill side), not over the slope below it; capped lower, it stops
+    /// there; flat ground holds none.
+    #[test]
+    fn a_basin_fills_to_its_lip() {
+        let slope = |x: f32, z: f32| {
+            let r = (x * x + z * z).sqrt();
+            100.0 + 0.1 * x - 3.0 * (1.0 - r / 8.0).max(0.0)
+        };
+        let e = basin(&slope, [2.0, 1.0], f32::MAX, 30.0).expect("water");
+        let level = match &e.water { Some(Height::At(l)) => *l, _ => panic!() };
+        // The lip is on the downhill side, where the bowl's edge (r = 8) meets the slope at x = -8.
+        assert!((level - (100.0 - 0.8 - 0.1)).abs() < 0.3, "to its lip: {level}");
+        assert!(e.dist(0.0, 0.0).0 < 0.0, "over its bottom");
+        assert!(e.dist(-14.0, 0.0).0 > e.edge.max(0.5), "not down the slope below");
+        let low = basin(&slope, [0.0, 0.0], 98.0, 30.0).unwrap();
+        assert_eq!(low.water, Some(Height::At(98.0)), "capped");
+        assert!(basin(&|x, _| x * 0.01, [0.0, 0.0], f32::MAX, 20.0).is_none(), "no hollow");
+    }
+
 
     fn flat(_: f32, _: f32) -> f32 {
         5.0

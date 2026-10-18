@@ -71,10 +71,29 @@ pub struct Look {
     /// it, and bodies that breathe suffocate without it.
     #[serde(default = "d_air")]
     pub air: f32,
+    /// The sea's level (m, 0 in most lands), or none (null): a land with no
+    /// sea, where low ground is only low ground (a cave world, a desert).
+    #[serde(default = "d_sea", deserialize_with = "number_or_none")]
+    pub sea: Option<f32>,
+    /// How far under the land's own surface the ground water lies (m), if
+    /// any: ground dug deeper than it fills with water up to it (0.5 a
+    /// marsh, 3 a meadow, 30 a desert; none: holes stay dry).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "number_or_none")]
+    pub groundwater: Option<f32>,
 }
 
 fn d_gravity() -> f32 {
     crate::sim::physics::GRAVITY
+}
+
+/// A number, or none for anything else (null, "none"), so one odd word
+/// doesn't lose the whole look.
+fn number_or_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_f64().map(|v| v as f32))
+}
+
+fn d_sea() -> Option<f32> {
+    Some(crate::terrain::WATER_LEVEL)
 }
 
 fn d_air() -> f32 {
@@ -94,12 +113,14 @@ impl Look {
     pub fn sanitize(&mut self) {
         self.gravity = if self.gravity.is_finite() { self.gravity.clamp(0.5, 30.0) } else { d_gravity() };
         self.air = if self.air.is_finite() { self.air.clamp(0.0, 1.0) } else { d_air() };
+        self.sea = self.sea.map(|s| if s.is_finite() { s.clamp(-50.0, 50.0) } else { crate::terrain::WATER_LEVEL });
+        self.groundwater = self.groundwater.filter(|d| d.is_finite()).map(|d| d.clamp(0.2, 200.0));
     }
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0, gravity: d_gravity(), air: d_air() }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0, gravity: d_gravity(), air: d_air(), sea: d_sea(), groundwater: None }
     }
 }
 
@@ -438,5 +459,22 @@ impl Solid {
     /// only lower bounds: too small for a wide body passing close).
     pub fn exact_sdf(&self, p: Vec3) -> f32 {
         self.inst.sdf(&self.ty.ct, p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A land keeps the usual sea unless it says it has none (null, or a
+    /// word), and old worlds have no ground water.
+    #[test]
+    fn a_land_may_have_no_sea() {
+        let look = |j: &str| serde_json::from_str::<super::Look>(j).unwrap();
+        assert_eq!(look("{}").sea, Some(0.0));
+        assert_eq!(look("{}").groundwater, None);
+        assert_eq!(look(r#"{"sea": null, "groundwater": 4}"#).sea, None);
+        assert_eq!(look(r#"{"sea": "none"}"#).sea, None);
+        assert_eq!(look(r#"{"groundwater": 4}"#).groundwater, Some(4.0));
+        let none = look(&serde_json::to_string(&look(r#"{"sea": null}"#)).unwrap());
+        assert_eq!(none.sea, None, "saved and loaded again");
     }
 }

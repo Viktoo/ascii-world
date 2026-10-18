@@ -1264,9 +1264,9 @@ impl<'c, 's> Lower<'c, 's> {
             self.err(span, format!("'{name}' shadows a parameter"));
             return None;
         }
-        // glow() came after many saved types had named a local `glow`; calls
-        // resolve by name, so the two never mix.
-        if (api::is_api_name(name) && name != "glow") || matches!(name, "PI" | "Math" | "sdf" | "color" | "meta") {
+        // glow(), triangle() and cone() came after saved types had named
+        // locals so; calls resolve by name, so the two never mix.
+        if (api::is_api_name(name) && !matches!(name, "glow" | "triangle" | "cone")) || matches!(name, "PI" | "Math" | "sdf" | "color" | "meta") {
             self.err(span, format!("'{name}' is a reserved name"));
             return None;
         }

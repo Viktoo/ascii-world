@@ -163,6 +163,10 @@ pub struct GroundFx {
     /// What covers a way (cobbles, gravel, packed earth), rgb 0–255.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+    /// The hollow holds water to its brim (a pond, a lake, a pool): it
+    /// rises in it until it would spill over the lowest point of its rim.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill: bool,
 }
 
 fn two() -> f32 {
@@ -1027,7 +1031,7 @@ impl Sim {
         let low = hs.iter().copied().fold(f32::MAX, f32::min);
         // Water at either end runs in: a canal from the river is the river's.
         let wet = |p: glam::Vec2| (t.water(p.x, p.y) - t.height(p.x, p.y) > 0.3).then(|| t.water(p.x, p.y));
-        let water = if cut { wet(start).into_iter().chain(wet(end)).reduce(f32::max).filter(|w| *w > low - depth - 0.1 && *w > crate::terrain::WATER_LEVEL + 0.05) } else { None };
+        let water = if cut { wet(start).into_iter().chain(wet(end)).reduce(f32::max).filter(|w| *w > low - depth - 0.1 && *w > t.sea + 0.05) } else { None };
         let (mode, to) = if cut {
             // The bed level, as deep as asked under its lowest point (and
             // under the water it joins, so it holds some).
@@ -1043,6 +1047,8 @@ impl Sim {
             let r = crate::terrain::rgbv(self.snap.look.palette.rock);
             (s * 0.55 + r * 0.45).to_array()
         }));
+        // Where it runs lowest the ground water seeps in first.
+        let bottom = if cut && water.is_none() { pts.iter().zip(&hs).min_by(|a, b| a.1.total_cmp(b.1)).map(|(p, _)| glam::Vec2::from_array(*p)) } else { None };
         let edit = Edit {
             kind: word,
             name: String::new(),
@@ -1061,6 +1067,9 @@ impl Sim {
         }
         t.set_ground(Layer::Made, made);
         self.dug_dirty = true;
+        if let Some(p) = bottom {
+            self.seep(p, long.min(120.0) + wide);
+        }
         Ok(())
     }
 
@@ -1095,7 +1104,38 @@ impl Sim {
             edge,
         };
         self.open_hollow(at, hollow);
+        let reach = long.unwrap_or(wide).max(wide) + edge * 2.0 + 6.0;
+        if g.fill {
+            self.pour(glam::Vec2::new(at.x, at.z), f32::MAX, reach);
+        } else {
+            self.seep(glam::Vec2::new(at.x, at.z), reach);
+        }
         Ok(())
+    }
+
+    /// Water fills the hollow at `at` (see `ground::basin`), up to `up_to`
+    /// at most, looked for within `reach`: a pond dug to hold water, or the
+    /// ground water seeping into a hole dug below it. Saved with the live
+    /// world.
+    pub(super) fn pour(&mut self, at: glam::Vec2, up_to: f32, reach: f32) {
+        use crate::ground::Layer;
+        let t = self.snap.terrain.clone();
+        let Some(edit) = crate::ground::basin(&|x, z| t.height(x, z), at.to_array(), up_to, reach) else { return };
+        let mut made = t.carve.read().ground.layer(Layer::Made).to_vec();
+        made.push(edit);
+        if made.len() > 200 {
+            made.remove(0);
+        }
+        t.set_ground(Layer::Made, made);
+        self.dug_dirty = true;
+    }
+
+    /// The ground water, where the land has any, seeps into ground dug
+    /// below it near `at`.
+    pub(super) fn seep(&mut self, at: glam::Vec2, reach: f32) {
+        if let Some(level) = self.snap.terrain.groundwater_at(at.x, at.y) {
+            self.pour(at, level, reach);
+        }
     }
 
     /// Take the ground away in `hollow` (a pit, a crater): what is placed

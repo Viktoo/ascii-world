@@ -97,6 +97,30 @@ boats, scatter, sounds, descriptions and the planner's map all read it. The
 renderers draw it where the ground seen lies under it, as a level sheet at
 that level.
 
+### The sea, ground water, and holes that fill (2026-10-17)
+
+Three primitives decide where water stands; nothing knows "lake",
+"well" or "cave world":
+
+- **The sea** is the world's own (`Look::sea`, metres, 0 by default; `null`
+  for a land with no sea). It stands over all ground below it. With none,
+  low ground is only low ground (a world of caves and bunkers, a desert
+  basin, the Moon). `Terrain::sea` is read everywhere the old constant was;
+  the GPU already took it as `G.water.w`.
+- **Ground water** (`Look::groundwater`, metres under the land's own
+  surface; none in older worlds) seeps into ground dug deeper than it:
+  a pit, a crater from a blast, a ditch. A marsh fills a hole half a metre
+  down; a desert none.
+- **A basin fills to its lip** (`ground::basin`): from the bottom of the
+  hollow at a point the water rises over the ground joined to it, lowest
+  first, until the next ground lies lower than it already stands (it would
+  run out there), or it reaches a cap. The water it holds is one ground
+  edit: its outline traced round the wet cells, its level. So a pond dug on
+  a slope fills only to its downhill edge, and nothing spills down the
+  slope below. Ground water is a basin capped at its level; a deed's
+  `"fill": true` is a basin with no cap (a pond, a lake on a mountain, a
+  moat).
+
 ## 5. Caves and the floor under a point
 
 A **cave** is a few capsules (a passage, a chamber) with a mouth where it
@@ -141,6 +165,10 @@ picture tests: `canal_city_png`, `river_png`, `cave_png`
 ## Not done
 
 - Locks; water only runs into a cut canal from its ends when it is dug.
+- Water doesn't flow: a full basin doesn't spill into a river, rain doesn't
+  fill hollows, and a hole filled once doesn't drain if dug deeper beside it.
+- Only water: no other liquid (lava, oil) has a level of its own yet.
+- Settlement plans' cuts don't take the ground water (only deeds and blasts).
 - Rivers don't join into one wider river; where two meet they just overlap.
 - Cave floors are the curve of their capsules; no flat floors, no stairs
   shapes of their own (a ladder or stairs is a thing set in one).

@@ -269,7 +269,7 @@ impl WorldModel {
         let u = db.universe()?;
         let mut look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
         crate::terrain::add_litter(&mut look.biomes);
-        let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()));
+        let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()).with_water(look.sea, look.groundwater));
         terrain.set_rivers(look.rivers, look.palette.sand, look.caves);
         let mut m = WorldModel {
             db: db.clone(),
@@ -680,7 +680,7 @@ impl WorldModel {
         let plans: Vec<LandPlan> = st.ground.iter().map(|g| g.0.clone()).collect();
         let others = self.places_edits(Some(r));
         let base = self.base_land(&others);
-        let laid = realize(&plans, &[], &base);
+        let laid = realize(&plans, &[], &base, self.terrain.sea);
 
         // Buildings lined up along its ways and cuts, doors toward them.
         let mut lined = 0;
@@ -726,7 +726,7 @@ impl WorldModel {
             None => Vec::new(),
         };
         let extra: Vec<LandPlan> = roads.iter().map(road_plan).collect();
-        let mut laid = if plans.is_empty() && extra.is_empty() { Vec::new() } else { realize(&plans, &extra, &base) };
+        let mut laid = if plans.is_empty() && extra.is_empty() { Vec::new() } else { realize(&plans, &extra, &base, self.terrain.sea) };
         // Rivers through the settlement's ways run on under them: cut again
         // after the ways (so they don't dam them) and bridged.
         if laid.iter().any(|e| is_way(e)) {
@@ -1076,7 +1076,7 @@ impl WorldModel {
                 let others = self.places_edits(Some(r));
                 let base = self.base_land(&others);
                 let mut edits = others;
-                edits.extend(crate::settle::realize(&plans, &[], &base));
+                edits.extend(crate::settle::realize(&plans, &[], &base, self.terrain.sea));
                 self.terrain.set_ground(crate::ground::Layer::Places, edits);
             }
             if !st.caves.is_empty() {
@@ -1177,7 +1177,7 @@ impl WorldModel {
         let mut terrain = self.terrain.clone();
         if let Some(l) = &req.look {
             look = Arc::new(l.clone());
-            terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()));
+            terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()).with_water(l.sea, l.groundwater));
             terrain.set_rivers(l.rivers, l.palette.sand, l.caves);
         }
         let cur: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();

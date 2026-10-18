@@ -6,7 +6,6 @@
 use super::props::*;
 use super::things::ThingId;
 use super::{ActorId, Note, Sim, Target};
-use crate::terrain::WATER_LEVEL;
 use crate::world::Solid;
 use glam::{Quat, Vec3};
 use serde_json::json;
@@ -241,7 +240,8 @@ impl Sim {
         v.y -= g * h;
         // Water: float if lighter than water, drag either way.
         // Inside a cave the sea doesn't reach.
-        let wl = if c.y < WATER_LEVEL + 80.0 && !(self.snap.terrain.caves_near(c.x, c.z) && self.snap.terrain.void(c) < 0.0) { self.snap.terrain.water(c.x, c.z) } else { f32::MIN };
+        let wl = self.snap.terrain.water(c.x, c.z);
+        let wl = if c.y < wl && !(self.snap.terrain.caves_near(c.x, c.z) && self.snap.terrain.void(c) < 0.0) { wl } else { f32::MIN };
         if c.y < wl {
             let vol = volume(&ty) * t.scale.powi(3);
             let density = mass / vol.max(1e-4);

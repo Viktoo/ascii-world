@@ -29,7 +29,7 @@ impl Sim {
 
     /// The height to keep over the land and anything standing on it, around `p`.
     fn cruise_height(&mut self, p: Vec3, dir: Vec3, height: f32) -> f32 {
-        let mut top: f32 = crate::terrain::WATER_LEVEL;
+        let mut top: f32 = self.snap.terrain.sea;
         for k in 0..5 {
             let q = p + dir * (k as f32 * 4.0);
             top = top.max(self.snap.terrain.height(q.x, q.z)).max(self.snap.terrain.water(q.x, q.z));
