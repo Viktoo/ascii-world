@@ -17,24 +17,29 @@ const CATCHUP_MAX_STEPS: usize = 400;
 impl Sim {
     pub fn step_regions(&mut self) {
         let t = self.t;
-        let p = self.player.pos;
-        let pr = region_of(p.x, p.z);
         let n = (self.cfg.medium / REGION).ceil() as i32;
         let mut entering = Vec::new();
-        for dz in -n..=n {
-            for dx in -n..=n {
-                let r = (pr.0 + dx, pr.1 + dz);
-                let c = region_center(r);
-                if (Vec3::new(c.x - p.x, 0.0, c.z - p.z)).length() - REGION * 0.7 > self.cfg.medium {
-                    continue;
-                }
-                if let Some(seen) = self.region_seen.get(&r) {
-                    if t - seen > 30.0 {
-                        entering.push((r, t - seen));
+        // Around every traveler (a region two are near is seen once).
+        let mut here = std::collections::BTreeSet::new();
+        for p in self.traveler_spots() {
+            let pr = region_of(p.x, p.z);
+            for dz in -n..=n {
+                for dx in -n..=n {
+                    let r = (pr.0 + dx, pr.1 + dz);
+                    let c = region_center(r);
+                    if (Vec3::new(c.x - p.x, 0.0, c.z - p.z)).length() - REGION * 0.7 <= self.cfg.medium {
+                        here.insert(r);
                     }
                 }
-                self.region_seen.insert(r, t);
             }
+        }
+        for r in here {
+            if let Some(seen) = self.region_seen.get(&r) {
+                if t - seen > 30.0 {
+                    entering.push((r, t - seen));
+                }
+            }
+            self.region_seen.insert(r, t);
         }
         if let FarMode::CatchUp { max_hours } = self.cfg.far {
             let max_s = max_hours as f64 * crate::render::sky::DAY_SECONDS / 24.0;
@@ -96,11 +101,11 @@ impl Sim {
 
     /// Placed objects near the player that act on their own join the live layer.
     fn promote_active_near(&mut self) {
-        let p = self.player.pos;
+        let spots = self.traveler_spots();
         let near = self.cfg.near;
         let mut todo = Vec::new();
         for pl in &self.snap.instances {
-            if self.things.by_instance.contains_key(&pl.id) || (pl.pos - p).length() > near {
+            if self.things.by_instance.contains_key(&pl.id) || !spots.iter().any(|p| (pl.pos - *p).length() <= near) {
                 continue;
             }
             let Some(ty) = self.snap.type_of(pl.type_id).cloned() else { continue };

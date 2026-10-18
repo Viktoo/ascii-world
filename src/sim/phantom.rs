@@ -256,7 +256,7 @@ impl Sim {
     /// or whoever else is close and not of the dark.
     fn prey(&self, cid: i64) -> Option<(ActorId, Vec3)> {
         let pos = self.cast.get(cid)?.a.pos;
-        let traveler = Some((ActorId::Player, self.player.pos)).filter(|(_, p)| (*p - pos).length() < SENSE && !self.fallen());
+        let traveler = self.nearest_traveler(pos).filter(|(_, p)| (*p - pos).length() < SENSE);
         let other = self
             .cast
             .npcs

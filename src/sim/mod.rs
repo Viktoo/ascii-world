@@ -357,6 +357,8 @@ pub struct Sim {
     pub own: hands::OwnBody,
     /// The other travelers here, playing together (see `travelers`).
     pub travelers: BTreeMap<u8, travelers::Traveler>,
+    /// What travelers who aren't here hold and wear, kept for them.
+    pub stowed: BTreeMap<u8, Vec<things::Thing>>,
     pub cast: Cast,
     pub things: Things,
     pub field: env::Field,
@@ -458,6 +460,7 @@ impl Sim {
             player: Actor::new(player_pos, player_yaw),
             own: Default::default(),
             travelers: BTreeMap::new(),
+            stowed: BTreeMap::new(),
             cast: Cast::default(),
             things: Things::default(),
             field: env::Field::default(),
@@ -705,7 +708,7 @@ impl Sim {
             self.out.push(req);
             return;
         }
-        let dist = self.dist_to_player(at);
+        let dist = self.dist_to_travelers(at);
         self.queue.push(Queued { req, dist, at: self.t, weight: weight.clamp(0.0, 1.0) });
     }
 
@@ -917,13 +920,16 @@ impl Sim {
             self.frame_dt = dt;
         }
         self.t += dt as f64;
-        // The rivers round the traveler, as they walk.
-        self.snap.terrain.lay_rivers_soon(self.player.pos.x, self.player.pos.z);
+        // The rivers round the travelers, as they walk.
+        for p in self.traveler_spots() {
+            self.snap.terrain.lay_rivers_soon(p.x, p.z);
+        }
         self.step_weather();
         let dark = sky::lighting(self.t, &self.snap.look.palette).night;
         self.cache.overlay.lamps = dark;
         self.mark_work();
         self.step_actors(dt);
+        self.step_travelers(dt);
         self.place_hands();
         self.update_riders();
         self.step_social(dt);
@@ -997,7 +1003,7 @@ impl Sim {
                 continue;
             }
             let Some(p) = self.snap.instances.iter().find(|p| p.id == id).cloned() else { continue };
-            if self.dist_to_player(p.pos) > 70.0 {
+            if self.dist_to_travelers(p.pos) > 70.0 {
                 continue;
             }
             let Some(ty) = self.snap.type_of(p.type_id).cloned() else { continue };

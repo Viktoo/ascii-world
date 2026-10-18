@@ -316,13 +316,9 @@ impl Sim {
         }
         let max_near = rules.iter().filter_map(|r| r.near).fold(0.0f32, f32::max);
         let range = self.cfg.medium;
-        let player = self.player.pos;
         let in_range = |p: Vec3| match region {
             Some(r) => crate::world::region_of(p.x, p.z) == r,
-            None => {
-                let d = p - player;
-                d.x * d.x + d.z * d.z <= range * range
-            }
+            None => self.dist_to_travelers(p) <= range,
         };
         let snap = self.snap.clone();
         let mut ents: Vec<Ent> = Vec::new();

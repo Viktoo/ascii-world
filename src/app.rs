@@ -1413,6 +1413,7 @@ impl App {
         self.achievements.touch();
         let p = self.pos();
         let _ = self.db.save_player(PlayerRow { x: p.x, z: p.z, yaw: self.yaw(), t_game: self.sim.t });
+        self.save_guests();
     }
 
     pub fn save_characters(&mut self) {

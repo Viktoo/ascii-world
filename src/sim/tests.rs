@@ -18,6 +18,7 @@ use std::sync::Arc;
 mod hands;
 mod missiles;
 mod night;
+mod together;
 mod remains;
 mod water_life;
 mod ways;

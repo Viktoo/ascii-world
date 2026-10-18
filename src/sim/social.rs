@@ -1035,7 +1035,7 @@ impl Sim {
                 n.needs.social = (n.needs.social - 0.3).max(0.0);
             }
         }
-        let near_player = self.dist_to_player(pa) <= self.cfg.chat_llm_range;
+        let near_player = self.dist_to_travelers(pa) <= self.cfg.chat_llm_range;
         if near_player && self.has_llm {
             let rel = self.social.rel(ActorId::Npc(a), ActorId::Npc(b)).map(|r| r.describe()).unwrap_or_default();
             let ctx_a = self.decide_context(a, &format!("You meet {bn} ({rel}) and stop to talk."));

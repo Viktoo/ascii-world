@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS species(name TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS thing_shapes(id INTEGER PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS spent_cells(gx INTEGER NOT NULL, gz INTEGER NOT NULL, t REAL NOT NULL, PRIMARY KEY(gx, gz));
 CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY, owner INTEGER NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS travelers(no INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE, name TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, yaw REAL NOT NULL, look_json TEXT NOT NULL DEFAULT '{}', wounds REAL NOT NULL DEFAULT 0, last_seen REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS beliefs(holder INTEGER NOT NULL, key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(holder, key));
 "#;
 
@@ -133,6 +134,21 @@ pub struct CreationRow {
     pub wall: f64,
     pub count: i64,
     pub tags: Vec<String>,
+}
+
+/// A traveler who has played in this world as a guest (the world's own
+/// traveler, 0, is the `player` row): known by their token, and kept as
+/// they left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TravelerRow {
+    pub no: u8,
+    pub token: String,
+    pub name: String,
+    pub pos: [f32; 3],
+    pub yaw: f32,
+    pub look_json: String,
+    pub wounds: f32,
+    pub last_seen: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -328,6 +344,38 @@ impl Db {
         })
         .ok()
         .flatten()
+    }
+
+    /// The guests this world has had.
+    pub fn travelers(&self) -> Vec<TravelerRow> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT no, token, name, x, y, z, yaw, look_json, wounds, last_seen FROM travelers ORDER BY no")?;
+            let rows = st.query_map([], |r| {
+                Ok(TravelerRow {
+                    no: r.get::<_, i64>(0)?.clamp(1, 255) as u8,
+                    token: r.get(1)?,
+                    name: r.get(2)?,
+                    pos: [r.get::<_, f64>(3)? as f32, r.get::<_, f64>(4)? as f32, r.get::<_, f64>(5)? as f32],
+                    yaw: r.get::<_, f64>(6)? as f32,
+                    look_json: r.get(7)?,
+                    wounds: r.get::<_, f64>(8)? as f32,
+                    last_seen: r.get(9)?,
+                })
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn save_traveler(&self, t: &TravelerRow) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO travelers(no, token, name, x, y, z, yaw, look_json, wounds, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(no) DO UPDATE SET token = excluded.token, name = excluded.name, x = excluded.x, y = excluded.y, z = excluded.z, yaw = excluded.yaw, look_json = excluded.look_json, wounds = excluded.wounds, last_seen = excluded.last_seen",
+                params![t.no as i64, t.token, t.name, t.pos[0] as f64, t.pos[1] as f64, t.pos[2] as f64, t.yaw as f64, t.look_json, t.wounds as f64, t.last_seen],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn save_player(&self, p: PlayerRow) -> Result<()> {

@@ -229,6 +229,8 @@ pub fn load(sim: &mut Sim) {
     for id in gone {
         sim.things.removed.push(id);
     }
+    // What travelers who aren't here hold and wear goes with them.
+    sim.stow_absent();
     // Who holds what.
     let held: Vec<(i64, Option<ActorId>, Option<ActorId>)> = sim.things.live().map(|t| (t.id, t.holder, t.co_holder)).collect();
     for (id, h, c) in held {

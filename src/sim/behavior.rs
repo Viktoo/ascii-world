@@ -115,7 +115,7 @@ impl Sim {
             .live()
             .filter(|t| self.snap.type_of(t.type_id).is_some_and(|ty| ty.ct.tick.is_some()))
             .filter_map(|t| {
-                let d = self.dist_to_player(t.pos);
+                let d = self.dist_to_travelers(t.pos);
                 if d > medium {
                     return None;
                 }

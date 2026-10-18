@@ -36,8 +36,6 @@ pub struct Hosting {
     world: String,
     name: String,
     guests: BTreeMap<TravelerNo, Guest>,
-    /// Who has had which number here (by token).
-    numbers: HashMap<String, TravelerNo>,
     last_bodies: Instant,
     /// The roster changed: tell everyone.
     roster_dirty: bool,
@@ -45,6 +43,7 @@ pub struct Hosting {
 
 struct Guest {
     name: String,
+    token: String,
     link: Link<Up, Down>,
     /// The world has gone to them (they can be sent the rest).
     ready: Arc<AtomicBool>,
@@ -66,7 +65,7 @@ pub struct Guesting {
 
 impl Hosting {
     pub fn new(host: Host, path: PathBuf, world: String, name: String) -> Hosting {
-        Hosting { host, path, world, name, guests: BTreeMap::new(), numbers: HashMap::new(), last_bodies: Instant::now(), roster_dirty: false }
+        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false }
     }
 
     /// How many are here besides the host.
@@ -142,6 +141,7 @@ impl App {
         }
         for no in gone {
             if let Some(g) = h.guests.remove(&no) {
+                self.save_guest(no, &g);
                 self.sim.remove_traveler(no);
                 let why = g.link.why().filter(|w| w != "closed").map(|w| format!(" ({w})")).unwrap_or_default();
                 self.say(None, &format!("{} left.{why}", g.name), DIM);
@@ -188,24 +188,42 @@ impl App {
     /// world sent to them (saved first, so it is as it is now).
     fn let_in(&mut self, h: &mut Hosting, a: Arrival) {
         let Arrival { hello, link, from } = a;
-        let next = (1..=u8::MAX).find(|n| !h.numbers.values().any(|x| x == n)).unwrap_or(u8::MAX);
-        let no = *h.numbers.entry(hello.token.clone()).or_insert(next);
+        // The host playing in their own world from another window.
+        let token = if hello.token == self.settings.player().1 { format!("{}+", hello.token) } else { hello.token.clone() };
+        let known = self.db.travelers();
+        let row = known.iter().find(|r| r.token == token).cloned();
+        let Some(no) = row.as_ref().map(|r| r.no).or_else(|| (1..=u8::MAX).find(|n| !known.iter().any(|r| r.no == *n))) else {
+            link.send(Down::Refused("This world has had too many travelers.".into()));
+            link.close();
+            return;
+        };
         // Back from somewhere else (a dropped connection): the old one goes.
         if let Some(old) = h.guests.remove(&no) {
             old.link.close();
+            self.save_guest(no, &old);
             self.sim.remove_traveler(no);
         }
         crate::log::info(format!("{} joins from {from} as traveler {no}", hello.name));
         self.say(None, &format!("{} is joining…", hello.name), DIM);
+        // Back: where they left, as they were. New: before the host.
+        let (at, yaw) = match &row {
+            Some(r) => (Vec3::from_array(r.pos), r.yaw),
+            None => self.beside_me(),
+        };
+        let look: crate::world::species::LookMap = row.as_ref().and_then(|r| serde_json::from_str(&r.look_json).ok()).unwrap_or_default();
+        let wounds = row.as_ref().map(|r| r.wounds).unwrap_or(0.0);
+        self.sim.add_traveler(no, &hello.name, &look, at, yaw);
+        if let Some(t) = self.sim.travelers.get_mut(&no) {
+            t.wounds = wounds;
+        }
+        let g = Guest { name: hello.name.clone(), token, link, ready: Arc::new(AtomicBool::new(false)), told_ready: false };
+        self.save_guest(no, &g);
+        // The copy they get is the world as it is now.
         self.save_player();
         self.save_characters();
-        let (at, yaw) = self.beside_me();
-        let look = Default::default();
-        self.sim.add_traveler(no, &hello.name, &look, at, yaw);
         let body = self.sim.travelers.get(&no).map(|t| Body::of(&t.a, 0.0)).unwrap_or_default();
-        let welcome = Welcome { you: no, world: h.world.clone(), host: h.name.clone(), bytes: 0, packed: 0, body, look, wounds: 0.0, t: self.sim.t };
-        let ready = Arc::new(AtomicBool::new(false));
-        let (tx, path, r) = (link.sender(), h.path.clone(), ready.clone());
+        let welcome = Welcome { you: no, world: h.world.clone(), host: h.name.clone(), bytes: 0, packed: 0, body, look, wounds, t: self.sim.t };
+        let (tx, path, r) = (g.link.sender(), h.path.clone(), g.ready.clone());
         let name = hello.name.clone();
         let _ = std::thread::Builder::new().name("host-send-world".into()).spawn(move || match crate::net::host::guest_copy(&path) {
             Ok((packed, bytes)) => {
@@ -223,7 +241,26 @@ impl App {
                 let _ = tx.send(Down::Refused(format!("The host couldn't send the world: {e}")));
             }
         });
-        h.guests.insert(no, Guest { name: hello.name, link, ready, told_ready: false });
+        h.guests.insert(no, g);
+    }
+
+    /// Keep a guest as they are now (where, how they look, how hurt), for
+    /// when they come back.
+    fn save_guest(&self, no: TravelerNo, g: &Guest) {
+        let Some(t) = self.sim.travelers.get(&no) else { return };
+        let row = crate::db::TravelerRow { no, token: g.token.clone(), name: g.name.clone(), pos: t.a.pos.to_array(), yaw: t.a.yaw, look_json: serde_json::to_string(&t.own.look).unwrap_or_else(|_| "{}".into()), wounds: if t.fallen.is_some() { 0.0 } else { t.wounds }, last_seen: crate::db::now() };
+        if let Err(e) = self.db.save_traveler(&row) {
+            crate::log::error(format!("saving traveler {no}: {e:#}"));
+        }
+    }
+
+    /// Every guest kept as they are now (with the regular saves).
+    pub(super) fn save_guests(&self) {
+        if let Some(Together::Host(h)) = &self.together {
+            for (no, g) in &h.guests {
+                self.save_guest(*no, g);
+            }
+        }
     }
 
     /// Where a newcomer arrives: a couple of steps before the host, facing
@@ -503,6 +540,11 @@ mod tests {
         g.shutdown();
         until(&mut [&mut h], "the guest to be gone", |gs| !gs[0].sim.travelers.contains_key(&1));
         assert!(h.log.iter().any(|l| l.text.contains("Bea left")));
+        // Kept for next time: where she was, by her token.
+        let kept = h.db.travelers();
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].no, kept[0].token.as_str(), kept[0].name.as_str()), (1, "tok-bea", "Bea"));
+        assert!((Vec3::from_array(kept[0].pos) - g.sim.player.pos).length() < 30.0);
         h.shutdown();
         let _ = std::fs::remove_file(&path);
     }

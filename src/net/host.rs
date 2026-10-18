@@ -132,6 +132,8 @@ pub fn guest_copy(src: &Path) -> Result<(Vec<u8>, u64)> {
         let c = rusqlite::Connection::open(&out)?;
         c.execute("DELETE FROM llm_usage", [])?;
         c.execute("DELETE FROM kv WHERE key = 'world_id'", [])?;
+        // Who each guest is stays with the host.
+        c.execute("UPDATE travelers SET token = 'traveler-' || no", [])?;
         drop(c);
         Ok(std::fs::read(&out)?)
     })();
