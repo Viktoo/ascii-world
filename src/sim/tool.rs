@@ -424,6 +424,13 @@ impl Sim {
             self.event("felled", Some(who), Some(format!("thing:{id}")), msg.clone(), Some(pos), json!({}));
             self.note_near(pos, 40.0, Note::Notable(format!("{}.", super::physics::cap(&msg))));
             self.witness(pos, 30.0, &msg, 0.4, &[who]);
+            // What it comes apart into is the world's to say (logs, branches,
+            // a stump), as for any deed: the one who felled it set it going.
+            let what = format!("let the felled {n} come apart into what a felled {n} gives here, replacing it");
+            let r = super::actions::Resolved::new(Target::Thing(id), pos, n.clone());
+            if let Err(e) = self.interpret(who, &what, Some(r), None) {
+                crate::log::info(format!("the felled {n} stays as it fell: {e:?}"));
+            }
         }
     }
 

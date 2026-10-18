@@ -1,0 +1,875 @@
+{
+ "name": "Marinella",
+ "land": "A sunny coast of small fishing villages on a warm blue sea: painted houses climbing hills above stone harbours, olive groves and meadows thick with wildflowers and tall grass, chestnut woods up the slopes where woodcutters live in tune with the trees, and quiet hill farms beyond. Peaceful, colourful and unhurried; everyone knows the sea and the seasons.",
+ "start": "The piazza of Marinella, a walled fishing village of painted houses above its little harbour, on a bright afternoon.",
+ "rivers": 0.25,
+ "caves": 0.05,
+ "sea": 0,
+ "groundwater": 3,
+ "gravity": 9.81,
+ "air": 1,
+ "palette": {
+  "sky_day": [
+   62,
+   136,
+   226
+  ],
+  "horizon_day": [
+   186,
+   214,
+   238
+  ],
+  "sky_dusk": [
+   104,
+   90,
+   164
+  ],
+  "horizon_dusk": [
+   255,
+   164,
+   92
+  ],
+  "sky_night": [
+   10,
+   14,
+   36
+  ],
+  "horizon_night": [
+   34,
+   38,
+   68
+  ],
+  "sun": [
+   255,
+   248,
+   232
+  ],
+  "water": [
+   26,
+   122,
+   168
+  ],
+  "rock": [
+   204,
+   190,
+   160
+  ],
+  "snow": [
+   240,
+   240,
+   240
+  ],
+  "sand": [
+   232,
+   216,
+   174
+  ],
+  "fog": 1.0
+ },
+ "climate": {
+  "kinds": [
+   {
+    "name": "clear",
+    "often": 4,
+    "hours": [
+     10,
+     40
+    ],
+    "clouds": 0.08,
+    "wind": 0.25
+   },
+   {
+    "name": "fair weather clouds",
+    "often": 2,
+    "hours": [
+     6,
+     24
+    ],
+    "clouds": 0.35,
+    "wind": 0.3
+   },
+   {
+    "name": "sea breeze",
+    "often": 1.2,
+    "hours": [
+     4,
+     12
+    ],
+    "clouds": 0.2,
+    "wind": 0.55,
+    "feel": "fresh and salty off the water"
+   },
+   {
+    "name": "soft rain",
+    "often": 0.4,
+    "hours": [
+     2,
+     8
+    ],
+    "clouds": 0.85,
+    "wind": 0.3,
+    "fog": 1.4,
+    "falls": {
+     "what": "rain",
+     "amount": 0.4,
+     "color": [
+      176,
+      190,
+      210
+     ],
+     "look": "streak",
+     "props": {
+      "wet": 1
+     }
+    }
+   },
+   {
+    "name": "summer storm",
+    "often": 0.15,
+    "hours": [
+     1,
+     4
+    ],
+    "clouds": 1,
+    "cloud_color": [
+     110,
+     116,
+     134
+    ],
+    "wind": 0.75,
+    "storm": 0.6,
+    "falls": {
+     "what": "rain",
+     "amount": 0.9,
+     "color": [
+      160,
+      176,
+      200
+     ],
+     "look": "streak",
+     "props": {
+      "wet": 1
+     }
+    }
+   }
+  ]
+ },
+ "biomes": [
+  {
+   "name": "flowering meadows",
+   "base": 7,
+   "amp": 5,
+   "rough": 0.1,
+   "cliffs": 0,
+   "ground": [
+    104,
+    156,
+    64
+   ],
+   "ground2": [
+    132,
+    170,
+    72
+   ],
+   "scatter": {
+    "grass": 1.6,
+    "flower": 2.4,
+    "tallgrass": 1.5,
+    "olive": 0.08,
+    "bush": 0.25,
+    "rock": 0.05
+   },
+   "clump": {
+    "flower": 0.95,
+    "tallgrass": 0.8,
+    "olive": 0.7
+   }
+  },
+  {
+   "name": "the sea",
+   "base": -10,
+   "amp": 3,
+   "rough": 0.0,
+   "cliffs": 0,
+   "ground": [
+    196,
+    184,
+    150
+   ],
+   "ground2": [
+    160,
+    160,
+    132
+   ],
+   "scatter": {
+    "grass": 0,
+    "seagrass": 0.8
+   },
+   "clump": {
+    "seagrass": 0.8
+   }
+  },
+  {
+   "name": "chestnut woods",
+   "base": 16,
+   "amp": 10,
+   "rough": 0.3,
+   "cliffs": 0,
+   "ground": [
+    72,
+    110,
+    50
+   ],
+   "ground2": [
+    96,
+    120,
+    58
+   ],
+   "scatter": {
+    "tree": 0.45,
+    "pine": 0.04,
+    "bush": 0.6,
+    "fern": 1.1,
+    "flower": 0.5,
+    "grass": 1.4,
+    "mushroom": 0.3,
+    "rock": 0.12
+   },
+   "clump": {
+    "tree": 0.35,
+    "fern": 0.7
+   }
+  },
+  {
+   "name": "limestone headland",
+   "base": 10,
+   "amp": 16,
+   "rough": 0.5,
+   "cliffs": 0.5,
+   "ground": [
+    150,
+    158,
+    96
+   ],
+   "ground2": [
+    176,
+    168,
+    120
+   ],
+   "scatter": {
+    "bush": 0.6,
+    "rock": 0.35,
+    "flower": 0.6,
+    "grass": 1.4,
+    "pine": 0.18
+   }
+  },
+  {
+   "name": "olive hills",
+   "base": 14,
+   "amp": 8,
+   "rough": 0.15,
+   "cliffs": 0,
+   "ground": [
+    116,
+    150,
+    70
+   ],
+   "ground2": [
+    146,
+    160,
+    86
+   ],
+   "scatter": {
+    "olive": 0.55,
+    "grass": 2.0,
+    "flower": 1.8,
+    "tallgrass": 1.0,
+    "bush": 0.3,
+    "rock": 0.08
+   },
+   "clump": {
+    "olive": 0.85,
+    "flower": 0.9
+   }
+  }
+ ],
+ "looks": {
+  "human": {
+   "skin": [
+    0.08,
+    0.45
+   ],
+   "undertone": [
+    0.55,
+    0.95
+   ],
+   "eyes": [
+    0.0,
+    0.5
+   ],
+   "eye_shape": [
+    0.2,
+    0.55
+   ],
+   "nose": [
+    0.2,
+    0.6
+   ],
+   "hair_color": [
+    0.0,
+    0.45
+   ],
+   "height": [
+    1.55,
+    1.86
+   ]
+  }
+ },
+ "species": [
+  {
+   "name": "bottlenose dolphin",
+   "plural": "bottlenose dolphins",
+   "body": "dolphin",
+   "body_description": "a sleek grey bottlenose dolphin lying along +z, pale beneath, a curved dorsal fin and a fluke that beats",
+   "size": 1.0,
+   "mind": "simple",
+   "speech": "sounds",
+   "social": "pack",
+   "diet": {
+    "plants": 0,
+    "meat": 1
+   },
+   "temper": {
+    "bold": 0.5,
+    "wary": 0.4,
+    "playful": 0.9,
+    "tame": 0.3
+   },
+   "move": {
+    "walk": 0,
+    "run": 0,
+    "fly": 0,
+    "swim": 7
+   },
+   "life": {
+    "sleep": [
+     1,
+     4
+    ]
+   },
+   "mass": 250,
+   "water": 1,
+   "depth": [
+    0,
+    8
+   ],
+   "sounds": [
+    "click",
+    "whistle"
+   ],
+   "voice": [
+    [
+     {
+      "kind": "knock",
+      "hz": 3000,
+      "len": 0.02,
+      "times": 8,
+      "gap": 0.03,
+      "loud": 0.5
+     }
+    ],
+    [
+     {
+      "kind": "whistle",
+      "hz": [
+       6000,
+       11000,
+       7000
+      ],
+      "len": 0.6,
+      "wobble": 0.3,
+      "loud": 0.6
+     }
+    ]
+   ],
+   "description": "a pod that follows the fishing boats in and out of the bay"
+  }
+ ],
+ "landforms": [
+  {
+   "name": "the coast",
+   "biome": "flowering meadows",
+   "outline": [
+    [
+     -3000,
+     -2500
+    ],
+    [
+     3000,
+     -2500
+    ],
+    [
+     3000,
+     3000
+    ],
+    [
+     -3000,
+     3000
+    ]
+   ],
+   "edge": 400
+  },
+  {
+   "name": "the olive hills",
+   "biome": "olive hills",
+   "outline": [
+    [
+     -264.6,
+     320.0
+    ],
+    [
+     -271.0,
+     451.5
+    ],
+    [
+     -314.9,
+     512.8
+    ],
+    [
+     -458.3,
+     666.0
+    ],
+    [
+     -560.0,
+     614.9
+    ],
+    [
+     -711.3,
+     621.3
+    ],
+    [
+     -824.8,
+     551.1
+    ],
+    [
+     -881.8,
+     428.6
+    ],
+    [
+     -907.8,
+     320.0
+    ],
+    [
+     -867.7,
+     181.5
+    ],
+    [
+     -809.3,
+     127.3
+    ],
+    [
+     -699.3,
+     4.0
+    ],
+    [
+     -560.0,
+     51.9
+    ],
+    [
+     -415.2,
+     18.4
+    ],
+    [
+     -306.2,
+     51.3
+    ],
+    [
+     -229.0,
+     172.4
+    ]
+   ],
+   "edge": 160,
+   "rise": 8,
+   "rugged": 0.3
+  },
+  {
+   "name": "the eastern olive hills",
+   "biome": "olive hills",
+   "outline": [
+    [
+     832.5,
+     260.0
+    ],
+    [
+     830.2,
+     345.8
+    ],
+    [
+     752.0,
+     436.6
+    ],
+    [
+     716.1,
+     529.1
+    ],
+    [
+     600.0,
+     491.1
+    ],
+    [
+     499.0,
+     478.8
+    ],
+    [
+     440.2,
+     414.9
+    ],
+    [
+     387.2,
+     376.5
+    ],
+    [
+     305.8,
+     260.0
+    ],
+    [
+     330.9,
+     172.7
+    ],
+    [
+     430.1,
+     66.8
+    ],
+    [
+     491.3,
+     -14.3
+    ],
+    [
+     600.0,
+     43.0
+    ],
+    [
+     703.7,
+     3.3
+    ],
+    [
+     784.3,
+     99.8
+    ],
+    [
+     837.7,
+     176.8
+    ]
+   ],
+   "edge": 160,
+   "rise": 6,
+   "rugged": 0.3
+  },
+  {
+   "name": "the village hill",
+   "biome": "flowering meadows",
+   "outline": [
+    [
+     152.9,
+     60.0
+    ],
+    [
+     145.1,
+     121.5
+    ],
+    [
+     110.1,
+     173.2
+    ],
+    [
+     53.1,
+     197.8
+    ],
+    [
+     -0.0,
+     213.6
+    ],
+    [
+     -61.1,
+     190.0
+    ],
+    [
+     -105.5,
+     161.8
+    ],
+    [
+     -139.6,
+     118.1
+    ],
+    [
+     -138.3,
+     60.0
+    ],
+    [
+     -133.7,
+     -1.2
+    ],
+    [
+     -110.6,
+     -40.3
+    ],
+    [
+     -60.1,
+     -70.6
+    ],
+    [
+     0.0,
+     -81.0
+    ],
+    [
+     52.8,
+     -86.8
+    ],
+    [
+     101.1,
+     -41.2
+    ],
+    [
+     149.3,
+     -0.8
+    ]
+   ],
+   "edge": 120,
+   "rise": 10
+  },
+  {
+   "name": "the chestnut wood",
+   "biome": "chestnut woods",
+   "outline": [
+    [
+     456.4,
+     660.0
+    ],
+    [
+     414.0,
+     746.1
+    ],
+    [
+     336.3,
+     844.9
+    ],
+    [
+     304.8,
+     921.6
+    ],
+    [
+     219.2,
+     968.4
+    ],
+    [
+     130.0,
+     987.2
+    ],
+    [
+     30.9,
+     938.0
+    ],
+    [
+     -48.4,
+     916.0
+    ],
+    [
+     -90.4,
+     839.2
+    ],
+    [
+     -181.4,
+     746.2
+    ],
+    [
+     -197.3,
+     660.0
+    ],
+    [
+     -184.8,
+     571.9
+    ],
+    [
+     -83.1,
+     467.8
+    ],
+    [
+     -62.5,
+     421.3
+    ],
+    [
+     48.6,
+     400.6
+    ],
+    [
+     130.0,
+     378.8
+    ],
+    [
+     235.3,
+     367.1
+    ],
+    [
+     290.5,
+     406.0
+    ],
+    [
+     362.5,
+     460.8
+    ],
+    [
+     450.4,
+     566.9
+    ]
+   ],
+   "edge": 110,
+   "rise": 12,
+   "rugged": 0.25
+  },
+  {
+   "name": "the bay",
+   "biome": "the sea",
+   "outline": [
+    [
+     -3000,
+     -70
+    ],
+    [
+     -900,
+     -60
+    ],
+    [
+     -420,
+     -58
+    ],
+    [
+     -240,
+     -52
+    ],
+    [
+     -190,
+     -40
+    ],
+    [
+     -150,
+     -34
+    ],
+    [
+     -112,
+     -30
+    ],
+    [
+     -96,
+     -26
+    ],
+    [
+     -60,
+     -24
+    ],
+    [
+     0,
+     -24
+    ],
+    [
+     60,
+     -24
+    ],
+    [
+     100,
+     -26
+    ],
+    [
+     135,
+     -32
+    ],
+    [
+     160,
+     -60
+    ],
+    [
+     185,
+     -130
+    ],
+    [
+     215,
+     -205
+    ],
+    [
+     245,
+     -215
+    ],
+    [
+     275,
+     -170
+    ],
+    [
+     300,
+     -95
+    ],
+    [
+     340,
+     -60
+    ],
+    [
+     520,
+     -58
+    ],
+    [
+     900,
+     -64
+    ],
+    [
+     3000,
+     -70
+    ],
+    [
+     3000,
+     -3000
+    ],
+    [
+     -3000,
+     -3000
+    ]
+   ],
+   "edge": 45
+  },
+  {
+   "name": "Capo Faro",
+   "biome": "limestone headland",
+   "outline": [
+    [
+     140,
+     -30
+    ],
+    [
+     170,
+     -110
+    ],
+    [
+     215,
+     -205
+    ],
+    [
+     262,
+     -196
+    ],
+    [
+     300,
+     -100
+    ],
+    [
+     320,
+     -40
+    ],
+    [
+     230,
+     10
+    ]
+   ],
+   "edge": 30,
+   "rise": 12,
+   "rugged": 0.5
+  }
+ ]
+}

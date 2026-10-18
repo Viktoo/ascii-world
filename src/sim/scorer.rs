@@ -389,11 +389,27 @@ impl Sim {
             let t = self.t;
             let can_work = self.has_llm && self.interp.building.is_empty() && t - self.cast.last_work > self.cfg.work_gap_secs as f64 && self.cast.get(cid).is_some_and(|n| t - n.last_work > self.cfg.work_secs as f64 && t >= n.next_llm);
             let maker = self.maker_turn(cid);
+            // A tool in hand is work that makes no new kind of thing by
+            // itself (an axe at a tree, a spade in the garden, a rod over
+            // the water): it can come round more often.
+            // In hand, or lying close by to take up.
+            let tool = self.held_tool(me).map(|(id, tl)| (id, tl, true)).or_else(|| {
+                self.things
+                    .live()
+                    .filter(|x| !x.held() && (x.pos - pos).length() < 8.0)
+                    .find_map(|x| self.snap.type_of(x.type_id).and_then(|ty| ty.ct.meta.tool.clone()).map(|tl| (x.id, tl, false)))
+            });
+            let tool_turn = tool.is_some() && self.has_llm && self.cast.get(cid).is_some_and(|n| t - n.last_work > self.cfg.work_secs as f64 * 0.25 && t >= n.next_llm);
             if maker {
                 add(Verb::Work { now: true }, 2.0, "make something with your craft".into());
-            } else if can_work {
+            } else if can_work || tool_turn {
                 if let Some(s) = self.worth(cid, Kind::Work, 1.0, 0.0) {
-                    add(Verb::Work { now: false }, s, "make or mend something with your craft".into());
+                    let label = match &tool {
+                        Some((id, tl, true)) => format!("work with the {} you hold ({})", self.thing_name(*id), tl.motions.join(", ")),
+                        Some((id, tl, false)) => format!("take up the {} and work with it ({})", self.thing_name(*id), tl.motions.join(", ")),
+                        None => "make or mend something with your craft".into(),
+                    };
+                    add(Verb::Work { now: false }, s, label);
                 }
             }
         } else {
@@ -693,7 +709,7 @@ impl Sim {
                         self.plan(me, steps, if sapient { "find something to eat" } else { "eat" }, false);
                     }
                     (None, false) => {
-                        self.ask(cid, "hungry", "You are hungry and see nothing to eat nearby.");
+                        self.ask(cid, "hungry", "You are hungry and see nothing ready to eat nearby. You might get or make something from what is around: pick it, bake or cook it, take it from a store or stall, catch it, or ask someone for it.");
                         self.wander(cid, home, 25.0);
                     }
                 }
@@ -823,7 +839,7 @@ impl Sim {
                 } else {
                     ""
                 };
-                let what = format!("You have a little time for your craft or daily work. Look at what is around you: your tools, things lying about, things others made. Make something new from one or two of them, or fix or improve something, in a way that fits who you are: hold what you work with, then a \"do\" step in words that names what you use. What you make stays here for anyone to use.{crowded} If nothing fits, carry on as you were.");
+                let what = format!("You have a little time for your craft or daily work. Look at what is around you: your tools, things lying about, things others made. Make something new from one or two of them, or fix or improve something, or work a tool you hold on what is around (chop at a tree with an axe, dig with a spade, fish with a rod), in a way that fits who you are and what you are after: hold what you work with, then a tool step (chop, dig, swing) or a \"do\" step in words that names what you use. What you make stays here for anyone to use.{crowded} If nothing fits, carry on as you were.");
                 self.ask_planner(cid, "work", &what, now);
                 self.set_doing(cid, "thinking about work");
                 self.think_again(cid, 8.0);

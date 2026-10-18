@@ -198,6 +198,13 @@ fn build(dir: &Path, out: Option<PathBuf>, genesis_only: bool) -> Result<()> {
             }
         }
         drop(run);
+        // Stood again on the ground the regions laid (a levelled square, a
+        // terrace), so the traveler doesn't begin in the air above it.
+        if let Some([x, z]) = spec.spawn {
+            let model = WorldModel::load(db.clone(), None, Arc::new(Mutex::new(Live::default())))?;
+            let y = model.terrain().height(x, z);
+            db.kv_set("spawn", &serde_json::to_string(&[x, y, z])?)?;
+        }
     }
     let rep = report.lock();
     if !rep.missing.is_empty() || !rep.failed.is_empty() || !rep.unknown.is_empty() {

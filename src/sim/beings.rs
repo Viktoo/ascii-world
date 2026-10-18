@@ -571,7 +571,11 @@ impl Sim {
         let diet = self.cast.get(cid)?.species.diet.clone();
         let strength = self.strength(ActorId::Npc(cid));
         let grazes = diet.grazes();
-        self.nearest_matching(p, range, |pr| (pr[P_EDIBLE] > 0.05 && pr[P_MASS] < strength.max(1.0)) || (grazes && grazable(pr)))
+        let found = self.nearest_matching(p, range, |pr| (pr[P_EDIBLE] > 0.05 && pr[P_MASS] < strength.max(1.0)) || (grazes && grazable(pr)))?;
+        // Not what they found out of their reach a moment ago.
+        let t = self.t;
+        let shunned = self.cast.get(cid).is_some_and(|n| n.unreachable.iter().any(|(q, until)| *until > t && (*q - found.1).length() < 1.5));
+        (!shunned).then_some(found)
     }
 
     /// Does this being eat plants as they grow (grass, leaves)?

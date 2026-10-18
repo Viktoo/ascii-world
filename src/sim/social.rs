@@ -455,8 +455,11 @@ impl Sim {
         let rel = self.social.rel(me, from).cloned().unwrap_or_default();
         let tr = n.traits;
         let needs = n.needs;
+        // Play weighs against what they are in the middle of (their own plan
+        // or goal); a hand with a load does not.
+        let busy = if n.plan.is_empty() && n.goal.is_empty() { 0.0 } else { 0.3 };
         match act {
-            Activity::Catch => needs.fun * 0.6 + tr.playful * 0.6 + aff * 0.5 > 0.45,
+            Activity::Catch => needs.fun * 0.6 + tr.playful * 0.6 + aff * 0.5 - busy > 0.45,
             Activity::Carry => tr.generous * 0.6 + aff * 0.6 + 0.1 > 0.4,
             Activity::Gesture(k) => {
                 if *k == GestureKind::Kiss {
@@ -465,9 +468,9 @@ impl Sim {
                     aff >= k.intimacy()
                 }
             }
-            Activity::Dance => tr.playful * 0.5 + aff * 0.7 > 0.5,
-            Activity::Walk => aff > 0.15,
-            Activity::Other(_) => aff > 0.35,
+            Activity::Dance => tr.playful * 0.5 + aff * 0.7 - busy > 0.5,
+            Activity::Walk => aff - busy > 0.15,
+            Activity::Other(_) => aff - busy > 0.35,
         }
     }
 
@@ -853,7 +856,19 @@ impl Sim {
                     self.set_task(j.b, Task::Follow { who: j.a, dist: 1.8, until: t + 3.0 });
                 }
                 if j.a != ActorId::Player && self.actor(j.a).is_some_and(|x| x.task.is_none()) {
-                    let p = pa + self.actor(j.a).map(|x| x.forward()).unwrap_or(Vec3::Z) * 12.0;
+                    // Ahead, or the nearest way round to it that stays on
+                    // dry land (not off a quay into the sea).
+                    let fwd = self.actor(j.a).map(|x| x.forward()).unwrap_or(Vec3::Z);
+                    let t_ = &self.snap.terrain;
+                    let dry = |q: Vec3| t_.water(q.x, q.z) - t_.height(q.x, q.z) < -0.3;
+                    let p = (0..9)
+                        .map(|k| {
+                            let a = ((k + 1) / 2) as f32 * if k % 2 == 0 { 1.0 } else { -1.0 } * 0.6;
+                            let d = Vec3::new(fwd.x * a.cos() - fwd.z * a.sin(), 0.0, fwd.x * a.sin() + fwd.z * a.cos());
+                            pa + d * 12.0
+                        })
+                        .find(|&q| dry(q) && dry((pa + q) * 0.5))
+                        .unwrap_or(pa);
                     self.set_task(j.a, Task::Goto { target: Target::Point(p.to_array()), stop: 1.0, run: false, deadline: t + 15.0 });
                 }
             }

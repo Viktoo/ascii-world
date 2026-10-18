@@ -247,13 +247,15 @@ pub enum ActErr {
     /// Walk closer to `at` and try again.
     TooFar { at: Vec3, dist: f32 },
     Fail(String),
+    /// What it names isn't there (nothing by that name near, gone).
+    Missing(String),
 }
 
 impl std::fmt::Display for ActErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ActErr::TooFar { dist, .. } => write!(f, "too far away ({dist:.1} m); go closer first"),
-            ActErr::Fail(s) => write!(f, "{s}"),
+            ActErr::Fail(s) | ActErr::Missing(s) => write!(f, "{s}"),
         }
     }
 }
@@ -273,7 +275,7 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    fn new(target: Target, pos: Vec3, name: String) -> Self {
+    pub(super) fn new(target: Target, pos: Vec3, name: String) -> Self {
         Resolved { target, pos, name, bounds: None }
     }
 
@@ -1644,7 +1646,7 @@ impl Sim {
 }
 
 fn not_found(t: &Target) -> ActErr {
-    ActErr::Fail(match t {
+    ActErr::Missing(match t {
         Target::Name(n) => format!("there's nothing called '{n}' nearby"),
         Target::Thing(id) => format!("thing {id} is gone"),
         Target::Actor(a) => format!("{} isn't here", a.key()),

@@ -142,7 +142,10 @@ pub fn fits(what: &str, name: &str) -> bool {
     if q.is_empty() || n.is_empty() {
         return q.is_empty();
     }
-    q == n || n.contains(&q) || q.contains(&n) || n.split_whitespace().any(|w| w.len() > 2 && q.split_whitespace().any(|x| x == w))
+    // Whole words, a plural fitting its one ("logs", "a log"); never part
+    // of a word ("fish" is not in "fishing rod").
+    let same = |a: &str, b: &str| a == b || a.strip_suffix('s') == Some(b) || b.strip_suffix('s') == Some(a) || a.strip_suffix("es") == Some(b) || b.strip_suffix("es") == Some(a);
+    q == n || n.split_whitespace().any(|w| w.len() > 2 && q.split_whitespace().any(|x| same(x, w)))
 }
 
 impl Sim {
@@ -495,5 +498,21 @@ impl Sim {
         let t = self.t;
         let parts: Vec<String> = self.goals.list.iter().filter(|g| g.owner == cid && g.closed.is_some_and(|c| t - c < 300.0)).map(|g| format!("{} ({})", g.text, if g.status == Status::Done { "done" } else { "given up" })).collect();
         (!parts.is_empty()).then(|| parts.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fits;
+
+    /// Words fit a thing's name as whole words, plurals too, never inside
+    /// another word.
+    #[test]
+    fn words_fit_whole() {
+        assert!(fits("a ball", "leather ball"));
+        assert!(fits("a log", "chestnut logs"));
+        assert!(fits("a fish", "fresh fish"));
+        assert!(!fits("a fish", "fishing rod"));
+        assert!(!fits("a cat", "catapult"));
     }
 }

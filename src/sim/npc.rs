@@ -210,6 +210,9 @@ pub struct Npc {
     pub seen_dead: Vec<i64>,
     /// When fear of someone near last moved them (see `fear`).
     pub feared_at: f64,
+    /// Where something they reached for was out of their reach, and until
+    /// when they leave it be (so they look elsewhere, not try again and again).
+    pub unreachable: Vec<(Vec3, f64)>,
 }
 
 impl Npc {
@@ -366,6 +369,7 @@ impl Cast {
             last_work: f64::MIN,
             last_greet: f64::MIN,
             deliver: None,
+            unreachable: Vec::new(),
             mission: None,
             asked_by: None,
             helping: None,
@@ -776,6 +780,13 @@ impl Sim {
                     // Standing right under it: out of reach (up a bush, on a roof).
                     let me = self.actor(who).map(|a| a.pos).unwrap_or(at);
                     if Vec3::new(at.x - me.x, 0.0, at.z - me.z).length() < self.reach_of(who) * 0.6 + 0.3 {
+                        if let ActorId::Npc(c) = who {
+                            let until = self.t + 300.0;
+                            if let Some(n) = self.cast.get_mut(c) {
+                                n.unreachable.retain(|(_, u)| *u > until - 300.0);
+                                n.unreachable.push((at, until));
+                            }
+                        }
                         self.plan_failed(who, &format!("{label}: out of reach"));
                         return false;
                     }
@@ -791,6 +802,22 @@ impl Sim {
                 Err(ActErr::Fail(msg)) => {
                     self.plan_failed(who, &msg);
                     return false;
+                }
+                // A step about something that isn't there: let it go and
+                // carry on with the rest, if there is a rest.
+                Err(ActErr::Missing(msg)) => {
+                    if self.plan_mut(who).is_none_or(|p| p.is_empty()) {
+                        self.plan_failed(who, &msg);
+                        return false;
+                    }
+                    if let ActorId::Npc(c) = who {
+                        let t = self.t;
+                        if let Some(n) = self.cast.get_mut(c) {
+                            n.log_decision(t, format!("skipped a step: {msg}"));
+                        }
+                    }
+                    self.event("step_skipped", Some(who), None, msg, self.actor(who).map(|a| a.pos), json!({}));
+                    return true;
                 }
             }
         }

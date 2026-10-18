@@ -707,10 +707,18 @@ pub fn act_once(s: &mut Session, who: ActorId, action: super::Action, run: f32) 
 }
 
 pub fn act_cli(args: &[String]) -> Result<()> {
-    let file = args.first().filter(|a| !a.starts_with("--")).context("usage: pocket act FILE --as player|ID|NAME '<action json>' [--run SECS] [--dry] | --stdin")?;
+    let file = args.first().filter(|a| !a.starts_with("--")).context("usage: pocket act FILE --as player|ID|NAME '<action json>' [--run SECS] [--at x,z] [--dry] | --stdin")?;
     let db = Db::open(Path::new(file))?;
     let llm = llm_for(&db, args);
     let mut s = Session::with_db(db, None, llm)?;
+    // Where the traveler stands first (x,z), as for `pocket sim --at`.
+    if let Some(at) = flag(args, "--at") {
+        let v: Vec<f32> = at.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if v.len() >= 2 {
+            let h = s.sim.snap.terrain.height(v[0], v[1]);
+            s.sim.player.pos = Vec3::new(v[0], h, v[1]);
+        }
+    }
     let dry = has(args, "--dry");
     if has(args, "--stdin") {
         let stdin = std::io::stdin();

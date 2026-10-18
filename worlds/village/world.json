@@ -1,0 +1,59 @@
+{
+ "seed": 31,
+ "prompt": "A peaceful, colourful Mediterranean fishing village of painted houses and terracotta roofs climbing a hill above its stone harbour, walled with a watchtower; meadows of wildflowers and tall grass round it, and a woodcutters' hamlet in the chestnut woods up the road.",
+ "spawn": [
+  6,
+  44
+ ],
+ "regions": [
+  [
+   -2,
+   -1
+  ],
+  [
+   -2,
+   0
+  ],
+  [
+   -2,
+   1
+  ],
+  [
+   -1,
+   -1
+  ],
+  [
+   -1,
+   0
+  ],
+  [
+   -1,
+   1
+  ],
+  [
+   0,
+   -1
+  ],
+  [
+   0,
+   0
+  ],
+  [
+   0,
+   1
+  ],
+  [
+   0,
+   2
+  ],
+  [
+   1,
+   -1
+  ],
+  [
+   1,
+   0
+  ]
+ ],
+ "difficulty": "peaceful"
+}

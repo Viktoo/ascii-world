@@ -69,6 +69,28 @@ pub struct Mission {
     pub goal: Option<u64>,
 }
 
+impl Mission {
+    /// What they ask others for, in words that follow "help {asker} …": the
+    /// thing they need ("with a log"), or, when what they need is a person,
+    /// that person's hand in the deed itself ("to build the boat"), never
+    /// the person as if they were a thing to fetch.
+    pub fn favour(&self) -> String {
+        if self.need.kind.trim().eq_ignore_ascii_case("someone") && !self.text.trim().is_empty() {
+            format!("to {}", self.text.trim())
+        } else {
+            format!("with {}", self.need.what)
+        }
+    }
+
+    /// The same, after "ask for …": "a log", or "help to build the boat".
+    pub fn asking(&self) -> String {
+        match self.favour().strip_prefix("with ") {
+            Some(what) => what.to_string(),
+            None => format!("help {}", self.favour()),
+        }
+    }
+}
+
 /// What a character is in the middle of, kept between sessions.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Work {
@@ -166,7 +188,7 @@ impl Sim {
                     if let Some(m) = self.mission_mut(me) {
                         m.until = t + ASK_SECS;
                     }
-                    self.plan(me, vec![Action::Goto { target: Target::Actor(other), run: false }, Action::Plea { to: Target::Actor(other) }], &format!("ask for {}", m.need.what), true);
+                    self.plan(me, vec![Action::Goto { target: Target::Actor(other), run: false }, Action::Plea { to: Target::Actor(other) }], &format!("ask for {}", m.asking()), true);
                 }
             }
             Stage::OnTheWay if !busy => self.meet_need(me),
@@ -324,9 +346,13 @@ impl Sim {
                 let at = self.actor(me).map(|x| x.pos);
                 self.event("agreed", Some(me), Some(asker.key()), format!("{a} agreed to help {b}"), at, json!({}));
                 // Saying yes is a promise: kept when they have it.
-                if let Some(what) = self.mission(asker).map(|m| m.need.what.clone()) {
+                if let Some(m) = self.mission(asker).cloned() {
                     let hours = (ASK_SECS / super::headless::hour_s()) as f32;
-                    self.promise(cid, asker, &format!("get {b} {what}"), Some(&what), Some(hours));
+                    if m.need.kind.trim().eq_ignore_ascii_case("someone") && !m.text.trim().is_empty() {
+                        self.promise(cid, asker, &format!("help {b} {}", m.favour()), None, Some(hours));
+                    } else {
+                        self.promise(cid, asker, &format!("get {b} {}", m.need.what), Some(&m.need.what), Some(hours));
+                    }
                 }
             }
             return steps;
@@ -403,7 +429,7 @@ impl Sim {
             m.stage = Stage::Asking(other);
             m.until = until;
         }
-        self.plan(who, vec![Action::Goto { target: Target::Actor(other), run: false }, Action::Plea { to: Target::Actor(other) }], &format!("ask {} for {}", self.actor_name(other), m.need.what), true);
+        self.plan(who, vec![Action::Goto { target: Target::Actor(other), run: false }, Action::Plea { to: Target::Actor(other) }], &format!("ask {} for {}", self.actor_name(other), m.asking()), true);
     }
 
     /// Standing by them: ask, in words, and let them decide.
@@ -412,9 +438,11 @@ impl Sim {
         let Some(Target::Actor(other)) = self.resolve(to, who).map(|r| r.target) else { return Err(super::actions::ActErr::Fail("ask whom?".into())) };
         let ActorId::Npc(oc) = other else { return Err(super::actions::ActErr::Fail("ask whom?".into())) };
         let (me, them) = (self.actor_name(who), self.actor_name(other));
-        let what = &m.need.what;
-        let why = if m.text.is_empty() { String::new() } else { format!(" so they can {}", m.text) };
-        self.say(who, &format!("{them}, could you help me with {what}?"), Some(Target::Actor(other)));
+        let favour = m.favour();
+        let person = m.need.kind.trim().eq_ignore_ascii_case("someone") && !m.text.trim().is_empty();
+        let what = if person { format!("your help {favour}") } else { m.need.what.clone() };
+        let why = if m.text.is_empty() || person { String::new() } else { format!(" so they can {}", m.text) };
+        self.say(who, &format!("{them}, could you help me {favour}?"), Some(Target::Actor(other)));
         let t = self.t;
         if let Some(n) = self.cast.get_mut(oc) {
             n.asked_by = Some((who, t + CHOOSE_SECS));
@@ -444,8 +472,8 @@ impl Sim {
         }
         let (a, b) = (self.actor_name(asker), self.actor_name(by));
         let at = self.actor(by).map(|x| x.pos).unwrap_or_default();
-        self.event("refused", Some(by), Some(asker.key()), format!("{b} wouldn't help {a} with {}", m.need.what), Some(at), json!({}));
-        self.witness(at, 15.0, &format!("{b} wouldn't help {a} with {}.", m.need.what), 0.3, &[]);
+        self.event("refused", Some(by), Some(asker.key()), format!("{b} wouldn't help {a} {}", m.favour()), Some(at), json!({}));
+        self.witness(at, 15.0, &format!("{b} wouldn't help {a} {}.", m.favour()), 0.3, &[]);
         self.next_ask(asker);
     }
 
@@ -589,5 +617,21 @@ impl Sim {
             }
             _ => self.give_up(me, "it took too long"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thing is asked for as a thing; a person is asked for their hand in
+    /// the deed, not for themselves.
+    #[test]
+    fn asking_for_a_person_asks_for_the_deed() {
+        let m = |kind: &str, what: &str| Mission { text: "build Marco a boat".into(), deliver: None, need: Need { kind: kind.into(), what: what.into(), hour: None }, stage: Stage::OnTheWay, candidates: vec![], asked: vec![], no_ask: false, until: 0.0, goal: None };
+        assert_eq!(m("thing", "a big log").favour(), "with a big log");
+        assert_eq!(m("thing", "a big log").asking(), "a big log");
+        assert_eq!(m("someone", "Bruno the woodcutter").favour(), "to build Marco a boat");
+        assert_eq!(m("someone", "Bruno the woodcutter").asking(), "help to build Marco a boat");
     }
 }

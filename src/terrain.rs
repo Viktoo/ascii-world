@@ -797,10 +797,10 @@ impl Terrain {
         self.carve.read().ground.edits_at(x, z, margin).into_iter().map(|(e, _)| e.clone()).collect()
     }
 
-    /// Whether (x, z) lies on a way laid with something (a road, a path, a
-    /// quay): scatter keeps off them.
+    /// Whether (x, z) lies on ground laid with something (a road, a path, a
+    /// quay, a paved square or terrace): scatter keeps off it.
     pub fn on_road(&self, x: f32, z: f32, margin: f32) -> bool {
-        self.carve.read().ground.edits_at(x, z, margin).iter().any(|(e, _)| e.color.is_some() && matches!(e.shape, crate::ground::Shape::Line { .. }) && e.mode != crate::ground::Mode::Lower)
+        self.carve.read().ground.edits_at(x, z, margin).iter().any(|(e, _)| e.color.is_some() && e.mode != crate::ground::Mode::Lower)
     }
 
     /// A fingerprint of the hollows reaching into the box (x0, z0)–(x1, z1):

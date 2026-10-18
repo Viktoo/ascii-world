@@ -188,6 +188,10 @@ fn cut_size() -> f32 {
 pub struct InterpEffect {
     #[serde(default)]
     pub narration: String,
+    /// The target gives what is made without changing (a fruit tree, an
+    /// oven, a larder, the sea to a fisher): it can be done again and again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source: bool,
     #[serde(default)]
     pub changes: Vec<Change>,
     #[serde(default)]
@@ -369,6 +373,9 @@ pub struct Work {
 /// cut, reshape, removal or replacement of it): likely "a piece came off" told
 /// only in words.
 fn pieces_without_change(fx: &InterpEffect, p: &PendingInterp) -> bool {
+    if fx.source {
+        return false;
+    }
     let on_thing = matches!(p.target, Some(Target::Thing(_) | Target::Instance(_) | Target::Cell(_)));
     let is_target = |r: &str| matches!(r.trim().to_lowercase().as_str(), "target" | "object" | "other");
     let loose = fx.create.iter().any(|m| m.replace.is_none());
@@ -395,7 +402,7 @@ fn shift(name: &str, d: f32) -> Option<String> {
 /// an answer is named here, so a new kind of effect decides whether it shows.
 fn effect_line(fx: &InterpEffect, moved: Vec<(String, Vec<String>)>) -> Option<String> {
     // The weather shows by itself.
-    let InterpEffect { narration: _, changes: _, cut: _, create: _, remove: _, make: _, reshape: _, ground: _, beings: _, say: _, needs: _, cache: _, weather: _, being } = fx;
+    let InterpEffect { narration: _, changes: _, cut: _, create: _, remove: _, make: _, reshape: _, ground: _, beings: _, say: _, needs: _, cache: _, weather: _, source: _, being } = fx;
     // `changes`, `cut` and the being's needs and feelings are in `moved`.
     // New, removed and reshaped things, new beings and words show by themselves.
     if let Some(b) = being {
@@ -445,8 +452,10 @@ impl Sim {
         let key = cache_key(who, text, &format!("{held_name}{held_state}"), &format!("{target_name}{target_state}"));
         let name = self.actor_name(who);
         self.deed_started(who, text, target.as_ref().map(|r| r.target.clone()));
-        if let Some(fx) = super::persist::cached_interp(&self.db, &key) {
+        if let Some(mut fx) = super::persist::cached_interp(&self.db, &key) {
             self.interp.hits += 1;
+            // The story is told of whoever does it now.
+            fx.narration = fx.narration.replace("{who}", &name);
             let p = PendingInterp { actor: who, text: text.to_string(), held, target: target.map(|r| r.target), hit, key, at: self.t, aim: Some(self.aim_of(who)) };
             let (msg, wait) = self.apply_interp(&p, &fx);
             if !fx.builds() {
@@ -613,7 +622,10 @@ impl Sim {
                         // answer would show nothing, so don't make it the rule.
                         crate::log::info(format!("not caching '{}': it makes new things from the target but leaves the target's shape as it was", p.text));
                     } else if fx.cache {
-                        super::persist::cache_interp(&self.db, &p.key, &fx);
+                        // Kept without the doer's name, for whoever does it next.
+                        let mut keep = fx.clone();
+                        keep.narration = keep.narration.replace(&name, "{who}");
+                        super::persist::cache_interp(&self.db, &p.key, &keep);
                     }
                 }
                 self.deed_event(p.actor, format!("{name}: {} → {msg}", p.text), json!({ "effect": fx }), wait);
@@ -1317,6 +1329,13 @@ impl Sim {
                 let name = self.thing_name(nid);
                 if let Some(h) = holder {
                     self.hand_to(h, nid);
+                } else if let Some(by) = b.by.filter(|w| *w != ActorId::Player) {
+                    // Made by someone close by: into their hands, as with a
+                    // kind of thing the world already knew.
+                    let near = self.actor(by).is_some_and(|a| (a.pos - at).length() < 4.0);
+                    if near && self.things.get(nid).is_some_and(|t| t.liftable(1)) {
+                        self.made_into_hands(by, nid, true);
+                    }
                 }
                 self.event("made", maker, Some(format!("thing:{nid}")), format!("{} {name} came into being", super::physics::cap(super::article(&name))), Some(at), json!({}));
                 if !self.tell_held_stories(id, at) {
@@ -1338,6 +1357,10 @@ impl Sim {
         let solids = self.solids_near(want, len + r + 1.0);
         let clear = |s: &Sim, q: glam::Vec3| {
             let g = s.snap.terrain.height(q.x, q.z);
+            // Not set down in water, where it would sink out of reach.
+            if s.snap.terrain.water(q.x, q.z) > g + 0.05 {
+                return false;
+            }
             // Probe low and at its middle: it stands on the ground.
             [0.15, r.min(1.0)].iter().all(|h| solids.iter().all(|so| so.sdf(glam::Vec3::new(q.x, g + h, q.z)) >= r * 0.8))
         };
@@ -1465,5 +1488,21 @@ impl Sim {
         let Interp { stories, held_events, creating, building, .. } = &mut self.interp;
         stories.retain(|id, _| creating.contains_key(id) || building.contains_key(id));
         held_events.retain(|id, _| creating.contains_key(id) || building.contains_key(id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Picking a lemon off a tree that gives many: the tree stays as it is,
+    /// and the answer is kept as the rule; a piece told only in words is not.
+    #[test]
+    fn a_source_gives_without_changing() {
+        let p = PendingInterp { actor: ActorId::Player, text: "pick a lemon".into(), held: None, target: Some(Target::Thing(7)), hit: None, key: String::new(), at: 0.0, aim: None };
+        let lemon: InterpEffect = serde_json::from_str(r#"{ "create": [ { "name": "lemon" } ], "cache": true }"#).unwrap();
+        assert!(pieces_without_change(&lemon, &p));
+        let from_tree: InterpEffect = serde_json::from_str(r#"{ "create": [ { "name": "lemon" } ], "source": true, "cache": true }"#).unwrap();
+        assert!(!pieces_without_change(&from_tree, &p));
     }
 }
