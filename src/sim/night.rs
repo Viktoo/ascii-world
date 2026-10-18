@@ -171,7 +171,7 @@ impl Sim {
         let worn: f32 = self.worn_by(who).iter().filter_map(|id| self.things.get(*id)).map(|t| t.props.get(P_PROTECT).copied().unwrap_or(0.0)).sum();
         let own = match who {
             ActorId::Npc(c) => self.cast.get(c).and_then(|n| n.props.get(P_PROTECT).copied()).unwrap_or(0.0),
-            ActorId::Player => 0.0,
+            ActorId::Player | ActorId::Traveler(_) => 0.0,
         };
         (worn + own).clamp(0.0, MAX_PROTECT)
     }
@@ -211,6 +211,7 @@ impl Sim {
                 }
                 false
             }
+            ActorId::Traveler(n) => self.wound_traveler(n, hurt, by, how),
             ActorId::Npc(c) => {
                 // The dark's own can always be struck down; others only where things die.
                 let dark = self.cast.get(c).is_some_and(|n| n.species.touch.harms() || n.species.hostile);
@@ -299,23 +300,34 @@ impl Sim {
 
     // ------------------------------------------------------------ sight
 
-    /// Whether `p` is anywhere on the traveler's screen (or just off it),
+    /// Whether `p` is anywhere on a traveler's screen (or just off it),
     /// near enough for the hour: nothing may appear or vanish there.
     pub fn player_sees(&self, p: Vec3) -> bool {
-        self.in_view(p, 0.0, 1.1)
+        self.viewers().iter().any(|v| self.in_view(v, p, 0.0, 1.1))
     }
 
-    /// Whether the traveler is looking at a body at `p`, `r` wide: any of
-    /// it in the middle of the view. The outer part on each side doesn't
-    /// count, so what moves unseen can still creep in from the edge of the eye.
-    pub fn player_watches(&self, p: Vec3, r: f32) -> bool {
-        self.in_view(p, r, WATCHING)
+    /// Who is looking at a body at `p`, `r` wide (any traveler on their
+    /// feet), and where they are: any of it in the middle of their view. The
+    /// outer part on each side doesn't count, so what moves unseen can still
+    /// creep in from the edge of the eye.
+    pub fn watched_by(&self, p: Vec3, r: f32) -> Option<(ActorId, Vec3)> {
+        self.viewers().into_iter().find(|v| !self.traveler_fallen(v.0) && self.in_view(v, p, r, WATCHING)).map(|v| (v.0, v.1))
     }
 
-    /// Any of a body at `p`, `r` wide, within `part` of the view's
+    /// Every traveler's eyes: who, where, the way they face, and how wide
+    /// their view is (the player's from their screen; the others' a usual one).
+    fn viewers(&self) -> Vec<(ActorId, Vec3, Vec3, f32)> {
+        let slope = if self.night.view_slope > 0.0 { self.night.view_slope } else { 1.0 };
+        let mut v = vec![(ActorId::Player, self.player.pos, self.player.forward(), slope)];
+        v.extend(self.travelers.values().map(|t| (ActorId::Traveler(t.no), t.a.pos, t.a.forward(), 1.0)));
+        v
+    }
+
+    /// Any of a body at `p`, `r` wide, within `part` of a viewer's view's
     /// half-width (1: its edge).
-    fn in_view(&self, p: Vec3, r: f32, part: f32) -> bool {
-        let d = p - self.player.pos;
+    fn in_view(&self, v: &(ActorId, Vec3, Vec3, f32), p: Vec3, r: f32, part: f32) -> bool {
+        let (_, eye, f, slope) = *v;
+        let d = p - eye;
         let dist = Vec3::new(d.x, 0.0, d.z).length();
         let range = if self.night() { 40.0 } else { 90.0 };
         if dist > range {
@@ -324,10 +336,8 @@ impl Sim {
         if dist < 0.1 + r {
             return true;
         }
-        let f = self.player.forward();
         let ahead = d.x * f.x + d.z * f.z;
         let side = (d.x * f.z - d.z * f.x).abs();
-        let slope = if self.night.view_slope > 0.0 { self.night.view_slope } else { 1.0 };
         // The body's near edge against the view's edge at its distance.
         let edge = ahead * slope * part;
         ahead + r > 0.0 && side - r * (1.0 + slope * part * slope * part).sqrt() < edge
@@ -742,7 +752,7 @@ impl Sim {
         let want = n.species.want.as_str();
         match want {
             "" => None,
-            "traveler" => Some((ActorId::Player, self.player.pos)).filter(|(_, p)| (*p - pos).length() < 150.0 && !self.fallen()),
+            "traveler" => self.nearest_traveler(pos).filter(|(_, p)| (*p - pos).length() < 150.0),
             _ => self
                 .actor_ids()
                 .into_iter()
@@ -753,7 +763,7 @@ impl Sim {
                         && match want {
                             "anyone" => self.cast.get(cid).map(|n| &n.species.name) != match o {
                                 ActorId::Npc(c) => self.cast.get(*c).map(|m| &m.species.name),
-                                ActorId::Player => None,
+                                ActorId::Player | ActorId::Traveler(_) => None,
                             },
                             sp => matches!(o, ActorId::Npc(c) if self.cast.get(*c).is_some_and(|m| m.species.name == sp)),
                         }
@@ -854,18 +864,19 @@ impl Sim {
         self.set_doing(cid, &format!("coming for {tname}"));
     }
 
-    /// A watched being that wants the traveler close enough to touch them
-    /// without a step: its body's nearest edge within arm's reach of theirs,
-    /// out of what it shuns.
-    pub(super) fn watched_reach(&mut self, cid: i64) -> bool {
+    /// A watched being that wants travelers close enough to touch `who`
+    /// (the one watching) without a step: its body's nearest edge within
+    /// arm's reach of theirs, out of what it shuns.
+    pub(super) fn watched_reach(&mut self, cid: i64, who: ActorId) -> bool {
         let Some(n) = self.cast.get(cid) else { return false };
-        if n.species.want != "traveler" || !n.species.touch.any() || self.fallen() {
+        if n.species.want != "traveler" || !n.species.touch.any() || self.traveler_fallen(who) {
             return false;
         }
+        let Some(at) = self.actor(who).map(|a| a.pos) else { return false };
         let shuns = n.species.shuns.clone();
-        let d = n.a.pos - self.player.pos;
+        let d = n.a.pos - at;
         let gap = Vec3::new(d.x, 0.0, d.z).length() - n.a.dims.radius - crate::world::collide::PLAYER_RADIUS;
-        gap < WATCHED_REACH && d.y.abs() < 2.0 && self.shunned_at(self.player.pos, &shuns).is_none()
+        gap < WATCHED_REACH && d.y.abs() < 2.0 && self.shunned_at(at, &shuns).is_none()
     }
 
     /// Its touch lands on `target`: a glow, a change to their needs, and
@@ -880,6 +891,10 @@ impl Sim {
         let hurt = touch.hurt * (1.0 - self.protection(target));
         if target == ActorId::Player {
             self.night.glow = (self.night.glow + touch.glow).min(1.0);
+        } else if let ActorId::Traveler(n) = target {
+            if let Some(t) = self.travelers.get_mut(&n) {
+                t.glow = (t.glow + touch.glow).min(1.0);
+            }
         } else if let ActorId::Npc(c) = target {
             if let Some(m) = self.cast.get_mut(c) {
                 if let Some(l) = m.props.get_mut(P_LIGHT) {

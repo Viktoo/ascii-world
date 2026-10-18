@@ -27,6 +27,7 @@ mod journal;
 mod loading;
 mod ears;
 mod menu;
+pub mod together;
 mod voices;
 mod work;
 
@@ -257,6 +258,10 @@ pub struct App {
     auto_at: Instant,
     /// Where auto detail last fell behind: it stays below that a while.
     auto_ceiling: Option<(f32, Instant)>,
+    /// Playing together: hosting this world, or a guest in someone's.
+    pub together: Option<together::Together>,
+    /// Why a game together ended (shown on the worlds list).
+    pub left_because: Option<String>,
 }
 
 pub struct Setup {
@@ -270,6 +275,11 @@ pub struct Setup {
     pub size: (u16, u16),
     pub llm: Option<Arc<crate::llm::Llm>>,
     pub genesis: bool,
+    /// Hosting, or a guest (whose world this is, held only in memory).
+    pub together: Option<together::Together>,
+    /// The world's seed for this session (a guest takes the host's, so
+    /// people look the same to both).
+    pub seed: Option<u64>,
 }
 
 impl App {
@@ -279,7 +289,7 @@ impl App {
             Some(p) => (crate::model::afloat(&s.snap.terrain, Vec3::new(p.x, 0.0, p.z)), p.yaw, p.t_game),
             None => (s.snap.spawn, 0.0, 0.33 * sky::DAY_SECONDS),
         };
-        let seed = s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17);
+        let seed = s.seed.unwrap_or_else(|| s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17));
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
         sim.has_llm = s.brain.has_llm;
         let achievements = crate::achievements::Tracker::load(&s.db, &sim);
@@ -364,6 +374,8 @@ impl App {
             auto_lines: 240.0,
             auto_at: Instant::now(),
             auto_ceiling: None,
+            together: s.together,
+            left_because: None,
         };
         app.sync_sound();
         app.sync_ears();
@@ -372,6 +384,7 @@ impl App {
         app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use or pick up, g grab/drop, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
+            None if app.is_guest() => {}
             None => {
                 app.llm_note = Some("no LLM key: story & dialogue off".into());
                 app.say(None, "No LLM configured (set ANTHROPIC_API_KEY or POCKET_LLM_BASE_URL): the land is here, but its stories and people are not.", DIM);
@@ -538,6 +551,12 @@ impl App {
             }
             return;
         }
+        if k.code == KeyCode::F(5) && self.together.is_some() {
+            if k.kind == KeyEventKind::Press {
+                self.copy_invite();
+            }
+            return;
+        }
         if k.code == KeyCode::F(2) {
             if k.kind == KeyEventKind::Press {
                 self.inspect = !self.inspect;
@@ -627,7 +646,7 @@ impl App {
                         self.sim.animal_answers(id);
                         return;
                     }
-                    if !self.brain.has_llm {
+                    if !self.brain.has_llm && !self.is_guest() {
                         self.say(None, &format!("{name} looks at you, but words need an LLM key."), DIM);
                         return;
                     }
@@ -646,6 +665,12 @@ impl App {
     fn player_act(&mut self, a: Action) {
         let verb = a.verb();
         self.sim.look_pitch = self.pitch;
+        // A guest's deeds are done in the host's world.
+        if let Some(together::Together::Guest(g)) = &self.together {
+            g.act(together::action_json(&a));
+            self.dirty = true;
+            return;
+        }
         match self.sim.act(ActorId::Player, a) {
             Ok(o) => {
                 // Things picked up show in the hand; a being in the arms is told.
@@ -927,6 +952,15 @@ impl App {
         }
         match lc.as_str() {
             "" => {}
+            // Playing together: words for everyone here.
+            "invite" if self.together.is_some() => self.copy_invite(),
+            "kick" if self.together.is_some() => self.send_away(rest),
+            "name" if !rest.is_empty() => {
+                let name: String = rest.chars().filter(|c| !c.is_control()).take(24).collect();
+                self.settings.name = name.trim().to_string();
+                self.settings.save();
+                self.say(None, &format!("You'll be {} when playing together (from the next game).", self.settings.name), DIM);
+            }
             "help" | "?" => {
                 for l in [
                     "/ <anything> — do or make anything, at what the middle of the view points at:",
@@ -940,10 +974,12 @@ impl App {
                     "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings (q there quits)",
                     "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
+                    "Playing together: /say TEXT is heard by everyone playing · /invite (or F5) copies the address and code · /name NAME · host: /kick NAME sends a guest away",
                 ] {
                     self.say(None, l, DIM);
                 }
             }
+            "undo" if self.is_guest() => self.say(None, "Only the host can undo in their world.", DIM),
             "undo" => {
                 self.brain.send(Cmd::Undo);
                 let got = self.achievements.grant("fresh_start");
@@ -985,7 +1021,12 @@ impl App {
             "yes" if rest.is_empty() => self.player_act(Action::Answer { yes: true, to: None }),
             "no" if rest.is_empty() => self.player_act(Action::Answer { yes: false, to: None }),
             "say" | "shout" if !rest.is_empty() => {
-                self.say(Some("you"), rest, ACCENT);
+                // Out loud: the people here hear it, and so does everyone playing.
+                if self.together.is_some() {
+                    self.say_to_all(rest.to_string());
+                } else {
+                    self.say(Some("you"), rest, ACCENT);
+                }
                 let to = self.person("");
                 self.player_act(Action::Say { text: rest.to_string(), to });
             }
@@ -1042,7 +1083,18 @@ impl App {
 
     fn send_talk(&mut self, cid: i64, text: String) {
         let text = text.trim().to_string();
-        if text.is_empty() || self.replying.is_some() || self.over_budget() {
+        if text.is_empty() || self.replying.is_some() {
+            return;
+        }
+        // A guest's words go to the host's world (whose LLM answers).
+        if let Some(together::Together::Guest(g)) = &self.together {
+            g.talk(cid, text.clone());
+            self.say(Some("you"), &text, ACCENT);
+            self.conv.entry(cid).or_default().push((true, text));
+            self.replying = Some(cid);
+            return;
+        }
+        if self.over_budget() {
             return;
         }
         self.say(Some("you"), &text, ACCENT);
@@ -1059,6 +1111,10 @@ impl App {
 
     fn on_event(&mut self, ev: Event) {
         if self.loading_event(&ev) {
+            return;
+        }
+        // Guests hear what is said, and a reply to one of them is theirs.
+        if self.share_event(&ev) {
             return;
         }
         match ev {
@@ -1107,14 +1163,15 @@ impl App {
                         let h = self.conv.entry(cid).or_default();
                         let said = h.last().filter(|x| x.0).map(|x| x.1.clone());
                         h.push((false, reply.clone()));
-                        // What was asked may now be done, not only talked about.
-                        if let Some(said) = said.filter(|_| self.replying == Some(cid)) {
+                        // What was asked may now be done, not only talked about
+                        // (in the host's world, by the host's game).
+                        if let Some(said) = said.filter(|_| self.replying == Some(cid) && !self.is_guest()) {
                             self.sim.asked(cid, &said, reply.trim());
                         }
                     }
                 }
                 if let Some(line) = self.sim_talk.remove(&cid) {
-                    if ok {
+                    if ok && !self.is_guest() {
                         self.sim.npc_said(cid, line.trim());
                     }
                 }
@@ -1166,6 +1223,13 @@ impl App {
         let terrain_changed = render::terrain_epoch(&snap.terrain) != render::terrain_epoch(&self.snap.terrain);
         self.snap = snap.clone();
         self.sim.flip(snap);
+        if self.is_guest() {
+            // The made ground on the land made anew; and what waited for its kind.
+            if terrain_changed {
+                crate::sim::persist::apply_made_ground(&mut self.sim);
+            }
+            self.sim.mirror_pending();
+        }
         self.unstick();
         if terrain_changed {
             // The land reshaped itself; don't leave the player under water.
@@ -1221,11 +1285,15 @@ impl App {
                 // Flyers and submarines: Space up, c down; or, moving, the way you look.
                 let keys = self.held(' ') as i32 - self.held('c') as i32;
                 let climb = if keys != 0 { keys as f32 } else if fwd != 0 { (self.pitch * 2.0).clamp(-1.0, 1.0) } else { 0.0 };
-                self.sim.steer(ActorId::Player, fwd as f32, steer, climb, dt);
+                if !self.guest_steers(crate::net::wire::Up::Steer { throttle: fwd as f32, steer, climb }) {
+                    self.sim.steer(ActorId::Player, fwd as f32, steer, climb, dt);
+                }
                 self.dirty = true;
             } else if self.sim.player.riding.is_some() && !self.noclip {
-                // Riding: the walk keys steer the mount.
-                self.sim.drive(dir, self.pitch, dt);
+                // Riding: the walk keys steer the mount (a guest's, in the host's world).
+                if !self.guest_steers(crate::net::wire::Up::Ride { dir: dir.to_array(), pitch: self.pitch }) {
+                    self.sim.drive(dir, self.pitch, dt);
+                }
                 if dir != Vec3::ZERO {
                     self.sim.player.task = None;
                 }
@@ -1259,9 +1327,15 @@ impl App {
         let k = if self.sim.player.grounded { (dt * 10.0).min(1.0) } else { 1.0 };
         self.cam_y += (eye - self.cam_y) * k;
 
-        // The living world.
+        // The living world (a guest's is the host's: only their own body
+        // moves here).
         let t0 = Instant::now();
-        self.sim.step(dt);
+        if self.is_guest() {
+            self.sim.step_guest(dt);
+        } else {
+            self.sim.step(dt);
+        }
+        self.together_tick();
         slow("sim step", t0, || format!("{} active cells, {} things, {} characters", self.sim.field.active(), self.sim.things.map.len(), self.sim.cast.npcs.len()));
         for r in self.sim.drain_requests() {
             if self.budget_paused && !matches!(r, crate::sim::Request::Witness { .. }) {
@@ -1269,9 +1343,13 @@ impl App {
             }
             crate::sim::headless::forward(&self.sim, &self.brain, r);
         }
-        for n in self.sim.drain_notes() {
+        let (placed, skip) = self.sim.drain_placed();
+        let notes = self.sim.drain_notes();
+        self.share_notes(&notes, &placed, &skip);
+        for n in notes {
             self.tell(n);
         }
+        self.share_sounds();
         self.hear(dt);
         self.mouths();
         self.ears_frame();
@@ -1280,8 +1358,11 @@ impl App {
             self.dirty = true;
         }
         self.update_work();
-        let got = self.achievements.update(&self.sim);
-        self.announce(got);
+        // A guest's achievements wait (the world isn't theirs).
+        if !self.is_guest() {
+            let got = self.achievements.update(&self.sim);
+            self.announce(got);
+        }
         if !self.toasts.is_empty() {
             self.dirty = true;
         }
@@ -1398,6 +1479,7 @@ impl App {
         self.achievements.touch();
         let p = self.pos();
         let _ = self.db.save_player(PlayerRow { x: p.x, z: p.z, yaw: self.yaw(), t_game: self.sim.t });
+        self.save_guests();
     }
 
     pub fn save_characters(&mut self) {
@@ -1572,6 +1654,7 @@ impl App {
                         let g = if self.sim.mind_of(ActorId::Npc(*id)) != crate::world::species::Mind::Sapient { "   g pick up" } else { "" };
                         format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
                     }
+                    (None, Some(p), None) if matches!(p.target, Target::Actor(ActorId::Traveler(_))) => format!("{}: /say to talk to everyone   / do anything{}   F2 inspect", p.name, if self.is_guest() { "" } else { "   /kick to send away" }),
                     (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.sim.target_seats(&p.target) => format!("{}: e sit   / do anything to it   F2 inspect", p.name),
                     (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),
@@ -1655,6 +1738,9 @@ impl App {
         let mut right = String::new();
         if let Some(n) = &self.llm_note {
             right = n.clone();
+        }
+        if let Some(t) = self.together_line() {
+            right = t;
         }
         if self.budget_paused {
             right = "budget reached: generation paused (Esc to change)".into();
@@ -2303,6 +2389,7 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        self.together_end();
         if let Some(o) = self.sound.take() {
             o.send(crate::audio::mix::Cmd::Clear);
         }
@@ -2341,8 +2428,14 @@ const RAMP: &[u8] = b" .:-=+*#%@";
 /// A message about the traveler, said to them: "the traveler pets Mog" →
 /// "You pet Mog", "Mog nips the traveler's hand" → "Mog nips your hand".
 fn you(msg: &str) -> String {
-    let s = msg.replace("the traveler's", "your");
-    let s = match s.strip_prefix("the traveler ") {
+    you_as(msg, "the traveler")
+}
+
+/// A message about `name` said to them: "Bea picks up the stone" → "You
+/// pick up the stone".
+fn you_as(msg: &str, name: &str) -> String {
+    let s = msg.replace(&format!("{name}'s"), "your");
+    let s = match s.strip_prefix(&format!("{name} ")) {
         Some(rest) => {
             let (verb, tail) = rest.split_once(' ').unwrap_or((rest, ""));
             let verb = match verb {
@@ -2360,7 +2453,7 @@ fn you(msg: &str) -> String {
         }
         None => s,
     };
-    let s = s.replace(" the traveler", " you");
+    let s = s.replace(&format!(" {name}"), " you");
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().chain(c).collect(),
@@ -2605,7 +2698,7 @@ mod tests {
             Some(g) => crate::render::gpu::spawn(g.clone()),
             None => crate::render::cpu::spawn(),
         };
-        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false });
+        let app = App::new(Setup { db: db.clone(), brain, events: rx, render, snap, live, truecolor: true, size: (100, 34), llm: Some(llm), genesis: false, together: None, seed: None });
         (app, db, gpu)
     }
 
@@ -2625,7 +2718,7 @@ mod tests {
         let snap = model.snapshot().unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
         let brain = Brain::start(model, None, tx, false);
-        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false });
+        let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false, together: None, seed: None });
         app.open_menu(false);
         app.on_key(key(KeyCode::Char('3'), KeyEventKind::Press));
         for _ in 0..3 {

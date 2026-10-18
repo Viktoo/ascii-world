@@ -57,11 +57,15 @@ fn section(r: &CreationRow) -> (u8, &'static str) {
     }
 }
 
-fn maker(r: &CreationRow) -> &str {
-    match r.made_by.as_str() {
-        "the traveler" => "you",
-        "" => "not recorded",
-        m => m,
+/// Who made it, as the one looking is told: "you" for their own. `guest`:
+/// playing in someone's world (our name there, the host's name).
+fn maker<'a>(r: &'a CreationRow, guest: Option<&'a (String, String)>) -> &'a str {
+    match (r.made_by.as_str(), guest) {
+        ("the traveler", Some((_, host))) => host,
+        ("the traveler", None) => "you",
+        ("", _) => "not recorded",
+        (m, Some((me, _))) if m == me => "you",
+        (m, _) => m,
     }
 }
 
@@ -114,6 +118,7 @@ impl App {
 
     /// The page's lines (headings and rows) and its rows in that order.
     fn creation_items(&self) -> (Vec<Item>, Vec<usize>) {
+        let gn = self.guest_names();
         let Some(b) = self.menu.as_ref().and_then(|m| m.creations.as_ref()) else { return (Vec::new(), Vec::new()) };
         let mut idx: Vec<usize> = (0..b.rows.len()).collect();
         let mut items = Vec::new();
@@ -134,16 +139,16 @@ impl App {
             Group::Maker => {
                 let mut counts: HashMap<&str, usize> = HashMap::new();
                 for r in &b.rows {
-                    *counts.entry(maker(r)).or_default() += 1;
+                    *counts.entry(maker(r, gn.as_ref())).or_default() += 1;
                 }
                 // Busiest makers first; the unrecorded last.
                 idx.sort_by_key(|i| {
-                    let m = maker(&b.rows[*i]);
+                    let m = maker(&b.rows[*i], gn.as_ref());
                     (m == "not recorded", std::cmp::Reverse(counts[m]), m.to_string(), section(&b.rows[*i]).0)
                 });
                 let mut last = "";
                 for i in &idx {
-                    let m = maker(&b.rows[*i]);
+                    let m = maker(&b.rows[*i], gn.as_ref());
                     if m != last {
                         last = m;
                         let head = if m == "not recorded" { format!("Maker not recorded · {} (made before makers were kept)", counts[m]) } else { format!("{} · {}", cap(m), counts[m]) };
@@ -196,6 +201,7 @@ impl App {
     }
 
     pub(super) fn draw_creations(&mut self, x0: u16, pw: usize, vh: u16, tabs: &str) {
+        let gn = self.guest_names();
         let (items, order) = self.creation_items();
         let here = self.creations_here();
         let Some(b) = self.menu.as_ref().and_then(|m| m.creations.as_ref()) else { return };
@@ -223,7 +229,7 @@ impl App {
                         sel_line = list.len();
                     }
                     // An unrecorded maker leaves the cell empty rather than saying so on every row.
-                    let who = if r.made_by.is_empty() { "" } else { maker(r) };
+                    let who = if r.made_by.is_empty() { "" } else { maker(r, gn.as_ref()) };
                     let text = if by_maker { format!("{:<wn$} {status}", clip(&r.name, wn)) } else { format!("{:<wn$} {:<wm$} {status}", clip(&r.name, wn), clip(who, wm)) };
                     list.push((text, if h.is_some() { TEXT } else { DIM }, sel));
                 }
@@ -234,7 +240,7 @@ impl App {
         if let Some(r) = sel_row.map(|i| &b.rows[i]) {
             detail.push((r.name.clone(), ACCENT, false));
             let from = if r.from.is_empty() { String::new() } else { format!(" from {}", r.from) };
-            let who = match maker(r) {
+            let who = match maker(r, gn.as_ref()) {
                 "not recorded" => " (maker not recorded)".to_string(),
                 m => format!(" by {m}"),
             };
@@ -273,7 +279,7 @@ impl App {
             detail.push((l, DIM, false));
         }
         // Heading: how much, by how many, how much is still here.
-        let makers = b.rows.iter().map(maker).filter(|m| *m != "not recorded").collect::<std::collections::HashSet<_>>().len();
+        let makers = b.rows.iter().map(|r| maker(r, gn.as_ref())).filter(|m| *m != "not recorded").collect::<std::collections::HashSet<_>>().len();
         let still = b.rows.iter().filter(|r| here.contains_key(&r.key)).count();
         let groups: String = Group::ALL.iter().map(|g| if *g == b.group { format!("[{}]", g.name()) } else { format!(" {} ", g.name()) }).collect::<Vec<_>>().join(" ");
         let summary = format!("{} creations · {makers} maker{} · {still} still here", b.rows.len(), if makers == 1 { "" } else { "s" });
@@ -295,5 +301,20 @@ impl App {
             self.screen.text(x0, y, &s, fg, if sel { SEL_BG } else { BG }, sel);
         }
         self.dress_panel(x0, y0, pw as u16, vh, 3);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn your_own_makings_are_yours_wherever_you_play() {
+        let row = |by: &str| CreationRow { key: String::new(), kind: "made".into(), name: "kite".into(), made_by: by.into(), from: String::new(), t: None, at: None, wall: 0.0, count: 1, tags: Vec::new() };
+        let guest = ("Bea".to_string(), "Hal".to_string());
+        assert_eq!(maker(&row("the traveler"), None), "you");
+        assert_eq!(maker(&row("the traveler"), Some(&guest)), "Hal", "the host's, seen by a guest");
+        assert_eq!(maker(&row("Bea"), Some(&guest)), "you");
+        assert_eq!(maker(&row("Bea"), None), "Bea", "a guest's, seen by the host");
     }
 }

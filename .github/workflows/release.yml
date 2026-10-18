@@ -1,0 +1,53 @@
+# A release: push a tag vX.Y.Z (matching Cargo.toml's version) and this
+# builds Infinite Pocket for Apple Silicon Macs and attaches it to a GitHub
+# release of that tag. See docs/releases.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build.rs reads the commit and the tag.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: The tag is Cargo.toml's version
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "Cargo.toml says $v, the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+      # (The tests ran before the tag: see docs/releases.md.)
+      - name: Build
+        run: cargo build --release
+      - name: The build knows it is this release
+        run: |
+          got=$(./target/release/pocket version)
+          if [ "v$got" != "$GITHUB_REF_NAME" ]; then
+            echo "the build says $got, the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - name: Bundle
+        run: sh scripts/bundle-macos.sh
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          **Infinite Pocket for Macs with Apple Silicon.** Unzip, and move Infinite Pocket to Applications.
+
+          The app isn't signed yet, so the first time macOS says it can't check it: right-click it, choose Open, then Open again. After that it opens normally.
+
+          Playing together needs everyone on this same release.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --title "Infinite Pocket ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes

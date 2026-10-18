@@ -873,7 +873,7 @@ impl Sim {
                 };
                 let home = match who {
                     ActorId::Npc(c) => bed.or(self.cast.get(c).map(|n| n.def.home)),
-                    ActorId::Player => Some(self.snap.spawn),
+                    ActorId::Player | ActorId::Traveler(_) => Some(self.snap.spawn),
                 };
                 let home = home.ok_or(ActErr::Fail("no home".into()))?;
                 let deadline = self.t + 300.0;
@@ -1400,7 +1400,7 @@ impl Sim {
     pub fn body_name(&self, who: ActorId) -> String {
         match who {
             ActorId::Npc(c) => self.cast.get(c).and_then(|n| self.snap.type_of(n.body_ty)).map(|t| t.name().to_string()).unwrap_or_else(|| "figure".into()),
-            ActorId::Player => "figure".into(),
+            ActorId::Player | ActorId::Traveler(_) => "figure".into(),
         }
     }
 

@@ -1,4 +1,4 @@
-# Pocket Universe
+# Infinite Pocket
 
 An infinite, colour 3D world in a window of its own. You walk with the keys (and look
 with the mouse), talk to characters who remember you, and type to create new things.

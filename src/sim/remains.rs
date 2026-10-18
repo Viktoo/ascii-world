@@ -127,7 +127,7 @@ impl Sim {
             .things
             .live()
             .filter_map(|t| t.origin.remains.map(|c| (t.id, c, t.pos)))
-            .filter(|(id, _, p)| self.things.get(*id).is_some_and(|t| self.t - t.born > REMAINS_DAYS * DAY_SECONDS && t.holder.is_none()) && self.dist_to_player(*p) > UNSEEN)
+            .filter(|(id, _, p)| self.things.get(*id).is_some_and(|t| self.t - t.born > REMAINS_DAYS * DAY_SECONDS && t.holder.is_none()) && self.dist_to_travelers(*p) > UNSEEN)
             .collect();
         for (id, cid, pos) in old {
             for w in self.worn_by(ActorId::Npc(cid)) {

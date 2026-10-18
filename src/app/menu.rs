@@ -40,11 +40,17 @@ enum Row {
     LifeSpeed,
     Hunting,
     Beings,
+    GuestBudget,
+    Name,
+    Updates,
     Worlds,
     Quit,
 }
 
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Speak, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::Worlds, Row::Quit];
+/// What a guest may spend of the host's LLM per session (0: nothing).
+const GUEST_BUDGETS: &[f64] = &[0.0, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
+
+const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Speak, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::GuestBudget, Row::Name, Row::Updates, Row::Worlds, Row::Quit];
 
 pub struct Menu {
     sel: usize,
@@ -200,7 +206,7 @@ impl App {
                             m.details = Some(d);
                         }
                     }
-                    Row::Shadows | Row::Blend | Row::Sound | Row::Voices | Row::Speak | Row::ShowWork | Row::Hunting | Row::Beings => self.change(row, 1),
+                    Row::Shadows | Row::Blend | Row::Sound | Row::Voices | Row::Speak | Row::ShowWork | Row::Hunting | Row::Beings | Row::Updates => self.change(row, 1),
                     Row::Quit => self.quit = true,
                     Row::Worlds => {
                         self.to_worlds = true;
@@ -215,7 +221,8 @@ impl App {
 
     /// The rows shown: window detail only in a window.
     fn rows(&self) -> Vec<Row> {
-        ROWS.iter().copied().filter(|r| !matches!(r, Row::Detail | Row::Blend) || self.win.is_some()).collect()
+        // Playing together's rows while playing together.
+        ROWS.iter().copied().filter(|r| (!matches!(r, Row::Detail | Row::Blend) || self.win.is_some()) && (!matches!(r, Row::GuestBudget | Row::Name) || self.together.is_some())).collect()
     }
 
     /// Whether an environment variable fixes this row for the run.
@@ -274,9 +281,11 @@ impl App {
             Row::LifeSpeed => self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, dir)),
             Row::Hunting => self.set_world("hunting", if self.sim.cfg.hunting { 0.0 } else { 1.0 }),
             Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
-            Row::Details | Row::Worlds | Row::Quit => {}
+            Row::GuestBudget => s.guest_budget_usd = step(GUEST_BUDGETS, s.guest_budget_usd, dir),
+            Row::Updates => s.check_updates = !s.check_updates,
+            Row::Details | Row::Worlds | Row::Quit | Row::Name => {}
         }
-        if matches!(row, Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::VoiceVolume | Row::Speak | Row::Radius | Row::ShowWork) {
+        if matches!(row, Row::GuestBudget | Row::Updates | Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::VoiceVolume | Row::Speak | Row::Radius | Row::ShowWork) {
             self.settings.save();
         }
         if row == Row::Speak {
@@ -327,6 +336,9 @@ impl App {
             Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
             Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),
             Row::Beings => ("Actions can bring new beings", on(self.sim.cfg.create_beings)),
+            Row::GuestBudget => ("Each guest may spend", if s.guest_budget_usd <= 0.0 { "nothing (they walk and look)".into() } else { format!("${:.2} of yours a session", s.guest_budget_usd) }),
+            Row::Name => ("Your name playing together", format!("{}   /name to change", self.settings.clone().player().0)),
+            Row::Updates => ("Tell me of new releases", on(s.check_updates)),
             Row::Worlds => ("Your worlds", "Enter: open another or make a new one".into()),
             Row::Quit => ("Quit game", "Enter or q (the world is saved)".into()),
         };
@@ -370,6 +382,7 @@ impl App {
                     Row::Budget => lines.push(("Spending".into(), HEAD, false)),
                     Row::Fps => lines.push(("Display".into(), HEAD, false)),
                     Row::Creatures => lines.push(("This world".into(), HEAD, false)),
+                    Row::GuestBudget => lines.push(("Playing together".into(), HEAD, false)),
                     Row::Worlds => lines.push(blank.clone()),
                     _ => {}
                 }
@@ -383,7 +396,7 @@ impl App {
                 lines.push((l, DIM, false));
             }
             lines.push(blank.clone());
-            lines.push(("Keys".into(), HEAD, false));
+            lines.push((format!("Keys{:>w$}", format!("Infinite Pocket {}", crate::db::build_name()), w = pw.saturating_sub(5)), HEAD, false));
             for l in [
                 "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · click: mouse look",
                 "      Enter talk · / do or make anything · e use · g grab/drop",

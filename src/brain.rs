@@ -23,7 +23,8 @@ pub enum Cmd {
     Genesis,
     Region((i32, i32)),
     /// `id` identifies the request (answered by `Event::Created`); `by` is a
-    /// character making something (None: the player).
+    /// character making something (None: the player), or another traveler
+    /// (their actor code, 0 or less, and name).
     Create { id: Option<u64>, by: Option<(i64, String)>, text: String, view: View, target: Vec3, yaw: f32 },
     Undo,
     History,
@@ -49,6 +50,9 @@ pub enum Cmd {
     /// Read people's look (face, hair, clothes) from their words. Answered
     /// by `Event::Dressed`.
     Dress { people: Vec<(i64, String)> },
+    /// Make the world anew from its tables (a guest's copy, changed by the
+    /// host). Answered by `Event::Flip`.
+    Reload,
 }
 
 pub enum Event {
@@ -80,6 +84,7 @@ pub enum Event {
 
 enum CMsg {
     Commit(Box<CommitRequest>, oneshot::Sender<Result<CommitOk, Vec<Diag>>>),
+    Reload,
     Undo(oneshot::Sender<Result<(Arc<WorldSnapshot>, String), String>>),
     History(oneshot::Sender<Vec<String>>),
     Info((i32, i32), oneshot::Sender<Info>),
@@ -113,14 +118,19 @@ struct Ctx {
 }
 
 pub struct Brain {
-    tx: mpsc::UnboundedSender<Cmd>,
+    tx: mpsc::UnboundedSender<(Cmd, Option<u8>)>,
     _rt: tokio::runtime::Runtime,
     pub has_llm: bool,
 }
 
 impl Brain {
     pub fn send(&self, c: Cmd) {
-        let _ = self.tx.send(c);
+        let _ = self.tx.send((c, None));
+    }
+
+    /// Send a command made for guest `payer` (what it costs is theirs to spend).
+    pub fn send_as(&self, c: Cmd, payer: Option<u8>) {
+        let _ = self.tx.send((c, payer));
     }
 
     /// Start the committer thread and the async runtime. `model` moves to the committer.
@@ -145,11 +155,11 @@ impl Brain {
                         Err(d) => crate::log::error(format!("full world shader failed: {}", format_diags(&d))),
                     }
                 }
-                committer(model, ctx_rx)
+                committer(model, ctx_rx, ev_c)
             })
             .expect("spawn committer");
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).max_blocking_threads(4).thread_stack_size(8 << 20).enable_all().build().expect("tokio runtime");
-        let (tx, mut rx) = mpsc::unbounded_channel::<Cmd>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<(Cmd, Option<u8>)>();
         let has_llm = llm.is_some();
         let decider = crate::decider::from_env(llm.clone(), universe.clone());
         let ev2 = events.clone();
@@ -157,7 +167,7 @@ impl Brain {
         let mem_db = db.clone();
         rt.spawn(async move {
             let ctx = llm.map(|llm| Ctx { llm, db, prompt, universe, commit: commit2.clone(), events: ev2.clone(), decider, regions: Arc::new(Semaphore::new(2)) });
-            while let Some(cmd) = rx.recv().await {
+            while let Some((cmd, payer)) = rx.recv().await {
                 // Commands that need no model.
                 match cmd {
                     Cmd::Undo => {
@@ -181,6 +191,10 @@ impl Brain {
                     // Memories need no model.
                     Cmd::Witness { cid, text, importance } => {
                         let _ = mem_db.add_memory(cid, crate::db::now(), &text, importance);
+                        continue;
+                    }
+                    Cmd::Reload => {
+                        let _ = commit2.send(CMsg::Reload);
                         continue;
                     }
                     Cmd::History => {
@@ -213,16 +227,24 @@ impl Brain {
                     }
                     continue;
                 };
-                tokio::spawn(run(ctx, cmd));
+                tokio::spawn(crate::llm::PAYER.scope(payer, run(ctx, cmd)));
             }
         });
         Brain { tx, _rt: rt, has_llm }
     }
 }
 
-fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>) {
+fn committer(mut model: WorldModel, rx: crossbeam_channel::Receiver<CMsg>, events: crossbeam_channel::Sender<Event>) {
     while let Ok(m) = rx.recv() {
         match m {
+            CMsg::Reload => {
+                match model.reload() {
+                    Ok(snap) => {
+                        let _ = events.send(Event::Flip { snap, region: None });
+                    }
+                    Err(e) => crate::log::error(format!("making the world anew: {e:#}")),
+                }
+            }
             CMsg::Commit(req, reply) => {
                 let r = model.commit(*req);
                 let _ = reply.send(r);
@@ -275,6 +297,8 @@ impl Ctx {
 
 async fn run(ctx: Ctx, cmd: Cmd) {
     match cmd {
+        // Answered on the committer, before any LLM.
+        Cmd::Reload => {}
         Cmd::Genesis => {
             let _ = ctx.events.send(Event::Building(1));
             if let Err(e) = genesis(&ctx).await {
@@ -310,7 +334,7 @@ async fn run(ctx: Ctx, cmd: Cmd) {
                 }
                 Err(e) => {
                     crate::log::error(format!("create '{text}' failed: {e:#}"));
-                    if by.is_none() {
+                    if by.as_ref().is_none_or(|b| b.0 <= 0) {
                         ctx.log(budget_msg(&e).unwrap_or_else(|| format!("Couldn't build that: {}", short(&e.to_string()))));
                     }
                     let _ = ctx.events.send(Event::Created { id, instances: vec![] });
@@ -1510,9 +1534,12 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
     let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let (who, sees) = match by {
+        Some((c, name)) if *c <= 0 => (format!("Made by: {name}, a traveler (one of the players)."), format!("What {name} sees")),
         Some((_, name)) => (format!("Made by: {name}, a character who lives here (not the player)."), format!("What {name} sees")),
         None => ("Made by: the player.".to_string(), "What the player sees".to_string()),
     };
+    // A character's making is fitted in; a player's is put where asked.
+    let by_npc = by.is_some_and(|b| b.0 > 0);
     let task = format!(
         "{}\n{who}\n{sees}:\n```json\n{}\n```\nExisting object types:\n{}\n\nThe request: \"{}\"",
         prompts::CREATE_TASK,
@@ -1569,8 +1596,8 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                 let s0 = s(&v, "summary");
                 if s0.is_empty() { text.to_string() } else { s0 }
             };
-            let kind = if by.is_some() { "npc_create" } else { "create" };
-            ctx.commit(CommitRequest { kind, summary, new_types, placements, nudge: by.is_some(), region: None, look: None }).await
+            let kind = if by_npc { "npc_create" } else { "create" };
+            ctx.commit(CommitRequest { kind, summary, new_types, placements, nudge: by_npc, region: None, look: None }).await
         }
         .await;
         match outcome {
@@ -1580,8 +1607,10 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                 let name = ok.snapshot.instances.iter().find(|p| p.version == v).and_then(|p| ok.snapshot.type_of(p.type_id)).map(|t| t.name().to_string()).unwrap_or_else(|| "it".into());
                 let ids: Vec<i64> = ok.snapshot.instances.iter().filter(|p| p.version == v).map(|p| p.id).collect();
                 let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
-                if by.is_none() {
-                    ctx.log(format!("Built the {name}. (/undo to remove)"));
+                match by {
+                    None => ctx.log(format!("Built the {name}. (/undo to remove)")),
+                    Some((c, who)) if *c <= 0 => ctx.log(format!("{who} built the {name}. (/undo to remove)")),
+                    _ => {}
                 }
                 return Ok(ids);
             }

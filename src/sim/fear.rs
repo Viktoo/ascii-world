@@ -73,7 +73,7 @@ impl Sim {
         }
         match who {
             ActorId::Npc(c) => self.cast.get(c).map(|n| 1.4 - n.traits.brave).unwrap_or(1.0),
-            ActorId::Player => 1.0,
+            ActorId::Player | ActorId::Traveler(_) => 1.0,
         }
     }
 

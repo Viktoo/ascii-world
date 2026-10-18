@@ -229,6 +229,8 @@ pub fn load(sim: &mut Sim) {
     for id in gone {
         sim.things.removed.push(id);
     }
+    // What travelers who aren't here hold and wear goes with them.
+    sim.stow_absent();
     // Who holds what.
     let held: Vec<(i64, Option<ActorId>, Option<ActorId>)> = sim.things.live().map(|t| (t.id, t.holder, t.co_holder)).collect();
     for (id, h, c) in held {
@@ -290,18 +292,7 @@ pub fn load(sim: &mut Sim) {
     if let Some(st) = db.kv_get("sim.incidents").and_then(|j| serde_json::from_str(&j).ok()) {
         sim.incidents = st;
     }
-    if let Some(dug) = db.kv_get("sim.dug").and_then(|j| serde_json::from_str::<Vec<crate::terrain::Hollow>>(&j).ok()) {
-        let mut c = sim.snap.terrain.carve.write();
-        c.dug = dug;
-        c.reindex();
-    }
-    // Ways and tunnels made in play.
-    if let Some(edits) = db.kv_get("sim.ground").and_then(|j| serde_json::from_str::<Vec<crate::ground::Edit>>(&j).ok()) {
-        sim.snap.terrain.set_ground(crate::ground::Layer::Made, edits);
-    }
-    if let Some(caves) = db.kv_get("sim.caves").and_then(|j| serde_json::from_str::<Vec<crate::ground::Cave>>(&j).ok()) {
-        sim.snap.terrain.set_caves(crate::ground::Layer::Made, caves);
-    }
+    apply_made_ground(sim);
     let goals: Vec<String> = db
         .with(|c| {
             let mut st = c.prepare("SELECT json FROM goals ORDER BY id")?;
@@ -341,6 +332,23 @@ pub fn load(sim: &mut Sim) {
     for (gx, gz, t) in spent {
         sim.things.spent_cells.insert((gx, gz), t);
         sim.things.taken.entry((gx, gz)).or_insert(-1);
+    }
+}
+
+/// Pits dug, and ways and tunnels made in play, put on the land as the
+/// world keeps them.
+pub fn apply_made_ground(sim: &mut Sim) {
+    let db = sim.db.clone();
+    if let Some(dug) = db.kv_get("sim.dug").and_then(|j| serde_json::from_str::<Vec<crate::terrain::Hollow>>(&j).ok()) {
+        let mut c = sim.snap.terrain.carve.write();
+        c.dug = dug;
+        c.reindex();
+    }
+    if let Some(edits) = db.kv_get("sim.ground").and_then(|j| serde_json::from_str::<Vec<crate::ground::Edit>>(&j).ok()) {
+        sim.snap.terrain.set_ground(crate::ground::Layer::Made, edits);
+    }
+    if let Some(caves) = db.kv_get("sim.caves").and_then(|j| serde_json::from_str::<Vec<crate::ground::Cave>>(&j).ok()) {
+        sim.snap.terrain.set_caves(crate::ground::Layer::Made, caves);
     }
 }
 

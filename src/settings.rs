@@ -34,6 +34,16 @@ pub struct Settings {
     /// In a window: frames blended over time, each drawn a fraction of a
     /// pixel apart, for about twice the detail standing still.
     pub blend_frames: bool,
+    /// What other players call you when you play together.
+    pub name: String,
+    /// Who you are to the worlds you join (random, made once): a host
+    /// knows you again by it and keeps your place, look and things.
+    pub token: String,
+    /// Hosting: what each guest may spend of your LLM budget in a session
+    /// (dollars; 0 = nothing, guests only walk and look).
+    pub guest_budget_usd: f64,
+    /// Ask GitHub once at start whether a newer release is out.
+    pub check_updates: bool,
 }
 
 /// Window detail that follows the frame rate.
@@ -44,7 +54,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true }
     }
 }
 
@@ -141,6 +151,14 @@ impl Settings {
         if env_blend() {
             s.blend_frames = false;
         }
+        // Two players on one machine (trying it out): each its own name and token.
+        if let Some(n) = env("POCKET_NAME") {
+            s.name = n;
+        }
+        if let Some(t) = env("POCKET_TOKEN") {
+            s.token = t;
+        }
+        s.guest_budget_usd = if s.guest_budget_usd.is_finite() { s.guest_budget_usd.max(0.0) } else { 10.0 };
         s.volume = if s.volume.is_finite() { s.volume.clamp(0.0, 1.0) } else { 0.8 };
         s.voice_volume = if s.voice_volume.is_finite() { s.voice_volume.clamp(0.0, 1.0) } else { 0.5 };
         s.fps = s.fps.clamp(5.0, 240.0);
@@ -154,6 +172,17 @@ impl Settings {
             0 => "full (every pixel)".into(),
             l => format!("{l}p"),
         }
+    }
+
+    /// Who you are when playing together: your name (your login's, until
+    /// you choose one) and your token (made and saved the first time).
+    pub fn player(&mut self) -> (String, String) {
+        if self.token.trim().is_empty() {
+            self.token = new_token();
+            self.save();
+        }
+        let name = if self.name.trim().is_empty() { default_name() } else { self.name.trim().to_string() };
+        (name, self.token.clone())
     }
 
     pub fn budget(&self) -> Option<f64> {
@@ -197,9 +226,44 @@ impl Settings {
         if !env_blend() {
             out.blend_frames = self.blend_frames;
         }
+        if env("POCKET_NAME").is_none() {
+            out.name = self.name.clone();
+        }
+        if env("POCKET_TOKEN").is_none() {
+            out.token = self.token.clone();
+        }
+        out.guest_budget_usd = self.guest_budget_usd;
+        out.check_updates = self.check_updates;
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {
             let _ = std::fs::write(path(), t);
         }
     }
+}
+
+/// A name until one is chosen: the login's, capitalised, or "Traveler".
+fn default_name() -> String {
+    let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+    let user: String = user.chars().filter(|c| c.is_alphanumeric()).take(20).collect();
+    let mut c = user.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => "Traveler".into(),
+    }
+}
+
+/// 128 random bits, as hex.
+pub fn new_token() -> String {
+    let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+    seed ^= std::process::id() as u64;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut out = String::new();
+    for i in 0..2u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut s = std::collections::hash_map::RandomState::new().build_hasher();
+        (seed, i).hash(&mut s);
+        (seed, i).hash(&mut h);
+        out.push_str(&format!("{:016x}", s.finish() ^ h.finish()));
+    }
+    out
 }

@@ -74,7 +74,7 @@ impl Sim {
             .things
             .live()
             .filter(|t| !t.asleep && !t.anchored && t.holder.is_none() && t.worn.is_none() && t.stuck_in.is_none())
-            .map(|t| (self.dist_to_player(t.pos), t.id))
+            .map(|t| (self.dist_to_travelers(t.pos), t.id))
             .collect();
         if ids.is_empty() {
             return;

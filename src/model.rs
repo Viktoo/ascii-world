@@ -446,6 +446,20 @@ impl WorldModel {
         crate::world::collide::free_spot(&self.terrain, &obs, p, crate::world::collide::NPC_RADIUS + 0.3, 40.0, swims)
     }
 
+    /// Make the world anew from what its tables say now (a guest's copy,
+    /// written to by the host), keeping the land as it is when its making
+    /// didn't change (the pits and ways made in play stay on it).
+    pub fn reload(&mut self) -> Result<Arc<WorldSnapshot>> {
+        let mut fresh = WorldModel::load(self.db.clone(), self.gpu.clone(), self.live.clone())?;
+        let same_land = fresh.seed == self.seed && serde_json::to_string(&*fresh.look).ok() == serde_json::to_string(&*self.look).ok();
+        if same_land {
+            fresh.terrain = self.terrain.clone();
+            fresh.apply_ground();
+        }
+        *self = fresh;
+        self.snapshot().map_err(|d| anyhow::anyhow!("building the world shader failed: {}", format_diags(&d)))
+    }
+
     pub fn terrain(&self) -> Arc<Terrain> {
         self.terrain.clone()
     }

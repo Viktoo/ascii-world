@@ -31,6 +31,7 @@ pub mod inspect;
 pub mod interp;
 pub mod joint;
 pub mod life;
+pub mod mirror;
 pub mod missile;
 pub mod motion;
 pub mod needs;
@@ -51,6 +52,7 @@ pub mod social;
 pub mod surprise;
 pub mod things;
 pub mod tool;
+pub mod travelers;
 pub mod vehicle;
 pub mod weather;
 
@@ -76,34 +78,60 @@ use things::{ThingId, Things};
 
 pub use actions::{Action, ActErr};
 
-/// Who acts: the player or a character (by character id).
+/// Who acts: the player, another traveler, or a character (by character id).
+///
+/// `Player` is the traveler this game plays: on the host, the world's
+/// own traveler (number 0); on a guest's copy, the guest. The other
+/// travelers in the world are `Traveler(number)` (see `travelers`): on the
+/// host its guests (1, 2, …), on a guest's copy the host (0) and the
+/// other guests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActorId {
     Player,
+    Traveler(u8),
     Npc(i64),
 }
 
+/// The code of traveler 0 seen from a guest's copy (the host); never kept.
+const HOST_SEEN_BY_GUEST: i64 = -256;
+
 impl ActorId {
-    /// A stable number: 0 for the player, the character id otherwise.
+    /// A stable number: 0 for the player, -n for traveler n, the character
+    /// id otherwise.
     pub fn code(self) -> i64 {
         match self {
             ActorId::Player => 0,
+            ActorId::Traveler(0) => HOST_SEEN_BY_GUEST,
+            ActorId::Traveler(n) => -(n as i64),
             ActorId::Npc(i) => i,
         }
     }
     pub fn from_code(c: i64) -> ActorId {
-        if c == 0 { ActorId::Player } else { ActorId::Npc(c) }
+        match c {
+            0 => ActorId::Player,
+            HOST_SEEN_BY_GUEST => ActorId::Traveler(0),
+            c if c < 0 && c > -256 => ActorId::Traveler((-c) as u8),
+            c => ActorId::Npc(c),
+        }
     }
     pub fn key(self) -> String {
         match self {
             ActorId::Player => "player".into(),
+            ActorId::Traveler(n) => format!("player:{n}"),
             ActorId::Npc(i) => format!("npc:{i}"),
         }
+    }
+    /// A traveler (this game's or another), not a character.
+    pub fn is_traveler(self) -> bool {
+        matches!(self, ActorId::Player | ActorId::Traveler(_))
     }
     pub fn parse(s: &str) -> Option<ActorId> {
         let s = s.trim();
         if s.eq_ignore_ascii_case("player") || s == "you" || s == "0" {
             return Some(ActorId::Player);
+        }
+        if let Some(n) = s.strip_prefix("player:") {
+            return n.parse::<u8>().ok().map(ActorId::Traveler);
         }
         s.trim_start_matches("npc:").parse::<i64>().ok().filter(|i| *i > 0).map(ActorId::Npc)
     }
@@ -113,6 +141,7 @@ impl Serialize for ActorId {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
             ActorId::Player => s.serialize_str("player"),
+            ActorId::Traveler(_) => s.serialize_str(&self.key()),
             ActorId::Npc(i) => s.serialize_i64(*i),
         }
     }
@@ -327,6 +356,12 @@ pub struct Sim {
     pub player: Actor,
     /// What the traveler chose about their own body (see `hands`).
     pub own: hands::OwnBody,
+    /// The other travelers here, playing together (see `travelers`).
+    pub travelers: BTreeMap<u8, travelers::Traveler>,
+    /// What travelers who aren't here hold and wear, kept for them.
+    pub stowed: BTreeMap<u8, Vec<things::Thing>>,
+    /// A guest's copy of the host's world (see `mirror`).
+    pub mirror: mirror::Mirror,
     pub cast: Cast,
     pub things: Things,
     pub field: env::Field,
@@ -341,6 +376,9 @@ pub struct Sim {
     queue: Vec<Queued>,
     budget: f32,
     pub notes: Vec<Note>,
+    /// Notes by where they happened, for other travelers (see `note_near`).
+    placed: Vec<(Vec3, f32, Note)>,
+    placed_host: std::collections::HashSet<usize>,
     pub has_llm: bool,
     /// How far up or down the player looks (radians): where "that hill" is.
     pub look_pitch: f32,
@@ -425,6 +463,9 @@ impl Sim {
             t,
             player: Actor::new(player_pos, player_yaw),
             own: Default::default(),
+            travelers: BTreeMap::new(),
+            stowed: BTreeMap::new(),
+            mirror: Default::default(),
             cast: Cast::default(),
             things: Things::default(),
             field: env::Field::default(),
@@ -438,6 +479,8 @@ impl Sim {
             queue: Vec::new(),
             budget: 2.0,
             notes: Vec::new(),
+            placed: Vec::new(),
+            placed_host: Default::default(),
             has_llm: false,
             look_pitch: -0.12,
             talking_to: None,
@@ -506,6 +549,11 @@ impl Sim {
         id
     }
 
+    /// The last step's length (s).
+    pub fn frame_dt(&self) -> f32 {
+        self.frame_dt
+    }
+
     pub fn hour(&self) -> f32 {
         sky::day_phase(self.t) * 24.0
     }
@@ -546,6 +594,7 @@ impl Sim {
     pub fn actor(&self, id: ActorId) -> Option<&Actor> {
         match id {
             ActorId::Player => Some(&self.player),
+            ActorId::Traveler(n) => self.travelers.get(&n).map(|t| &t.a),
             ActorId::Npc(c) => self.cast.get(c).map(|n| &n.a),
         }
     }
@@ -553,12 +602,14 @@ impl Sim {
     pub fn actor_mut(&mut self, id: ActorId) -> Option<&mut Actor> {
         match id {
             ActorId::Player => Some(&mut self.player),
+            ActorId::Traveler(n) => self.travelers.get_mut(&n).map(|t| &mut t.a),
             ActorId::Npc(c) => self.cast.get_mut(c).map(|n| &mut n.a),
         }
     }
 
     pub fn actor_ids(&self) -> Vec<ActorId> {
         let mut v = vec![ActorId::Player];
+        v.extend(self.travelers.keys().map(|n| ActorId::Traveler(*n)));
         v.extend(self.cast.npcs.iter().filter(|n| n.here()).map(|n| ActorId::Npc(n.def.id)));
         v
     }
@@ -566,6 +617,7 @@ impl Sim {
     pub fn actor_name(&self, id: ActorId) -> String {
         match id {
             ActorId::Player => "the traveler".into(),
+            ActorId::Traveler(n) => self.travelers.get(&n).map(|t| t.name.clone()).unwrap_or_else(|| "a traveler".into()),
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.name().to_string()).unwrap_or_else(|| "someone".into()),
         }
     }
@@ -623,16 +675,23 @@ impl Sim {
 
     /// Tell the player, if they are close enough to notice.
     /// Notable news from beyond earshot is still told, as far off.
+    /// With other travelers here, each is told as near or far as it is to
+    /// them (see `drain_placed`).
     pub fn note_near(&mut self, at: Vec3, range: f32, n: Note) {
-        if self.dist_to_player(at) <= range {
-            self.notes.push(n);
-        } else {
-            match n {
-                Note::Notable(text) => self.notes.push(Note::Far { text, at: at.to_array(), made: false }),
-                Note::Made(text) => self.notes.push(Note::Far { text, at: at.to_array(), made: true }),
-                _ => {}
-            }
+        if !self.travelers.is_empty() {
+            self.placed.push((at, range, n.clone()));
+            self.placed_host.insert(self.notes.len());
         }
+        if let Some(n) = told_at(n, self.dist_to_player(at), at, range) {
+            self.notes.push(n);
+        }
+    }
+
+    /// Notes told by where they happened (for the other travelers, each
+    /// judged from where they are), and which of the notes not yet drained
+    /// came from them (so they aren't passed on twice).
+    pub fn drain_placed(&mut self) -> (Vec<(Vec3, f32, Note)>, std::collections::HashSet<usize>) {
+        (std::mem::take(&mut self.placed), std::mem::take(&mut self.placed_host))
     }
 
     /// Characters within `range` of `at` who can see it remember it.
@@ -667,7 +726,7 @@ impl Sim {
             self.out.push(req);
             return;
         }
-        let dist = self.dist_to_player(at);
+        let dist = self.dist_to_travelers(at);
         self.queue.push(Queued { req, dist, at: self.t, weight: weight.clamp(0.0, 1.0) });
     }
 
@@ -879,13 +938,16 @@ impl Sim {
             self.frame_dt = dt;
         }
         self.t += dt as f64;
-        // The rivers round the traveler, as they walk.
-        self.snap.terrain.lay_rivers_soon(self.player.pos.x, self.player.pos.z);
+        // The rivers round the travelers, as they walk.
+        for p in self.traveler_spots() {
+            self.snap.terrain.lay_rivers_soon(p.x, p.z);
+        }
         self.step_weather();
         let dark = sky::lighting(self.t, &self.snap.look.palette).night;
         self.cache.overlay.lamps = dark;
         self.mark_work();
         self.step_actors(dt);
+        self.step_travelers(dt);
         self.place_hands();
         self.update_riders();
         self.step_social(dt);
@@ -942,6 +1004,9 @@ impl Sim {
     }
 
     pub fn drain_notes(&mut self) -> Vec<Note> {
+        // (What was told by place goes with them: take that first, if wanted.)
+        self.placed.clear();
+        self.placed_host.clear();
         std::mem::take(&mut self.notes)
     }
 
@@ -959,7 +1024,7 @@ impl Sim {
                 continue;
             }
             let Some(p) = self.snap.instances.iter().find(|p| p.id == id).cloned() else { continue };
-            if self.dist_to_player(p.pos) > 70.0 {
+            if self.dist_to_travelers(p.pos) > 70.0 {
                 continue;
             }
             let Some(ty) = self.snap.type_of(p.type_id).cloned() else { continue };
@@ -1051,6 +1116,19 @@ pub fn traveler_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
     let mut d = npc::body_dims(&body, &human, &sliders, h / own);
     d.human_arms = d.arms && snap.body_root(&human.body) == "figure";
     d
+}
+
+/// A note about something at `at`, as one `dist` from it hears it: whole
+/// within `range`; beyond it, only what changes the world, as far off.
+pub fn told_at(n: Note, dist: f32, at: Vec3, range: f32) -> Option<Note> {
+    if dist <= range {
+        return Some(n);
+    }
+    match n {
+        Note::Notable(text) => Some(Note::Far { text, at: at.to_array(), made: false }),
+        Note::Made(text) => Some(Note::Far { text, at: at.to_array(), made: true }),
+        _ => None,
+    }
 }
 
 /// Short compass word for a direction.

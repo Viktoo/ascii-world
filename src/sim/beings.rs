@@ -27,7 +27,7 @@ impl Sim {
     /// The species' mind for an actor (the traveler is a person).
     pub fn mind_of(&self, who: ActorId) -> Mind {
         match who {
-            ActorId::Player => Mind::Sapient,
+            ActorId::Player | ActorId::Traveler(_) => Mind::Sapient,
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.species.mind).unwrap_or(Mind::Sapient),
         }
     }
@@ -35,7 +35,7 @@ impl Sim {
     /// Whether an actor speaks in words.
     pub fn speaks(&self, who: ActorId) -> bool {
         match who {
-            ActorId::Player => true,
+            ActorId::Player | ActorId::Traveler(_) => true,
             ActorId::Npc(c) => self.cast.get(c).is_none_or(|n| n.species.speech == Speech::Words),
         }
     }
@@ -244,7 +244,7 @@ impl Sim {
 
     pub(super) fn species_of(&self, who: ActorId) -> Option<&std::sync::Arc<crate::world::species::Species>> {
         match who {
-            ActorId::Player => None,
+            ActorId::Player | ActorId::Traveler(_) => None,
             ActorId::Npc(c) => self.cast.get(c).map(|n| &n.species),
         }
     }
@@ -253,7 +253,7 @@ impl Sim {
     pub fn temper_of(&self, who: ActorId) -> Option<crate::world::species::Temper> {
         match who {
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.temper),
-            ActorId::Player => None,
+            ActorId::Player | ActorId::Traveler(_) => None,
         }
     }
 

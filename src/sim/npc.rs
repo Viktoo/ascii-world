@@ -689,7 +689,7 @@ impl Sim {
                 if !n.here() {
                     continue;
                 }
-                (n.def.id, self.dist_to_player(n.a.pos))
+                (n.def.id, self.dist_to_travelers(n.a.pos))
             };
             if d <= near {
                 self.npc_tick(cid, dt, true);
@@ -722,6 +722,8 @@ impl Sim {
             ActorId::Player => {
                 self.player_plan = actions.into();
             }
+            // Other travelers are moved by their own players.
+            ActorId::Traveler(_) => {}
             ActorId::Npc(c) => {
                 if let Some(n) = self.cast.get_mut(c) {
                     n.plan = actions.into();
@@ -736,6 +738,7 @@ impl Sim {
     fn plan_mut(&mut self, who: ActorId) -> Option<&mut VecDeque<Action>> {
         match who {
             ActorId::Player => Some(&mut self.player_plan),
+            ActorId::Traveler(_) => None,
             ActorId::Npc(c) => self.cast.get_mut(c).map(|n| &mut n.plan),
         }
     }
@@ -995,7 +998,7 @@ impl Sim {
 
     fn base_speeds(&self, who: ActorId) -> (f32, f32) {
         match who {
-            ActorId::Player => {
+            ActorId::Player | ActorId::Traveler(_) => {
                 let s = PLAYER_SPEED * (self.player.dims.height / 1.75).sqrt();
                 (s, s * 1.7)
             }
@@ -1101,13 +1104,18 @@ impl Sim {
         if self.carried_tick(cid, dt) {
             return;
         }
-        // Talking with the player: stand and face them.
-        if self.talking_to == Some(cid) {
+        // Talking with a traveler: stand and face them.
+        let talker = if self.talking_to == Some(cid) {
+            Some((player, "the traveler".to_string()))
+        } else {
+            self.travelers.values().find(|t| t.talking_to == Some(cid)).map(|t| (t.a.pos, t.name.clone()))
+        };
+        if let Some((at, who)) = talker {
             if let Some(n) = self.cast.get_mut(cid) {
                 n.a.task = None;
                 n.a.asleep = false;
-                n.a.face(player - n.a.pos, dt * 4.0);
-                n.doing = "talking with the traveler".into();
+                n.a.face(at - n.a.pos, dt * 4.0);
+                n.doing = format!("talking with {who}");
                 n.needs.social = (n.needs.social - dt / 60.0).max(0.0);
             }
             let held_big = self.held_size(ActorId::Npc(cid));
@@ -1116,16 +1124,22 @@ impl Sim {
             }
             return;
         }
-        // The player comes close.
+        // A traveler comes close (the nearest, when several are about).
+        let Some(n) = self.cast.get(cid) else { return };
+        let (who, at) = self.nearest_traveler(n.a.pos).unwrap_or((ActorId::Player, player));
+        let who_name = match who {
+            ActorId::Traveler(_) => format!("{}, a traveler,", self.actor_name(who)),
+            _ => "The traveler".into(),
+        };
         let Some(n) = self.cast.get_mut(cid) else { return };
-        let dp = (n.a.pos - player).length();
+        let dp = (n.a.pos - at).length();
         if dp < 9.0 && !n.a.asleep {
             if t - n.last_player_near > 240.0 {
                 n.last_player_near = t;
-                let ctx = format!("The traveler has come within a few metres of you. It is {}.", crate::render::sky::time_label(t));
+                let ctx = format!("{who_name} has come within a few metres of you. It is {}.", crate::render::sky::time_label(t));
                 if self.has_llm && near && sapient {
                     let context = self.decide_context(cid, &ctx);
-                    self.request(Request::Decide { cid, event: "player_near".into(), context }, player);
+                    self.request(Request::Decide { cid, event: "player_near".into(), context }, at);
                 }
             }
         }
@@ -1161,14 +1175,18 @@ impl Sim {
         // near (the edge of the eye doesn't count: there it can be seen creeping).
         // Drawing back after its touch it may be seen going.
         let drawing_back = self.cast.get(cid).is_some_and(|n| n.species.touch.any() && self.t - n.touched_at < super::night::TOUCH_GAP);
-        let watched = !drawing_back && self.cast.get(cid).is_some_and(|n| n.species.moves_unseen && n.a.riding.is_none()) && self.actor(ActorId::Npc(cid)).is_some_and(|a| self.player_watches(a.pos, a.dims.radius));
-        if watched {
+        let watched = if drawing_back || !self.cast.get(cid).is_some_and(|n| n.species.moves_unseen && n.a.riding.is_none()) {
+            None
+        } else {
+            self.actor(ActorId::Npc(cid)).and_then(|a| self.watched_by(a.pos, a.dims.radius))
+        };
+        if let Some((by, by_at)) = watched {
             // Within arm's reach looking doesn't save you: it reaches out.
-            if self.watched_reach(cid) {
-                self.touch(cid, ActorId::Player);
+            if self.watched_reach(cid, by) {
+                self.touch(cid, by);
             }
             if let Some(n) = self.cast.get_mut(cid) {
-                n.a.face(player - n.a.pos, dt * 2.0);
+                n.a.face(by_at - n.a.pos, dt * 2.0);
                 n.a.update_pose(t, dt, None);
             }
             return;
@@ -1336,7 +1354,6 @@ impl Sim {
         if !self.has_llm || gap <= 0.0 || t - self.cast.last_made < gap || t - self.cast.last_work < gap * 0.5 || self.interp.building.len() >= 2 {
             return false;
         }
-        let player = self.player.pos;
         let ready = |n: &Npc| {
             n.here()
                 && !n.a.asleep
@@ -1346,7 +1363,7 @@ impl Sim {
                 && n.mission.is_none()
                 && self.talking_to != Some(n.def.id)
                 && !self.social.busy(ActorId::Npc(n.def.id))
-                && (n.a.pos - player).length() < 60.0
+                && self.dist_to_travelers(n.a.pos) < 60.0
         };
         self.cast.npcs.iter().filter(|n| ready(n)).min_by(|a, b| a.last_work.total_cmp(&b.last_work).then(a.def.id.cmp(&b.def.id))).is_some_and(|n| n.def.id == cid)
     }
@@ -1609,7 +1626,7 @@ impl Sim {
         }
         n.next_llm = t + every as f64;
         let pos = n.a.pos;
-        if self.dist_to_player(pos) > self.cfg.near && !self.cfg.medium_llm {
+        if self.dist_to_travelers(pos) > self.cfg.near && !self.cfg.medium_llm {
             return false;
         }
         let context = self.decide_context(cid, what);
@@ -1684,6 +1701,7 @@ impl Sim {
             let doing = match o {
                 ActorId::Npc(c) => self.cast.get(c).map(|x| x.doing.clone()).unwrap_or_default(),
                 ActorId::Player => "the traveler".into(),
+                ActorId::Traveler(_) => "another traveler".into(),
             };
             people.push(format!("{} ({d:.0} m, {rel}{}{})", self.actor_name(o), if doing.is_empty() { "" } else { ", " }, doing));
         }

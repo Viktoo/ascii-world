@@ -394,6 +394,21 @@ impl Things {
         out
     }
 
+    /// Take a thing out of the world as it is (it goes with a traveler who
+    /// leaves): not drawn, moved or saved until put back. Its row stays.
+    pub fn stow(&mut self, id: ThingId) -> Option<Thing> {
+        let t = self.map.remove(&id)?;
+        self.grid_dirty = true;
+        Some(t)
+    }
+
+    /// Put a stowed thing back.
+    pub fn unstow(&mut self, t: Thing) {
+        self.next_id = self.next_id.max(t.id + 1);
+        self.map.insert(t.id, t);
+        self.grid_dirty = true;
+    }
+
     pub fn live(&self) -> impl Iterator<Item = &Thing> {
         self.map.values().filter(|t| !t.removed)
     }

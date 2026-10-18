@@ -866,7 +866,7 @@ impl Sim {
     pub fn ready_to_catch(&mut self, who: ActorId, from: ActorId, secs: f64) {
         let t = self.t;
         let willing = match who {
-            ActorId::Player => true,
+            ActorId::Player | ActorId::Traveler(_) => true,
             ActorId::Npc(c) => {
                 let in_game = self.social.joint_of(who).is_some_and(|j| j.has(from));
                 let n = self.cast.get(c);
@@ -953,7 +953,7 @@ impl Sim {
             return Err(ActErr::Fail(format!("{oname} is busy")));
         }
         match other {
-            ActorId::Player => {
+            ActorId::Player | ActorId::Traveler(_) => {
                 self.propose(who, other, &k.name(), None)?;
                 Ok(Outcome::ok(format!("{name} offers {oname} a {}", k.name().replace('_', " "))))
             }
@@ -1035,7 +1035,7 @@ impl Sim {
                 n.needs.social = (n.needs.social - 0.3).max(0.0);
             }
         }
-        let near_player = self.dist_to_player(pa) <= self.cfg.chat_llm_range;
+        let near_player = self.dist_to_travelers(pa) <= self.cfg.chat_llm_range;
         if near_player && self.has_llm {
             let rel = self.social.rel(ActorId::Npc(a), ActorId::Npc(b)).map(|r| r.describe()).unwrap_or_default();
             let ctx_a = self.decide_context(a, &format!("You meet {bn} ({rel}) and stop to talk."));

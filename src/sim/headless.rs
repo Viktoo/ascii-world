@@ -25,6 +25,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Who pays for what an actor asks for: a guest for their own.
+fn payer(a: ActorId) -> Option<u8> {
+    match a {
+        ActorId::Traveler(n) => Some(n),
+        _ => None,
+    }
+}
+
 /// Send a simulation request to the brain. Returns true if an answer will come.
 pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
     match req {
@@ -37,15 +45,16 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
             false
         }
         Request::Interpret { id, actor, text, context } => {
-            brain.send(Cmd::Interpret { id, actor: sim.actor_name(actor), text, context });
+            brain.send_as(Cmd::Interpret { id, actor: sim.actor_name(actor), text, context }, payer(actor));
             true
         }
         Request::Create { id, by, text, target, yaw, view } => {
+            let payer = payer(by);
             let by = match by {
-                ActorId::Npc(c) => Some((c, sim.actor_name(by))),
+                ActorId::Npc(_) | ActorId::Traveler(_) => Some((by.code(), sim.actor_name(by))),
                 ActorId::Player => None,
             };
-            brain.send(Cmd::Create { id: Some(id), by, text, view: *view, target, yaw });
+            brain.send_as(Cmd::Create { id: Some(id), by, text, view: *view, target, yaw }, payer);
             true
         }
         Request::Chat { a, b, context } => {
@@ -466,7 +475,7 @@ pub fn metrics(sim: &Sim, events: &[SimEvent], hours: f32, start_pos: &HashMap<i
         *by_kind.entry(e.kind.clone()).or_insert(0) += 1;
     }
     let species_of = |a: ActorId| match a {
-        ActorId::Player => Some("human".to_string()),
+        ActorId::Player | ActorId::Traveler(_) => Some("human".to_string()),
         ActorId::Npc(c) => sim.cast.get(c).map(|n| n.species.name.clone()),
     };
     let cross = events
@@ -668,7 +677,7 @@ pub fn act_once(s: &mut Session, who: ActorId, action: super::Action, run: f32) 
         s.step(dt);
         t += dt;
         let busy = s.sim.actor(who).is_some_and(|a| a.task.is_some()) || match who {
-            ActorId::Player => !s.sim.player_plan.is_empty(),
+            ActorId::Player | ActorId::Traveler(_) => !s.sim.player_plan.is_empty(),
             ActorId::Npc(c) => s.sim.cast.get(c).is_some_and(|n| !n.plan.is_empty()),
         };
         if !busy && t >= run.min(1.0) && s.outstanding == 0 && pending.is_none() {

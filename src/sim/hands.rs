@@ -31,7 +31,7 @@ pub struct OwnBody {
 const LIFT: f32 = 0.24;
 
 /// A look slider's value for the traveler when they haven't chosen one.
-fn usual(name: &str, lo: f32, hi: f32) -> f32 {
+pub(super) fn usual(name: &str, lo: f32, hi: f32) -> f32 {
     match name {
         "build" => 1.0,
         "skin" => 0.3,
@@ -113,18 +113,7 @@ impl Sim {
 
     /// The traveler's look sliders (k.a … k.e of their body).
     pub fn own_sliders(&self) -> [f32; crate::lang::ir::MAX_SLIDERS] {
-        let mut out = [0.5f32; crate::lang::ir::MAX_SLIDERS];
-        let Some(b) = self.own_body_type().and_then(|t| t.ct.meta.body.clone()) else { return out };
-        let d = &self.player.dims;
-        for (i, (name, lo, hi)) in b.look.iter().enumerate().take(crate::lang::ir::MAX_SLIDERS) {
-            let v = crate::world::species::look_value(&self.own.look, name).unwrap_or_else(|| match name.as_str() {
-                // People draw their own height: the traveler's, at the world's size.
-                "height" => d.height / d.scale.max(1e-3),
-                _ => b.usual(name).unwrap_or_else(|| usual(name, *lo, *hi)),
-            });
-            out[i] = v.clamp(lo.min(*hi), hi.max(*lo));
-        }
-        out
+        self.sliders_of(&self.own, &self.player.dims)
     }
 
     /// Change how the traveler looks (sliders by name, within their ranges);

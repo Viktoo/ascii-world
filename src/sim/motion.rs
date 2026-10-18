@@ -16,14 +16,14 @@ impl Sim {
     pub fn can_fly(&self, who: ActorId) -> bool {
         match who {
             ActorId::Npc(c) => self.cast.get(c).is_some_and(|n| n.a.dims.flies && n.species.moves.fly > 0.0),
-            ActorId::Player => false,
+            ActorId::Player | ActorId::Traveler(_) => false,
         }
     }
 
     pub fn fly_speed(&self, who: ActorId) -> f32 {
         match who {
             ActorId::Npc(c) => self.cast.get(c).map(|n| n.species.moves.fly).unwrap_or(0.0),
-            ActorId::Player => 0.0,
+            ActorId::Player | ActorId::Traveler(_) => 0.0,
         }
     }
 
@@ -220,7 +220,7 @@ impl Sim {
                     Some(t @ super::actor::Task::Goto { .. }) | Some(t @ super::actor::Task::Follow { .. }) => Some(t),
                     _ => None,
                 };
-                if r != ActorId::Player {
+                if !r.is_traveler() {
                     a.yaw = yaw;
                 }
             }
@@ -231,7 +231,12 @@ impl Sim {
     /// The traveler steers what they ride: walk keys move it at its pace,
     /// and on a flyer, looking up or down climbs or dives.
     pub fn drive(&mut self, dir: Vec3, pitch: f32, dt: f32) {
-        let Some(m) = self.player.riding else { return };
+        self.drive_as(ActorId::Player, dir, pitch, dt);
+    }
+
+    /// A traveler (this game's or another) steers what they ride.
+    pub fn drive_as(&mut self, who: ActorId, dir: Vec3, pitch: f32, dt: f32) {
+        let Some(m) = self.actor(who).and_then(|a| a.riding) else { return };
         let (walk, run) = self.speeds(m);
         let flyer = self.can_fly(m);
         let speed = if flyer && self.actor(m).is_some_and(|a| a.alt > 1.0) { self.fly_speed(m) } else { run.max(walk) };

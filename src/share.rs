@@ -51,7 +51,9 @@ fn clean(c: &Connection) -> Result<()> {
 /// - kv `player.body`: the look they chose;
 /// - kv `sim.night`: their wounds and whether they've fallen;
 /// - `things.holder` / `co_holder` `player` or `worn:player`: what they
-///   carry and wear, put down where they are.
+///   carry and wear, put down where they are;
+/// - `travelers`: the guests who played here (each one's place, look and
+///   wounds), and what they carry and wear (`player:N`), put down too.
 fn reset_travelers(c: &Connection) -> Result<()> {
     let spawn: Option<[f32; 3]> = kv(c, "spawn")?.and_then(|s| serde_json::from_str(&s).ok());
     if let Some([x, _, z]) = spawn {
@@ -66,8 +68,9 @@ fn reset_travelers(c: &Connection) -> Result<()> {
         night.wounded = 0;
         crate::db::kv_set(c, "sim.night", &serde_json::to_string(&night)?)?;
     }
-    c.execute("UPDATE things SET holder = NULL, asleep = 0 WHERE holder IN ('player', 'worn:player')", [])?;
-    c.execute("UPDATE things SET co_holder = NULL WHERE co_holder = 'player'", [])?;
+    c.execute("UPDATE things SET holder = NULL, asleep = 0 WHERE holder IN ('player', 'worn:player') OR holder LIKE 'player:%' OR holder LIKE 'worn:player:%'", [])?;
+    c.execute("UPDATE things SET co_holder = NULL WHERE co_holder = 'player' OR co_holder LIKE 'player:%'", [])?;
+    c.execute("DELETE FROM travelers", [])?;
     Ok(())
 }
 
@@ -77,7 +80,7 @@ pub fn check(path: &Path) -> Result<()> {
     c.query_row("SELECT 1 FROM universe WHERE id = 1", [], |_| Ok(())).map_err(|_| anyhow::anyhow!("not a world file"))?;
     let format: i64 = kv(&c, "format").ok().flatten().and_then(|s| s.parse().ok()).unwrap_or(1);
     if format > FORMAT {
-        anyhow::bail!("made by a newer Pocket Universe: update the game to open it");
+        anyhow::bail!("made by a newer Infinite Pocket: update the game to open it");
     }
     Ok(())
 }

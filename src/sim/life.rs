@@ -73,7 +73,7 @@ impl Sim {
             .npcs
             .iter()
             .filter(|n| n.here() && !n.species.touch.harms() && !n.a.asleep && n.growth >= 0.99 && n.needs.hunger < 0.6 && t - n.last_birth > gap && n.a.riding.is_none())
-            .filter(|n| self.dist_to_player(n.a.pos) <= self.cfg.medium)
+            .filter(|n| self.dist_to_travelers(n.a.pos) <= self.cfg.medium)
             .map(|n| (n.def.id, n.a.pos, self.snap.type_of(n.body_ty).map(|t| self.snap.body_root(t.name())).unwrap_or_default(), n.species.mind == Mind::Sapient))
             .collect();
         let mut pairs = Vec::new();

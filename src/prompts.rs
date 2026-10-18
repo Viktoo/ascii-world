@@ -1,7 +1,7 @@
 //! Prompt text. The language reference is the stable, cached prefix of every
 //! builder call; it must describe exactly what `lang::check` accepts.
 
-pub const LANGUAGE: &str = r#"You write object types for Pocket Universe, a 3D world rendered by raymarching signed distance functions (SDFs) on the GPU. Each object type is a small module in a strict subset of JavaScript. Your code is never run as JavaScript: it is parsed, checked against an allowlist, and translated to WGSL and to a CPU bytecode. Anything outside the subset is rejected.
+pub const LANGUAGE: &str = r#"You write object types for Infinite Pocket, a 3D world rendered by raymarching signed distance functions (SDFs) on the GPU. Each object type is a small module in a strict subset of JavaScript. Your code is never run as JavaScript: it is parsed, checked against an allowlist, and translated to WGSL and to a CPU bytecode. Anything outside the subset is rejected.
 
 ## Module shape (exactly this)
 
@@ -377,7 +377,7 @@ pub fn repair(errors: &str) -> String {
     format!("That failed validation:\n{errors}\n\nFix every problem and reply again in the same format, with the complete corrected answer.")
 }
 
-pub const DIALOGUE_RULES: &str = "You are a character in Pocket Universe, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveler (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. If you agree to do something, say you will do it or are starting on it; it isn't done yet.";
+pub const DIALOGUE_RULES: &str = "You are a character in Infinite Pocket, a small living world. Stay in character. Speak in your own voice, in 1–3 short sentences (this is a terminal; keep it brief). No stage directions, no lists, no markdown. You remember earlier conversations with the traveler (the player) from your memories below; refer to them naturally when relevant. Never state clock times; speak of when things happened loosely, as a person would (\"just now\", \"earlier\", \"yesterday\"). You only know what your character would know. If you are asked about things outside your world, respond as your character would. If you agree to do something, say you will do it or are starting on it; it isn't done yet.";
 
 pub const DECIDER_TASK: &str = r#"You decide what a character in a small simulated world does next, given an event and what they know. Reply with one JSON object only:
 {"goal": "a few words", "say": "what they say now (one short sentence in their voice) or null", "steps": [ ... ]}

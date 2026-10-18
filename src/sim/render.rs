@@ -215,6 +215,11 @@ impl Sim {
     /// the overlay, for the static world's own drawing).
     fn work_marks(&self) -> Marks {
         let mut m = Marks::default();
+        // A guest's copy: the host says what is being conjured.
+        if self.mirror.on {
+            m.conjures = self.mirror.conjuring.clone();
+            return m;
+        }
         for w in self.work() {
             if w.appears {
                 if let Some(at) = w.at {
@@ -307,6 +312,14 @@ impl Sim {
                     }
                 }
             }
+        }
+        // The other travelers, in what they wear.
+        for (id, g) in self.draw_travelers(cam, view) {
+            for t in worn.get(&id).map(|v| v.as_slice()).unwrap_or(&[]) {
+                let (Some(body), Some(ty)) = (self.own_body_type(), self.snap.type_of(t.type_id)) else { continue };
+                insts.push(self.worn_inst(&g, body, ty, look(&t.props)));
+            }
+            insts.push(g);
         }
         // The traveler's own body, seen from inside, in what they wear.
         let own = eye.and_then(|c| self.own_view(c));

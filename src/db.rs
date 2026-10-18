@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS species(name TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS thing_shapes(id INTEGER PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS spent_cells(gx INTEGER NOT NULL, gz INTEGER NOT NULL, t REAL NOT NULL, PRIMARY KEY(gx, gz));
 CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY, owner INTEGER NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS travelers(no INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE, name TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, yaw REAL NOT NULL, look_json TEXT NOT NULL DEFAULT '{}', wounds REAL NOT NULL DEFAULT 0, last_seen REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS beliefs(holder INTEGER NOT NULL, key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(holder, key));
 "#;
 
@@ -135,6 +136,21 @@ pub struct CreationRow {
     pub tags: Vec<String>,
 }
 
+/// A traveler who has played in this world as a guest (the world's own
+/// traveler, 0, is the `player` row): known by their token, and kept as
+/// they left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TravelerRow {
+    pub no: u8,
+    pub token: String,
+    pub name: String,
+    pub pos: [f32; 3],
+    pub yaw: f32,
+    pub look_json: String,
+    pub wounds: f32,
+    pub last_seen: f64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerRow {
     pub x: f32,
@@ -162,7 +178,8 @@ impl Db {
         Self::configure(&conn)?;
         conn.execute("INSERT INTO universe(id, seed, bible, palette, created_at) VALUES (1, ?1, ?2, ?3, ?4)", params![seed as i64, bible, look_json, now()])?;
         kv_set(&conn, "made_with", COMMIT)?;
-        kv_set(&conn, "last_opened_with", COMMIT)?;
+        kv_set(&conn, "made_with_release", RELEASE)?;
+        mark_opened(&conn)?;
         Ok(Arc::new(Db { conn: Mutex::new(conn) }))
     }
 
@@ -172,7 +189,17 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         Self::configure(&conn)?;
-        kv_set(&conn, "last_opened_with", COMMIT)?;
+        mark_opened(&conn)?;
+        Ok(Arc::new(Db { conn: Mutex::new(conn) }))
+    }
+
+    /// A world held only in memory (a guest's copy of the host's world):
+    /// read and written like any other, gone when let go.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Arc<Db>> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, bytes, bytes.len(), false).context("not a world")?;
+        conn.query_row("SELECT 1 FROM universe WHERE id = 1", [], |_| Ok(())).context("not a world")?;
+        Self::configure(&conn)?;
         Ok(Arc::new(Db { conn: Mutex::new(conn) }))
     }
 
@@ -319,6 +346,38 @@ impl Db {
         .flatten()
     }
 
+    /// The guests this world has had.
+    pub fn travelers(&self) -> Vec<TravelerRow> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT no, token, name, x, y, z, yaw, look_json, wounds, last_seen FROM travelers ORDER BY no")?;
+            let rows = st.query_map([], |r| {
+                Ok(TravelerRow {
+                    no: r.get::<_, i64>(0)?.clamp(1, 255) as u8,
+                    token: r.get(1)?,
+                    name: r.get(2)?,
+                    pos: [r.get::<_, f64>(3)? as f32, r.get::<_, f64>(4)? as f32, r.get::<_, f64>(5)? as f32],
+                    yaw: r.get::<_, f64>(6)? as f32,
+                    look_json: r.get(7)?,
+                    wounds: r.get::<_, f64>(8)? as f32,
+                    last_seen: r.get(9)?,
+                })
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn save_traveler(&self, t: &TravelerRow) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO travelers(no, token, name, x, y, z, yaw, look_json, wounds, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(no) DO UPDATE SET token = excluded.token, name = excluded.name, x = excluded.x, y = excluded.y, z = excluded.z, yaw = excluded.yaw, look_json = excluded.look_json, wounds = excluded.wounds, last_seen = excluded.last_seen",
+                params![t.no as i64, t.token, t.name, t.pos[0] as f64, t.pos[1] as f64, t.pos[2] as f64, t.yaw as f64, t.look_json, t.wounds as f64, t.last_seen],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn save_player(&self, p: PlayerRow) -> Result<()> {
         self.with(|c| {
             c.execute(
@@ -440,6 +499,21 @@ pub fn creations(c: &Connection) -> Result<Vec<CreationRow>> {
 /// committed). A world keeps the one that made it (kv `made_with`, absent in
 /// worlds older than this) and the one that last opened it (`last_opened_with`).
 pub const COMMIT: &str = env!("POCKET_COMMIT");
+
+/// The release this game is (`0.1.0`), or `dev` for a build that isn't a
+/// clean one of its tag. A world keeps the release that made it
+/// (`made_with_release`) and that last opened it (`last_opened_with_release`).
+pub const RELEASE: &str = env!("POCKET_RELEASE");
+
+/// How this build is called to players: the release, or `dev` and the commit.
+pub fn build_name() -> String {
+    if RELEASE == "dev" { format!("dev {COMMIT}") } else { RELEASE.to_string() }
+}
+
+fn mark_opened(c: &Connection) -> Result<()> {
+    kv_set(c, "last_opened_with", COMMIT)?;
+    kv_set(c, "last_opened_with_release", RELEASE)
+}
 
 pub fn kv_set(c: &Connection, key: &str, value: &str) -> Result<()> {
     c.execute("INSERT INTO kv(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value])?;
