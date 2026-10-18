@@ -131,6 +131,9 @@ pub struct Screen {
     /// Shapes and free text over the cells (each screen draws them anew).
     pub decor: Vec<Deco>,
     pub labels: Vec<Label>,
+    /// Shapes and free text over everything else (an open list, a dialog).
+    pub over_decor: Vec<Deco>,
+    pub over_labels: Vec<Label>,
     /// Areas (x, y, w, h in cells) drawn as a grid in a window: each glyph
     /// centred in its own cell, as a map needs, not set as flowing words.
     pub grids: Vec<[u16; 4]>,
@@ -139,7 +142,7 @@ pub struct Screen {
 impl Screen {
     pub fn new(w: u16, h: u16, truecolor: bool) -> Screen {
         let n = w as usize * h as usize;
-        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, field: None, decor: Vec::new(), labels: Vec::new(), grids: Vec::new() }
+        Screen { w, h, cells: vec![Cell::BLANK; n], shown: vec![None; n], truecolor, bytes_last: 0, see: vec![false; n], caret: None, field: None, decor: Vec::new(), labels: Vec::new(), over_decor: Vec::new(), over_labels: Vec::new(), grids: Vec::new() }
     }
 
     pub fn resize(&mut self, w: u16, h: u16) {
@@ -197,6 +200,8 @@ impl Screen {
     pub fn clear_decor(&mut self) {
         self.decor.clear();
         self.labels.clear();
+        self.over_decor.clear();
+        self.over_labels.clear();
         self.grids.clear();
         self.caret = None;
         self.field = None;
@@ -263,7 +268,7 @@ impl Screen {
     /// What the screen says, cells and free text together (for tests and agents).
     pub fn plain_text(&self) -> String {
         let mut rows: Vec<Vec<char>> = (0..self.h).map(|y| (0..self.w).map(|x| self.get(x, y).map_or(' ', |c| c.ch)).collect()).collect();
-        for l in &self.labels {
+        for l in self.labels.iter().chain(&self.over_labels) {
             let n = l.text.chars().count() as f32;
             let x0 = if l.center { l.x - n * 0.5 } else { l.x }.max(0.0) as usize;
             let y = l.y.max(0.0) as usize;

@@ -261,7 +261,11 @@ impl Compositor {
         self.deco_list.clear();
         let (cw, ch) = cell;
         let col = |c: [u8; 3], a: f32| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, a];
-        for d in &screen.decor {
+        let mut split = 0;
+        for (i, d) in screen.decor.iter().chain(&screen.over_decor).enumerate() {
+            if i == screen.decor.len() {
+                split = self.deco_list.len();
+            }
             let rect = [d.x * cw, d.y * ch, d.w * cw, d.h * ch];
             let r = d.radius * ch;
             if d.shadow {
@@ -270,6 +274,9 @@ impl Compositor {
             }
             let bw = if d.border.is_some() { (ch * 0.07).max(1.0) } else { 0.0 };
             self.deco_list.push(DecoGpu { rect, fill: col(d.fill, d.alpha), params: [r, 0.0, bw, 0.0], border: col(d.border.unwrap_or(d.fill), 1.0) });
+        }
+        if screen.over_decor.is_empty() {
+            split = self.deco_list.len();
         }
         let need = (self.deco_list.len().max(1) * std::mem::size_of::<DecoGpu>()) as u64;
         if self.decos.size() < need {
@@ -326,15 +333,19 @@ impl Compositor {
             pass.set_bind_group(0, self.bind.as_ref(), &[]);
             pass.set_pipeline(&self.grid_pipe);
             pass.draw(0..3, 0..1);
-            if !self.deco_list.is_empty() {
-                pass.set_pipeline(&self.deco_pipe);
-                pass.set_vertex_buffer(0, self.decos.slice(..));
-                pass.draw(0..6, 0..self.deco_list.len() as u32);
-            }
-            if !self.quad_list.is_empty() {
-                pass.set_pipeline(&self.text_pipe);
-                pass.set_vertex_buffer(0, self.quads.slice(..));
-                pass.draw(0..6, 0..self.quad_list.len() as u32);
+            // Shapes, then words; then what lies over them, the same way.
+            let (ds, ts) = (split as u32, self.text.split as u32);
+            for (decos, quads) in [(0..ds, 0..ts), (ds..self.deco_list.len() as u32, ts..self.quad_list.len() as u32)] {
+                if !decos.is_empty() {
+                    pass.set_pipeline(&self.deco_pipe);
+                    pass.set_vertex_buffer(0, self.decos.slice(..));
+                    pass.draw(0..6, decos);
+                }
+                if !quads.is_empty() {
+                    pass.set_pipeline(&self.text_pipe);
+                    pass.set_vertex_buffer(0, self.quads.slice(..));
+                    pass.draw(0..6, quads);
+                }
             }
         }
         self.queue.submit([enc.finish()]);

@@ -194,6 +194,8 @@ pub struct App {
     settings: crate::settings::Settings,
     /// The settings screen, when open.
     menu: Option<menu::Menu>,
+    /// The controls of the menus over the world (mouse and keys).
+    pub ui: crate::ui::Ui,
     /// The log: 0 a few lines, 1 half the screen, 2 the whole screen (key 1 cycles).
     log_view: u8,
     /// Log lines scrolled back from the newest (PgUp / PgDn).
@@ -253,6 +255,8 @@ pub struct App {
     pub win: Option<WinGeom>,
     /// Left for the list of worlds (not quit).
     pub to_worlds: bool,
+    /// The world's file (to host it from the pause menu).
+    pub path: Option<std::path::PathBuf>,
     /// Window detail on auto: the lines drawn now, and when they last changed.
     auto_lines: f32,
     auto_at: Instant,
@@ -338,6 +342,7 @@ impl App {
             budget_paused: false,
             settings: crate::settings::Settings::load(),
             menu: None,
+            ui: crate::ui::Ui::new(),
             log_view: 0,
             log_scroll: 0,
             journal_filter: journal::Filter::default(),
@@ -371,6 +376,7 @@ impl App {
             ears_trouble: None,
             win: None,
             to_worlds: false,
+            path: None,
             auto_lines: 240.0,
             auto_at: Instant::now(),
             auto_ceiling: None,
@@ -381,13 +387,13 @@ impl App {
         app.sync_ears();
         app.unstick();
         let name = app.snap.look.name.clone();
-        app.say(None, &format!("Welcome{}. W/S walk, A/D strafe, ←→ turn, ↑↓ look, Enter talk, / do or make anything, e use or pick up, g grab/drop, f throw, Esc settings and quit.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
+        app.say(None, &format!("Welcome{}. W/A/S/D move, the mouse looks, Enter talks, / does or makes anything, e uses, g picks up. Esc pauses.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
             None if app.is_guest() => {}
             None => {
-                app.llm_note = Some("no LLM key: story & dialogue off".into());
-                app.say(None, "No LLM configured (set ANTHROPIC_API_KEY or POCKET_LLM_BASE_URL): the land is here, but its stories and people are not.", DIM);
+                app.llm_note = Some("no AI key: Esc → Settings → AI".into());
+                app.say(None, "No AI key yet: the land is here, but its stories and people are not. Add one in Settings → AI.", DIM);
             }
         }
         if app.render.cpu_fallback {
@@ -893,7 +899,7 @@ impl App {
             return;
         }
         if !self.brain.has_llm {
-            self.say(None, "Doing things in words needs an LLM (set ANTHROPIC_API_KEY or POCKET_LLM_BASE_URL).", DIM);
+            self.say(None, "Doing things in words needs an AI key (Esc → Settings → AI).", DIM);
             return;
         }
         self.say(Some("you"), &format!("*{text}*"), ACCENT);
@@ -971,7 +977,7 @@ impl App {
                     "/give NAME · /say TEXT · /propose NAME catch|carry|dance|walk|… · /drop",
                     "/ride NAME · /drive (the vehicle in view) · /dismount · /pet NAME · /wear (what you hold) · /takeoff — on a flyer, look up or down to climb or dive",
                     "/day, /night, /time <hour 0–23> — jump the clock forward to that time",
-                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc settings (q there quits)",
+                    "Walk: W/S move, A/D strafe, ←→ turn, ↑↓ look, Space jump, c crouch, Shift+move or r run, Tab ascii/blocks, F1 stats, F2 inspect, F3 achievements, Esc pause menu",
                     "Log: 1 bigger (half, full, back to small), PgUp/PgDn scroll back",
                     "Talk: walk up to someone and press Enter; Esc to leave.",
                     "Playing together: /say TEXT is heard by everyone playing · /invite (or F5) copies the address and code · /name NAME · host: /kick NAME sends a guest away",
@@ -1622,7 +1628,7 @@ impl App {
         let x = self.screen.text(2, top, &tag, ACCENT, PANEL_BG, true);
         self.draw_log(w, top, rows, x);
         if self.menu.is_some() && !full {
-            self.draw_menu(w, vh);
+            self.draw_menu(w, vh, true);
         }
         // Input line.
         let iy = sep + 1 + log_rows;
@@ -1674,9 +1680,10 @@ impl App {
                     }
                     (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
                     (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
-                    (None, None, None) => "W/S walk  A/D strafe  ←→ turn  ↑↓ look  / do or make anything  e use  g grab  1 journal  Esc settings/quit".into(),
+                    (None, None, None) => "W/A/S/D move   / do or make anything   e use   g grab   1 journal   Esc menu".into(),
                 };
-                let hint = if self.sim.fallen() { "You lie where you fell.   Enter wake   Esc settings/quit".to_string() } else { hint };
+                let hint = if self.sim.fallen() { "You lie where you fell.   Enter wake   Esc menu".to_string() } else { hint };
+                let hint = if (self.settings.show_hints || self.sim.fallen()) && self.menu.is_none() { hint } else { String::new() };
                 if self.win.is_some() {
                     self.screen.hints(1, iy, &hint, DIM, PANEL_BG);
                 } else {
@@ -2322,6 +2329,12 @@ impl App {
     }
 
     pub fn paste(&mut self, s: &str) {
+        // Into a field of the menu (an API key, a name), when it is open.
+        if self.menu.is_some() {
+            self.ui.feed(&crate::window::Ev::Paste(s.to_string()));
+            self.dirty = true;
+            return;
+        }
         if self.mode != Mode::Walk {
             self.stop_hearing();
             self.input.push_str(&s.replace(['\n', '\r'], " "));
@@ -2720,7 +2733,7 @@ mod tests {
         let brain = Brain::start(model, None, tx, false);
         let mut app = App::new(Setup { db: db.clone(), brain, events: rx, render: crate::render::cpu::spawn(), snap, live, truecolor: true, size: (110, 44), llm: None, genesis: false, together: None, seed: None });
         app.open_menu(false);
-        app.on_key(key(KeyCode::Char('3'), KeyEventKind::Press));
+        app.menu_page(menu::Page::Creations);
         for _ in 0..3 {
             app.compose();
             println!("{}", screen_text(&app));
@@ -3003,14 +3016,7 @@ mod tests {
     }
 
     fn screen_text(app: &App) -> String {
-        let mut out = String::new();
-        for y in 0..app.screen.h {
-            for x in 0..app.screen.w {
-                out.push(app.screen.get(x, y).map(|c| c.ch).unwrap_or(' '));
-            }
-            out.push('\n');
-        }
-        out
+        app.screen.plain_text()
     }
 
     #[test]
@@ -3119,16 +3125,14 @@ mod tests {
         app.sim.event("made", Some(ActorId::Player), Some("instance:2".into()), "the traveler made a cup", Some(p), serde_json::json!({}));
         drive(&mut app, 0.2, |_, _| true);
         assert!(app.toasts.is_empty());
-        // F3 opens the list; 1 and 2 switch pages.
+        // F3 opens the list; Esc goes back to the pause menu, and again to the world.
         app.on_key(key(KeyCode::F(3), KeyEventKind::Press));
         app.compose();
         let s = screen_text(&app);
-        assert!(s.contains("Achievements 1/") && s.contains("Second Draft") && s.contains("earned just now"), "{s}");
-        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
-        app.compose();
-        assert!(screen_text(&app).contains("Budget per session"));
-        app.on_key(key(KeyCode::Char('2'), KeyEventKind::Press));
-        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        assert!(s.contains("1 of 40 earned") && s.contains("Second Draft") && s.contains("just now"), "{s}");
+        press(&mut app, KeyCode::Esc);
+        assert!(screen_text(&app).contains("Paused"));
+        press(&mut app, KeyCode::Esc);
         assert!(app.menu.is_none());
         // /undo is noticed by the app itself.
         app.command("/undo");
@@ -3207,82 +3211,96 @@ mod tests {
         assert_eq!(app.toasts.len(), 4, "one popup each, queued");
     }
 
+    /// A key in a menu: it acts when the menu is next drawn.
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_key(key(code, KeyEventKind::Press));
+        app.compose();
+    }
+
     #[test]
     fn quit_is_in_the_esc_menu_not_walk() {
         let (mut app, _db) = make_app();
         app.on_key(key(KeyCode::Char('q'), KeyEventKind::Press));
         assert!(!app.quit, "q while walking does nothing");
-        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
-        app.compose();
+        press(&mut app, KeyCode::Esc);
         assert!(screen_text(&app).contains("Quit game"));
-        app.on_key(key(KeyCode::Char('q'), KeyEventKind::Press));
+        press(&mut app, KeyCode::Char('q'));
         assert!(app.quit, "q in the menu quits");
     }
 
     #[test]
-    fn settings_screen_opens_changes_and_closes() {
+    fn pause_menu_settings_and_world_options() {
         let (mut app, _db) = make_app();
-        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
-        assert!(app.menu.is_some(), "Esc in walk opens settings");
-        app.compose();
-        assert!(screen_text(&app).contains("Settings"));
-        // Budget: no limit by default; ← steps down to $50.
-        app.on_key(key(KeyCode::Left, KeyEventKind::Press));
-        assert_eq!(app.settings.budget(), Some(50.0));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.menu.is_some(), "Esc in walk opens the pause menu");
+        assert!(screen_text(&app).contains("Paused") && screen_text(&app).contains("Back to game"));
+        // Down to Settings (after Back, Achievements, Creations, World options).
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        let shown = screen_text(&app);
+        assert!(shown.contains("Settings") && shown.contains("Video") && shown.contains("Detail"), "{shown}");
         // Walking keys do nothing while it is open.
         let before = app.pos();
         app.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
         drive(&mut app, 0.3, |_, _| true);
         assert_eq!(app.pos(), before);
-        // The spend page, and back.
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        // The AI tab: the budget, no limit by default; ← steps down to $50.
+        app.ui.focus = Some(2);
+        press(&mut app, KeyCode::Enter);
+        assert!(screen_text(&app).contains("Who answers"), "{}", screen_text(&app));
+        // Low on the page: the page scrolls to it first.
+        app.ui.focus = Some(12);
         app.compose();
-        assert!(screen_text(&app).contains("Spend details"), "{}", screen_text(&app));
-        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.settings.budget(), Some(50.0));
         // Sound and its volume (no device in tests: it stays quiet).
-        for _ in 0..3 {
-            app.on_key(key(KeyCode::Down, KeyEventKind::Press));
-        }
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        app.ui.focus = Some(1);
+        press(&mut app, KeyCode::Enter);
+        app.ui.focus = Some(6);
+        press(&mut app, KeyCode::Enter);
         assert!(!app.settings.sound, "Enter turns sound off");
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        press(&mut app, KeyCode::Enter);
         assert!(app.settings.sound);
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        press(&mut app, KeyCode::Down);
         let vol = app.settings.volume;
-        app.on_key(key(KeyCode::Left, KeyEventKind::Press));
+        press(&mut app, KeyCode::Left);
         assert!(app.settings.volume < vol);
         // Voices (no sound device in tests: never started).
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
         assert!(!app.settings.voices, "Enter turns voices off");
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        press(&mut app, KeyCode::Enter);
         assert!(app.settings.voices && app.voice.is_none());
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        press(&mut app, KeyCode::Down);
         assert_eq!(app.settings.voice_volume, 0.5, "voices sit below the world by default");
-        app.on_key(key(KeyCode::Left, KeyEventKind::Press));
+        press(&mut app, KeyCode::Left);
         assert!(app.settings.voice_volume < 0.5);
         // Speak to talk (the recogniser never starts in tests).
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
         assert!(app.settings.speak_to_talk, "off by default; Enter turns speaking to talk on");
-        app.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+        press(&mut app, KeyCode::Enter);
         assert!(!app.settings.speak_to_talk && app.ears.is_none());
+        // Esc: back to the pause menu, then World options.
+        press(&mut app, KeyCode::Esc);
+        assert!(screen_text(&app).contains("Paused"));
+        app.ui.focus = Some(3);
+        press(&mut app, KeyCode::Enter);
+        assert!(screen_text(&app).contains("World options"));
         // A world setting changes the running sim and is kept with the world.
-        for _ in 0..3 {
-            app.on_key(key(KeyCode::Down, KeyEventKind::Press));
-        }
         assert_eq!(app.sim.cfg.difficulty, 0, "peaceful by default");
-        app.on_key(key(KeyCode::Right, KeyEventKind::Press));
+        press(&mut app, KeyCode::Right);
         assert_eq!(app.sim.level().name, "easy");
         assert_eq!(app.db.kv_get("sim.difficulty").as_deref(), Some("1"));
-        app.on_key(key(KeyCode::Down, KeyEventKind::Press));
+        press(&mut app, KeyCode::Down);
         let was = app.sim.cfg.max_creatures;
-        app.on_key(key(KeyCode::Right, KeyEventKind::Press));
+        press(&mut app, KeyCode::Right);
         assert!(app.sim.cfg.max_creatures > was);
         assert_eq!(app.db.kv_get("sim.max_creatures"), Some(app.sim.cfg.max_creatures.to_string()));
-        app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         assert!(app.menu.is_none());
     }
 

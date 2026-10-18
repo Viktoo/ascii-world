@@ -15,6 +15,7 @@ mod model;
 mod net;
 mod noise;
 mod pace;
+mod panorama;
 mod picker;
 mod png;
 mod prompts;
@@ -25,6 +26,7 @@ mod share;
 mod sim;
 mod term;
 mod terrain;
+mod ui;
 mod ground;
 mod settle;
 mod rivers;
@@ -43,7 +45,8 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
 
-  pocket [FILE]                          open the game: FILE, or your last universe
+  pocket                                 open the game (the title: continue, worlds, settings…)
+  pocket FILE                            open the game straight into a world
   pocket list                            start on your worlds (open one, or start a new one)
   pocket new [\"<prompt>\"] [--out FILE] [--difficulty peaceful|easy|normal(default)|hard]
                                          start on the new-world screen: check or edit the
@@ -60,7 +63,7 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
   runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
 
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
-                       [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
+                       [--lift M] [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
   pocket gpubench FILE --at x,z,yawDeg [--px 640x360] [--breakdown]   GPU time for one view, by part
@@ -120,6 +123,7 @@ fn run(args: Vec<String>) -> Result<()> {
             session(Start::New(given), Some(n), flag(&args, "--out").map(PathBuf::from), shot)
         }
         Some("list") | Some("ls") => session(Start::List, None, None, shot),
+        Some("continue") | Some("last") => session(Start::Last, None, None, shot),
         Some("host") => {
             let port = flag(&args, "--port").map(|p| p.parse::<u16>().context("--port takes a number")).transpose()?.unwrap_or(net::PORT);
             let path = match args.get(1).filter(|a| !a.starts_with("--")) {
@@ -144,9 +148,16 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("open") => session(Start::Play(PathBuf::from(args.get(1).context("usage: pocket open FILE")?), false), None, None, shot),
         Some("window") => match args.get(1).filter(|a| !a.starts_with("--")) {
             Some(p) => session(Start::Play(PathBuf::from(p), false), None, None, shot),
-            None => session(Start::Last, None, None, shot),
+            None => session(Start::Title, None, None, shot),
         },
         Some("snapshot") => snapshot(&args[1..]),
+        Some("showcase") => {
+            let path = panorama::showcase().context("couldn't make the showcase world")?;
+            let l = load(&path)?;
+            let (p, yaw) = panorama::vista(&l.snap.terrain);
+            println!("{} --at {:.0},{:.0},{:.0}", path.display(), p.x, p.z, yaw.to_degrees());
+            Ok(())
+        }
         Some("describe") => describe(&args[1..]),
         Some("bench") => bench(&args[1..]),
         Some("selftest") => selftest(),
@@ -157,7 +168,7 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("inspect") => sim::headless::inspect_cli(&args[1..]),
         Some("listen") => audio::listen::cli(&args[1..]),
         Some(p) if !p.starts_with('-') => session(Start::Play(PathBuf::from(p), false), None, None, shot),
-        None | Some("--shot") => session(Start::Last, None, None, shot),
+        None | Some("--shot") => session(Start::Title, None, None, shot),
         Some(other) => bail!("unknown option {other}\n\n{USAGE}"),
     }
 }
@@ -233,11 +244,14 @@ fn load_db(db: Arc<db::Db>, quick: bool) -> Result<Loaded> {
 
 /// Where a session starts.
 enum Start {
+    /// The title screen.
+    Title,
     /// The last world played, or the new-world screen the first time.
     Last,
     List,
     New(Option<String>),
-    Create(String),
+    /// A new world: its prompt and difficulty (an index into the levels).
+    Create(String, Option<usize>),
     Play(PathBuf, bool),
     /// Open a world for others to join, on a port, with a code; over the
     /// internet too (ngrok) when asked.
@@ -268,22 +282,24 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                 Some(p) => Start::Play(p, false),
                 None => Start::New(None),
             },
-            Start::List => match picker::pick(&mut win, note.take()) {
-                picker::Choice::Open(p) => Start::Play(p, false),
-                picker::Choice::New(prompt) => Start::Create(prompt),
-                picker::Choice::Host(p, internet) => Start::Host(p, net::PORT, net::new_code(), internet),
-                picker::Choice::Join(addr, code) => Start::Join(addr, code),
-                picker::Choice::Quit => break,
-            },
-            Start::New(given) => match picker::compose(&mut win, given.as_deref()) {
-                picker::Composed::Prompt(p) => Start::Create(p),
-                picker::Composed::Back => Start::List,
-                picker::Composed::Quit => break,
-            },
-            Start::Create(prompt) => {
+            Start::Title | Start::List | Start::New(_) => {
+                let entry = match next {
+                    Start::List => ui::screens::Entry::Worlds,
+                    Start::New(given) => ui::screens::Entry::New(given),
+                    _ => ui::screens::Entry::Title,
+                };
+                match ui::screens::menus(&mut win, entry, note.take()) {
+                    ui::screens::Choice::Open(p) => Start::Play(p, false),
+                    ui::screens::Choice::New(prompt, d) => Start::Create(prompt, Some(d)),
+                    ui::screens::Choice::Host(p, internet) => Start::Host(p, net::PORT, net::new_code(), internet),
+                    ui::screens::Choice::Join(addr, code) => Start::Join(addr, code),
+                    ui::screens::Choice::Quit => break,
+                }
+            }
+            Start::Create(prompt, d) => {
                 let path = out.clone().unwrap_or_else(|| default_path(&prompt));
                 create_universe(&path, &prompt)?;
-                if let Some(d) = difficulty {
+                if let Some(d) = d.or(difficulty) {
                     db::Db::open(&path)?.kv_set("sim.difficulty", &d.to_string())?;
                 }
                 Start::Play(path, true)
@@ -291,27 +307,27 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
             Start::Play(path, fresh) => match play(&mut win, &path, fresh, remember, None, &stop)? {
                 (true, why) => {
                     note = why;
-                    Start::List
+                    Start::Title
                 }
                 (false, _) => break,
             },
             Start::Host(path, port, code, internet) => match play(&mut win, &path, false, remember, Some((port, code, internet)), &stop)? {
                 (true, why) => {
                     note = why;
-                    Start::List
+                    Start::Title
                 }
                 (false, _) => break,
             },
             Start::Join(addr, code) => match join(&mut win, &addr, &code, &stop) {
                 Ok((true, why)) => {
                     note = why;
-                    Start::List
+                    Start::Title
                 }
                 Ok((false, _)) => break,
                 Err(e) => {
                     log::info(format!("joining {addr}: {e:#}"));
                     note = Some(format!("Couldn't join: {e}"));
-                    Start::List
+                    Start::Title
                 }
             },
         };
@@ -361,6 +377,7 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
         together,
         seed: None,
     });
+    app.path = Some(path.clone());
     app.start_loading();
     let r = window::play(win, &mut app, stop);
     app.shutdown();
@@ -578,6 +595,9 @@ fn snapshot(args: &[String]) -> Result<()> {
     let mut cam = camera_at(&l.snap, x, z, yaw);
     if let Some(p) = flag(args, "--pitch").and_then(|p| p.parse::<f32>().ok()) {
         cam.pitch = p.to_radians();
+    }
+    if let Some(m) = flag(args, "--lift").and_then(|m| m.parse::<f32>().ok()) {
+        cam.pos.y += m;
     }
     let png_out = flag(args, "--png");
     // Quadrant cells: 2×2 pixels each. A PNG gets square pixels at the same detail.

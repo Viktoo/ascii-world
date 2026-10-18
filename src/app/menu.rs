@@ -1,67 +1,46 @@
-//! The settings screen (Esc or F10 in walk mode): budget, display, this
-//! world's life, and the keys. Changes take effect at once and are saved.
-//! Its second page (2, or F3 in walk mode) lists this world's achievements,
-//! its third (3) everything made in it (see `creations`).
+//! The pause menu (Esc): back to the game, achievements, creations, this
+//! world's options, the settings (see `ui::settings`), and the ways out.
+//! All buttons; the keys work them too.
 
 use super::{ACCENT, App, DIM, TEXT};
+use crate::ui::{Kind, R};
 use crate::achievements::{self, Tier};
-use crate::settings;
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub(super) const BG: [u8; 3] = [16, 18, 26];
-pub(super) const SEL_BG: [u8; 3] = [48, 52, 72];
 pub(super) const HEAD: [u8; 3] = [150, 170, 220];
 
-const BUDGETS: &[f64] = &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 0.0];
-const FPS: &[f64] = &[15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 144.0, 240.0];
-const RADII: &[f64] = &[0.0, 1.0, 2.0, 3.0, 4.0];
 const CREATURES: &[f64] = &[6.0, 12.0, 24.0, 48.0, 96.0, 200.0];
 const LIFE: &[f64] = &[0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
-const VOLUMES: &[f64] = &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
 
+/// Which page of the pause menu is open.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Row {
-    Budget,
-    Spent,
+pub enum Page {
+    Pause,
+    Settings,
+    World,
     Details,
-    Fps,
-    Shadows,
-    Detail,
-    Blend,
-    Sound,
-    Volume,
-    Voices,
-    VoiceVolume,
-    Speak,
-    Difficulty,
-    Radius,
-    ShowWork,
-    Creatures,
-    LifeSpeed,
-    Hunting,
-    Beings,
-    GuestBudget,
-    Name,
-    Updates,
-    Worlds,
-    Quit,
+    Achievements,
+    Creations,
+    /// Opening this world to friends: on this network, or for anyone.
+    Open,
+    /// Hosting: the invite to give, who is here.
+    Invite,
 }
 
-/// What a guest may spend of the host's LLM per session (0: nothing).
-const GUEST_BUDGETS: &[f64] = &[0.0, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
-
-const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Speak, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::GuestBudget, Row::Name, Row::Updates, Row::Worlds, Row::Quit];
-
 pub struct Menu {
-    sel: usize,
+    pub page: Page,
     /// The spend details page: this world's total and the latest calls.
     details: Option<(f64, Vec<(f64, String, f64)>)>,
-    /// The achievements page instead of the settings.
-    achievements: bool,
-    /// The chosen achievement on that page.
+    /// The chosen achievement on that page, and how far it is scrolled.
     ach_sel: usize,
-    /// The creations page instead, when open.
+    ach_scroll: f32,
+    /// The creations page, when open.
     pub creations: Option<super::creations::Book>,
+    settings: crate::ui::settings::Page,
+    /// The page just changed (the controls start over).
+    fresh: bool,
+    /// Why hosting couldn't start.
+    open_err: Option<String>,
 }
 
 /// A medal: more ornate as the challenge grows.
@@ -90,12 +69,6 @@ pub fn tier_name(t: Tier) -> &'static str {
         Tier::Gold => "gold",
         Tier::Diamond => "diamond",
     }
-}
-
-/// The next value along `list` from the one nearest `cur`.
-fn step(list: &[f64], cur: f64, dir: i32) -> f64 {
-    let i = list.iter().enumerate().min_by(|a, b| (a.1 - cur).abs().total_cmp(&(b.1 - cur).abs())).map(|x| x.0).unwrap_or(0);
-    list[(i as i32 + dir).clamp(0, list.len() as i32 - 1) as usize]
 }
 
 /// What a paid call was for, in plain words.
@@ -129,173 +102,420 @@ impl App {
         self.open_menu(false);
     }
 
-    /// Open the settings (or its achievements page), or close it.
+    /// Open the pause menu (or its achievements page), or close it.
     pub(super) fn open_menu(&mut self, achievements: bool) {
         self.menu = match self.menu {
             Some(_) => None,
-            None => Some(Menu { sel: 0, details: None, achievements, ach_sel: 0, creations: None }),
+            None => Some(Menu { page: if achievements { Page::Achievements } else { Page::Pause }, details: None, ach_sel: 0, ach_scroll: 0.0, creations: None, settings: Default::default(), fresh: false, open_err: None }),
         };
         if self.log_view == 2 {
             self.set_log_view(0);
         }
         self.keys.down.clear();
+        self.ui.reset();
+        self.ui.focus = Some(first_focus(if achievements { Page::Achievements } else { Page::Pause }));
         self.dirty = true;
+    }
+
+    pub(super) fn menu_page(&mut self, p: Page) {
+        if p == Page::Creations {
+            self.open_creations();
+        }
+        if let Some(m) = self.menu.as_mut() {
+            m.page = p;
+            m.fresh = true;
+        }
+        self.ui.reset();
+        self.ui.focus = Some(first_focus(p));
+        self.dirty = true;
+    }
+
+    /// The pointer moved (in cells): menus follow it.
+    pub fn pointer(&mut self, x: f32, y: f32) {
+        self.ui.feed(&crate::window::Ev::Mouse(x, y));
+        if self.menu.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// The pointer is over a button of the menu (show a hand).
+    pub fn pointer_hand(&self) -> bool {
+        self.menu.is_some() && self.ui.hot
+    }
+
+    pub fn click(&mut self, x: f32, y: f32) {
+        self.ui.press_at(x, y);
+        self.dirty = true;
+    }
+
+    pub fn scroll(&mut self, d: f32) {
+        if self.menu.is_some() {
+            self.ui.feed(&crate::window::Ev::Scroll(d));
+            self.dirty = true;
+        } else {
+            // The journal scrolls back with the wheel.
+            let rows = d.round() as i32;
+            self.log_scroll = (self.log_scroll as i32 + rows).max(0) as usize;
+            self.dirty = true;
+        }
     }
 
     pub(super) fn menu_key(&mut self, k: KeyEvent) {
         let Some(m) = self.menu.as_mut() else { return };
         self.dirty = true;
-        // Quit lives here, not in walk mode, so it is never hit by accident.
-        if matches!(k.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+        match m.page {
+            Page::Achievements | Page::Creations if matches!(k.code, KeyCode::F(3)) => self.menu = None,
+            Page::Creations if k.code == KeyCode::Tab => self.creations_key(k),
+            _ if k.code == KeyCode::F(10) => self.menu = None,
+            _ => self.ui.key(k),
+        }
+    }
+
+    /// What the settings screen shows of the game around it.
+    fn live(&self) -> crate::ui::settings::Live {
+        let s = &self.settings;
+        let note = |v: String| (v != "on" && v != "off").then(|| cap(&v));
+        crate::ui::settings::Live {
+            spent: self.llm.is_some().then(|| self.spent()),
+            sound_note: (s.sound && self.sound.is_none() && !cfg!(test)).then(|| "No sound device found.".into()),
+            voices_note: note(self.voice_status()),
+            ears_note: if s.speak_to_talk { Some(cap(&self.ears_status())) } else { None },
+            detail_now: self.win.is_some().then(|| self.detail_now()),
+            together: self.together.is_some(),
+        }
+    }
+
+    /// A setting of this world only (kept in its kv table, like `sim.<key>`).
+    fn set_world(&mut self, key: &str, v: f64) {
+        self.sim.cfg.set(key, v as f32);
+        let _ = self.db.kv_set(&format!("sim.{key}"), &v.to_string());
+    }
+
+    /// The menu over the top `vh` rows (`over_world`: the world shows there, dimmed).
+    pub(super) fn draw_menu(&mut self, w: u16, vh: u16, over_world: bool) {
+        let Some(page) = self.menu.as_ref().map(|m| m.page) else { return };
+        // The world, dimmed, behind the buttons; its names and marks hidden.
+        self.screen.labels.clear();
+        if self.win.is_some() && over_world {
+            self.screen.fill_world(vh);
+        } else {
+            for y in 0..vh {
+                for x in 0..w {
+                    self.screen.over(x, y, |c| crate::term::Cell { ch: ' ', ..c });
+                }
+            }
+        }
+        let decor = self.screen.decor.len();
+        self.screen.deco(crate::term::Deco { x: 0.0, y: 0.0, w: w as f32, h: vh as f32, fill: [6, 7, 12], alpha: 0.55, radius: 0.0, shadow: false, border: None });
+        let mut ui = std::mem::take(&mut self.ui);
+        ui.begin();
+        let mut s = std::mem::replace(&mut self.screen, crate::term::Screen::new(1, 1, true));
+        match page {
+            Page::Pause => self.pause(&mut ui, &mut s, w, vh),
+            Page::Settings => {
+                let pw = 90.0f32.min(w as f32 - 2.0);
+                let area = R::new((w as f32 - pw) * 0.5, 1.0, pw, vh as f32 - 2.0);
+                let live = self.live();
+                let mut st = self.settings.clone();
+                let out = self.menu.as_mut().map(|m| m.settings.draw(&mut ui, &mut s, area, &mut st, &live)).unwrap_or_default();
+                self.settings = st;
+                self.settings_changed(out);
+                if out.details {
+                    let d = (self.db.usage_total(), self.db.usage_recent(10));
+                    if let Some(m) = self.menu.as_mut() {
+                        m.details = Some(d);
+                    }
+                    self.menu_page(Page::Details);
+                } else if out.done {
+                    self.menu_page(Page::Pause);
+                }
+            }
+            Page::World => self.world_page(&mut ui, &mut s, w, vh),
+            Page::Open => self.open_page(&mut ui, &mut s, w, vh),
+            Page::Achievements => self.achievements_page(&mut ui, &mut s, w, vh),
+            Page::Creations => self.creations_page(&mut ui, &mut s, w, vh),
+            Page::Invite => self.invite_page(&mut ui, &mut s, w, vh),
+            Page::Details => self.details_page(&mut ui, &mut s, w, vh),
+        }
+        ui.end();
+        if ui.acted {
+            self.dirty = true;
+        }
+        self.screen = s;
+        // A new page starts with the keys on its first control, drawn at once.
+        let fresh = self.menu.as_ref().is_some_and(|m| m.fresh);
+        if fresh {
+            ui.reset();
+            ui.focus = self.menu.as_ref().map(|m| first_focus(m.page));
+            if let Some(m) = self.menu.as_mut() {
+                m.fresh = false;
+            }
+        }
+        self.ui = ui;
+        if fresh && self.menu.is_some() {
+            self.screen.decor.truncate(decor);
+            self.screen.labels.truncate(0);
+            self.screen.over_decor.clear();
+            self.screen.over_labels.clear();
+            self.draw_menu(w, vh, over_world);
+        }
+    }
+
+    fn pause(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        let (w, h) = (w as f32, vh as f32);
+        let cx = w * 0.5;
+        let bw = 36.0f32.min(w - 4.0);
+        let x = cx - bw * 0.5;
+        let name = self.db.universe().ok().and_then(|u| serde_json::from_str::<serde_json::Value>(&u.look_json).ok()).and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string)).unwrap_or_default();
+        let bh = 2.2;
+        let gap = 0.7;
+        let hosting = matches!(self.together, Some(super::together::Together::Host(_)));
+        let can_open = self.together.is_none() && self.path.is_some() && self.win.is_some();
+        let n = 6.0 + (hosting || can_open) as i32 as f32;
+        let mut y = ((h - (n * (bh + gap) + 4.0)) * 0.5).max(0.5);
+        s.title(cx, y + 1.4, "Paused", 2.8, ACCENT);
+        if !name.is_empty() {
+            crate::ui::note(s, cx, y + 3.3, &name, DIM);
+        }
+        y += 4.6;
+        let row = |y: f32| R::new(x, y, bw, bh);
+        if ui.button(s, row(y), "Back to game", Kind::Primary) || ui.back() {
+            self.menu = None;
+            self.dirty = true;
+            return;
+        }
+        y += bh + gap;
+        let two = row(y).cols(2, 0.7);
+        if ui.button(s, two[0], &format!("Achievements {}/{}", self.achievements.count(), achievements::ALL.len()), Kind::Normal) {
+            return self.menu_page(Page::Achievements);
+        }
+        if ui.button(s, two[1], "Creations", Kind::Normal) {
+            return self.menu_page(Page::Creations);
+        }
+        y += bh + gap;
+        let two = row(y).cols(2, 0.7);
+        if ui.button(s, two[0], "World options", Kind::Normal) {
+            return self.menu_page(Page::World);
+        }
+        if ui.button(s, two[1], "Settings", Kind::Normal) {
+            return self.menu_page(Page::Settings);
+        }
+        y += bh + gap;
+        if hosting {
+            let n = match &self.together {
+                Some(super::together::Together::Host(h)) => h.guests(),
+                _ => 0,
+            };
+            let label = if n == 0 { "Invite friends".to_string() } else { format!("Invite friends · {n} here") };
+            if ui.button(s, row(y), &label, Kind::Normal) {
+                return self.menu_page(Page::Invite);
+            }
+            y += bh + gap;
+        } else if can_open {
+            if ui.button(s, row(y), "Open to friends", Kind::Normal) {
+                return self.menu_page(Page::Open);
+            }
+            y += bh + gap;
+        }
+        let quit_label = if self.is_guest() { "Leave and go to title" } else { "Save and quit to title" };
+        if ui.button(s, row(y), quit_label, Kind::Normal) {
+            self.to_worlds = true;
             self.quit = true;
             return;
         }
-        if m.details.is_some() {
-            if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Left | KeyCode::Backspace) {
-                m.details = None;
-            }
-            return;
+        y += bh + gap;
+        if ui.button(s, row(y), "Quit game", Kind::Quiet) || ui.letter('q') {
+            self.quit = true;
         }
-        match k.code {
-            KeyCode::Char('1') => {
-                m.achievements = false;
-                m.creations = None;
-            }
-            KeyCode::Char('2') => {
-                m.achievements = true;
-                m.creations = None;
-            }
-            KeyCode::Char('3') => return self.open_creations(),
-            _ => {}
+    }
+
+    fn world_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        use crate::ui::settings::{ROW, Rows, step};
+        let pw = 76.0f32.min(w as f32 - 2.0);
+        let area = R::new((w as f32 - pw) * 0.5, 1.0, pw, (vh as f32 - 2.0).min(22.0));
+        s.deco(crate::term::Deco::panel(area.x, area.y, area.w, area.h, crate::ui::PANEL).border(crate::ui::PANEL_EDGE));
+        s.labels.push(crate::ui::left(area.x + 2.0, area.y + 2.0, "World options", 1.8, ACCENT, crate::term::Face::Title));
+        let mut rows = Rows { x: area.x + 1.0, y: area.y + 3.8, w: area.w - 2.0, top: area.y + 3.0, bottom: area.y + area.h - 3.0 };
+        let levels = crate::sim::night::LEVELS;
+        let r = rows.next(ROW);
+        let d = ui.choice(s, r, "Difficulty", &cap(self.sim.level().name), false);
+        if d != 0 {
+            let v = (self.sim.cfg.difficulty as i32 + d).clamp(0, levels.len() as i32 - 1);
+            self.set_world("difficulty", v as f64);
         }
-        if m.creations.is_some() {
-            if matches!(k.code, KeyCode::Esc | KeyCode::F(10) | KeyCode::F(3)) {
-                self.menu = None;
-            } else {
-                self.creations_key(k);
-            }
-            return;
+        let r = rows.next(ROW);
+        let d = ui.choice(s, r, "Most of one kind of creature", &format!("{} a region", self.sim.cfg.max_creatures), false);
+        if d != 0 {
+            self.set_world("max_creatures", step(CREATURES, self.sim.cfg.max_creatures as f64, d));
         }
-        if m.achievements {
-            let n = achievements::ALL.len();
-            match k.code {
-                KeyCode::Esc | KeyCode::F(10) | KeyCode::F(3) => self.menu = None,
-                KeyCode::Up => m.ach_sel = (m.ach_sel + n - 1) % n,
-                KeyCode::Down | KeyCode::Tab => m.ach_sel = (m.ach_sel + 1) % n,
-                KeyCode::PageUp => m.ach_sel = m.ach_sel.saturating_sub(8),
-                KeyCode::PageDown => m.ach_sel = (m.ach_sel + 8).min(n - 1),
-                _ => {}
-            }
-            return;
+        let r = rows.next(ROW);
+        let d = ui.choice(s, r, "How fast lives go", &format!("×{}", self.sim.cfg.life_speed), false);
+        if d != 0 {
+            self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, d));
         }
-        let rows = self.rows();
-        let Some(m) = self.menu.as_mut() else { return };
-        let row = rows[m.sel.min(rows.len() - 1)];
-        match k.code {
-            KeyCode::Esc | KeyCode::F(10) => self.menu = None,
-            KeyCode::Up => m.sel = (m.sel + rows.len() - 1) % rows.len(),
-            KeyCode::Down | KeyCode::Tab => m.sel = (m.sel + 1) % rows.len(),
-            KeyCode::Left => self.change(row, -1),
-            KeyCode::Right => self.change(row, 1),
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                match row {
-                    Row::Spent => self.change(row, 0),
-                    Row::Details => {
-                        let d = (self.db.usage_total(), self.db.usage_recent(10));
-                        if let Some(m) = self.menu.as_mut() {
-                            m.details = Some(d);
-                        }
+        let r = rows.next(ROW);
+        let mut v = self.sim.cfg.hunting;
+        if ui.toggle(s, r, "Hunters kill their prey", &mut v, false) {
+            self.set_world("hunting", v as i32 as f64);
+        }
+        let r = rows.next(ROW);
+        let mut v = self.sim.cfg.create_beings;
+        if ui.toggle(s, r, "Actions can bring new beings", &mut v, false) {
+            self.set_world("create_beings", v as i32 as f64);
+        }
+        let done = R::new(area.x + area.w - 14.0, area.y + area.h - 2.8, 12.0, 2.0);
+        if ui.button(s, done, "Done", Kind::Primary) || ui.back() {
+            self.menu_page(Page::Pause);
+        }
+    }
+
+    /// A panel in the view, `pw` wide and `ph` tall at most, titled; the rect.
+    pub(super) fn page_panel(s: &mut crate::term::Screen, w: u16, vh: u16, pw: f32, ph: f32, title: &str) -> R {
+        let pw = pw.min(w as f32 - 2.0);
+        let ph = ph.min(vh as f32 - 2.0);
+        let area = R::new((w as f32 - pw) * 0.5, ((vh as f32 - ph) * 0.5).max(1.0), pw, ph);
+        s.deco(crate::term::Deco::panel(area.x, area.y, area.w, area.h, crate::ui::PANEL).border(crate::ui::PANEL_EDGE));
+        s.labels.push(crate::ui::left(area.x + 2.0, area.y + 2.0, title, 1.8, ACCENT, crate::term::Face::Title));
+        area
+    }
+
+    /// Words wrapped in the panel; the row after them.
+    fn page_para(s: &mut crate::term::Screen, area: R, mut y: f32, text: &str, color: [u8; 3]) -> f32 {
+        for l in crate::term::wrap(text, ((area.w - 4.0) / 0.8) as usize) {
+            s.labels.push(crate::ui::left(area.x + 2.0, y + 0.5, &l, 0.95, color, crate::term::Face::Body));
+            y += 1.15;
+        }
+        y
+    }
+
+    fn open_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        let area = Self::page_panel(s, w, vh, 70.0, 20.0, "Open to friends");
+        let mut y = area.y + 3.8;
+        y = Self::page_para(s, area, y, "Friends join this world and play in it with you, right now: you keep playing while they arrive.", TEXT) + 0.5;
+        y = Self::page_para(s, area, y, "What they say and make uses your AI, up to what you allow each guest in Settings → Together. They need no key and no copy of the world.", DIM) + 0.5;
+        let ngrok = crate::net::ngrok::find().is_some();
+        if !ngrok {
+            y = Self::page_para(s, area, y, "For friends outside this network, install ngrok (ngrok.com/download) and sign in once.", crate::ui::FAINT);
+        }
+        if let Some(e) = self.menu.as_ref().and_then(|m| m.open_err.clone()) {
+            Self::page_para(s, area, y + 0.4, &format!("Couldn't open it: {e}"), [240, 150, 130]);
+        }
+        let row = R::new(area.x + 2.0, area.y + area.h - 5.6, area.w - 4.0, 2.1).cols(2, 0.8);
+        let mut internet = None;
+        if ui.button(s, row[0], "On this network", Kind::Primary) {
+            internet = Some(false);
+        }
+        if ui.button_on(s, row[1], "For anyone (ngrok)", Kind::Normal, ngrok) {
+            internet = Some(true);
+        }
+        let back = R::new(area.x + area.w - 14.0, area.y + area.h - 3.0, 12.0, 2.0);
+        if ui.button(s, back, "Back", Kind::Quiet) || ui.back() {
+            return self.menu_page(Page::Pause);
+        }
+        if let Some(internet) = internet {
+            match self.open_to_friends(internet) {
+                Ok(()) => self.menu_page(Page::Invite),
+                Err(e) => {
+                    if let Some(m) = self.menu.as_mut() {
+                        m.open_err = Some(format!("{e:#}"));
                     }
-                    Row::Shadows | Row::Blend | Row::Sound | Row::Voices | Row::Speak | Row::ShowWork | Row::Hunting | Row::Beings | Row::Updates => self.change(row, 1),
-                    Row::Quit => self.quit = true,
-                    Row::Worlds => {
-                        self.to_worlds = true;
-                        self.quit = true;
-                    }
-                    _ => {}
                 }
             }
-            _ => {}
         }
     }
 
-    /// The rows shown: window detail only in a window.
-    fn rows(&self) -> Vec<Row> {
-        // Playing together's rows while playing together.
-        ROWS.iter().copied().filter(|r| (!matches!(r, Row::Detail | Row::Blend) || self.win.is_some()) && (!matches!(r, Row::GuestBudget | Row::Name) || self.together.is_some())).collect()
+    /// Start hosting this world as it is being played.
+    fn open_to_friends(&mut self, internet: bool) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let path = self.path.clone().context("this world has no file to share")?;
+        let (me, _) = self.settings.player();
+        let host = crate::net::host::Host::start(crate::net::PORT, crate::net::new_code())?;
+        let name = if self.snap.look.name.is_empty() { "this world".to_string() } else { self.snap.look.name.clone() };
+        self.together = Some(super::together::Together::Host(super::together::Hosting::new(host, path, name, me, internet)));
+        self.say(None, "Open to friends: they can join now (Esc → Invite friends for the invite).", ACCENT);
+        Ok(())
     }
 
-    /// Whether an environment variable fixes this row for the run.
-    fn locked(row: Row) -> bool {
-        match row {
-            Row::Budget => settings::env_budget(),
-            Row::Fps => settings::env_fps(),
-            Row::Shadows => settings::env_shadows(),
-            Row::Sound => settings::env_sound(),
-            Row::Voices => settings::env_voices(),
-            Row::Speak => settings::env_mic(),
-            Row::Blend => settings::env_blend(),
-            Row::Radius => settings::env_region_radius(),
-            _ => false,
+    fn invite_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        let Some(super::together::Together::Host(h)) = &self.together else { return self.menu_page(Page::Pause) };
+        let (addr, code, names) = (h.address(), h.host.code.clone(), h.names());
+        let area = Self::page_panel(s, w, vh, 70.0, 22.0, "Invite friends");
+        let mut y = area.y + 3.8;
+        y = Self::page_para(s, area, y, "Send them this invite. In Infinite Pocket they choose Play together → Join with an invite, and paste it. On this network your game also shows there by itself.", DIM) + 0.8;
+        let card = R::new(area.x + 2.0, y, area.w - 4.0, 4.4);
+        s.deco(crate::term::Deco::panel(card.x, card.y, card.w, card.h, [18, 20, 28]).border(crate::ui::PANEL_EDGE));
+        s.labels.push(crate::ui::left(card.x + 1.5, card.y + 1.2, "Address", 0.85, DIM, crate::term::Face::Body));
+        s.labels.push(crate::ui::left(card.x + 12.0, card.y + 1.2, &addr, 1.0, TEXT, crate::term::Face::Bold));
+        s.labels.push(crate::ui::left(card.x + 1.5, card.y + 3.0, "Code", 0.85, DIM, crate::term::Face::Body));
+        s.labels.push(crate::ui::left(card.x + 12.0, card.y + 3.0, &code, 1.3, ACCENT, crate::term::Face::Bold));
+        y += 5.4;
+        let who = if names.is_empty() { "Nobody has joined yet.".to_string() } else { format!("Here with you: {}.", names.join(", ")) };
+        Self::page_para(s, area, y, &who, TEXT);
+        let row = R::new(area.x + 2.0, area.y + area.h - 3.0, area.w - 4.0, 2.1).cols(3, 0.8);
+        if ui.button(s, row[0], "Stop hosting", Kind::Danger) {
+            self.together_end();
+            self.say(None, "Closed to friends: it's just you again.", DIM);
+            return self.menu_page(Page::Pause);
+        }
+        if ui.button(s, row[1], "Back", Kind::Quiet) || ui.back() {
+            return self.menu_page(Page::Pause);
+        }
+        if ui.button(s, row[2], "Copy invite", Kind::Primary) {
+            self.copy_invite();
         }
     }
 
-    /// Change a row by one step (`dir` ±1; 0 for an action like reset).
-    fn change(&mut self, row: Row, dir: i32) {
-        if Self::locked(row) {
-            return;
+    fn details_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        let Some((total, recent)) = self.menu.as_ref().and_then(|m| m.details.clone()) else { return self.menu_page(Page::Settings) };
+        let pw = 76.0f32.min(w as f32 - 2.0);
+        let area = R::new((w as f32 - pw) * 0.5, 1.0, pw, (vh as f32 - 2.0).min(24.0));
+        s.deco(crate::term::Deco::panel(area.x, area.y, area.w, area.h, crate::ui::PANEL).border(crate::ui::PANEL_EDGE));
+        s.labels.push(crate::ui::left(area.x + 2.0, area.y + 2.0, "What the AI cost", 1.8, ACCENT, crate::term::Face::Title));
+        let mut y = area.y + 4.0;
+        let line = |s: &mut crate::term::Screen, y: f32, a: &str, b: &str, c: [u8; 3]| {
+            s.labels.push(crate::ui::left(area.x + 2.5, y, a, 0.95, c, crate::term::Face::Body));
+            s.labels.push(crate::ui::left(area.x + area.w - 14.0, y, b, 0.95, c, crate::term::Face::Body));
+        };
+        let budget = self.settings.budget().map(|b| format!(" of ${b:.2}")).unwrap_or_default();
+        line(s, y, "This session", &format!("${:.2}{budget}", self.spent()), TEXT);
+        y += 1.2;
+        line(s, y, "This world, all time", &format!("${total:.2}"), TEXT);
+        y += 2.0;
+        let now = crate::db::now();
+        if recent.is_empty() {
+            line(s, y, "No calls yet.", "", DIM);
         }
-        let s = &mut self.settings;
-        match row {
-            Row::Budget => {
-                // "No limit" sits at the top of the list.
-                let cur = if s.budget_usd <= 0.0 { 0.0 } else { s.budget_usd };
-                let i = if cur == 0.0 { BUDGETS.len() as f64 - 1.0 } else { BUDGETS.iter().position(|b| (*b - cur).abs() < 1e-9).map(|i| i as f64).unwrap_or(2.0) };
-                let n = (i as i32 + dir).clamp(0, BUDGETS.len() as i32 - 1) as usize;
-                s.budget_usd = BUDGETS[n];
+        for (t, p, c) in &recent {
+            if y > area.y + area.h - 4.0 {
+                break;
             }
-            Row::Spent => {
-                if let Some(l) = &self.llm {
-                    *l.spent.lock() = 0.0;
-                }
-            }
-            Row::Fps => s.fps = step(FPS, s.fps as f64, dir) as f32,
-            Row::Shadows => s.shadows = !s.shadows,
-            Row::Blend => s.blend_frames = !s.blend_frames,
-            Row::Detail => {
-                let i = settings::DETAILS.iter().position(|d| *d == s.window_detail).unwrap_or(1) as i32;
-                s.window_detail = settings::DETAILS[(i + dir).clamp(0, settings::DETAILS.len() as i32 - 1) as usize];
-            }
-            Row::Sound => s.sound = !s.sound,
-            Row::Voices => s.voices = !s.voices,
-            Row::Speak => s.speak_to_talk = !s.speak_to_talk,
-            Row::Volume => s.volume = step(VOLUMES, s.volume as f64, dir) as f32,
-            Row::VoiceVolume => s.voice_volume = step(VOLUMES, s.voice_volume as f64, dir) as f32,
-            Row::Radius => s.region_radius = step(RADII, s.region_radius as f64, dir) as i32,
-            Row::ShowWork => s.show_work = s.show_work.next(dir),
-            Row::Difficulty => {
-                let d = (self.sim.cfg.difficulty as i32 + dir).clamp(0, 3);
-                self.set_world("difficulty", d as f64);
-            }
-            Row::Creatures => self.set_world("max_creatures", step(CREATURES, self.sim.cfg.max_creatures as f64, dir)),
-            Row::LifeSpeed => self.set_world("life_speed", step(LIFE, self.sim.cfg.life_speed as f64, dir)),
-            Row::Hunting => self.set_world("hunting", if self.sim.cfg.hunting { 0.0 } else { 1.0 }),
-            Row::Beings => self.set_world("create_beings", if self.sim.cfg.create_beings { 0.0 } else { 1.0 }),
-            Row::GuestBudget => s.guest_budget_usd = step(GUEST_BUDGETS, s.guest_budget_usd, dir),
-            Row::Updates => s.check_updates = !s.check_updates,
-            Row::Details | Row::Worlds | Row::Quit | Row::Name => {}
+            line(s, y, &format!("{} · {}", cap(purpose(p)), ago(now - t)), &format!("${c:.3}"), DIM);
+            y += 1.15;
         }
-        if matches!(row, Row::GuestBudget | Row::Updates | Row::Budget | Row::Fps | Row::Shadows | Row::Detail | Row::Blend | Row::Sound | Row::Volume | Row::Voices | Row::VoiceVolume | Row::Speak | Row::Radius | Row::ShowWork) {
-            self.settings.save();
+        let done = R::new(area.x + area.w - 14.0, area.y + area.h - 2.8, 12.0, 2.0);
+        if ui.button(s, done, "Back", Kind::Primary) || ui.back() {
+            self.menu_page(Page::Settings);
         }
-        if row == Row::Speak {
+    }
+
+    /// Act on settings just changed: sound, the mic, the budget.
+    fn settings_changed(&mut self, out: crate::ui::settings::Out) {
+        if out.reset_spent {
+            if let Some(l) = &self.llm {
+                *l.spent.lock() = 0.0;
+            }
+        }
+        if out.ears {
             self.sync_ears();
             if self.settings.speak_to_talk {
                 self.ask_mic();
             }
         }
-        if matches!(row, Row::Sound | Row::Volume | Row::Voices) {
+        if out.sound {
             self.sync_sound();
+        }
+        if out.ai {
+            self.say(None, "The AI settings take effect the next time this world opens.", DIM);
         }
         if let Some(l) = &self.llm {
             *l.budget.lock() = self.settings.budget();
@@ -306,252 +526,130 @@ impl App {
         }
     }
 
-    /// A setting of this world only (kept in its kv table, like `sim.<key>`).
-    fn set_world(&mut self, key: &str, v: f64) {
-        self.sim.cfg.set(key, v as f32);
-        let _ = self.db.kv_set(&format!("sim.{key}"), &v.to_string());
-    }
-
-    fn row_text(&self, row: Row) -> (String, String) {
-        let s = &self.settings;
-        let on = |b: bool| if b { "on" } else { "off" }.to_string();
-        let (label, value) = match row {
-            Row::Budget => ("Budget per session", s.budget().map(|b| format!("${b:.2}")).unwrap_or_else(|| "no limit".into())),
-            Row::Spent => ("Spent this session", format!("${:.2}   Enter: reset to $0", self.spent())),
-            Row::Details => ("Spend details", "Enter →".into()),
-            Row::Fps => ("Frame rate cap", format!("{:.0} fps", s.fps)),
-            Row::Shadows => ("Shadows", on(s.shadows)),
-            Row::Detail if s.window_detail == settings::AUTO => ("Window detail", format!("auto: {}", self.detail_now())),
-            Row::Detail => ("Window detail", format!("{}: {}", s.window_detail_name(), self.detail_now())),
-            Row::Blend => ("Blend frames for detail", on(s.blend_frames)),
-            Row::Sound => ("Sound", if s.sound && self.sound.is_none() && !cfg!(test) { "on (no output device)".into() } else { on(s.sound) }),
-            Row::Volume => ("Volume", format!("{:.0}%", s.volume * 100.0)),
-            Row::Voices => ("Voices", self.voice_status()),
-            Row::VoiceVolume => ("Voice volume", format!("{:.0}%", s.voice_volume * 100.0)),
-            Row::Speak => ("Speak to talk", self.ears_status()),
-            Row::Radius => ("World loads around you", format!("{} region{}", s.region_radius, if s.region_radius == 1 { "" } else { "s" })),
-            Row::ShowWork => ("Show work in progress", s.show_work.name().to_string()),
-            Row::Difficulty => ("Difficulty", self.sim.level().name.to_string()),
-            Row::Creatures => ("Most of one kind of creature", format!("{} per region", self.sim.cfg.max_creatures)),
-            Row::LifeSpeed => ("How fast lives go", format!("×{}", self.sim.cfg.life_speed)),
-            Row::Hunting => ("Hunters kill their prey", on(self.sim.cfg.hunting)),
-            Row::Beings => ("Actions can bring new beings", on(self.sim.cfg.create_beings)),
-            Row::GuestBudget => ("Each guest may spend", if s.guest_budget_usd <= 0.0 { "nothing (they walk and look)".into() } else { format!("${:.2} of yours a session", s.guest_budget_usd) }),
-            Row::Name => ("Your name playing together", format!("{}   /name to change", self.settings.clone().player().0)),
-            Row::Updates => ("Tell me of new releases", on(s.check_updates)),
-            Row::Worlds => ("Your worlds", "Enter: open another or make a new one".into()),
-            Row::Quit => ("Quit game", "Enter or q (the world is saved)".into()),
-        };
-        let value = if Self::locked(row) { format!("{value}   (set by env)") } else { value };
-        (label.to_string(), value)
-    }
-
-    pub(super) fn draw_menu(&mut self, w: u16, vh: u16) {
-        let Some(m) = self.menu.as_ref() else { return };
-        let pw = (w as usize).saturating_sub(4).clamp(20, 76);
-        let x0 = (w as usize).saturating_sub(pw) as u16 / 2;
-        let mut lines: Vec<(String, [u8; 3], bool)> = Vec::new();
-        let blank = (String::new(), TEXT, false);
-        let tabs = format!("[1] Settings    [2] Achievements {}/{}    [3] Creations", self.achievements.count(), achievements::ALL.len());
-        if m.creations.is_some() {
-            return self.draw_creations(x0, pw, vh, &tabs);
+    /// The achievements page: every one as a card, by group, with its medal;
+    /// how many are earned at the top. ↑↓ or the wheel move through them.
+    fn achievements_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        use crate::term::{Deco, Face, Label};
+        use crate::ui::{FAINT, left};
+        let total = achievements::ALL.len();
+        let got = self.achievements.count();
+        let area = Self::page_panel(s, w, vh, 96.0, 200.0, "Achievements");
+        // Progress, top right.
+        let bw = 22.0f32.min(area.w * 0.3);
+        let bx = area.x + area.w - bw - 15.0;
+        s.deco(Deco::pill(bx, area.y + 1.8, bw, 0.5, [44, 48, 66]));
+        s.deco(Deco::pill(bx, area.y + 1.8, (bw * got as f32 / total as f32).max(0.5), 0.5, ACCENT));
+        s.labels.push(Label { x: bx + bw * 0.5, y: area.y + 1.0, text: format!("{got} of {total} earned"), size: 0.85, color: DIM, face: Face::Body, center: true });
+        let back = R::new(area.x + area.w - 12.0, area.y + 1.0, 10.0, 1.8);
+        if ui.button(s, back, "Back", Kind::Quiet) || ui.back() {
+            return self.menu_page(Page::Pause);
         }
-        if m.achievements {
-            return self.draw_achievements(x0, pw, vh, &tabs);
-        }
-        if let Some((total, recent)) = &m.details {
-            lines.push(("Spend details".into(), ACCENT, false));
-            lines.push(blank.clone());
-            lines.push((format!("This session            ${:.2}{}", self.spent(), self.settings.budget().map(|b| format!(" of ${b:.2}")).unwrap_or_default()), TEXT, false));
-            lines.push((format!("This world, all time    ${total:.2}"), TEXT, false));
-            lines.push(blank.clone());
-            lines.push(("Latest calls".into(), HEAD, false));
-            if recent.is_empty() {
-                lines.push(("  none yet".into(), DIM, false));
-            }
-            let now = crate::db::now();
-            for (t, p, c) in recent {
-                lines.push((format!("  {:<12} {:<30} ${c:.3}", ago(now - t), purpose(p)), TEXT, false));
-            }
-            lines.push(blank.clone());
-            lines.push(("Esc back".into(), DIM, false));
-        } else {
-            lines.push((tabs, ACCENT, false));
-            for (i, row) in self.rows().iter().enumerate() {
-                match row {
-                    Row::Budget => lines.push(("Spending".into(), HEAD, false)),
-                    Row::Fps => lines.push(("Display".into(), HEAD, false)),
-                    Row::Creatures => lines.push(("This world".into(), HEAD, false)),
-                    Row::GuestBudget => lines.push(("Playing together".into(), HEAD, false)),
-                    Row::Worlds => lines.push(blank.clone()),
-                    _ => {}
+        // The cards: two across when there is room.
+        let cols = if area.w >= 80.0 { 2 } else { 1 };
+        let gap = 0.8;
+        let cw = (area.w - 4.0 - gap * (cols as f32 - 1.0)) / cols as f32;
+        let ch = 3.6;
+        let top = area.y + 4.0;
+        let bottom = area.y + area.h - 1.0;
+        let Some(m) = self.menu.as_mut() else { return };
+        let mut sel = m.ach_sel.min(total - 1);
+        let (_, focused) = ui.list(R::new(area.x, top, area.w, bottom - top), total, &mut sel);
+        // Lay out: a heading per group, then its cards in rows.
+        let mut place = Vec::with_capacity(total);
+        let mut heads = Vec::new();
+        let mut y = 0.0f32;
+        let mut group = "";
+        let mut col = 0;
+        for d in achievements::ALL.iter() {
+            if d.group != group {
+                if col > 0 {
+                    y += ch + gap;
                 }
-                let (label, value) = self.row_text(*row);
-                let sel = i == m.sel;
-                let fg = if Self::locked(*row) { DIM } else if matches!(*row, Row::Quit | Row::Worlds) { ACCENT } else { TEXT };
-                lines.push((format!("{} {label:<30} {value}", if sel { "›" } else { " " }), fg, sel));
+                group = d.group;
+                heads.push((y, group));
+                y += 1.9;
+                col = 0;
             }
-            lines.push(blank.clone());
-            for l in hang("↑↓ choose · ←→ change · Enter select · 2 achievements · 3 creations · q quit · Esc close", pw - 3, 0) {
-                lines.push((l, DIM, false));
-            }
-            lines.push(blank.clone());
-            lines.push((format!("Keys{:>w$}", format!("Infinite Pocket {}", crate::db::build_name()), w = pw.saturating_sub(5)), HEAD, false));
-            for l in [
-                "Walk  W/S move · A/D strafe · ←→ turn · ↑↓ look · click: mouse look",
-                "      Enter talk · / do or make anything · e use · g grab/drop",
-                "      f throw · y/n answer · F1 stats · F2 inspect · F3 achievements",
-                "Log   1 journal (half → full → closed) · Tab filter · PgUp/PgDn scroll back",
-                "Talk  type and Enter · Esc back to walking",
-                "/help lists every / shortcut (/wave, /give, /ride, /undo…)",
-            ] {
-                for l in hang(l, pw - 3, 6) {
-                    lines.push((l, DIM, false));
-                }
+            place.push((area.x + 2.0 + col as f32 * (cw + gap), y));
+            col += 1;
+            if col == cols {
+                col = 0;
+                y += ch + gap;
             }
         }
-        let y0 = (vh as usize).saturating_sub(lines.len() + 2) as u16 / 2;
-        let rows = std::iter::once(blank.clone()).chain(lines).chain(std::iter::once(blank));
-        for (i, (text, fg, sel)) in rows.enumerate() {
-            let y = y0 + i as u16;
-            if y >= vh {
-                break;
+        let len = y + if col > 0 { ch } else { 0.0 };
+        // Scroll: the wheel, and the chosen card kept in view.
+        let view = bottom - top;
+        m.ach_scroll = (m.ach_scroll - ui.wheel * 3.0).clamp(0.0, (len - view).max(0.0));
+        if focused || sel != m.ach_sel {
+            let sy = place[sel].1;
+            if sy < m.ach_scroll {
+                m.ach_scroll = (sy - 2.0).max(0.0);
+            } else if sy + ch > m.ach_scroll + view {
+                m.ach_scroll = sy + ch - view;
             }
-            let t: String = text.chars().take(pw - 3).collect();
-            let s = format!("  {t:<width$} ", width = pw - 3);
-            self.screen.text(x0, y, &s, fg, if sel { SEL_BG } else { BG }, sel);
         }
-        self.dress_panel(x0, y0, pw as u16, vh, 1);
-    }
-
-    /// In a window, the panel the menu rows make gets its look: a rounded
-    /// card with a shadow, tabs as pills (`page` the open one), headings in the
-    /// title face, the chosen row as a pill.
-    pub(super) fn dress_panel(&mut self, x0: u16, y0: u16, pw: u16, vh: u16, page: u8) {
-        use crate::term::{Deco, Face, KEYCAP, KEYCAP_EDGE, Label};
-        if self.win.is_none() {
-            return;
-        }
-        let s = &mut self.screen;
-        let mut y1 = y0;
-        while y1 < vh && s.get(x0, y1).is_some_and(|c| c.bg == BG || c.bg == SEL_BG) {
-            y1 += 1;
-        }
-        s.deco(Deco::panel(x0 as f32, y0 as f32, pw as f32, (y1 - y0) as f32, BG).border([44, 48, 66]));
-        for y in y0..y1 {
-            let row: Vec<_> = (x0..x0 + pw).filter_map(|x| s.get(x, y)).collect();
-            let text: String = row.iter().map(|c| c.ch).collect();
-            if row.first().is_some_and(|c| c.bg == SEL_BG) {
-                s.deco(Deco::pill(x0 as f32 + 0.6, y as f32 + 0.06, pw as f32 - 1.2, 0.88, SEL_BG).border([90, 96, 130]));
-                if let Some(i) = text.chars().take(4).position(|c| c == '›') {
-                    s.over(x0 + i as u16, y, |c| crate::term::Cell { ch: ' ', ..c });
-                }
+        m.ach_sel = sel;
+        let scroll = m.ach_scroll;
+        let shown = |y: f32, h: f32| y - scroll >= -0.01 && y - scroll + h <= view + 0.01;
+        for (hy, g) in heads {
+            if shown(hy, 1.9) {
+                s.labels.push(left(area.x + 2.2, top + hy - scroll + 1.0, g, 1.15, HEAD, Face::Title));
             }
-            // Tabs: "[1] Settings    [2] Achievements    [3] Creations".
-            if text.contains("[1]") && text.contains("[2]") {
-                let starts: Vec<usize> = text.char_indices().filter(|(_, c)| *c == '[').map(|(i, _)| text[..i].chars().count()).collect();
-                for (k, &a) in starts.iter().enumerate() {
-                    let end = starts.get(k + 1).copied().unwrap_or(row.len());
-                    let seg: String = row[a..end].iter().map(|c| c.ch).collect();
-                    let len = seg.trim_end().chars().count();
-                    let active = k as u8 + 1 == page;
-                    let pill = Deco::pill(x0 as f32 + a as f32 - 0.6, y as f32 + 0.05, len as f32 + 1.2, 0.9, if active { ACCENT } else { KEYCAP });
-                    s.deco(if active { pill } else { pill.border(KEYCAP_EDGE) });
-                    for i in 0..len {
-                        let x = x0 + (a + i) as u16;
-                        s.over(x, y, |c| crate::term::Cell { ch: if matches!(c.ch, '[' | ']') { ' ' } else { c.ch }, fg: if active { BG } else { TEXT }, bold: true, ..c });
-                    }
-                }
+        }
+        let now = crate::db::now();
+        for (i, d) in achievements::ALL.iter().enumerate() {
+            let (x, y) = place[i];
+            if !shown(y, ch) {
                 continue;
             }
-            // A heading: one word or two, all in the heading colour.
-            let words: Vec<&crate::term::Cell> = row.iter().filter(|c| c.ch != ' ').collect();
-            if !words.is_empty() && words.iter().all(|c| c.fg == HEAD) {
-                let first = row.iter().position(|c| c.ch != ' ').unwrap_or(0);
-                let t = text.trim().to_string();
-                for x in x0..x0 + pw {
-                    s.over(x, y, |c| crate::term::Cell { ch: ' ', ..c });
+            let r = R::new(x, top + y - scroll, cw, ch);
+            let earned = self.achievements.earned(d.id);
+            let it = ui.card(s, r, i == sel && focused, focused);
+            if it.click {
+                if let Some(m) = self.menu.as_mut() {
+                    m.ach_sel = i;
                 }
-                s.labels.push(Label { x: (x0 as usize + first) as f32, y: y as f32 - 0.05, text: t, size: 1.15, color: HEAD, face: Face::Title, center: false });
+            }
+            // The medal: its tier's colour when earned, grey until then.
+            let medal = if earned.is_some() { tier_color(d.tier) } else { [58, 62, 80] };
+            // Cells are half as wide as tall: twice the columns for a round medal.
+            let mx = r.x + 1.0;
+            s.deco(Deco::pill(mx, r.y + 0.7, 4.4, 2.2, medal).border(if earned.is_some() { [255, 244, 220] } else { [80, 84, 104] }));
+            let glyph = match d.tier {
+                Tier::Bronze => "•",
+                Tier::Silver => "✦",
+                Tier::Gold => "★",
+                Tier::Diamond => "◆",
+            };
+            s.labels.push(Label { x: mx + 2.2, y: r.y + 1.8, text: if earned.is_some() { glyph.into() } else { "?".into() }, size: if d.tier == Tier::Bronze && earned.is_some() { 1.8 } else { 1.1 }, color: if earned.is_some() { [40, 26, 8] } else { FAINT }, face: Face::Bold, center: true });
+            let tx = r.x + 6.4;
+            let tw = r.w - 7.4;
+            s.labels.push(left(tx, r.y + 0.95, &crate::ui::fit(d.title, tw - 10.0, 1.0), 1.0, if earned.is_some() { TEXT } else { DIM }, Face::Bold));
+            let when = match earned {
+                Some(t) => ago(now - t),
+                None => tier_name(d.tier).to_string(),
+            };
+            s.labels.push(Label { x: r.x + r.w - 1.2 - when.chars().count() as f32 * 0.72, y: r.y + 0.5, text: when, size: 0.8, color: if earned.is_some() { tier_color(d.tier) } else { FAINT }, face: Face::Body, center: false });
+            for (k, l) in crate::term::wrap(d.text, (tw / 0.72) as usize).iter().take(2).enumerate() {
+                s.labels.push(left(tx, r.y + 2.05 + k as f32 * 0.95, l, 0.82, if earned.is_some() { DIM } else { FAINT }, Face::Body));
             }
         }
-    }
-
-    /// The achievements page: every one, by group; the chosen one in full below.
-    fn draw_achievements(&mut self, x0: u16, pw: usize, vh: u16, tabs: &str) {
-        let Some(m) = self.menu.as_ref() else { return };
-        let sel = m.ach_sel.min(achievements::ALL.len() - 1);
-        let now = crate::db::now();
-        // (text, colour, selected, medal colour for the first 3 columns)
-        let mut list: Vec<(String, [u8; 3], bool, Option<[u8; 3]>)> = Vec::new();
-        let mut sel_line = 0;
-        let mut group = "";
-        for (i, d) in achievements::ALL.iter().enumerate() {
-            if d.group != group {
-                group = d.group;
-                list.push((group.to_string(), HEAD, false, None));
-            }
-            let got = self.achievements.earned(d.id);
-            let when = got.map(|t| ago(now - t)).unwrap_or_default();
-            if i == sel {
-                sel_line = list.len();
-            }
-            let icon = if got.is_some() { icon(d.tier).to_string() } else { "( )".into() };
-            list.push((format!("{icon} {:<22} {when}", d.title), if got.is_some() { TEXT } else { DIM }, i == sel, got.map(|_| tier_color(d.tier))));
-        }
-        // The chosen one, in full.
-        let d = &achievements::ALL[sel];
-        let got = self.achievements.earned(d.id);
-        let mut detail = vec![(String::new(), TEXT, false, None)];
-        let state = match got {
-            Some(t) => format!("{} · earned {}", tier_name(d.tier), ago(now - t)),
-            None => format!("{} · not yet", tier_name(d.tier)),
-        };
-        detail.push((format!("{}   {state}", d.title), if got.is_some() { tier_color(d.tier) } else { TEXT }, false, None));
-        for l in crate::term::wrap(d.text, pw.saturating_sub(6)) {
-            detail.push((l, DIM, false, None));
-        }
-        detail.push((String::new(), TEXT, false, None));
-        for l in hang("↑↓ choose · PgUp/PgDn page · 1 settings · 3 creations · q quit · Esc close", pw - 3, 0) {
-            detail.push((l, DIM, false, None));
-        }
-        // As much of the list as fits, scrolled to keep the chosen one in view.
-        let fit = (vh as usize).saturating_sub(detail.len() + 6).max(3);
-        let top = sel_line.saturating_sub(fit / 2).min(list.len().saturating_sub(fit));
-        let mut lines = vec![(tabs.to_string(), ACCENT, false, None), (String::new(), TEXT, false, None)];
-        lines.extend(list.into_iter().skip(top).take(fit));
-        lines.extend(detail);
-        let blank = (String::new(), TEXT, false, None);
-        let y0 = (vh as usize).saturating_sub(lines.len() + 2) as u16 / 2;
-        let rows = std::iter::once(blank.clone()).chain(lines).chain(std::iter::once(blank));
-        for (i, (text, fg, sel, medal)) in rows.enumerate() {
-            let y = y0 + i as u16;
-            if y >= vh {
-                break;
-            }
-            let bg = if sel { SEL_BG } else { BG };
-            let t: String = text.chars().take(pw - 3).collect();
-            let s = format!("{}{t:<width$} ", if sel { "› " } else { "  " }, width = pw - 3);
-            self.screen.text(x0, y, &s, fg, bg, sel);
-            if let Some(c) = medal {
-                let icon: String = t.chars().take(3).collect();
-                self.screen.text(x0 + 2, y, &icon, c, bg, true);
-            }
-        }
-        self.dress_panel(x0, y0, pw as u16, vh, 2);
     }
 }
 
-/// Wrap a menu line to `width`, later lines indented by `indent` (so a key
-/// list's continuation lines up under its first entry instead of being cut).
-pub(super) fn hang(text: &str, width: usize, indent: usize) -> Vec<String> {
-    let first = crate::term::wrap(text, width);
-    if first.len() <= 1 || indent == 0 {
-        return first;
+
+/// Where the keys start on a page: its list, on the pages that are one.
+fn first_focus(p: Page) -> usize {
+    match p {
+        // After Back (and the creations' three groups).
+        Page::Achievements => 1,
+        Page::Creations => 4,
+        _ => 0,
     }
-    let head = first[0].clone();
-    let rest: String = text.chars().skip(head.chars().count()).collect();
-    let mut out = vec![head];
-    out.extend(crate::term::wrap(rest.trim_start(), width - indent).into_iter().map(|l| format!("{:indent$}{l}", "")));
-    out
+}
+
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }

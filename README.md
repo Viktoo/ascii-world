@@ -28,24 +28,26 @@ takes the ground away under it. Tools say how they are held and worked: a sword 
 an axe chops (and fells a tree), a spade digs a pit. See [docs/physics.md](docs/physics.md).
 
 ```bash
-export ANTHROPIC_API_KEY=...        # or POCKET_LLM_BASE_URL for any OpenAI-compatible endpoint
-pocket                              # open the game on your last universe (or a new one, the first time)
-pocket list                         # open on your worlds: arrows choose, N a new one, D delete
-pocket new                          # open on the new-world screen, a random prompt: Enter takes
-                                    # it, Tab rolls another, typing replaces it, the arrows edit it
-pocket new "a rainy coastal valley where the lighthouse keeper vanished"   # check or edit it, Enter to begin
+pocket                              # open the game: Continue, Worlds, Play together, Settings, Quit
+pocket FILE                         # straight into a world
+pocket list                         # open on your worlds
+pocket new "a rainy coastal valley where the lighthouse keeper vanished"   # open on the new-world screen with it
 ```
 
-Everything happens in one window: your worlds, the new-world screen, loading, play.
-`Esc` → **Your worlds** goes back to the list from a game (it is saved). Click the view
+Everything happens in one window, with buttons (the mouse, or `↑` `↓` `Enter` `Esc`):
+the title, your worlds, a new world, playing together, settings, loading, play. Add your
+Anthropic key (or another OpenAI-compatible endpoint) in **Settings → AI**, where you also
+pick the model for each job; `ANTHROPIC_API_KEY` / `POCKET_LLM_BASE_URL` still work and
+win for their run. In a world `Esc` pauses: achievements, creations, world options,
+settings, **Save and quit to title**. See [docs/ui-plan.md](docs/ui-plan.md). Click the view
 to look with the mouse (it lets go when a menu or typing opens). `Cmd+V` pastes,
 `Cmd+Q` (or closing the window) saves and quits. Titles are set in Fraunces, the rest
 in Nunito (`assets/fonts`, both OFL).
 
-The world is drawn at fewer lines than the window has and scaled up. `Esc` →
-**Window detail** sets how many: **auto** (the default) holds the frame-rate cap,
+The world is drawn at fewer lines than the window has and scaled up. **Settings → Video
+→ Detail** sets how many: **auto** (the default) holds the frame-rate cap,
 raising detail while the GPU keeps up and lowering it when it falls behind; or a
-fixed 180p…1080p, or every pixel. **Blend frames for detail** (on by default) draws
+fixed 180p…1080p, or every pixel. **Smooth edges** (on by default) draws
 each frame's rays a fraction of a pixel apart and blends them into a picture of up
 to twice the lines: standing still, detail builds up over a few frames; moving, the
 blend follows the camera and is held to what the newest frame shows, so nothing
@@ -63,8 +65,8 @@ For checking changes without a screen (agents, scripts), any of those commands t
 `--shot out.png [--size 1600x1000] [--scale 2] [--after 8] [--keys esc,down]`: it runs
 the same screens unseen for a while, presses the keys a second before the end, saves
 the window as a PNG and what it says as `out.txt`, and (in a world) prints the frame
-stats. `pocket FILE --shot …` plays FILE; `pocket list --shot … --keys n` shows the
-new-world screen. Work on a copy of a world: it saves like play does.
+stats. Keys are pressed one a frame, so `--keys down,down,enter` works menus. `pocket FILE --shot …`
+plays FILE; `pocket list --shot … --keys n` shows the new-world screen. Work on a copy of a world: it saves like play does.
 
 ## Build
 
@@ -79,11 +81,11 @@ cargo build --release      # → target/release/pocket
 
 | Mode | Enter with | Keys |
 |---|---|---|
-| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, click the view to look with the mouse, `F1` stats, `F2` inspect; quit from the `Esc` menu (`q` there, or the Quit row) |
+| Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, click the view to look with the mouse, `F1` stats, `F2` inspect; quit from the `Esc` pause menu |
 | Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`; a fire or other incident is one line, updated as it goes); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
 | Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
-| Settings | `Esc` (in walk) or `F10` | `↑` `↓` choose, `←` `→` change, `Enter` select, `q` quit the game, `Esc` close: budget, reset this session's spend, spend details, frame rate, shadows, how far the world loads, and this world's difficulty, creature limit, life speed, hunting and conjured beings, and a Quit game row. Saved in `~/.pocket/settings.json` (world settings with the world); an environment variable still wins for its run. |
-| Creations | `3` in settings (`Esc`, or `F3` then `3`) | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
+| Pause menu | `Esc` (in walk) or `F10` | Buttons: Back to game, Achievements (`F3`), Creations, World options (difficulty, creature limit, life speed, hunting, conjured beings), Settings (tabs: Video, Sound, AI, Together, General, Controls), Save and quit to title, Quit game (`q`). Mouse or `↑` `↓` `←` `→` `Enter` `Esc`. Settings are saved in `~/.pocket/settings.json` (world options with the world); an environment variable still wins for its run. |
+| Creations | Creations in the pause menu | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
 | Hands | (in walk) | `e` use (what you hold, on what you point at; a door opens or shuts; a held tool swings, chops, thrusts, digs or pours, by what it is and what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
 | Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |

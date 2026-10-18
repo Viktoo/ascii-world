@@ -1,4 +1,4 @@
-//! Settings the player changes in the game (Esc / F10), kept in
+//! Settings the player changes in the game (Settings, from the title or Esc), kept in
 //! ~/.pocket/settings.json. An environment variable still wins for its run,
 //! and the screen shows those as set by env. World settings (creature limits,
 //! life speed…) belong to one world and live in its own `kv` table instead.
@@ -44,6 +44,18 @@ pub struct Settings {
     pub guest_budget_usd: f64,
     /// Ask GitHub once at start whether a newer release is out.
     pub check_updates: bool,
+    /// Where words come from: "anthropic", or "other" (any OpenAI-compatible
+    /// endpoint at `base_url`, such as Ollama).
+    pub provider: String,
+    /// The provider's API key (an environment variable wins).
+    pub api_key: String,
+    pub base_url: String,
+    /// The model for each job (builder, characters, choices, memories); empty: the default.
+    pub models: [String; 4],
+    /// The key hints along the bottom while walking.
+    pub show_hints: bool,
+    /// The welcome (asking for a key) was seen and answered or skipped.
+    pub welcomed: bool,
 }
 
 /// Window detail that follows the frame rate.
@@ -54,7 +66,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true, provider: "anthropic".into(), api_key: String::new(), base_url: String::new(), models: Default::default(), show_hints: true, welcomed: false }
     }
 }
 
@@ -117,6 +129,19 @@ pub fn env_voices() -> bool {
 pub fn env_mic() -> bool {
     std::env::var_os("POCKET_NO_MIC").is_some()
 }
+/// The provider is chosen by the environment (a base URL, or a key).
+pub fn env_provider() -> bool {
+    env("POCKET_LLM_BASE_URL").is_some() || env("ANTHROPIC_API_KEY").is_some()
+}
+/// The key comes from the environment for this provider.
+pub fn env_key(provider: &str) -> bool {
+    if provider == "other" { env("POCKET_LLM_API_KEY").or_else(|| env("OPENAI_API_KEY")).is_some() } else { env("ANTHROPIC_API_KEY").is_some() }
+}
+/// A job's model is fixed by the environment.
+pub fn env_model(i: usize) -> bool {
+    const NAMES: [&str; 4] = ["POCKET_MODEL_BUILDER", "POCKET_MODEL_CHARACTER", "POCKET_MODEL_DECIDER", "POCKET_MODEL_SUMMARIZER"];
+    env(NAMES[i]).is_some() || env("POCKET_MODEL").is_some()
+}
 
 impl Settings {
     /// The saved settings, with environment variables on top.
@@ -166,14 +191,6 @@ impl Settings {
         s
     }
 
-    pub fn window_detail_name(&self) -> String {
-        match self.window_detail {
-            AUTO => "auto (keeps the frame rate)".into(),
-            0 => "full (every pixel)".into(),
-            l => format!("{l}p"),
-        }
-    }
-
     /// Who you are when playing together: your name (your login's, until
     /// you choose one) and your token (made and saved the first time).
     pub fn player(&mut self) -> (String, String) {
@@ -183,6 +200,14 @@ impl Settings {
         }
         let name = if self.name.trim().is_empty() { default_name() } else { self.name.trim().to_string() };
         (name, self.token.clone())
+    }
+
+    /// An LLM can be reached: a key (or another provider's address) is set, here or in the environment.
+    pub fn has_llm(&self) -> bool {
+        if env("POCKET_LLM_BASE_URL").is_some_and(|b| !b.contains("anthropic.com")) || env("ANTHROPIC_API_KEY").is_some() {
+            return true;
+        }
+        if self.provider == "other" { !self.base_url.trim().is_empty() } else { !self.api_key.trim().is_empty() }
     }
 
     pub fn budget(&self) -> Option<f64> {
@@ -234,15 +259,27 @@ impl Settings {
         }
         out.guest_budget_usd = self.guest_budget_usd;
         out.check_updates = self.check_updates;
+        out.provider = self.provider.clone();
+        out.api_key = self.api_key.clone();
+        out.base_url = self.base_url.clone();
+        out.models = self.models.clone();
+        out.show_hints = self.show_hints;
+        out.welcomed = self.welcomed;
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {
             let _ = std::fs::write(path(), t);
+            // It may hold an API key: for this user's eyes only.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path(), std::fs::Permissions::from_mode(0o600));
+            }
         }
     }
 }
 
 /// A name until one is chosen: the login's, capitalised, or "Traveler".
-fn default_name() -> String {
+pub fn default_name() -> String {
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
     let user: String = user.chars().filter(|c| c.is_alphanumeric()).take(20).collect();
     let mut c = user.chars();

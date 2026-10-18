@@ -125,6 +125,21 @@ pub fn reveal(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Open a web page in the browser.
+pub fn open_url(url: &str) -> Result<()> {
+    let mut cmd = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(url).spawn().context("open the browser")?;
+    Ok(())
+}
+
 /// What the file browser is called here.
 pub fn browser_name() -> &'static str {
     if cfg!(target_os = "macos") {

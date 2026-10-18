@@ -801,7 +801,7 @@ impl App {
             None => return,
         };
         let copied = matches!(self.together, Some(Together::Host(_))) && arboard::Clipboard::new().and_then(|mut c| c.set_text(line.clone())).is_ok();
-        self.say(None, &if copied { format!("Copied: {line}. Whoever joins presses J on their worlds list and pastes it.") } else { line }, ACCENT);
+        self.say(None, &if copied { format!("Copied: {line}. Whoever joins chooses Play together → Join with an invite, and pastes it.") } else { line }, ACCENT);
     }
 
     /// The host sends a guest away ("/kick NAME"): they leave the world at

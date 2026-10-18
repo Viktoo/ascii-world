@@ -51,6 +51,8 @@ pub struct Text {
     pub uploads: Vec<(u32, u32, u32, u32, Vec<u8>)>,
     /// The atlas filled up and was cleared; everything must be uploaded again.
     pub reset: bool,
+    /// Glyphs before this one lie under the screen's `over_decor`; the rest over it.
+    pub split: usize,
 }
 
 /// The grid shader's shape for a block or box character, if it is one.
@@ -92,7 +94,7 @@ impl Text {
         let opts = fontdue::FontSettings::default;
         let fonts = [BODY, BOLD, TITLE].iter().map(|b| fontdue::Font::from_bytes(*b, opts()).expect("bundled font")).collect();
         let fallbacks = FALLBACKS.iter().filter_map(|p| std::fs::read(p).ok()).filter_map(|b| fontdue::Font::from_bytes(b, opts()).ok()).collect();
-        let mut t = Text { fonts, fallbacks, cache: HashMap::new(), shelf: (0, 0, 0), uploads: Vec::new(), reset: false };
+        let mut t = Text { fonts, fallbacks, cache: HashMap::new(), shelf: (0, 0, 0), uploads: Vec::new(), reset: false, split: 0 };
         t.solid();
         t
     }
@@ -225,6 +227,10 @@ impl Text {
         }
         if let Some(f) = &screen.field {
             self.field(f, cell_w, cell_h, base, px, out);
+        }
+        self.split = out.len();
+        for l in &screen.over_labels {
+            self.label(l, cell_w, cell_h, out);
         }
     }
 

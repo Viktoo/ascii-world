@@ -411,14 +411,14 @@ impl App {
         let right_fg = if done { mix(TEXT, ACCENT, (t * 2.0).sin() * 0.5 + 0.5) } else { FAINT };
         self.screen.text(rx, bar_y + 1, &right, right_fg, BG, false);
         if !done && bar_y + 2 < h {
-            self.screen.text(x0, bar_y + 2, "q leave · Esc settings", FAINT, BG, false);
+            self.screen.text(x0, bar_y + 2, "Esc menu", FAINT, BG, false);
         }
         if l.leaving {
             self.draw_leaving();
         }
 
         if self.menu.is_some() {
-            self.draw_menu(w, h);
+            self.draw_menu(w, h, false);
         }
         self.loading = Some(l);
     }
@@ -769,7 +769,7 @@ mod tests {
         };
         let key = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
         let shown = screen(&mut app);
-        assert!(shown.contains("a grey coast where the keeper vanished") && shown.contains("q leave · Esc settings"), "{shown}");
+        assert!(shown.contains("a grey coast where the keeper vanished") && shown.contains("Esc menu"), "{shown}");
         app.loading_key(key('q'));
         assert!(!app.quit && screen(&mut app).contains("Leave this world?"));
         app.loading_key(key('x'));

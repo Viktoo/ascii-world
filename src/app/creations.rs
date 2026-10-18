@@ -1,11 +1,11 @@
-//! The creations page (3 in the settings screen): everything made in this
+//! The creations page (in the pause menu): everything made in this
 //! world since it began, who made it, from what, and whether it is still
 //! here. In real worlds most creations are meals, soon eaten, so the page
 //! leads with what lasts (built things, made things, reshaped ones, beings)
 //! and keeps food and the world's own changes below. Tab groups by kind, by
 //! maker, or newest first.
 
-use super::menu::{BG, HEAD, SEL_BG, ago};
+use super::menu::{HEAD, ago};
 use super::{ACCENT, App, DIM, TEXT};
 use crate::db::CreationRow;
 use glam::Vec3;
@@ -40,6 +40,8 @@ pub struct Book {
     rows: Vec<CreationRow>,
     sel: usize,
     group: Group,
+    /// How far the list is scrolled (rows).
+    scroll: f32,
 }
 
 /// Where a creation sits on the page by kind: what lasts first, food and
@@ -74,9 +76,6 @@ fn cap(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>()) }
-}
 
 /// How many of it are in the world now, and the nearest one.
 struct Here {
@@ -94,25 +93,17 @@ impl App {
     pub(super) fn open_creations(&mut self) {
         let rows = self.db.with(crate::db::creations).unwrap_or_default();
         if let Some(m) = self.menu.as_mut() {
-            m.creations = Some(Book { rows, sel: 0, group: Group::default() });
+            m.creations = Some(Book { rows, sel: 0, group: Group::default(), scroll: 0.0 });
         }
     }
 
+    /// Tab: the next way of grouping.
     pub(super) fn creations_key(&mut self, k: crossterm::event::KeyEvent) {
-        use crossterm::event::KeyCode;
-        let order = self.creation_items().1;
         let Some(b) = self.menu.as_mut().and_then(|m| m.creations.as_mut()) else { return };
-        let n = order.len().max(1);
-        match k.code {
-            KeyCode::Up => b.sel = (b.sel + n - 1) % n,
-            KeyCode::Down => b.sel = (b.sel + 1) % n,
-            KeyCode::PageUp => b.sel = b.sel.saturating_sub(8),
-            KeyCode::PageDown => b.sel = (b.sel + 8).min(n - 1),
-            KeyCode::Tab => {
-                b.group = b.group.next();
-                b.sel = 0;
-            }
-            _ => {}
+        if k.code == crossterm::event::KeyCode::Tab {
+            b.group = b.group.next();
+            b.sel = 0;
+            b.scroll = 0.0;
         }
     }
 
@@ -200,107 +191,163 @@ impl App {
         }
     }
 
-    pub(super) fn draw_creations(&mut self, x0: u16, pw: usize, vh: u16, tabs: &str) {
+    /// The page: what was made, grouped, as a list; the chosen one in full
+    /// beside it (below, in a narrow window).
+    pub(super) fn creations_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
+        use crate::term::{Deco, Face, Label};
+        use crate::ui::{FAINT, Kind, R, left};
         let gn = self.guest_names();
         let (items, order) = self.creation_items();
         let here = self.creations_here();
+        let area = Self::page_panel(s, w, vh, 110.0, 200.0, "Creations");
+        let back = R::new(area.x + area.w - 12.0, area.y + 1.0, 10.0, 1.8);
+        if ui.button(s, back, "Back", Kind::Quiet) || ui.back() {
+            return self.menu_page(super::menu::Page::Pause);
+        }
         let Some(b) = self.menu.as_ref().and_then(|m| m.creations.as_ref()) else { return };
-        let inner = pw.saturating_sub(4);
-        let by_maker = b.group == Group::Maker;
-        let (wn, wm) = if by_maker { (inner.saturating_sub(24), 0) } else { (inner.saturating_sub(40).max(16), 16) };
-        let sel_row = order.get(b.sel.min(order.len().saturating_sub(1))).copied();
-        let mut list: Vec<(String, [u8; 3], bool)> = Vec::new();
-        let mut sel_line = 0;
+        let makers = b.rows.iter().map(|r| maker(r, gn.as_ref())).filter(|m| *m != "not recorded").collect::<std::collections::HashSet<_>>().len();
+        let still = b.rows.iter().filter(|r| here.contains_key(&r.key)).count();
+        let summary = format!("{} made · {makers} maker{} · {still} still here", b.rows.len(), if makers == 1 { "" } else { "s" });
+        s.labels.push(left(area.x + 16.5, area.y + 2.05, &summary, 0.9, DIM, Face::Body));
+        let names: Vec<String> = Group::ALL.iter().map(|g| cap(g.name())).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let cur = Group::ALL.iter().position(|g| *g == b.group).unwrap_or(0);
+        if let Some(t) = ui.tabs(s, area.x + 2.0, area.y + 3.6, &names, cur) {
+            if let Some(b) = self.menu.as_mut().and_then(|m| m.creations.as_mut()) {
+                b.group = Group::ALL[t];
+                b.sel = 0;
+                b.scroll = 0.0;
+            }
+            return;
+        }
+        // The list on the left, the chosen one on the right (or below).
+        let wide = area.w >= 90.0;
+        let top = area.y + 6.4;
+        let bottom = area.y + area.h - if wide { 1.0 } else { 9.0 };
+        let lw = if wide { area.w * 0.58 } else { area.w - 4.0 };
+        let lx = area.x + 2.0;
+        let Some(b) = self.menu.as_mut().and_then(|m| m.creations.as_mut()) else { return };
+        let mut sel = b.sel.min(order.len().saturating_sub(1));
+        let (_, focused) = ui.list(R::new(lx, top, lw, bottom - top), order.len(), &mut sel);
+        let rh = 1.9;
+        let hh = 1.9;
+        // Each line's place.
+        let mut ys = Vec::with_capacity(items.len());
+        let mut y = 0.0f32;
         for it in &items {
-            match it {
-                Item::Head(h) => list.push((h.clone(), HEAD, false)),
-                Item::Row(i) => {
-                    let r = &b.rows[*i];
-                    let h = here.get(&r.key);
-                    let mut status = match h {
-                        Some(h) if h.count > 0 => format!("here · {}", self.where_from_you(h.nearest.unwrap_or_default(), false)),
-                        _ => "gone".to_string(),
-                    };
-                    if r.count > 1 {
-                        status = format!("×{} · {status}", r.count);
-                    }
-                    let sel = Some(*i) == sel_row;
-                    if sel {
-                        sel_line = list.len();
-                    }
-                    // An unrecorded maker leaves the cell empty rather than saying so on every row.
-                    let who = if r.made_by.is_empty() { "" } else { maker(r, gn.as_ref()) };
-                    let text = if by_maker { format!("{:<wn$} {status}", clip(&r.name, wn)) } else { format!("{:<wn$} {:<wm$} {status}", clip(&r.name, wn), clip(who, wm)) };
-                    list.push((text, if h.is_some() { TEXT } else { DIM }, sel));
+            ys.push(y);
+            y += match it {
+                Item::Head(_) => hh,
+                Item::Row(_) => rh,
+            };
+        }
+        let len = y;
+        let view = bottom - top;
+        b.scroll = (b.scroll - ui.wheel * 3.0).clamp(0.0, (len - view).max(0.0));
+        let sel_row = order.get(sel).copied();
+        if focused || sel != b.sel {
+            if let Some(k) = items.iter().position(|it| matches!(it, Item::Row(i) if Some(*i) == sel_row)) {
+                // Keep its heading in view too when it is the first under one.
+                let sy = if k > 0 && matches!(items[k - 1], Item::Head(_)) { ys[k - 1] } else { ys[k] };
+                if sy < b.scroll {
+                    b.scroll = sy;
+                } else if ys[k] + rh > b.scroll + view {
+                    b.scroll = ys[k] + rh - view;
                 }
             }
         }
+        b.sel = sel;
+        let scroll = b.scroll;
+        let mut clicked = None;
+        for (k, it) in items.iter().enumerate() {
+            let yy = ys[k] - scroll;
+            let h = if matches!(it, Item::Head(_)) { hh } else { rh };
+            if yy < -0.01 || yy + h > view + 0.01 {
+                continue;
+            }
+            let ry = top + yy;
+            match it {
+                Item::Head(t) => s.labels.push(left(lx + 0.3, ry + 1.05, t, 1.1, HEAD, Face::Title)),
+                Item::Row(i) => {
+                    let Some(b) = self.menu.as_ref().and_then(|m| m.creations.as_ref()) else { return };
+                    let r = &b.rows[*i];
+                    let rr = R::new(lx, ry + 0.1, lw, rh - 0.2);
+                    let is_sel = Some(*i) == sel_row;
+                    let c = ui.card(s, rr, is_sel, focused);
+                    if c.click {
+                        clicked = Some(order.iter().position(|o| o == i).unwrap_or(0));
+                    }
+                    let h = here.get(&r.key);
+                    // A dot: still in the world (green) or gone.
+                    s.deco(Deco::pill(rr.x + 0.7, rr.mid_y() - 0.22, 0.88, 0.44, if h.is_some() { [130, 210, 130] } else { [70, 74, 92] }));
+                    let by_maker = b.group == Group::Maker;
+                    let who = if r.made_by.is_empty() { "" } else { maker(r, gn.as_ref()) };
+                    let name_w = if by_maker { lw - 8.0 } else { lw * 0.62 - 3.0 };
+                    let mut name = r.name.clone();
+                    if r.count > 1 {
+                        name = format!("{name} ×{}", r.count);
+                    }
+                    s.labels.push(left(rr.x + 2.0, rr.mid_y(), &crate::ui::fit(&name, name_w, 0.95), 0.95, if h.is_some() { TEXT } else { DIM }, if is_sel { Face::Bold } else { Face::Body }));
+                    if !by_maker && !who.is_empty() {
+                        s.labels.push(left(rr.x + lw * 0.64, rr.mid_y(), &crate::ui::fit(who, lw * 0.34, 0.85), 0.85, FAINT, Face::Body));
+                    }
+                }
+            }
+        }
+        if let (Some(c), Some(b)) = (clicked, self.menu.as_mut().and_then(|m| m.creations.as_mut())) {
+            b.sel = c;
+        }
+        if items.is_empty() {
+            s.labels.push(Label { x: lx + lw * 0.5, y: top + 3.0, text: "Nothing has been made here yet.".into(), size: 1.0, color: DIM, face: Face::Body, center: true });
+            s.labels.push(Label { x: lx + lw * 0.5, y: top + 4.4, text: "Press / in the world and say what to make; its people make things too.".into(), size: 0.85, color: FAINT, face: Face::Body, center: true });
+        }
         // The chosen one, in full.
-        let mut detail: Vec<(String, [u8; 3], bool)> = vec![(String::new(), TEXT, false)];
-        if let Some(r) = sel_row.map(|i| &b.rows[i]) {
-            detail.push((r.name.clone(), ACCENT, false));
-            let from = if r.from.is_empty() { String::new() } else { format!(" from {}", r.from) };
-            let who = match maker(r, gn.as_ref()) {
-                "not recorded" => " (maker not recorded)".to_string(),
-                m => format!(" by {m}"),
-            };
-            let how = match r.kind.as_str() {
-                "built" => format!("built{who}"),
-                "reshaped" => format!("reshaped{who}{from}"),
-                "changed" => format!("became this{from}, by itself"),
-                "being" => format!("brought into the world{who}"),
-                _ => format!("made{who}{from}"),
-            };
-            let times = if r.count > 1 { format!(" · made {} times", r.count) } else { String::new() };
-            detail.push((format!("{how}{times}"), TEXT, false));
-            let when = match r.t {
-                Some(t) => format!("day {}, {}", (t / crate::render::sky::DAY_SECONDS) as i64 + 1, crate::render::sky::time_label(t)),
-                None => ago(crate::db::now() - r.wall),
-            };
-            let place = r.at.map(|[x, z]| format!(" · first made at {}", self.where_from_you(Vec3::new(x, 0.0, z), true))).unwrap_or_default();
-            detail.push((format!("{when}{place}"), DIM, false));
-            let now = match here.get(&r.key) {
-                Some(h) if r.kind == "being" => format!("alive · {}", self.where_from_you(h.nearest.unwrap_or_default(), true)),
-                Some(h) => format!("{} in the world · nearest {}", h.count, self.where_from_you(h.nearest.unwrap_or_default(), true)),
-                None if r.kind == "being" => "no longer living".into(),
-                None => "none left in the world".into(),
-            };
-            detail.push((now, DIM, false));
-            if !r.tags.is_empty() {
-                detail.push((r.tags.join(" · "), DIM, false));
-            }
-        } else {
-            for l in super::menu::hang("Nothing has been made in this world yet. Try / to make something, or wait: its people make things too.", pw - 3, 0) {
-                detail.push((l, DIM, false));
-            }
+        let Some(b) = self.menu.as_ref().and_then(|m| m.creations.as_ref()) else { return };
+        let Some(r) = order.get(b.sel.min(order.len().saturating_sub(1))).map(|i| &b.rows[*i]) else { return };
+        let d = if wide { R::new(lx + lw + 1.5, top, area.x + area.w - 2.0 - (lx + lw + 1.5), bottom - top) } else { R::new(lx, bottom + 0.6, lw, area.y + area.h - 1.0 - bottom - 0.6) };
+        s.deco(Deco::panel(d.x, d.y, d.w, d.h, [18, 20, 28]).border(crate::ui::PANEL_EDGE));
+        let tw = ((d.w - 3.0) / 0.75) as usize;
+        let mut y = d.y + 1.0;
+        for l in crate::term::wrap(&r.name, ((d.w - 3.0) / 1.0) as usize).iter().take(2) {
+            s.labels.push(left(d.x + 1.5, y + 0.6, l, 1.3, ACCENT, Face::Title));
+            y += 1.5;
         }
-        detail.push((String::new(), TEXT, false));
-        for l in super::menu::hang("↑↓ choose · Tab group · 1 settings · 2 achievements · q quit · Esc close", pw - 3, 0) {
-            detail.push((l, DIM, false));
-        }
-        // Heading: how much, by how many, how much is still here.
-        let makers = b.rows.iter().map(|r| maker(r, gn.as_ref())).filter(|m| *m != "not recorded").collect::<std::collections::HashSet<_>>().len();
-        let still = b.rows.iter().filter(|r| here.contains_key(&r.key)).count();
-        let groups: String = Group::ALL.iter().map(|g| if *g == b.group { format!("[{}]", g.name()) } else { format!(" {} ", g.name()) }).collect::<Vec<_>>().join(" ");
-        let summary = format!("{} creations · {makers} maker{} · {still} still here", b.rows.len(), if makers == 1 { "" } else { "s" });
-        let fit = (vh as usize).saturating_sub(detail.len() + 7).max(3);
-        let top = sel_line.saturating_sub(fit / 2).min(list.len().saturating_sub(fit));
-        let mut lines = vec![(tabs.to_string(), ACCENT, false), (summary, DIM, false), (groups, TEXT, false), (String::new(), TEXT, false)];
-        lines.extend(list.into_iter().skip(top).take(fit));
-        lines.extend(detail);
-        let blank = (String::new(), TEXT, false);
-        let y0 = (vh as usize).saturating_sub(lines.len() + 2) as u16 / 2;
-        let rows = std::iter::once(blank.clone()).chain(lines).chain(std::iter::once(blank));
-        for (i, (text, fg, sel)) in rows.enumerate() {
-            let y = y0 + i as u16;
-            if y >= vh {
-                break;
+        y += 0.5;
+        let from = if r.from.is_empty() { String::new() } else { format!(" from {}", r.from) };
+        let who = match maker(r, gn.as_ref()) {
+            "not recorded" => " (maker not recorded)".to_string(),
+            m => format!(" by {m}"),
+        };
+        let how = match r.kind.as_str() {
+            "built" => format!("Built{who}"),
+            "reshaped" => format!("Reshaped{who}{from}"),
+            "changed" => format!("Became this{from}, by itself"),
+            "being" => format!("Brought into the world{who}"),
+            _ => format!("Made{who}{from}"),
+        };
+        let times = if r.count > 1 { format!(", {} times", r.count) } else { String::new() };
+        let when = match r.t {
+            Some(t) => format!("Day {}, {}", (t / crate::render::sky::DAY_SECONDS) as i64 + 1, crate::render::sky::time_label(t)),
+            None => cap(&ago(crate::db::now() - r.wall)),
+        };
+        let place = r.at.map(|[x, z]| format!(" · at {}", self.where_from_you(Vec3::new(x, 0.0, z), true))).unwrap_or_default();
+        let now = match here.get(&r.key) {
+            Some(h) if r.kind == "being" => format!("Alive · {}", self.where_from_you(h.nearest.unwrap_or_default(), true)),
+            Some(h) => format!("{} in the world · nearest {}", h.count, self.where_from_you(h.nearest.unwrap_or_default(), true)),
+            None if r.kind == "being" => "No longer living".into(),
+            None => "None left in the world".into(),
+        };
+        let lines: Vec<(String, [u8; 3])> = vec![(format!("{how}{times}."), TEXT), (format!("{when}{place}"), DIM), (now, if here.contains_key(&r.key) { [150, 220, 150] } else { DIM }), (r.tags.join(" · "), FAINT)];
+        for (t, c) in lines {
+            for l in crate::term::wrap(&t, tw) {
+                if y + 1.2 > d.y + d.h {
+                    break;
+                }
+                s.labels.push(left(d.x + 1.5, y + 0.5, &l, 0.9, c, Face::Body));
+                y += 1.1;
             }
-            let t: String = text.chars().take(pw - 3).collect();
-            let s = format!("{}{t:<width$} ", if sel { "› " } else { "  " }, width = pw - 3);
-            self.screen.text(x0, y, &s, fg, if sel { SEL_BG } else { BG }, sel);
+            y += 0.35;
         }
-        self.dress_panel(x0, y0, pw as u16, vh, 3);
     }
 }
 

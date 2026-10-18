@@ -18,7 +18,53 @@ pub enum Role {
     Summarizer,
 }
 
+/// The Claude models offered in the menus: id and what it is, briefly.
+pub const CLAUDE_MODELS: &[(&str, &str)] = &[
+    ("claude-opus-5-5", "Opus 5.5 · best"),
+    ("claude-sonnet-5-5", "Sonnet 5.5 · balanced"),
+    ("claude-haiku-5-5", "Haiku 5.5 · fast, cheap"),
+    ("claude-fable-5-1", "Fable 5.1 · strongest, dearest"),
+];
+
+/// Whether a Claude API key works: Ok, or what is wrong in a few words.
+/// Waits for the answer (call it off the main thread).
+pub fn check_key(key: &str) -> std::result::Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    rt.block_on(async {
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+        let r = http.get("https://api.anthropic.com/v1/models").header("x-api-key", key.trim()).header("anthropic-version", "2023-06-01").send().await;
+        match r {
+            Ok(r) if r.status().is_success() => Ok(()),
+            Ok(r) if r.status().as_u16() == 401 => Err("Anthropic doesn't know that key. Check it was copied whole.".into()),
+            Ok(r) if r.status().as_u16() == 403 => Err("That key isn't allowed to use the API.".into()),
+            Ok(r) => Err(format!("Anthropic answered {}. Try again in a moment.", r.status())),
+            Err(_) => Err("Couldn't reach Anthropic. Are you online?".into()),
+        }
+    })
+}
+
 impl Role {
+    pub const ALL: [Role; 4] = [Role::Builder, Role::Character, Role::Decider, Role::Summarizer];
+
+    /// What the job is, for the menus.
+    pub fn job(self) -> &'static str {
+        match self {
+            Role::Builder => "World builder",
+            Role::Character => "Characters' words",
+            Role::Decider => "Everyday choices",
+            Role::Summarizer => "Memories",
+        }
+    }
+
+    /// The model a job uses unless one is chosen.
+    pub fn default_model(self, claude: bool) -> &'static str {
+        match (claude, self) {
+            (true, Role::Builder | Role::Character) => "claude-opus-5-5",
+            (true, _) => "claude-haiku-5-5",
+            _ => "llama3.1",
+        }
+    }
+
     fn env(self) -> &'static str {
         match self {
             Role::Builder => "POCKET_MODEL_BUILDER",
@@ -133,15 +179,20 @@ struct Usage {
 
 impl Llm {
     /// None when no provider is configured (the base layer still works).
+    /// The environment first, then what was chosen in the settings.
     pub fn from_env(db: Arc<Db>) -> Option<Arc<Llm>> {
-        let base_override = std::env::var("POCKET_LLM_BASE_URL").ok().filter(|s| !s.is_empty());
+        let set = crate::settings::Settings::load();
+        let env = |n: &str| std::env::var(n).ok().filter(|s| !s.trim().is_empty());
+        let saved = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty());
+        // Another provider, by the environment or (with no Claude key there) the settings.
+        let base_override = env("POCKET_LLM_BASE_URL").or_else(|| if env("ANTHROPIC_API_KEY").is_none() && set.provider == "other" { saved(&set.base_url) } else { None });
         let provider = match base_override {
             Some(base) if !base.contains("anthropic.com") => Provider::OpenAi {
-                key: std::env::var("POCKET_LLM_API_KEY").or_else(|_| std::env::var("OPENAI_API_KEY")).ok().filter(|s| !s.is_empty()),
+                key: env("POCKET_LLM_API_KEY").or_else(|| env("OPENAI_API_KEY")).or_else(|| saved(&set.api_key).filter(|_| set.provider == "other")),
                 base: base.trim_end_matches('/').to_string(),
             },
             other => {
-                let key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty())?;
+                let key = env("ANTHROPIC_API_KEY").or_else(|| saved(&set.api_key).filter(|_| set.provider != "other"))?;
                 let workspace = std::env::var("ANTHROPIC_WORKSPACE_ID").or_else(|_| std::env::var("POCKET_ANTHROPIC_WORKSPACE")).ok().filter(|s| !s.is_empty());
                 Provider::Anthropic { key, base: other.unwrap_or_else(|| "https://api.anthropic.com".into()).trim_end_matches('/').to_string(), workspace }
             }
@@ -153,15 +204,14 @@ impl Llm {
             if let Ok(m) = std::env::var("POCKET_MODEL") {
                 return m;
             }
-            match (&provider, r) {
-                (Provider::Anthropic { .. }, Role::Builder | Role::Character) => "claude-opus-5-5".into(),
-                (Provider::Anthropic { .. }, _) => "claude-haiku-5-5".into(),
-                _ => "llama3.1".into(),
+            if let Some(m) = saved(&set.models[r as usize]) {
+                return m;
             }
+            r.default_model(matches!(provider, Provider::Anthropic { .. })).into()
         };
         let models = [default_model(Role::Builder), default_model(Role::Character), default_model(Role::Decider), default_model(Role::Summarizer)];
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(600)).build().ok()?;
-        let budget = crate::settings::Settings::load().budget();
+        let budget = set.budget();
         Some(Arc::new(Llm { http, provider, models, db, spent: Mutex::new(0.0), budget: Mutex::new(budget), spent_by: Default::default() }))
     }
 

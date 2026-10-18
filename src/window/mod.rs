@@ -110,7 +110,12 @@ pub enum Ev {
     Resized,
     Focus(bool),
     Look(f32, f32),
-    Click,
+    /// The pointer moved to here (in cells, fractions allowed).
+    Mouse(f32, f32),
+    /// The left button went down here (in cells).
+    Click(f32, f32),
+    /// The wheel turned: rows, up positive.
+    Scroll(f32),
     Close,
     Paste(String),
     /// A file dropped on the window.
@@ -132,6 +137,8 @@ pub struct Win {
     scale: f64,
     geom: WinGeom,
     grabbed: bool,
+    /// The pointer is a hand (over a button).
+    hand: bool,
     shot: Option<ShotState>,
     /// Set by SIGTERM / SIGINT: every screen closes as if the window had.
     pub stop: Arc<AtomicBool>,
@@ -183,7 +190,7 @@ impl Win {
         surface.configure(&device, &config);
         crate::log::info(format!("window: {} ({:?}), {:?}", adapter.get_info().name, adapter.get_info().backend, config.format));
         let comp = Compositor::new(device, queue, config.format);
-        let mut win = Win { el: Some(el), h, gpu: Some(Gpu { surface, config }), comp, size: (1, 1), scale: 1.0, geom: geom(1.0), grabbed: false, shot: None, stop: crate::term::signal_flag() };
+        let mut win = Win { el: Some(el), h, gpu: Some(Gpu { surface, config }), comp, size: (1, 1), scale: 1.0, geom: geom(1.0), grabbed: false, hand: false, shot: None, stop: crate::term::signal_flag() };
         win.fit();
         Ok(win)
     }
@@ -201,7 +208,7 @@ impl Win {
         let keys = shot.key_codes();
         let held = shot.held();
         let target = comp.offscreen(size);
-        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, shot: Some(ShotState { shot, start: Instant::now(), keys, held, target, text: None }), stop: crate::term::signal_flag() })
+        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, hand: false, shot: Some(ShotState { shot, start: Instant::now(), keys, held, target, text: None }), stop: crate::term::signal_flag() })
     }
 
     /// The screen size in cells, and each cell's size in pixels.
@@ -238,10 +245,10 @@ impl Win {
             let mut out = std::mem::take(&mut self.h.events);
             out.extend(s.held.drain(..).map(|k| Ev::Key(press(k))));
             if !s.keys.is_empty() && left <= Duration::from_secs_f32(s.shot.keys_at) {
-                for k in s.keys.drain(..) {
-                    out.push(Ev::Key(press(k)));
-                    out.push(Ev::Key(KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Release)));
-                }
+                // One key a pump, as fingers would: each screen sees the last one's result.
+                let k = s.keys.remove(0);
+                out.push(Ev::Key(press(k)));
+                out.push(Ev::Key(KeyEvent::new_with_kind(k, KeyModifiers::empty(), KeyEventKind::Release)));
             } else if left.is_zero() {
                 out.push(Ev::Close);
             }
@@ -258,6 +265,17 @@ impl Win {
         }
         if evs.iter().any(|e| matches!(e, Ev::Resized)) {
             self.fit();
+        }
+        // Pointer positions in cells, as screens think.
+        let (cw, ch) = (self.geom.cell_w.max(1.0), self.geom.cell_h.max(1.0));
+        for e in evs.iter_mut() {
+            match e {
+                Ev::Mouse(x, y) | Ev::Click(x, y) => {
+                    *x /= cw;
+                    *y /= ch;
+                }
+                _ => {}
+            }
         }
         if evs.iter().any(|e| matches!(e, Ev::Focus(false))) {
             self.grab(false);
@@ -302,6 +320,17 @@ impl Win {
             std::fs::write(s.shot.out.with_extension("txt"), text)?;
         }
         Ok(())
+    }
+
+    /// A hand over something to click, else the arrow.
+    pub fn set_hand(&mut self, on: bool) {
+        if on == self.hand {
+            return;
+        }
+        self.hand = on;
+        if let Some(w) = self.h.window.as_ref() {
+            w.set_cursor(if on { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default });
+        }
     }
 
     pub fn is_shot(&self) -> bool {
@@ -355,11 +384,15 @@ impl PlayFront<'_> {
                 Ev::Focus(true) => {}
                 Ev::Look(dx, dy) if self.win.grabbed => app.mouse_look(dx, dy),
                 Ev::Look(..) => {}
-                Ev::Click => {
+                Ev::Click(x, y) => {
                     if app.wants_mouse() {
                         self.win.grab(true);
+                    } else {
+                        app.click(x, y);
                     }
                 }
+                Ev::Mouse(x, y) => app.pointer(x, y),
+                Ev::Scroll(d) => app.scroll(d),
                 Ev::Close => app.quit_now(),
                 Ev::Paste(t) => app.paste(&t),
                 // Worlds are added from the list of them.
@@ -370,6 +403,7 @@ impl PlayFront<'_> {
         if self.win.grabbed && !app.wants_mouse() {
             self.win.grab(false);
         }
+        self.win.set_hand(app.pointer_hand());
     }
 }
 
@@ -397,6 +431,8 @@ struct Handler {
     window: Option<Arc<Window>>,
     events: Vec<Ev>,
     mods: ModifiersState,
+    /// Where the pointer is, in pixels.
+    cursor: (f32, f32),
 }
 
 impl ApplicationHandler for Handler {
@@ -418,7 +454,15 @@ impl ApplicationHandler for Handler {
             WindowEvent::Focused(f) => self.events.push(Ev::Focus(f)),
             WindowEvent::DroppedFile(p) => self.events.push(Ev::Dropped(p)),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => self.events.push(Ev::Click),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as f32, position.y as f32);
+                self.events.push(Ev::Mouse(self.cursor.0, self.cursor.1));
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => self.events.push(Ev::Click(self.cursor.0, self.cursor.1)),
+            WindowEvent::MouseWheel { delta, .. } => self.events.push(Ev::Scroll(match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 22.0,
+            })),
             WindowEvent::KeyboardInput { event, .. } => {
                 // Cmd+Q / Cmd+W (Mac), Alt+F4 elsewhere: save and quit.
                 let quit = match &event.logical_key {

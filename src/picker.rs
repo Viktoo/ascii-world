@@ -1,8 +1,8 @@
 //! Your worlds (the first screen): pick one, or start a new one, with the arrow keys.
 
-use crate::term::{Cell, Deco, Face, Label, Screen};
-use crate::window::{Ev, Win};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::term::Screen;
+use crate::window::Win;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -15,22 +15,7 @@ pub struct World {
     /// Living beings who talk and plan, and the rest (animals, beasts).
     pub people: i64,
     pub creatures: i64,
-    /// Species with someone alive.
-    pub species: i64,
-    /// Object types (not bodies) the world can hold.
-    pub kinds: i64,
-    pub built: i64,
     pub modified: SystemTime,
-}
-
-pub enum Choice {
-    Open(PathBuf),
-    New(String),
-    /// Open a world for others to join (over the internet too, when true).
-    Host(PathBuf, bool),
-    /// Join someone's world: their address and code.
-    Join(String, String),
-    Quit,
 }
 
 /// Read a world's summary without modifying the file.
@@ -39,8 +24,7 @@ fn summarize(path: &Path) -> Option<World> {
     let (prompt, look): (String, String) = c.query_row("SELECT bible, palette FROM universe WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
     let name = serde_json::from_str::<serde_json::Value>(&look).ok().and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string)).unwrap_or_default();
     let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
-    let undone = "SELECT reverts FROM versions WHERE reverts IS NOT NULL";
-    let (people, creatures, species) = beings(&c);
+    let (people, creatures) = beings(&c);
     Some(World {
         path: path.to_path_buf(),
         name: if name.is_empty() { path.file_stem().map(|s| s.to_string_lossy().replace('-', " ")).unwrap_or_default() } else { name },
@@ -48,15 +32,12 @@ fn summarize(path: &Path) -> Option<World> {
         regions: count("SELECT COUNT(*) FROM regions WHERE status = 'done'"),
         people,
         creatures,
-        species,
-        kinds: count("SELECT COUNT(*) FROM types WHERE status IN ('ok', 'builtin') AND json_extract(meta_json, '$.body') IS NULL"),
-        built: count(&format!("SELECT COUNT(*) FROM versions WHERE kind = 'create' AND id NOT IN ({undone})")),
         modified: std::fs::metadata(path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH),
     })
 }
 
-/// The living, by mind: (people, creatures, species among them).
-fn beings(c: &Connection) -> (i64, i64, i64) {
+/// The living, by mind: (people, creatures).
+fn beings(c: &Connection) -> (i64, i64) {
     use crate::world::species::{Mind, SpeciesBook};
     let rows: Vec<(String, String)> = c.prepare("SELECT name, json FROM species").and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()).unwrap_or_default();
     let book = SpeciesBook::load(&rows, None);
@@ -65,7 +46,6 @@ fn beings(c: &Connection) -> (i64, i64, i64) {
         .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
         .unwrap_or_default();
     let (mut people, mut creatures) = (0, 0);
-    let mut kinds = std::collections::HashSet::new();
     for s in &alive {
         let sp = book.of(s);
         if sp.mind == Mind::Sapient {
@@ -73,9 +53,8 @@ fn beings(c: &Connection) -> (i64, i64, i64) {
         } else {
             creatures += 1;
         }
-        kinds.insert(sp.name.clone());
     }
-    (people, creatures, kinds.len() as i64)
+    (people, creatures)
 }
 
 /// The world last played, if it is still there. One in a temporary folder
@@ -103,7 +82,7 @@ pub fn worlds() -> Vec<World> {
     out
 }
 
-fn ago(t: SystemTime) -> String {
+pub fn ago(t: SystemTime) -> String {
     let s = SystemTime::now().duration_since(t).unwrap_or(Duration::ZERO).as_secs();
     match s {
         0..=59 => "just now".into(),
@@ -113,60 +92,40 @@ fn ago(t: SystemTime) -> String {
     }
 }
 
-fn plural(n: i64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
-const BG: [u8; 3] = [12, 13, 18];
-const TEXT: [u8; 3] = [222, 224, 230];
-const DIM: [u8; 3] = [125, 130, 148];
-const ACCENT: [u8; 3] = [255, 200, 110];
-const CARD: [u8; 3] = [24, 26, 38];
-const CARD_SEL: [u8; 3] = [34, 37, 54];
-const CARD_EDGE: [u8; 3] = [60, 64, 88];
-const FRESH: [u8; 3] = [240, 214, 170];
-
-fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>()) }
-}
-
 /// The new-world text. It opens on a random prompt, selected: Enter takes it,
 /// Tab rolls another, typing replaces it, and the arrows step in to edit it.
-struct Draft {
-    text: Vec<char>,
-    cursor: usize,
+pub(crate) struct Draft {
+    pub text: Vec<char>,
+    pub cursor: usize,
     /// The whole text is a fresh roll: the next thing typed replaces it.
-    fresh: bool,
+    pub fresh: bool,
 }
 
-enum Edit {
+pub(crate) enum Edit {
     Stay,
     Cancel,
     Done(String),
 }
 
-/// Most lines of the draft shown at once.
-const DRAFT_ROWS: usize = 8;
-
 impl Draft {
-    fn rolled() -> Draft {
+    pub fn rolled() -> Draft {
         let text: Vec<char> = crate::random_world::prompt().chars().collect();
         Draft { cursor: text.len(), text, fresh: true }
     }
 
     /// Text the person already wrote, ready to fix or take as it is.
-    fn given(text: &str) -> Draft {
+    pub fn given(text: &str) -> Draft {
         let text: Vec<char> = text.chars().collect();
         Draft { cursor: text.len(), text, fresh: false }
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
         self.fresh = false;
     }
 
-    fn insert(&mut self, s: &str) {
+    pub fn insert(&mut self, s: &str) {
         if self.fresh {
             self.clear();
         }
@@ -188,7 +147,7 @@ impl Draft {
         i
     }
 
-    fn key(&mut self, k: KeyEvent) -> Edit {
+    pub fn key(&mut self, k: KeyEvent) -> Edit {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         match k.code {
@@ -250,7 +209,7 @@ impl Draft {
     }
 
     /// Word-wrapped lines as char ranges, so the cursor can be placed.
-    fn lines(&self, width: usize) -> Vec<(usize, usize)> {
+    pub fn lines(&self, width: usize) -> Vec<(usize, usize)> {
         let width = width.max(8);
         let mut out = Vec::new();
         let mut start = 0;
@@ -265,126 +224,13 @@ impl Draft {
     }
 }
 
-/// The prompt box: its first column and width (in cells).
-fn draft_box(w: u16) -> (u16, usize) {
-    let width = (w as usize).saturating_sub(10).clamp(10, 96).min(w as usize);
-    ((w as usize - width) as u16 / 2, width)
-}
-
-/// Columns the draft wraps to (one spare for the cursor at a line's end).
-fn draft_width(w: u16) -> usize {
-    draft_box(w).1.saturating_sub(4).max(4)
-}
-
-fn blank(scr: &mut Screen) {
-    scr.clear_decor();
-    for y in 0..scr.h {
-        scr.fill_row(y, Cell { bg: BG, ..Cell::BLANK });
-    }
-}
-
-/// The new-world screen: one place to see and change the prompt before
-/// the world begins (from `pocket new` and from the list alike).
-fn draw_new(scr: &mut Screen, d: &Draft, back: &str) {
-    let (w, h) = (scr.w, scr.h);
-    blank(scr);
-    let cx = w as f32 / 2.0;
-    // The whole block sits a little above the middle.
-    let top = (h as f32 * 0.32 - 6.0).max(0.0) as u16;
-    scr.title(cx, top as f32 + 2.6, "A new world", 2.6, ACCENT);
-    let intro = if d.fresh { "A place picked at random. Keep it, roll another, or write your own." } else { "The world you want, as you'll begin it:" };
-    scr.center_text(cx, top + 5, &clip(intro, w.saturating_sub(4) as usize), DIM);
-    let (bx, bw) = draft_box(w);
-    let lines = d.lines(draft_width(w));
-    let at = lines.iter().rposition(|(s, _)| *s <= d.cursor).unwrap_or(0);
-    let first = at.saturating_sub(DRAFT_ROWS - 1);
-    let y0 = top + 8;
-    let shown = lines.len().min(DRAFT_ROWS).max(1) as f32;
-    scr.deco(Deco::panel(bx as f32, y0 as f32 - 1.0, bw as f32, shown + 2.0, CARD).border(if d.fresh { CARD_EDGE } else { ACCENT }));
-    let tx = bx + 2;
-    for (row, (s, e)) in lines.iter().enumerate().skip(first).take(DRAFT_ROWS) {
-        let y = y0 + (row - first) as u16;
-        // A fresh roll reads as a suggestion (warm), what you write as your own.
-        let fg = if d.fresh { FRESH } else { TEXT };
-        for (i, ch) in d.text[*s..*e].iter().enumerate() {
-            scr.set(tx + i as u16, y, Cell { ch: *ch, fg, bg: BG, bold: false });
-        }
-        let last = row == lines.len() - 1;
-        if !d.fresh && d.cursor >= *s && (d.cursor < *e || (last && d.cursor == *e)) {
-            scr.caret = Some((tx + (d.cursor - s) as u16, y, ACCENT));
-        }
-    }
-    if lines.is_empty() || d.text.is_empty() {
-        scr.caret = Some((tx, y0, ACCENT));
-    }
-    let hint = if d.fresh {
-        format!("Enter begin   Tab another   Type your own   ←→ edit   Esc {back}")
-    } else {
-        format!("Enter begin   Tab random   Ctrl+U clear   Esc {back}")
-    };
-    let y = (y0 + shown as u16 + 2).min(h.saturating_sub(2));
-    let n = hint_width(&hint);
-    scr.hints(w.saturating_sub(n) / 2, y, &hint, DIM, BG);
-}
-
-/// Columns a line of hints takes (each key drawn one wider, as a cap).
-fn hint_width(s: &str) -> u16 {
-    let parts: Vec<&str> = s.split("  ").map(str::trim).filter(|p| !p.is_empty()).collect();
-    let mut n = parts.len().saturating_sub(1) * 3;
-    for p in parts {
-        let keyed = p.split_once(' ').is_some_and(|(k, _)| crate::term::is_key(k.trim_end_matches(':')));
-        n += p.chars().count() + keyed as usize;
-    }
-    n as u16
-}
-
-/// The screen as big as the window.
-fn fit(win: &Win, scr: &mut Screen) {
-    let (w, h, _) = win.grid();
-    if (scr.w, scr.h) != (w, h) {
-        scr.resize(w, h);
-    }
-}
-
-/// What the new-world screen ended with.
-pub enum Composed {
-    Prompt(String),
-    Back,
-    Quit,
-}
-
-/// Run the new-world screen until the prompt is taken or left.
-fn compose_on(win: &mut Win, scr: &mut Screen, mut d: Draft, back: &str) -> Composed {
-    loop {
-        fit(win, scr);
-        draw_new(scr, &d, back);
-        win.present(scr, 0, None);
-        for ev in win.pump(Duration::from_millis(500)) {
-            match ev {
-                Ev::Close => return Composed::Quit,
-                Ev::Paste(t) => d.insert(&t.replace(['\n', '\r'], " ")),
-                Ev::Key(k) if k.kind != KeyEventKind::Release => match d.key(k) {
-                    Edit::Stay => {}
-                    Edit::Cancel => return Composed::Back,
-                    Edit::Done(p) => return Composed::Prompt(p),
-                },
-                _ => {}
-            }
-        }
-    }
-}
-
-/// The new-world screen on its own, on the prompt given (to check before it
-/// begins) or a random one.
-pub fn compose(win: &mut Win, given: Option<&str>) -> Composed {
-    let given = given.map(str::trim).filter(|p| !p.is_empty());
-    let (w, h, _) = win.grid();
-    let mut scr = Screen::new(w, h, true);
-    compose_on(win, &mut scr, given.map_or_else(Draft::rolled, Draft::given), "back")
+pub fn size_text(path: &Path) -> String {
+    let b = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as f64;
+    if b >= 1e6 { format!("{:.1} MB", b / 1e6) } else { format!("{:.0} KB", (b / 1e3).max(1.0)) }
 }
 
 /// Delete a world's file and SQLite's files beside it.
-fn delete_world(path: &Path) -> std::io::Result<()> {
+pub fn delete_world(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)?;
     for ext in ["-wal", "-shm", "-journal"] {
         let mut side = path.as_os_str().to_owned();
@@ -394,460 +240,13 @@ fn delete_world(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Your worlds, as cards.
-fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Option<&str>) {
-    let (w, h) = (scr.w, scr.h);
-    blank(scr);
-    let cx = w as f32 / 2.0;
-    scr.title(cx, 2.6, "Infinite Pocket", 2.8, ACCENT);
-    scr.center_text(cx, 5, "your worlds", DIM);
-    let cw = (w as usize).saturating_sub(10).clamp(20, 96).min(w as usize);
-    let x0 = ((w as usize - cw) / 2) as u16;
-    let width = cw.saturating_sub(4);
-    let per = 5u16;
-    let top = 8u16;
-    let visible = ((h.saturating_sub(top + 4)) / per).max(1) as usize;
-    let first = sel.saturating_sub(visible - 1).min(list.len().saturating_sub(visible));
-    if list.is_empty() {
-        scr.center_text(cx, top + 1, "No worlds yet. Press N to start one.", DIM);
-    }
-    for (row, (i, wd)) in list.iter().enumerate().skip(first).take(visible).enumerate() {
-        let y = top + row as u16 * per;
-        let selected = i == sel;
-        let card = Deco::panel(x0 as f32, y as f32 - 0.6, cw as f32, 4.2, if selected { CARD_SEL } else { CARD });
-        scr.deco(if selected { card.border(ACCENT) } else { card });
-        let when = ago(wd.modified);
-        let name = clip(&wd.name, width.saturating_sub(when.len() + 2));
-        scr.labels.push(Label { x: x0 as f32 + 2.0, y: y as f32 - 0.25, text: name, size: 1.45, color: if selected { ACCENT } else { TEXT }, face: Face::Title, center: false });
-        scr.text(x0 + cw as u16 - when.len() as u16 - 2, y, &when, DIM, BG, false);
-        scr.text(x0 + 2, y + 1, &clip(&format!("“{}”", wd.prompt), width), TEXT, BG, false);
-        let stats = [
-            plural(wd.regions, "place", "places"),
-            plural(wd.people, "person", "people"),
-            plural(wd.creatures, "creature", "creatures"),
-            plural(wd.species, "species", "species"),
-            plural(wd.kinds, "kind of thing", "kinds of things"),
-            plural(wd.built, "thing you made", "things you made"),
-        ]
-        .join(" · ");
-        scr.text(x0 + 2, y + 2, &clip(&stats, width), DIM, BG, false);
-    }
-    let fy = h.saturating_sub(2);
-    let build = crate::db::build_name();
-    scr.text(w.saturating_sub(build.chars().count() as u16 + 2), 1, &build, DIM, BG, false);
-    if let Some(n) = crate::net::update::newer() {
-        let line = clip(&format!("{} is out: {}", n.version, n.url.trim_start_matches("https://")), w.saturating_sub(4) as usize);
-        scr.text(w.saturating_sub(line.chars().count() as u16 + 2), 2, &line, ACCENT, BG, false);
-    }
-    scr.center_text(cx, fy.saturating_sub(1), &clip("Drop a .pocket file here to add a world someone shared", w.saturating_sub(4) as usize), DIM);
-    if let Some(n) = note {
-        scr.center_text(cx, fy, &clip(n, w.saturating_sub(4) as usize), ACCENT);
-    } else if deleting && sel < list.len() {
-        let q = clip(&format!("Delete “{}” for good?", list[sel].name), w.saturating_sub(40) as usize);
-        let n = q.chars().count() as u16 + 3 + hint_width("Y delete   Any other key keep");
-        let x = scr.text(w.saturating_sub(n) / 2, fy, &q, ACCENT, BG, true);
-        scr.hints(x + 3, fy, "Y delete   Any other key keep", DIM, BG);
-    } else {
-        let keys = if list.is_empty() { "N new world   J join   Q quit" } else { "↑↓ choose   Enter open   N new   H host   J join   S share   D delete   Q quit" };
-        scr.hints(w.saturating_sub(hint_width(keys)) / 2, fy, keys, DIM, BG);
-    }
-}
-
-/// Your worlds: open one, start a new one, or delete one. `note`: a line
-/// to show first (why a game together ended).
-pub fn pick(win: &mut Win, note: Option<String>) -> Choice {
-    crate::net::update::ask();
-    let mut list = worlds();
-    let (w, h, _) = win.grid();
-    let mut scr = Screen::new(w, h, true);
-    let mut sel = 0usize;
-    let mut deleting = false;
-    let mut note = note;
-    loop {
-        fit(win, &mut scr);
-        draw(&mut scr, &list, sel, deleting, note.as_deref());
-        win.present(&scr, 0, None);
-        for ev in win.pump(Duration::from_millis(500)) {
-            let k = match ev {
-                Ev::Close => return Choice::Quit,
-                Ev::Dropped(p) => {
-                    deleting = false;
-                    note = Some(match crate::share::take_in(&p, &crate::log::dir().join("universes")) {
-                        Ok(added) => {
-                            list = worlds();
-                            let at = added.canonicalize().ok();
-                            sel = list.iter().position(|w| w.path.canonicalize().ok() == at).unwrap_or(0);
-                            format!("Added “{}” to your worlds.", list.get(sel).map_or("the world", |w| w.name.as_str()))
-                        }
-                        Err(e) => format!("Couldn't add {}: {e}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()),
-                    });
-                    continue;
-                }
-                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
-                _ => continue,
-            };
-            note = None;
-            if deleting {
-                deleting = false;
-                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) && sel < list.len() {
-                    if let Err(e) = delete_world(&list[sel].path) {
-                        crate::log::error(format!("delete {}: {e}", list[sel].path.display()));
-                    }
-                    list = worlds();
-                    sel = sel.min(list.len().saturating_sub(1));
-                }
-                continue;
-            }
-            match k.code {
-                KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if !list.is_empty() => deleting = true,
-                KeyCode::Char('h') | KeyCode::Char('H') if !list.is_empty() => match host_on(win, &mut scr, &list[sel]) {
-                    None => return Choice::Quit,
-                    Some(Some(internet)) => return Choice::Host(list[sel].path.clone(), internet),
-                    Some(None) => {}
-                },
-                KeyCode::Char('j') | KeyCode::Char('J') => match join_on(win, &mut scr) {
-                    None => return Choice::Quit,
-                    Some(Some((addr, code))) => return Choice::Join(addr, code),
-                    Some(None) => {}
-                },
-                KeyCode::Char('s') | KeyCode::Char('S') if !list.is_empty() => {
-                    if !share_on(win, &mut scr, &list[sel]) {
-                        return Choice::Quit;
-                    }
-                }
-                KeyCode::Up => sel = sel.saturating_sub(1),
-                KeyCode::Down => sel = (sel + 1).min(list.len().saturating_sub(1)),
-                KeyCode::Enter if !list.is_empty() => return Choice::Open(list[sel].path.clone()),
-                KeyCode::Char('n') | KeyCode::Char('N') => match compose_on(win, &mut scr, Draft::rolled(), "back") {
-                    Composed::Prompt(p) => return Choice::New(p),
-                    Composed::Quit => return Choice::Quit,
-                    Composed::Back => {}
-                },
-                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => return Choice::Quit,
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Where the share screen stands.
-enum Sharing {
-    Asking,
-    Made(PathBuf),
-    Failed(String),
-}
-
-fn size_text(path: &Path) -> String {
-    let b = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as f64;
-    if b >= 1e6 { format!("{:.1} MB", b / 1e6) } else { format!("{:.0} KB", (b / 1e3).max(1.0)) }
-}
-
-/// The share screen: what a copy keeps and leaves out, then where it went.
-fn draw_share(scr: &mut Screen, wd: &World, st: &Sharing) {
-    let (w, h) = (scr.w, scr.h);
-    blank(scr);
-    let cx = w as f32 / 2.0;
-    let top = (h as f32 * 0.30 - 7.0).max(0.0) as u16;
-    scr.title(cx, top as f32 + 2.6, "Share a world", 2.6, ACCENT);
-    let cw = (w as usize).saturating_sub(10).clamp(20, 64).min(w as usize);
-    let x0 = ((w as usize - cw) / 2) as u16;
-    let width = cw.saturating_sub(4);
-    let y0 = top + 6;
-    let lines: Vec<(String, [u8; 3])> = match st {
-        Sharing::Asking => vec![
-            ("Makes a copy of this world as one file to send to anyone.".into(), TEXT),
-            (String::new(), TEXT),
-            ("It keeps the land, everything made in it, its people and".into(), DIM),
-            ("what they remember.".into(), DIM),
-            (String::new(), TEXT),
-            ("It leaves out you: your health, what you carry, how you".into(), DIM),
-            ("look, where you stand, and what the world cost you.".into(), DIM),
-            ("No keys are ever in it.".into(), DIM),
-        ],
-        Sharing::Made(p) => vec![
-            (format!("Saved {} ({}).", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), size_text(p)), TEXT),
-            (format!("In {}", p.parent().map(|d| d.display().to_string()).unwrap_or_default()), DIM),
-            (String::new(), TEXT),
-            ("Send it however you like: a chat, an email, GitHub.".into(), DIM),
-            ("To play it, they drop it on the Infinite Pocket window".into(), DIM),
-            ("while it shows their worlds.".into(), DIM),
-        ],
-        Sharing::Failed(e) => vec![("The copy couldn't be made:".into(), TEXT), (e.clone(), DIM)],
-    };
-    scr.deco(Deco::panel(x0 as f32, y0 as f32 - 1.0, cw as f32, lines.len() as f32 + 4.0, CARD).border(CARD_EDGE));
-    scr.labels.push(Label { x: x0 as f32 + 2.0, y: y0 as f32 - 0.25, text: clip(&wd.name, width), size: 1.45, color: ACCENT, face: Face::Title, center: false });
-    for (i, (l, c)) in lines.iter().enumerate() {
-        scr.text(x0 + 2, y0 + 2 + i as u16, &clip(l, width), *c, BG, false);
-    }
-    let hint = match st {
-        Sharing::Asking => "Enter make the copy   Esc back".to_string(),
-        Sharing::Made(_) => format!("Enter {}   Esc done", crate::share::browser_name()),
-        Sharing::Failed(_) => "Esc back".to_string(),
-    };
-    let y = (y0 + lines.len() as u16 + 5).min(h.saturating_sub(2));
-    scr.hints(w.saturating_sub(hint_width(&hint)) / 2, y, &hint, DIM, BG);
-}
-
-/// Run the share screen for one world; false if the window was closed.
-fn share_on(win: &mut Win, scr: &mut Screen, wd: &World) -> bool {
-    let mut st = Sharing::Asking;
-    loop {
-        fit(win, scr);
-        draw_share(scr, wd, &st);
-        win.present(scr, 0, None);
-        for ev in win.pump(Duration::from_millis(500)) {
-            let k = match ev {
-                Ev::Close => return false,
-                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
-                _ => continue,
-            };
-            match (&st, k.code) {
-                (_, KeyCode::Esc) => return true,
-                (Sharing::Asking, KeyCode::Enter) => {
-                    st = match crate::share::make_copy(&wd.path, &crate::share::copies_dir()) {
-                        Ok(p) => Sharing::Made(p),
-                        Err(e) => {
-                            crate::log::error(format!("share {}: {e:#}", wd.path.display()));
-                            Sharing::Failed(format!("{e:#}"))
-                        }
-                    };
-                }
-                (Sharing::Made(p), KeyCode::Enter) => {
-                    if let Err(e) = crate::share::reveal(p) {
-                        crate::log::error(format!("reveal {}: {e:#}", p.display()));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// The host screen: who can join, and how. None when the window closed,
-/// Some(None) back, Some(Some(over the internet)) host.
-fn host_on(win: &mut Win, scr: &mut Screen, wd: &World) -> Option<Option<bool>> {
-    let ngrok = crate::net::ngrok::find().is_some();
-    loop {
-        fit(win, scr);
-        let (w, h) = (scr.w, scr.h);
-        blank(scr);
-        let cx = w as f32 / 2.0;
-        let top = (h as f32 * 0.30 - 7.0).max(0.0) as u16;
-        scr.title(cx, top as f32 + 2.6, "Play together", 2.6, ACCENT);
-        let cw = (w as usize).saturating_sub(10).clamp(20, 66).min(w as usize);
-        let x0 = ((w as usize - cw) / 2) as u16;
-        let width = cw.saturating_sub(4);
-        let y0 = top + 6;
-        let mut lines: Vec<(String, [u8; 3])> = vec![
-            ("Friends join this world and play in it with you.".into(), TEXT),
-            (String::new(), TEXT),
-            ("It runs here, and what they say and make is asked of".into(), DIM),
-            ("your LLM: you pay for it (each guest up to what you set".into(), DIM),
-            ("in settings). They need no key and no copy of the world.".into(), DIM),
-            (String::new(), TEXT),
-            ("You get an address and a code to give them; they press".into(), DIM),
-            ("J on their worlds list. Games on this network show there".into(), DIM),
-            ("by themselves.".into(), DIM),
-            (String::new(), TEXT),
-        ];
-        if ngrok {
-            lines.push(("I: from anywhere too, through ngrok (installed here).".into(), TEXT));
-        } else {
-            lines.push(("From outside this network: install ngrok (ngrok.com/download)".into(), DIM));
-            lines.push(("and sign in once; then I hosts through it.".into(), DIM));
-        }
-        scr.deco(Deco::panel(x0 as f32, y0 as f32 - 1.0, cw as f32, lines.len() as f32 + 4.0, CARD).border(CARD_EDGE));
-        scr.labels.push(Label { x: x0 as f32 + 2.0, y: y0 as f32 - 0.25, text: clip(&wd.name, width), size: 1.45, color: ACCENT, face: Face::Title, center: false });
-        for (i, (l, c)) in lines.iter().enumerate() {
-            scr.text(x0 + 2, y0 + 2 + i as u16, &clip(l, width), *c, BG, false);
-        }
-        let hint = if ngrok { "Enter host on this network   I host for anyone   Esc back" } else { "Enter host on this network   Esc back" };
-        let y = (y0 + lines.len() as u16 + 5).min(h.saturating_sub(2));
-        scr.hints(w.saturating_sub(hint_width(hint)) / 2, y, hint, DIM, BG);
-        win.present(scr, 0, None);
-        for ev in win.pump(Duration::from_millis(500)) {
-            let k = match ev {
-                Ev::Close => return None,
-                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
-                _ => continue,
-            };
-            match k.code {
-                KeyCode::Esc => return Some(None),
-                KeyCode::Enter => return Some(Some(false)),
-                KeyCode::Char('i') | KeyCode::Char('I') if ngrok => return Some(Some(true)),
-                _ => {}
-            }
-        }
-    }
-}
-
-/// What the join screen has typed in.
-#[derive(Default)]
-struct JoinForm {
-    addr: String,
-    code: String,
-    /// Typing the code (else the address).
-    on_code: bool,
-    /// The game picked from those heard on the network.
-    pick: Option<usize>,
-}
-
-impl JoinForm {
-    /// Text pasted: an invite ("address code") fills both.
-    fn paste(&mut self, t: &str) {
-        let parts: Vec<&str> = t.split_whitespace().collect();
-        match parts.as_slice() {
-            [a, c] => {
-                self.addr = a.to_string();
-                self.code = c.to_string();
-                self.on_code = true;
-            }
-            _ => {
-                let field = if self.on_code { &mut self.code } else { &mut self.addr };
-                field.push_str(t.trim());
-            }
-        }
-    }
-}
-
-/// The join screen: games heard on this network, or an address and the
-/// code typed (or pasted). None when the window closed, Some(None) back.
-fn join_on(win: &mut Win, scr: &mut Screen) -> Option<Option<(String, String)>> {
-    let mut listen = crate::net::discover::Listen::start();
-    let mut f = JoinForm::default();
-    let mut found = Vec::new();
-    let mut note: Option<String> = None;
-    loop {
-        if let Some(l) = listen.as_mut() {
-            found = l.hosts();
-        }
-        if f.pick.is_some_and(|i| i >= found.len()) {
-            f.pick = None;
-        }
-        fit(win, scr);
-        draw_join(scr, &f, &found, note.as_deref());
-        win.present(scr, 0, None);
-        for ev in win.pump(Duration::from_millis(300)) {
-            let k = match ev {
-                Ev::Close => return None,
-                Ev::Paste(t) => {
-                    f.paste(&t);
-                    continue;
-                }
-                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
-                _ => continue,
-            };
-            note = None;
-            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::SUPER);
-            match k.code {
-                KeyCode::Esc => return Some(None),
-                KeyCode::Char('v') if ctrl => {
-                    if let Some(t) = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()) {
-                        f.paste(&t);
-                    }
-                }
-                KeyCode::Down if !found.is_empty() => {
-                    let i = f.pick.map_or(0, |i| (i + 1).min(found.len() - 1));
-                    f.pick = Some(i);
-                    f.addr = found[i].addr.clone();
-                    f.on_code = true;
-                }
-                KeyCode::Up => {
-                    if let Some(i) = f.pick {
-                        if i == 0 {
-                            f.pick = None;
-                        } else {
-                            f.pick = Some(i - 1);
-                            f.addr = found[i - 1].addr.clone();
-                        }
-                    }
-                }
-                KeyCode::Tab => f.on_code = !f.on_code,
-                KeyCode::Backspace => {
-                    let field = if f.on_code { &mut f.code } else { &mut f.addr };
-                    field.pop();
-                    if !f.on_code {
-                        f.pick = None;
-                    }
-                }
-                KeyCode::Enter => {
-                    if f.addr.trim().is_empty() {
-                        note = Some("Type the host's address, or pick a game heard on this network (↓).".into());
-                    } else if f.code.trim().is_empty() {
-                        f.on_code = true;
-                        note = Some("Now the code the host gave you.".into());
-                    } else {
-                        return Some(Some((f.addr.trim().to_string(), f.code.trim().to_string())));
-                    }
-                }
-                KeyCode::Char(c) if !ctrl => {
-                    if c == ' ' && !f.on_code && !f.addr.is_empty() {
-                        f.on_code = true;
-                    } else {
-                        let field = if f.on_code { &mut f.code } else { &mut f.addr };
-                        field.push(c);
-                        if !f.on_code {
-                            f.pick = None;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn draw_join(scr: &mut Screen, f: &JoinForm, found: &[crate::net::discover::Found], note: Option<&str>) {
-    let (w, h) = (scr.w, scr.h);
-    blank(scr);
-    let cx = w as f32 / 2.0;
-    let top = (h as f32 * 0.25 - 6.0).max(0.0) as u16;
-    scr.title(cx, top as f32 + 2.6, "Join a world", 2.6, ACCENT);
-    let cw = (w as usize).saturating_sub(10).clamp(20, 66).min(w as usize);
-    let x0 = ((w as usize - cw) / 2) as u16;
-    let width = cw.saturating_sub(4);
-    let mut y = top + 6;
-    scr.text(x0 + 2, y, "On this network", DIM, BG, false);
-    y += 1;
-    if found.is_empty() {
-        scr.text(x0 + 2, y + 1, &clip("No games heard yet (a host on this Wi-Fi shows here by itself).", width), DIM, BG, false);
-        y += 3;
-    }
-    for (i, g) in found.iter().enumerate().take(5) {
-        let sel = f.pick == Some(i);
-        let card = Deco::panel(x0 as f32, y as f32 + 0.4, cw as f32, 2.2, if sel { CARD_SEL } else { CARD });
-        scr.deco(if sel { card.border(ACCENT) } else { card });
-        let build = if g.same_build { String::new() } else { format!(" · another build ({})", g.build) };
-        scr.text(x0 + 2, y + 1, &clip(&format!("{}'s “{}”  {}{build}", g.host, g.world, g.addr), width), if sel { ACCENT } else { TEXT }, BG, false);
-        y += 3;
-    }
-    y += 1;
-    let field = |scr: &mut Screen, y: u16, label: &str, v: &str, on: bool| {
-        scr.text(x0 + 2, y, label, DIM, BG, false);
-        let card = Deco::panel(x0 as f32, y as f32 + 1.0, cw as f32, 1.6, CARD);
-        scr.deco(if on { card.border(ACCENT) } else { card });
-        let shown = if on { format!("{v}▏") } else { v.to_string() };
-        scr.text(x0 + 2, y + 1, &clip(&shown, width), TEXT, BG, false);
-    };
-    field(scr, y, "Address (192.168.1.20:7777, or an https://….ngrok-free.app link)", &f.addr, !f.on_code);
-    y += 4;
-    field(scr, y, "Code", &f.code, f.on_code);
-    y += 4;
-    if let Some(n) = note {
-        scr.center_text(cx, y, &clip(n, w.saturating_sub(4) as usize), ACCENT);
-    }
-    let hint = "↑↓ pick a game   Tab address/code   ⌘V paste an invite   Enter join   Esc back";
-    let hy = h.saturating_sub(2);
-    scr.hints(w.saturating_sub(hint_width(hint)) / 2, hy, hint, DIM, BG);
-}
-
-/// A title and a line in the middle (while a world opens).
+/// A title and a line in the middle (while a world opens), over the land of words.
 pub fn notice(win: &mut Win, title: &str, line: &str) {
     let (w, h, _) = win.grid();
     let mut scr = Screen::new(w, h, true);
-    blank(&mut scr);
-    scr.title(w as f32 / 2.0, h as f32 / 2.0 - 1.5, title, 2.4, ACCENT);
-    scr.center_text(w as f32 / 2.0, h / 2 + 1, &clip(line, w.saturating_sub(4) as usize), DIM);
+    crate::ui::title::Backdrop::new().draw(&mut scr, 0.0, 1.0);
+    scr.title(w as f32 / 2.0, h as f32 / 2.0 - 1.5, title, 2.4, crate::ui::ACCENT);
+    crate::ui::note(&mut scr, w as f32 / 2.0, h as f32 / 2.0 + 1.0, &crate::ui::fit(line, w as f32 - 4.0, 0.92), crate::ui::DIM);
     win.present(&scr, 0, None);
 }
 
@@ -910,43 +309,6 @@ mod tests {
         assert_eq!(text(&d), "a quiet ");
         d.key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
         assert_eq!(text(&d), "a ");
-    }
-
-    #[test]
-    fn wraps_on_words_and_draws_at_any_size() {
-        let d = Draft { text: "salt flats where caravans trade salt for everything".chars().collect(), cursor: 0, fresh: false };
-        let lines = d.lines(20);
-        assert!(lines.len() > 1 && lines.iter().all(|(s, e)| e - s <= 20));
-        assert_eq!(lines.first().unwrap().0, 0);
-        assert_eq!(lines.last().unwrap().1, d.text.len());
-        for (w, h) in [(30, 10), (80, 24), (12, 6), (200, 60)] {
-            let mut scr = Screen::new(w, h, true);
-            let mut d = Draft::rolled();
-            draw_new(&mut scr, &d, "back");
-            let shown = screen_text(&scr);
-            assert!((shown.contains("Enter") && shown.contains("begin")) || w < 20, "{shown}");
-            d.key(key(KeyCode::Home));
-            draw_new(&mut scr, &d, "back");
-            draw(&mut scr, &[], 0, false, None);
-        }
-        let mut scr = Screen::new(100, 30, true);
-        draw_new(&mut scr, &Draft::rolled(), "quit");
-        let shown = screen_text(&scr);
-        assert!(shown.contains("A new world") && shown.contains("Esc") && shown.contains("quit"), "{shown}");
-    }
-
-    #[test]
-    fn share_screen_says_what_a_copy_is_and_where_it_went() {
-        let wd = World { path: "/w/salt.pocket".into(), name: "Salt Flats".into(), prompt: String::new(), regions: 0, people: 0, creatures: 0, species: 0, kinds: 0, built: 0, modified: SystemTime::UNIX_EPOCH };
-        for (w, h) in [(100, 30), (24, 8)] {
-            let mut scr = Screen::new(w, h, true);
-            draw_share(&mut scr, &wd, &Sharing::Asking);
-            assert!(w < 40 || screen_text(&scr).contains("No keys"), "{}", screen_text(&scr));
-            draw_share(&mut scr, &wd, &Sharing::Made("/Users/x/Downloads/salt.pocket".into()));
-            assert!(w < 40 || screen_text(&scr).contains("Saved salt.pocket"), "{}", screen_text(&scr));
-            draw_share(&mut scr, &wd, &Sharing::Failed("disk full".into()));
-            draw(&mut scr, &[], 0, false, Some("Added “Salt Flats” to your worlds."));
-        }
     }
 
     #[test]
