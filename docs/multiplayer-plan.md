@@ -5,7 +5,8 @@ an ngrok tunnel. The host runs the whole simulation and every LLM call and
 pays for them. Guests need no key and no world file. A few friends, not an
 MMO: up to about 4 guests, trusted, and the host's machine is the server.
 
-Nothing here is built yet. This is the design to agree on before coding.
+Built on the `multiplayer` branch (steps 0–6 below). What differs from the
+first design, and what is still missing, is at the end ("As built").
 
 ## What the code assumes today
 
@@ -278,3 +279,38 @@ achievements, kicking a guest, guest voices heard by others.
   that player and their name to everyone else.
 - There is no pause today (the sim ticks while the settings menu is open),
   so nothing changes there.
+
+## As built
+
+- **Code**: `src/net` (wire messages, host, guest, the world's tables kept
+  the same `rows`, local network `discover`, `ngrok`, `update`),
+  `src/app/together.rs` (hosting and joining in the game), `src/sim/travelers.rs`
+  (other travelers as bodies in the world), `src/sim/mirror.rs` (the live
+  world as a guest sees it).
+- **Traveler 0 stays in the old places** (the `player` table, kv
+  `player.body`, the traveler half of `sim.night`), so no migration was
+  needed; guests are rows of `travelers`. `ActorId::Player` is "this game's
+  traveler" on both sides: on a guest's copy the host is `Traveler(0)`.
+- **Movement**: a guest moves themselves and the host keeps it (a step over
+  25 m is put back). No prediction beyond that is needed for a few friends.
+- **The live world** goes as changes per guest at 20 Hz (things, beings,
+  burning ground, flashes, conjurings, weather, the guest's own wounds); the
+  world's tables (types, instances, regions, people, species, made ground)
+  are watched on the host's file and sent as rows; the guest's copy makes
+  its world anew from them in the background.
+- **Who pays**: each LLM request carries the guest it is for (a tokio task
+  local), so its cost counts against what that guest may spend. Requests a
+  guest's deed sets off later (a new kind of thing to write) are the host's.
+- **Talk between players**: `/say` (not in the first design).
+- **The internet** is opt-in: `I` on the host screen (or `pocket host
+  --ngrok`); plain hosting is the local network only.
+
+Not yet:
+
+- Guests can't drive vehicles or ride (their deeds go to the host, but
+  steering is the host's own keys).
+- Notes about places far from the host but near a guest are told as the host
+  hears them (near the host).
+- A guest's own creations are recorded as made by "the traveler".
+- Guests earn no achievements; nobody can be sent away by the host yet.
+- The ngrok tunnel was tested against its log format, not live.
