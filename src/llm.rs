@@ -75,8 +75,8 @@ impl Role {
     }
 }
 
-/// Test double: (system, messages) → reply.
-#[cfg(test)]
+/// A scripted model: (system, messages) → reply. The tests' double, and
+/// how `pocket author` answers the builder from files.
 pub type Script = Arc<dyn Fn(&str, &[Msg]) -> String + Send + Sync>;
 
 #[derive(Clone)]
@@ -84,7 +84,6 @@ enum Provider {
     /// `workspace`: required for user-scoped keys (sk-ant-usr-…).
     Anthropic { key: String, base: String, workspace: Option<String> },
     OpenAi { key: Option<String>, base: String },
-    #[cfg(test)]
     Script(Script),
 }
 
@@ -215,7 +214,6 @@ impl Llm {
         Some(Arc::new(Llm { http, provider, models, db, spent: Mutex::new(0.0), budget: Mutex::new(budget), spent_by: Default::default() }))
     }
 
-    #[cfg(test)]
     pub fn scripted(db: Arc<Db>, f: Script) -> Arc<Llm> {
         Arc::new(Llm { http: reqwest::Client::new(), provider: Provider::Script(f), models: std::array::from_fn(|_| "script".to_string()), db, spent: Mutex::new(0.0), budget: Mutex::new(None), spent_by: Default::default() })
     }
@@ -228,7 +226,6 @@ impl Llm {
         match &self.provider {
             Provider::Anthropic { .. } => format!("Anthropic ({})", self.models[0]),
             Provider::OpenAi { base, .. } => format!("{base} ({})", self.models[0]),
-            #[cfg(test)]
             Provider::Script(_) => "script".into(),
         }
     }
@@ -269,7 +266,6 @@ impl Llm {
             let r = match &self.provider {
                 Provider::Anthropic { key, base, workspace } => self.anthropic(key, base, workspace.as_deref(), &model, req, &mut on_text).await,
                 Provider::OpenAi { key, base } => self.openai(key.as_deref(), base, &model, req, &mut on_text).await,
-                #[cfg(test)]
                 Provider::Script(f) => {
                     let system = format!("{}\n\n{}", req.system, req.system_tail);
                     let text = f(&system, &req.messages);

@@ -212,6 +212,8 @@ pub struct Terrain {
     /// How far under the land's own surface the ground water lies, if any:
     /// ground dug deeper than it fills up to it.
     pub groundwater: Option<f32>,
+    /// The land's large shape where the world gives one (see `landforms`).
+    pub lands: Option<std::sync::Arc<crate::landforms::LandMap>>,
 }
 
 /// A box (or round pit) of ground taken away, down to `floor`.
@@ -410,13 +412,19 @@ impl Terrain {
         // Offsets stay zero: per-field seeds decorrelate the noise, and any offset
         // would cost precision (and CPU/GPU parity) far from the origin.
         let o = |_i: u32| 0.0f32;
-        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default(), rivers: Default::default(), sea: WATER_LEVEL, groundwater: None }
+        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default(), rivers: Default::default(), sea: WATER_LEVEL, groundwater: None, lands: None }
     }
 
     /// With the world's sea (None: no sea) and ground water.
     pub fn with_water(mut self, sea: Option<f32>, groundwater: Option<f32>) -> Self {
         self.sea = sea.unwrap_or(crate::ground::NO_WATER);
         self.groundwater = groundwater;
+        self
+    }
+
+    /// With the world's landforms (none: the seed's land everywhere).
+    pub fn with_lands(mut self, forms: &[crate::landforms::Landform]) -> Self {
+        self.lands = crate::landforms::LandMap::bake(forms, &self.biomes).map(std::sync::Arc::new);
         self
     }
 
@@ -430,6 +438,25 @@ impl Terrain {
     }
 
     pub fn weights(&self, x: f32, z: f32) -> [f32; MAX_BIOMES] {
+        self.weights_rise(x, z).0
+    }
+
+    /// The biomes' weights at (x, z) and how far landforms raise the land
+    /// there. Twin of `terrain_weights` in common.wgsl.
+    pub fn weights_rise(&self, x: f32, z: f32) -> ([f32; MAX_BIOMES], f32) {
+        let mut w = self.climate_weights(x, z);
+        let mut rise = 0.0;
+        if let Some((t, r)) = self.lands.as_ref().and_then(|m| m.at(x, z)) {
+            let s: f32 = t.iter().sum();
+            for (wi, ti) in w.iter_mut().zip(t) {
+                *wi = *wi * (1.0 - s) + ti;
+            }
+            rise = r;
+        }
+        (w, rise)
+    }
+
+    fn climate_weights(&self, x: f32, z: f32) -> [f32; MAX_BIOMES] {
         let t = vnoise2(x * 0.0011 + self.off[0], z * 0.0011 + self.off[1], self.seed);
         let m = vnoise2(x * 0.0011 + self.off[2], z * 0.0011 + self.off[3], self.seed.wrapping_add(17));
         let t = ((t - 0.5) * 2.4 + 0.5).clamp(0.0, 1.0);
@@ -449,8 +476,8 @@ impl Terrain {
     }
 
     pub fn sample(&self, x: f32, z: f32) -> Sample {
-        let w = self.weights(x, z);
-        let mut base = 0.0;
+        let (w, rise) = self.weights_rise(x, z);
+        let mut base = rise;
         let mut amp = 0.0;
         let mut rough = 0.0;
         let mut cliffs = 0.0;
@@ -557,8 +584,8 @@ impl Terrain {
     /// the foot of a rock face (0 … 1): where what falls off cliffs gathers
     /// (boulders, stones).
     pub fn height_and_foot(&self, x: f32, z: f32) -> (f32, f32) {
-        let w = self.weights(x, z);
-        let (mut base, mut amp, mut rough, mut cliffs, mut craters) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let (w, rise) = self.weights_rise(x, z);
+        let (mut base, mut amp, mut rough, mut cliffs, mut craters) = (rise, 0.0, 0.0, 0.0, 0.0);
         for (i, b) in self.biomes.iter().enumerate() {
             base += w[i] * b.base;
             amp += w[i] * b.amp;

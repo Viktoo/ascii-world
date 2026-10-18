@@ -28,7 +28,7 @@ export function color(x, y, z, k) {
 }
 ```
 
-Coordinates: y is up, +z is the object's front. The local origin is the centre of the object's footprint; the object normally stands on y = 0 (it is placed so its lowest solid point touches the ground). The whole shape must lie inside the box [-bx, bx] x [-by, by] x [-bz, bz] given by meta.bounds, and must not be empty. Make bounds snug (a little margin is fine): oversized bounds cost rendering time.
+Coordinates: y is up, +z is the object's front. Someone standing in front of it, looking back at it, has +x on their LEFT: lettering, numbers, a face or a clock on the front run toward -x (draw text so it reads with -x as "rightward"; on the back face, +x). The local origin is the centre of the object's footprint; the object normally stands on y = 0 (it is placed so its lowest solid point touches the ground). The whole shape must lie inside the box [-bx, bx] x [-by, by] x [-bz, bz] given by meta.bounds, and must not be empty. Make bounds snug (a little margin is fine): oversized bounds cost rendering time.
 
 ## Values and syntax
 - Every value is a number (f32), a boolean (from comparisons), or a vec3 (a colour from rgb/hsv/mix, or a point from rotX/rotY/rotZ or vec3(x, y, z)). Read vec3 components with .x .y .z (or .r .g .b), e.g. `const q = rotY(x, y, z, 0.5); sphere(q.x, q.y, q.z, 1)`.
@@ -160,6 +160,18 @@ pub const GENESIS_TASK: &str = r#"Design the base layer of this universe. Reply 
 - craters 0..1 (per biome, default 0) = how pocked the land is with round impact craters, bowls with raised rims from a few metres to over a hundred across: 0 none (any earthly land); 0.3 the odd one (a meteor-struck plain, a shelled battlefield); 0.8 the Moon's or Mercury's cratered highlands; 1 overlapping everywhere. Keep 0 where people farm and build.
 - gravity = how hard things fall in m/s²: 9.81 anywhere on Earth (leave it so for any earthly place); the Moon 1.62, Mars 3.7, a small asteroid 0.6, a heavy world up to 25. Bodies jump as high and throw as hard as their muscles let them there.
 - air 0..1 = how much breathable air there is out in the open: 1 anywhere on Earth (leave it); 0.3 thin (a high Martian dome's leak, a mountain of a dead world); 0 none (the Moon, an asteroid, deep space, under a sea with no air). Without air, fire won't burn, the world's sounds don't carry, and any being that breathes suffocates in about a minute unless it is inside a building that holds air or wears or holds something that gives it (the property "air": a space suit, a helmet, a tank; give such buildings and suits meta.props { air: 1 } when the world needs them). Species that don't breathe say so (see "breathes" below). An airless sky is black even by day (every sky and horizon colour near black, the sun stark white, fog 1), and its climate has one still, clear kind (clouds 0, wind 0, nothing falls).
+
+Optionally, in the same JSON object, the land's large shape: "landforms", when the description names a real place (Santa Monica, the Isle of Skye, Kyoto, the Grand Canyon) or a clear shape of land (an island in the open sea, a valley between two ranges, a crater lake, a long peninsula, a town between the mountains and the sea). Without them the seed shapes the land at random; with them the land is shaped as they say, for tens of kilometres, and the seed only adds its hills, colours and plants:
+  "landforms": [
+    { "name": "the plain", "biome": "…", "outline": [[-8000, -8000], [8000, -8000], [8000, 8000], [-8000, 8000]], "edge": 1000 },
+    { "name": "the bay", "biome": "…", "outline": [[-300, -4000], [-200, 0], [-600, 3000], [-6000, 4000], [-6000, -5000]], "edge": 250 },
+    { "name": "the range", "biome": "…", "line": [[-3000, 6000], [4000, 7000]], "width": 3000, "edge": 1200, "rise": 500, "rugged": 0.8 }
+  ]
+- Metres; x is east, z is north, and the traveler begins at (0, 0): put the place "start" names there. For a real place keep its true distances and directions (the shore 300 m west of the town, the mountains 6 km to the north, the far shore of the bay 25 km away).
+- biome: one of your biomes by name; inside its shape the land is that biome (its base, amp, cliffs, ground and plants). "outline" is an area (6–30 points round it); "line" with "width" is a band along points (a ridge, a range, a valley floor, a spit). edge: metres of soft border either side of the shape, half and half on it (a beach 200, hills 800, a range's foothills 1500).
+- rise: metres it lifts the land where it is wholly itself, deeper inside than edge (hills 50–300, a range 300–1500, high mountains up to 2500; below 0 it sinks it), over the biome's own base. rugged 0..1: how broken that rise is into ridges and canyons (a smooth mesa 0, mountains 0.8).
+- Later landforms lie over earlier ones. Lay the land first (one big outline of the main land biome over all of it, so the seed puts no sea in the middle of it), then the sea or lakes over it, then islands, hills and ranges.
+- Usually 2–6. Leave it out for an invented land the seed may shape as it likes.
 
 Also in the same JSON object, the land's weather: 2 to 6 kinds it has, each with how often it comes and how long a spell lasts. Fit them to the land (a desert: fair, haze, the odd sandstorm; a coast: fair, sea fog, squalls; a fae wood: soft sun, glimmer rain; a dead land: grey, ash fall), and let at least one kind make sunsets worth seeing (some cloud, not all of it):
   "climate": { "kinds": [

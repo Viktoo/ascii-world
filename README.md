@@ -533,6 +533,8 @@ pocket bench FILE --distance 2000 --size 250x70                                 
 pocket gpubench FILE --at 0,0,90 --px 640x360 [--breakdown]                       # GPU time for one view, and by part
 pocket gpubench FILE --at 0,0,90 --px 640x360 --ab 32 --shots DIR               # A/B two flag sets in one run: speed and picture
 pocket check my_type.js                                                         # validate an object type
+pocket author DIR [--out FILE]                                                  # make a world written by hand (src/author.rs)
+pocket author heights FILE x0,z0,x1,z1 STEP                                     # the ground's heights on a grid
 pocket selftest                                                                 # GPU/CPU parity + validator
 pocket sim FILE --hours 24 --seed 5 --events out.jsonl                          # run the world headless, fast; report what emerged
 pocket sim --replay out.jsonl --kinds ignited,caught                            # read a run back

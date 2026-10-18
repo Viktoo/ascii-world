@@ -59,6 +59,8 @@ pub struct Globals {
     pub voids: [[f32; 4]; MAX_VOIDS * 2],
     /// How cratered each biome is, four to a row.
     pub craters: [[f32; 4]; 2],
+    /// The landform map (see `landforms::LandMap::globals`; 0 samples: none).
+    pub lands: [f32; 4],
 }
 
 pub const MAX_LIGHTS: usize = 8;
@@ -425,6 +427,12 @@ pub fn terrain_epoch(t: &Terrain) -> u32 {
             h = crate::noise::pcg(h ^ v.to_bits());
         }
     }
+    if let Some(m) = &t.lands {
+        for v in m.globals() {
+            h = crate::noise::pcg(h ^ v.to_bits());
+        }
+        h = crate::noise::pcg(h ^ m.words.len() as u32 ^ m.words.iter().step_by(97).fold(0u32, |a, w| a.rotate_left(5) ^ w));
+    }
     h.max(1)
 }
 
@@ -525,6 +533,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         ground,
         voids,
         craters,
+        lands: t.lands.as_ref().map(|m| m.globals()).unwrap_or_default(),
     }
 }
 

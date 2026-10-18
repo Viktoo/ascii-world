@@ -2,6 +2,7 @@
 
 mod achievements;
 mod audio;
+mod author;
 mod app;
 mod brain;
 mod db;
@@ -28,6 +29,7 @@ mod term;
 mod terrain;
 mod ui;
 mod ground;
+mod landforms;
 mod inground;
 mod settle;
 mod rivers;
@@ -76,6 +78,8 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
   pocket inspect FILE player|npc:ID|thing:ID|instance:ID|cell:X,Z|NAME   (or --look [--as WHO])
   pocket listen --play | --demo | FILE [--species NAME | --at x,z,yawDeg --walk --calls]   hear it (WAVs)
   pocket check TYPE.js                   validate an object type module (steps 1-4)
+  pocket author DIR [--out FILE]         make a world written by hand (see src/author.rs)
+  pocket author heights FILE x0,z0,x1,z1 STEP   the ground's heights on a grid
   pocket selftest                        GPU/CPU parity and validator checks
 
 Environment: ANTHROPIC_API_KEY, or POCKET_LLM_BASE_URL (+ POCKET_LLM_API_KEY) for any
@@ -95,11 +99,11 @@ fn main() {
     }
 }
 
-fn flag(args: &[String], name: &str) -> Option<String> {
+pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
-fn has(args: &[String], name: &str) -> bool {
+pub(crate) fn has(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
@@ -164,6 +168,7 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("selftest") => selftest(),
         Some("gpubench") => gpubench(&args[1..]),
         Some("check") => check_file(&args[1..]),
+        Some("author") => author::cli(&args[1..]),
         Some("sim") => sim::headless::run_sim_cli(&args[1..]),
         Some("act") => sim::headless::act_cli(&args[1..]),
         Some("inspect") => sim::headless::inspect_cli(&args[1..]),
@@ -188,7 +193,7 @@ fn default_path(prompt: &str) -> PathBuf {
 }
 
 /// New worlds start here (older worlds, made before difficulty, stay peaceful).
-const NEW_DIFFICULTY: &str = "normal";
+pub(crate) const NEW_DIFFICULTY: &str = "normal";
 
 fn create_universe(path: &Path, prompt: &str) -> Result<()> {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
@@ -535,6 +540,8 @@ fn render_once(l: &Loaded, mut cam: render::Camera, w: u32, h: u32, pixel_aspect
         live.weather_st.spell = Some(world::weather::Spell { kind, from: t_game - 3.0 * world::weather::HOUR, until: t_game + 3.0 * world::weather::HOUR, by: String::new() });
         live.step_weather();
     }
+    // Lamps and lit windows shine after dark, as in play.
+    live.cache.overlay.lamps = render::sky::lighting(t_game, &snap.look.palette).night;
     let aspect = w as f32 / h as f32 * pixel_aspect;
     // Seen through the traveler's eyes, their arms posed: a gesture's
     // height ("punch", "grab", "wave"…), "hold", or "conjure".

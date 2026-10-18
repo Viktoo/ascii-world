@@ -57,6 +57,48 @@ fn gpu_parity_types_and_terrain() {
     eprintln!("terrain parity worst error {worst:e}");
 }
 
+/// Landforms (a bay, a range raised over the land) agree on the GPU and
+/// the CPU: heights and ground colours, inside, outside and on their borders.
+#[test]
+fn landforms_agree_on_gpu_and_cpu() {
+    let Ok(gpu) = Gpu::new() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let types = all_types();
+    let refs: Vec<(u32, &CompiledType)> = types.iter().map(|(i, t)| (*i, t)).collect();
+    let pipe = gpu.build_pipeline(&shader::assemble(&refs), 1).unwrap();
+    let biomes = default_biomes();
+    let forms = vec![
+        crate::landforms::Landform { biome: "1".into(), outline: vec![[-3000.0, -3000.0], [-200.0, -2500.0], [400.0, 2800.0], [-3000.0, 3000.0]], edge: 250.0, ..Default::default() },
+        crate::landforms::Landform { biome: "0".into(), line: vec![[600.0, -2000.0], [1800.0, 2400.0]], width: 900.0, edge: 1200.0, rise: 350.0, rugged: 0.8, ..Default::default() },
+    ];
+    let terrain = crate::terrain::Terrain::new(4242, biomes).with_lands(&forms);
+    let m = terrain.lands.clone().unwrap();
+    let mut g = probe_globals(&terrain);
+    assert!(g.lands[3] > 1.0);
+    let mut pts = Vec::new();
+    for i in 0..3000 {
+        let a = i as f32 * 2.399;
+        let r = (i as f32).sqrt() * 70.0;
+        pts.push([a.cos() * r + 300.0, 0.0, a.sin() * r, 0.0]);
+    }
+    g.ground = [0.0; 4];
+    let out = gpu.probe_lands(&pipe, &g, &m.words, 1, &pts).unwrap();
+    let (mut worst, mut worst_c, mut risen) = (0.0f32, 0.0f32, 0);
+    for (p, o) in pts.iter().zip(&out) {
+        let c = terrain.height(p[0], p[2]);
+        risen += (c > 150.0) as usize;
+        worst = worst.max((o[0] - c).abs() / c.abs().max(1.0));
+        let pal = crate::terrain::Palette::default();
+        let col = terrain.ground_color(&pal, p[0], p[2], c, 1.0);
+        worst_c = worst_c.max((o[1] - col.x).abs().max((o[2] - col.y).abs()).max((o[3] - col.z).abs()));
+    }
+    assert!(risen > 50, "the range stands: {risen}");
+    assert!(worst <= 1e-4, "landform height parity: worst relative error {worst}");
+    assert!(worst_c <= 2e-3, "landform colour parity: worst error {worst_c}");
+}
+
 /// Cliffs agree on the GPU and the CPU, faces and all: points packed onto
 /// the steepest ground of a land that is cliffs wherever it has hills.
 #[test]
@@ -248,8 +290,8 @@ fn ground_edits_agree_on_gpu_and_cpu() {
         let r = (i as f32).sqrt() * 2.2;
         pts.push([a.cos() * r + (i % 7) as f32 * 0.13, 0.0, a.sin() * r - 10.0, 0.0]);
     }
-    let out = gpu.probe_ground(&pipe, &g, &pack.words, 1, 0, &GpuInst::default(), &pts).unwrap();
-    let wat = gpu.probe_ground(&pipe, &g, &pack.words, 4, 0, &GpuInst::default(), &pts).unwrap();
+    let out = gpu.probe_ground(&pipe, &g, &pack.words, &[0], 1, 0, &GpuInst::default(), &pts).unwrap();
+    let wat = gpu.probe_ground(&pipe, &g, &pack.words, &[0], 4, 0, &GpuInst::default(), &pts).unwrap();
     let (mut worst, mut worst_w, mut worst_c, mut moved, mut wet) = (0.0f32, 0.0f32, 0.0f32, 0, 0);
     for ((p, o), w) in pts.iter().zip(&out).zip(&wat) {
         let c = terrain.height(p[0], p[2]);

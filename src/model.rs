@@ -206,8 +206,14 @@ pub fn find_spawn(t: &Terrain) -> Vec3 {
 
 /// For a newly made land: near the middle of a region, so only that one
 /// region is in sight and loading waits for it alone; the nearest region
-/// whose middle lies in the first biome (where the land's "start" is).
+/// whose middle lies in the first biome (where the land's "start" is). A
+/// land shaped by landforms begins at the origin, where they put its start.
 pub fn find_first_spawn(t: &Terrain) -> Vec3 {
+    // A land given its shape (landforms) is laid round where the traveler
+    // begins: the origin.
+    if t.lands.is_some() {
+        return spawn_near(t, 0.0, 0.0);
+    }
     let reg = crate::world::REGION;
     let mid = |i: i32, j: i32| (i as f32 * reg + reg / 2.0, j as f32 * reg + reg / 2.0);
     let first = (0..=16i32).flat_map(|ring| {
@@ -276,7 +282,7 @@ impl WorldModel {
         let u = db.universe()?;
         let mut look: Look = serde_json::from_str(&u.look_json).unwrap_or_default();
         crate::terrain::add_litter(&mut look.biomes);
-        let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()).with_water(look.sea, look.groundwater));
+        let terrain = Arc::new(Terrain::new(u.seed, look.biomes.clone()).with_water(look.sea, look.groundwater).with_lands(&look.landforms));
         terrain.set_rivers(look.rivers, look.palette.sand, look.caves);
         let mut m = WorldModel {
             db: db.clone(),
@@ -1019,6 +1025,9 @@ impl WorldModel {
             None => lo.min(ground) + ((hi - lo) * 0.3).min(0.4) - entry.bottom * scale - 0.12,
             // In a cave, on its floor: the land above doesn't matter.
             Some(y) if t.void(Vec3::new(pl.x, y + entry.bottom * scale + 0.3, pl.z)) < 0.0 => y,
+            // A world written by hand stands it exactly where it says (its
+            // y = 0 at that level: on a deck, piles sunk into the sand).
+            Some(y) if crate::brain::authored() => y,
             Some(y) => {
                 let base = y + entry.bottom * scale;
                 if base - hi > 0.5 {
@@ -1041,7 +1050,9 @@ impl WorldModel {
         let y = if afloat && pl.y.is_none() && ground < wl - 0.1 { wl - ((entry.top - entry.bottom) * scale * 0.25).clamp(0.1, 1.0) - entry.bottom * scale } else { y };
         let under = entry.ct.meta.drive.as_ref().is_some_and(|d| d.on == "under");
         let water_ok = afloat || under || entry.ct.meta.tags.iter().any(|t| matches!(t.as_str(), "water" | "boat" | "bridge" | "pier"));
-        if ground < wl - 0.6 && !water_ok {
+        // (Something up on a pier or a jetty over the water stands dry.)
+        let over = y + entry.bottom * scale > wl + 0.3;
+        if ground < wl - 0.6 && !water_ok && !over {
             return Err(format!("{label} would stand in deep water at ({:.0}, {:.0})", pl.x, pl.z));
         }
         let mut params = pl.params;
@@ -1308,7 +1319,7 @@ impl WorldModel {
         let mut terrain = self.terrain.clone();
         if let Some(l) = &req.look {
             look = Arc::new(l.clone());
-            terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()).with_water(l.sea, l.groundwater));
+            terrain = Arc::new(Terrain::new(self.seed, l.biomes.clone()).with_water(l.sea, l.groundwater).with_lands(&l.landforms));
             terrain.set_rivers(l.rivers, l.palette.sand, l.caves);
         }
         let cur: Vec<TypeRec> = self.active_types().into_iter().cloned().collect();
@@ -1336,7 +1347,8 @@ impl WorldModel {
         // Characters live beside their houses, never inside them.
         // (Beings that live in water keep the water they were put in.)
         let wet = |p: &Persona| !p.species.is_empty() && self.species.get(&p.species).is_some_and(|s| s.water > 0.0);
-        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(p, h)| if wet(p) { self.clear_spot(*h, &placed, true) } else { self.clear_spot(dry_near(&terrain, *h), &placed, false) }).collect()).unwrap_or_default();
+        // (Someone a world written by hand stood up on something stays there.)
+        let homes: Vec<Vec3> = req.region.as_ref().map(|rc| rc.characters.iter().map(|(p, h)| if h.y != 0.0 { *h } else if wet(p) { self.clear_spot(*h, &placed, true) } else { self.clear_spot(dry_near(&terrain, *h), &placed, false) }).collect()).unwrap_or_default();
         let region = req.region.as_ref();
         let res = self.db.tx(|tx| {
             let v = db::add_version(tx, parent, req.kind, &req.summary, None)?;
@@ -1355,6 +1367,10 @@ impl WorldModel {
             if let Some(rc) = region {
                 for ((persona, _), home) in rc.characters.iter().zip(&homes) {
                     let id = db::add_character(tx, rc.r, &serde_json::to_string(persona)?, home.x, home.z, v)?;
+                    if home.y != 0.0 {
+                        let st = crate::world::characters::SavedState { x: home.x, z: home.z, y: Some(home.y), ..Default::default() };
+                        tx.execute("UPDATE characters SET state_json = ?1 WHERE id = ?2", rusqlite::params![serde_json::to_string(&st)?, id])?;
+                    }
                     char_ids.push(id);
                 }
                 db::set_region(tx, rc.r.0, rc.r.1, "done", region_plan.as_deref().unwrap_or(&rc.plan_json), Some(v))?;

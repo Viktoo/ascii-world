@@ -80,6 +80,10 @@ pub struct Look {
     /// marsh, 3 a meadow, 30 a desert; none: holes stay dry).
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "number_or_none")]
     pub groundwater: Option<f32>,
+    /// The land's large shape, where the world gives one: coasts, bays,
+    /// ranges at their real places (see `landforms`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub landforms: Vec<crate::landforms::Landform>,
 }
 
 fn d_gravity() -> f32 {
@@ -115,12 +119,13 @@ impl Look {
         self.air = if self.air.is_finite() { self.air.clamp(0.0, 1.0) } else { d_air() };
         self.sea = self.sea.map(|s| if s.is_finite() { s.clamp(-50.0, 50.0) } else { crate::terrain::WATER_LEVEL });
         self.groundwater = self.groundwater.filter(|d| d.is_finite()).map(|d| d.clamp(0.2, 200.0));
+        crate::landforms::sanitize(&mut self.landforms);
     }
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0, gravity: d_gravity(), air: d_air(), sea: d_sea(), groundwater: None }
+        Look { name: String::new(), palette: Palette::default(), biomes: crate::terrain::default_biomes(), land: String::new(), start: String::new(), climate: Default::default(), rivers: 0.0, caves: 0.0, gravity: d_gravity(), air: d_air(), sea: d_sea(), groundwater: None, landforms: Vec::new() }
     }
 }
 

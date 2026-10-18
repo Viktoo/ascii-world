@@ -115,3 +115,20 @@ one, sticks under trees, boulders under cliffs),
 `render::tests::cliffs_agree_on_gpu_and_cpu` (12k points packed on faces:
 worst error 2.5e-4 m). `sim::tests::land_pictures` (ignored) writes maps and
 views of a default land and of red canyon country to `POCKET_PNG_OUT`.
+
+## Landforms: the land's large shape (`landforms.rs`, `lands_at` in `common.wgsl`)
+
+Added 2026-10-18. A world may give its land a shape (genesis `landforms`):
+outlines or lines in world metres, each making its area into one of the
+world's biomes, with a soft border (`edge`), an optional lift (`rise`) and
+how broken that lift is into ridges and canyons (`rugged`). Later ones lie
+over earlier ones. The genesis prompt asks for them when the description
+names a real place or a clear shape (an island, a valley between ranges);
+the traveler then begins at the origin, where they put the start.
+
+They are baked once (`LandMap`, ≤ 640 samples a side, ≥ 48 m apart) into
+biome shares (bytes) and a rise per sample; the terrain blends them over the
+climate's weights and adds the rise before the hills, on the CPU and the GPU
+alike (`render::tests::landforms_agree_on_gpu_and_cpu`). The ridges of
+`rugged` are baked in on the CPU, so the GPU only reads the map. Outside the
+map the seed's land goes on as ever; worlds without landforms are unchanged.

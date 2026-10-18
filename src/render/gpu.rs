@@ -84,6 +84,7 @@ impl Gpu {
                 storage(5, false),
                 storage(6, false),
                 storage(7, true),
+                storage(8, true),
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("scene"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -129,12 +130,20 @@ impl Gpu {
     pub fn probe(&self, pipe: &ScenePipeline, globals: &Globals, mode: u32, tid: u32, inst: &GpuInst, points: &[[f32; 4]]) -> anyhow::Result<Vec<[f32; 4]>> {
         let mut g = *globals;
         g.ground = [0.0; 4];
-        self.probe_ground(pipe, &g, &[0], mode, tid, inst, points)
+        g.lands = [0.0; 4];
+        self.probe_ground(pipe, &g, &[0], &[0], mode, tid, inst, points)
+    }
+
+    /// `probe` of the terrain with its landform map (`LandMap::words`, matching `globals.lands`).
+    pub fn probe_lands(&self, pipe: &ScenePipeline, globals: &Globals, lands: &[u32], mode: u32, points: &[[f32; 4]]) -> anyhow::Result<Vec<[f32; 4]>> {
+        let mut g = *globals;
+        g.ground = [0.0; 4];
+        self.probe_ground(pipe, &g, &[0], lands, mode, 0, &super::GpuInst::default(), points)
     }
 
     /// `probe` with the ground edits' tiles (`ground::Pack::words`, matching `globals.ground`).
     #[allow(clippy::too_many_arguments)]
-    pub fn probe_ground(&self, pipe: &ScenePipeline, globals: &Globals, ground: &[u32], mode: u32, tid: u32, inst: &GpuInst, points: &[[f32; 4]]) -> anyhow::Result<Vec<[f32; 4]>> {
+    pub fn probe_ground(&self, pipe: &ScenePipeline, globals: &Globals, ground: &[u32], lands: &[u32], mode: u32, tid: u32, inst: &GpuInst, points: &[[f32; 4]]) -> anyhow::Result<Vec<[f32; 4]>> {
         use wgpu::BufferUsages as U;
         let n = points.len();
         let mut g = *globals;
@@ -153,7 +162,9 @@ impl Gpu {
         let hb = self.buf("probe-hmap", 16, U::STORAGE);
         let gb = self.buf("probe-ground", (ground.len() * 4) as u64, U::STORAGE | U::COPY_DST);
         self.queue.write_buffer(&gb, 0, bytemuck::cast_slice(ground));
-        let bg = self.bind_group(&ub, &ib, &cb, &tb, &ob, &pb, &hb, &gb);
+        let lb = self.buf("probe-lands", (lands.len() * 4) as u64, U::STORAGE | U::COPY_DST);
+        self.queue.write_buffer(&lb, 0, bytemuck::cast_slice(lands));
+        let bg = self.bind_group(&ub, &ib, &cb, &tb, &ob, &pb, &hb, &gb, &lb);
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("probe"), timestamp_writes: None });
@@ -186,14 +197,14 @@ impl Gpu {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn bind_group(&self, g: &wgpu::Buffer, i: &wgpu::Buffer, c: &wgpu::Buffer, t: &wgpu::Buffer, o: &wgpu::Buffer, p: &wgpu::Buffer, h: &wgpu::Buffer, gr: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind_group(&self, g: &wgpu::Buffer, i: &wgpu::Buffer, c: &wgpu::Buffer, t: &wgpu::Buffer, o: &wgpu::Buffer, p: &wgpu::Buffer, h: &wgpu::Buffer, gr: &wgpu::Buffer, l: &wgpu::Buffer) -> wgpu::BindGroup {
         fn e(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry { binding: b, resource: buf.as_entire_binding() }
         }
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene"),
             layout: &self.bgl,
-            entries: &[e(0, g), e(1, i), e(2, c), e(3, t), e(4, o), e(5, p), e(6, h), e(7, gr)],
+            entries: &[e(0, g), e(1, i), e(2, c), e(3, t), e(4, o), e(5, p), e(6, h), e(7, gr), e(8, l)],
         })
     }
 }
@@ -228,6 +239,10 @@ struct Renderer {
     ground: wgpu::Buffer,
     ground_cap: u64,
     ground_state: Option<([i32; 2], u32)>,
+    /// The landform map, and which one it holds (its address).
+    lands: wgpu::Buffer,
+    lands_cap: u64,
+    lands_state: usize,
     /// (origin x, origin z, terrain epoch) of the heightmap contents.
     hmap_state: Option<(f32, f32, u32)>,
     /// The same for the fine heightmap.
@@ -262,6 +277,7 @@ impl Renderer {
         let probe_dummy = gpu.buf("probe-dummy", 16, U::STORAGE);
         let hmap = gpu.buf("heightmap", ((HMAP_N * HMAP_N + FINE_N * FINE_N) * 4) as u64, U::STORAGE);
         let ground = gpu.buf("ground", 1 << 16, U::STORAGE | U::COPY_DST);
+        let lands = gpu.buf("lands", 16, U::STORAGE | U::COPY_DST);
         let queries = gpu.timestamps.then(|| {
             let qs = gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("ts"), ty: wgpu::QueryType::Timestamp, count: (SLOTS * 2) as u32 });
             let rb = gpu.buf("ts-resolve", 256 * SLOTS as u64, U::QUERY_RESOLVE | U::COPY_SRC);
@@ -287,6 +303,9 @@ impl Renderer {
             ground,
             ground_cap: 1 << 16,
             ground_state: None,
+            lands,
+            lands_cap: 16,
+            lands_state: 0,
             hmap_state: None,
             fine_state: None,
             bind: None,
@@ -337,8 +356,19 @@ impl Renderer {
             gpu.queue.write_buffer(&self.ground, 0, bytemuck::cast_slice(&p.words));
             self.ground_state = ground_new;
         }
+        // The landform map, once per world.
+        let lands_new = req.terrain.lands.as_ref().map(|m| std::sync::Arc::as_ptr(m) as usize).unwrap_or(0);
+        if lands_new != self.lands_state {
+            if let Some(m) = &req.terrain.lands {
+                if Self::ensure(&gpu, &mut self.lands, &mut self.lands_cap, (m.words.len() * 4) as u64, "lands", U::STORAGE | U::COPY_DST) {
+                    dirty = true;
+                }
+                gpu.queue.write_buffer(&self.lands, 0, bytemuck::cast_slice(&m.words));
+            }
+            self.lands_state = lands_new;
+        }
         if dirty {
-            self.bind = Some(gpu.bind_group(&self.globals, &self.inst, &self.cells, &self.items, &self.out, &self.probe_dummy, &self.hmap, &self.ground));
+            self.bind = Some(gpu.bind_group(&self.globals, &self.inst, &self.cells, &self.items, &self.out, &self.probe_dummy, &self.hmap, &self.ground, &self.lands));
         }
         let ts_offset = (npx * 8).div_ceil(256) * 256;
         let need = ts_offset + 16;

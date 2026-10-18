@@ -36,6 +36,7 @@ struct Globals {
   ground: vec4f,      // ground tiles: first tile x, z, tiles across (0 = none), any water
   voids: array<vec4f, 80>,     // caves: per capsule (a.xyz, r), (b.xyz, -); per box (c.xyz, -1), (half.xyz, yaw)
   craters: array<vec4f, 2>,    // how cratered each biome is, four to a row
+  lands: vec4f,       // landform map: origin x, origin z, cell size, samples a side (0 = none)
 }
 
 struct Inst {
@@ -65,6 +66,7 @@ struct Params { seed: f32, scale: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f
 @group(0) @binding(5) var<storage, read_write> probe_io: array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> hmap: array<f32>;
 @group(0) @binding(7) var<storage, read> gtiles: array<u32>;
+@group(0) @binding(8) var<storage, read> lands: array<u32>;
 
 fn pcg(v: u32) -> u32 {
   let state = v * 747796405u + 2891336453u;
@@ -135,7 +137,37 @@ fn hash3f(a: f32, b: f32, c: f32) -> f32 { return u2f(pcg(fbits(a) + pcg(fbits(b
 
 const BIOME_SHARPNESS: f32 = 26.0;
 
-struct Weights { w: array<f32, 6>, }
+struct Weights { w: array<f32, 6>, rise: f32, }
+
+// One landform sample: six biome shares (bytes) and the rise. Twin of
+// LandMap::sample in landforms.rs.
+fn land_sample(i: u32, j: u32) -> f32 {
+  let a = lands[i * 2u + j / 4u];
+  if (j == 6u) { return f32(a >> 16u) * 0.1 - 2000.0; }
+  return f32((a >> ((j % 4u) * 8u)) & 255u) / 255.0;
+}
+
+// What the landforms make of the land at (x, z) laid over the climate's
+// weights. Twin of Terrain::weights_rise in terrain.rs.
+fn lands_at(x: f32, z: f32, out: ptr<function, Weights>) {
+  let n = G.lands.w;
+  if (n < 2.0) { return; }
+  let gx = (x - G.lands.x) / G.lands.z;
+  let gz = (z - G.lands.y) / G.lands.z;
+  if (!(gx >= 0.0 && gz >= 0.0 && gx < n - 1.0 && gz < n - 1.0)) { return; }
+  let ix = u32(gx); let iz = u32(gz);
+  let fx = gx - f32(ix); let fz = gz - f32(iz);
+  let ni = u32(n);
+  let i0 = iz * ni + ix;
+  var t: array<f32, 6>;
+  var s = 0.0;
+  for (var j = 0u; j < 6u; j = j + 1u) {
+    t[j] = nlerp(nlerp(land_sample(i0, j), land_sample(i0 + 1u, j), fx), nlerp(land_sample(i0 + ni, j), land_sample(i0 + ni + 1u, j), fx), fz);
+    s = s + t[j];
+  }
+  for (var j = 0u; j < 6u; j = j + 1u) { (*out).w[j] = (*out).w[j] * (1.0 - s) + t[j]; }
+  (*out).rise = nlerp(nlerp(land_sample(i0, 6u), land_sample(i0 + 1u, 6u), fx), nlerp(land_sample(i0 + ni, 6u), land_sample(i0 + ni + 1u, 6u), fx), fz);
+}
 
 fn terrain_weights(x: f32, z: f32) -> Weights {
   let s = G.seed.x;
@@ -158,11 +190,13 @@ fn terrain_weights(x: f32, z: f32) -> Weights {
     }
   }
   for (var i = 0u; i < 6u; i = i + 1u) { out.w[i] = out.w[i] / sum; }
+  out.rise = 0.0;
+  lands_at(x, z, &out);
   return out;
 }
 
 fn terrain_height_w(x: f32, z: f32, wt: Weights) -> f32 {
-  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0; var cr = 0.0;
+  var base = wt.rise; var amp = 0.0; var rough = 0.0; var cl = 0.0; var cr = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
     if (i < G.seed.y) {
       let b0 = G.biomes[i * 3u];
@@ -441,7 +475,7 @@ fn terrain_height_lod_raw(x: f32, z: f32, t: f32) -> f32 {
   let fine = 1.0 - clamp((t - 35.0) / 40.0, 0.0, 1.0);
   if (fine >= 1.0) { return terrain_height_w(x, z, terrain_weights(x, z)) + ground_delta(x, z); }
   let wt = terrain_weights(x, z);
-  var base = 0.0; var amp = 0.0; var rough = 0.0; var cl = 0.0; var cr = 0.0;
+  var base = wt.rise; var amp = 0.0; var rough = 0.0; var cl = 0.0; var cr = 0.0;
   for (var i = 0u; i < 6u; i = i + 1u) {
     if (i < G.seed.y) {
       let b0 = G.biomes[i * 3u];

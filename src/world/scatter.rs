@@ -250,7 +250,9 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
         if blockers.iter().any(|(c, r)| (Vec3::new(c.x, 0.0, c.z) - pos2).length() < *r) {
             return None;
         }
-        if big && t.on_road(x, z, 0.8) {
+        // Nothing grows on a road, a street or a path (grass tufts only up
+        // to its edge).
+        if t.on_road(x, z, if big { 0.8 } else { 0.0 }) {
             return None;
         }
         let (s0, s1) = scale_range(tag);

@@ -121,7 +121,7 @@ fn is_hollow(what: &str) -> bool {
 /// point [x, z]), "length", "depth" and "room" (metres).
 pub fn parse_caves(list: &[Value], ox: f32, oz: f32) -> Vec<CaveSpec> {
     let mut out = Vec::new();
-    for v in list.iter().take(MAX_PLANS) {
+    for v in list.iter().take(max_plans()) {
         let what = v.get("what").and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
         if !is_hollow(&what) {
             continue;
@@ -152,6 +152,11 @@ pub fn parse_caves(list: &[Value], ox: f32, oz: f32) -> Vec<CaveSpec> {
 pub const MAX_PLANS: usize = 24;
 const MAX_POINTS: usize = 64;
 
+/// How many plans a settlement may give (more for a world written by hand).
+fn max_plans() -> usize {
+    if crate::brain::authored() { 256 } else { MAX_PLANS }
+}
+
 fn num(v: &Value) -> Option<f32> {
     v.as_f64().map(|x| x as f32).filter(|x| x.is_finite())
 }
@@ -174,7 +179,7 @@ fn color(v: Option<&Value>) -> Option<[f32; 3]> {
 /// `ox`, `oz`). Entries it can't make sense of are skipped.
 pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
     let mut out = Vec::new();
-    for v in list.iter().take(MAX_PLANS) {
+    for v in list.iter().take(max_plans()) {
         let words = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_lowercase();
         if is_hollow(&words("what")) && (v.get("mouth").is_some() || v.get("toward").is_some()) {
             continue;
@@ -208,6 +213,10 @@ pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
         };
         let line = matches!(shape, Shape::Line { .. });
         let height = v.get("height").and_then(num).map(|h| h.clamp(-20.0, 80.0));
+        // A line may give a height per point (a ramp down a bluff, a quay
+        // stepping down): it runs straight between them.
+        let along: Option<Vec<f32>> = v.get("height").and_then(|h| h.as_array()).filter(|_| line).map(|a| a.iter().map(|h| num(h).unwrap_or(0.0).clamp(-20.0, 80.0)).collect());
+        let height = height.or_else(|| along.as_ref().and_then(|a| a.first().copied()));
         let mode = match words("how").as_str() {
             "cut" | "lower" | "dig" | "dredge" => Mode::Lower,
             "fill" | "raise" | "build up" | "heap" => Mode::Raise,
@@ -240,7 +249,7 @@ pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
             name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().chars().take(60).collect(),
             shape,
             mode,
-            to: Height::At(height.unwrap_or(0.0)),
+            to: along.map(Height::Along).unwrap_or(Height::At(height.unwrap_or(0.0))),
             edge,
             color: color(v.get("color")),
             rim,

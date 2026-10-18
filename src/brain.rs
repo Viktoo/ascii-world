@@ -104,6 +104,20 @@ struct Info {
 /// written it, the player's own prompt before that (and in older worlds).
 pub type Universe = Arc<std::sync::RwLock<String>>;
 
+/// Set by `pocket author`: a world written by hand plans a whole town in a
+/// region (every building on a street, every stall on a pier), so the
+/// limits sized for a model planning one region at a time are lifted.
+pub static AUTHORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn authored() -> bool {
+    AUTHORED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A plan's limit: `n`, or `hand` for a world written by hand.
+fn cap(n: usize, hand: usize) -> usize {
+    if authored() { hand } else { n }
+}
+
 #[derive(Clone)]
 struct Ctx {
     llm: Arc<Llm>,
@@ -975,7 +989,7 @@ async fn genesis(ctx: &Ctx) -> anyhow::Result<()> {
     let mut types = Vec::new();
     let mut futs = Vec::new();
     let system_ref = &system;
-    let blocks: Vec<String> = all_code_blocks(&reply).into_iter().take(8).collect();
+    let blocks: Vec<String> = all_code_blocks(&reply).into_iter().take(cap(8, 64)).collect();
     let n_blocks = blocks.len().max(1);
     for code in blocks {
         let code = add_tags(&code, &["base"]);
@@ -1228,7 +1242,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // New types, in parallel.
     let mut new_types: Vec<NewType> = Vec::new();
     let mut new_names: Vec<(String, usize)> = Vec::new();
-    let specs: Vec<Value> = plan.get("new_types").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().take(8).collect();
+    let specs: Vec<Value> = plan.get("new_types").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().take(cap(8, 128)).collect();
     let done = std::sync::atomic::AtomicUsize::new(0);
     let done = &done;
     let n_specs = specs.len().max(1);
@@ -1310,16 +1324,22 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let clampl = |v: f32| v.clamp(4.0, REGION - 4.0);
     // Set up off the ground ("height" metres), on what holds it there (a
     // platform in a great tree, a ledge, stilts): placed before it.
+    // Or, in a world written by hand, at a level ("y", metres over the sea,
+    // where its own y = 0 goes): a pier's rides on its deck, whatever the
+    // sea bed does.
     let lifted = |v: &Value, ty: &TypeRef, x: f32, z: f32| -> Option<f32> {
-        let up = v.get("height").and_then(|h| h.as_f64()).map(|h| h as f32).filter(|h| h.is_finite() && *h > 0.3)?;
         let bottom = match ty {
             TypeRef::New(i) => new_types.get(*i).map(|t| t.report.bottom).unwrap_or(0.0),
             TypeRef::Existing(_) => 0.0,
         };
+        if let Some(y) = v.get("y").and_then(|h| h.as_f64()).map(|h| h as f32).filter(|h| h.is_finite() && authored()) {
+            return Some(y);
+        }
+        let up = v.get("height").and_then(|h| h.as_f64()).map(|h| h as f32).filter(|h| h.is_finite() && *h > 0.3)?;
         Some(info.terrain.height(x, z) + up.min(80.0) - bottom)
     };
     let mut placements = Vec::new();
-    for lm in plan.get("landmarks").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(3) {
+    for lm in plan.get("landmarks").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(cap(3, 512)) {
         let Some(ty) = resolve(&s(lm, "type")) else { continue };
         let (x, z) = (ox + clampl(f(lm, "x", 128.0)), oz + clampl(f(lm, "z", 128.0)));
         placements.push(Placement {
@@ -1336,9 +1356,10 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     if let Some(st) = plan.get("settlement").filter(|v| v.is_object()) {
         let cx = ox + clampl(f(st, "x", 128.0));
         let cz = oz + clampl(f(st, "z", 128.0));
-        for (i, b) in st.get("buildings").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(8).enumerate() {
+        for (i, b) in st.get("buildings").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(cap(8, 512)).enumerate() {
             let Some(ty) = resolve(&s(b, "type")) else { continue };
-            let (x, z) = (cx + f(b, "dx", 0.0).clamp(-60.0, 60.0), cz + f(b, "dz", 0.0).clamp(-60.0, 60.0));
+            let reach = if authored() { 300.0 } else { 60.0 };
+            let (x, z) = (cx + f(b, "dx", 0.0).clamp(-reach, reach), cz + f(b, "dz", 0.0).clamp(-reach, reach));
             placements.push(Placement {
                 y: lifted(b, &ty, x, z),
                 ty,
@@ -1353,7 +1374,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     }
     let book = crate::world::species::SpeciesBook::load(&ctx.db.with(|c| crate::db::species_rows(c)).unwrap_or_default(), None);
     let mut chars = Vec::new();
-    for c in plan.get("characters").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
+    for c in plan.get("characters").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(cap(6, 64)) {
         let mut p: Persona = serde_json::from_value(c.clone()).unwrap_or_default();
         if p.name.trim().is_empty() {
             continue;
@@ -1381,9 +1402,15 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             p.species = p.species.trim().to_lowercase();
         }
         let mut home = Vec3::new(ox + clampl(f(c, "home_x", 128.0)), 0.0, oz + clampl(f(c, "home_z", 128.0)));
+        // A world written by hand may stand someone up on something (the
+        // pier's deck): "y", the level their feet are at, kept as written.
+        let up = c.get("y").and_then(|y| y.as_f64()).map(|y| y as f32).filter(|y| y.is_finite() && authored());
+        if let Some(y) = up {
+            home.y = y;
+        }
         // Homes are where their people can live (dry land, or the water
         // for a people of the water): spiral out until we find some.
-        for k in 0..40 {
+        for k in 0..if up.is_some() { 0 } else { 40 } {
             if lives_at(&info.terrain, &book, &p.species, home.x, home.z) {
                 break;
             }
@@ -1398,7 +1425,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // Hollows the settlement digs: things "near" one lie inside it.
     let caves = plan.get("settlement").and_then(|st| st.get("ground")).and_then(|g| g.as_array()).map(|a| crate::settle::parse_caves(a, ox, oz)).unwrap_or_default();
     let mut by_spot: std::collections::HashMap<String, usize> = Default::default();
-    for (i, th) in plan.get("things").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(12).enumerate() {
+    for (i, th) in plan.get("things").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(cap(12, 256)).enumerate() {
         let Some(ty) = resolve(&s(th, "type")) else { continue };
         let near = s(th, "near").trim().to_lowercase();
         let cave = caves.iter().find(|c| !near.is_empty() && (c.name.to_lowercase() == near || c.kind == near || near.contains(&c.kind)));
@@ -1422,7 +1449,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     // Creatures: herds, packs, pets, beasts. No voice or trade, just a
     // species, a home, maybe a name and a person they belong to.
     let mut n_creatures = 0;
-    for c in plan.get("creatures").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6) {
+    for c in plan.get("creatures").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(cap(6, 32)) {
         let sp = s(c, "species").trim().to_lowercase();
         if sp.is_empty() || sp == "human" {
             continue;
@@ -1435,7 +1462,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         let cx = ox + clampl(f(c, "x", 128.0));
         let cz = oz + clampl(f(c, "z", 128.0));
         for i in 0..count {
-            if n_creatures >= 24 {
+            if n_creatures >= cap(24, 96) {
                 break;
             }
             let name = names.get(i).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("the {}", sp.replace('-', " ")));
@@ -1503,7 +1530,8 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             summary: format!("region {} ({}, {})", if rname.is_empty() { "unnamed" } else { &rname }, r.0, r.1),
             new_types,
             placements,
-            nudge: true,
+            // A world written by hand is placed exactly as written, or not at all.
+            nudge: !authored(),
             region: Some(RegionCommit { r, plan_json: plan.to_string(), info: region_info_from_plan(&plan.to_string()), characters: chars, settlement }),
             look: None,
         })
