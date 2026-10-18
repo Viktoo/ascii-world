@@ -54,7 +54,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 0.5, check_updates: true }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true }
     }
 }
 
@@ -158,7 +158,7 @@ impl Settings {
         if let Some(t) = env("POCKET_TOKEN") {
             s.token = t;
         }
-        s.guest_budget_usd = if s.guest_budget_usd.is_finite() { s.guest_budget_usd.max(0.0) } else { 0.5 };
+        s.guest_budget_usd = if s.guest_budget_usd.is_finite() { s.guest_budget_usd.max(0.0) } else { 10.0 };
         s.volume = if s.volume.is_finite() { s.volume.clamp(0.0, 1.0) } else { 0.8 };
         s.voice_volume = if s.voice_volume.is_finite() { s.voice_volume.clamp(0.0, 1.0) } else { 0.5 };
         s.fps = s.fps.clamp(5.0, 240.0);

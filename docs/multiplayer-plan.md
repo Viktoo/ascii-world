@@ -97,7 +97,7 @@ below), and typed text: talk lines and `/do`.
 A guest's talk line or `/do` goes to the host as text and joins the host's
 LLM queue as coming from that traveler, ordered by distance like any other
 request. The host sets, in its settings, **a spending limit per guest per
-session** (default $0.50) and **a pace** (at most three requests in flight
+session** (default $10) and **a pace** (at most three requests in flight
 per guest, so a quick `/do` isn't stuck behind a slow conjuring). Every LLM call already reports its cost; the host adds it to that
 guest's tally in memory (never written to the world). When a guest's limit
 runs out, they get a plain line ("the host's limit for you is spent") and
@@ -302,15 +302,19 @@ achievements, kicking a guest, guest voices heard by others.
   local), so its cost counts against what that guest may spend. Requests a
   guest's deed sets off later (a new kind of thing to write) are the host's.
 - **Talk between players**: `/say` (not in the first design).
+- **Driving and riding**: a guest gets in or mounts by a deed like any
+  other; then their keys go to the host as steering (20 times a second at
+  most), the host moves the vehicle or mount, and the guest is carried where
+  the host says, eased between messages.
+- **Who made what**: a guest's makings are theirs by name (the builder is
+  told a traveler made it; the creations page says "you" for your own on any
+  machine, and names the host for theirs).
 - **The internet** is opt-in: `I` on the host screen (or `pocket host
   --ngrok`); plain hosting is the local network only.
 
 Not yet:
 
-- Guests can't drive vehicles or ride (their deeds go to the host, but
-  steering is the host's own keys).
 - Notes about places far from the host but near a guest are told as the host
   hears them (near the host).
-- A guest's own creations are recorded as made by "the traveler".
 - Guests earn no achievements; nobody can be sent away by the host yet.
 - The ngrok tunnel was tested against its log format, not live.

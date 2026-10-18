@@ -34,6 +34,9 @@ const TABLES: &[Table] = &[
     Table { name: "characters", key: &["id"], watch: &["id", "region", "persona_json", "home_x", "home_z", "version_id"], rebuild: true },
     Table { name: "species", key: &["name"], watch: &[], rebuild: true },
     Table { name: "gestures", key: &["name"], watch: &[], rebuild: false },
+    // Who made what (the creations page, and what inspecting a thing says).
+    Table { name: "creations", key: &["key"], watch: &[], rebuild: false },
+    Table { name: "origins", key: &["instance_id"], watch: &[], rebuild: false },
     Table { name: "kv", key: &["key"], watch: &[], rebuild: false },
 ];
 

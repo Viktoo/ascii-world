@@ -48,7 +48,7 @@ enum Row {
 }
 
 /// What a guest may spend of the host's LLM per session (0: nothing).
-const GUEST_BUDGETS: &[f64] = &[0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0];
+const GUEST_BUDGETS: &[f64] = &[0.0, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
 
 const ROWS: &[Row] = &[Row::Budget, Row::Spent, Row::Details, Row::Fps, Row::Shadows, Row::Detail, Row::Blend, Row::Sound, Row::Volume, Row::Voices, Row::VoiceVolume, Row::Speak, Row::Radius, Row::ShowWork, Row::Difficulty, Row::Creatures, Row::LifeSpeed, Row::Hunting, Row::Beings, Row::GuestBudget, Row::Name, Row::Updates, Row::Worlds, Row::Quit];
 

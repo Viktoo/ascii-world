@@ -49,6 +49,7 @@ impl Sim {
         let t = self.t;
         self.player.update_pose(t, dt, held);
         self.ease_npcs(dt);
+        self.ease_me(dt);
         self.place_hands();
     }
 

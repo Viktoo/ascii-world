@@ -1700,7 +1700,8 @@ impl Sim {
             }
             let doing = match o {
                 ActorId::Npc(c) => self.cast.get(c).map(|x| x.doing.clone()).unwrap_or_default(),
-                ActorId::Player | ActorId::Traveler(_) => "the traveler".into(),
+                ActorId::Player => "the traveler".into(),
+                ActorId::Traveler(_) => "another traveler".into(),
             };
             people.push(format!("{} ({d:.0} m, {rel}{}{})", self.actor_name(o), if doing.is_empty() { "" } else { ", " }, doing));
         }

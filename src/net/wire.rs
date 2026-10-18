@@ -38,6 +38,11 @@ pub enum Up {
     Talking(Option<i64>),
     /// Something said to everyone ("/say").
     Say(String),
+    /// Seated in what they drive: throttle and brake, steering, up and down.
+    Steer { throttle: f32, steer: f32, climb: f32 },
+    /// On what they ride: the way to go (flat, length up to 1), and where
+    /// they look up or down.
+    Ride { dir: [f32; 3], pitch: f32 },
     /// Leaving.
     Bye,
 }
@@ -61,6 +66,8 @@ pub enum Down {
     /// The host moved the guest (pulled out of the ground, carried, put
     /// back): take this place.
     Place(Body),
+    /// Seated in or on something the host moves: where the guest is now.
+    Seated(Body),
     /// A line for the log.
     Say(String),
     /// The live world near the guest: what changed since last sent.
@@ -69,8 +76,9 @@ pub enum Down {
     /// species…) changed by the host: the guest keeps them and, when
     /// `rebuild`, makes its world anew from them.
     Rows { tables: Vec<Rows>, rebuild: bool },
-    /// The guest's own lot: how hurt, fallen or not, glowing.
-    Own { wounds: f32, fallen: bool, glow: f32 },
+    /// The guest's own lot: how hurt, fallen or not, glowing, and what they
+    /// sit in or on (a vehicle's id and seat, a mount's host code).
+    Own { wounds: f32, fallen: bool, glow: f32, aboard: Option<i64>, seat_no: u8, riding: Option<i64> },
     /// Something for the log, as it is said to this guest.
     Note(Note),
     /// How what they did went (`verb` as the action's; the message names

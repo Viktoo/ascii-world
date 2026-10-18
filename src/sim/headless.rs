@@ -51,8 +51,8 @@ pub fn forward(sim: &Sim, brain: &Brain, req: Request) -> bool {
         Request::Create { id, by, text, target, yaw, view } => {
             let payer = payer(by);
             let by = match by {
-                ActorId::Npc(c) => Some((c, sim.actor_name(by))),
-                ActorId::Player | ActorId::Traveler(_) => None,
+                ActorId::Npc(_) | ActorId::Traveler(_) => Some((by.code(), sim.actor_name(by))),
+                ActorId::Player => None,
             };
             brain.send_as(Cmd::Create { id: Some(id), by, text, view: *view, target, yaw }, payer);
             true

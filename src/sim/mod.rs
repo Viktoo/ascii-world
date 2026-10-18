@@ -121,6 +121,10 @@ impl ActorId {
             ActorId::Npc(i) => format!("npc:{i}"),
         }
     }
+    /// A traveler (this game's or another), not a character.
+    pub fn is_traveler(self) -> bool {
+        matches!(self, ActorId::Player | ActorId::Traveler(_))
+    }
     pub fn parse(s: &str) -> Option<ActorId> {
         let s = s.trim();
         if s.eq_ignore_ascii_case("player") || s == "you" || s == "0" {
@@ -541,6 +545,11 @@ impl Sim {
         let id = self.next_req;
         self.next_req += 1;
         id
+    }
+
+    /// The last step's length (s).
+    pub fn frame_dt(&self) -> f32 {
+        self.frame_dt
     }
 
     pub fn hour(&self) -> f32 {

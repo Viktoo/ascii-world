@@ -104,3 +104,53 @@ fn what_a_guest_carries_waits_for_them() {
     run_for(&mut s, 0.5);
     assert!(s.sim.check_invariants().is_empty(), "{:?}", s.sim.check_invariants());
 }
+
+#[test]
+fn a_guest_rides_a_horse_and_drives_a_cart() {
+    let w = world_with("together ride", 68, bare());
+    let cart = add_type(&w, &fixture("vehicles/cart.js"));
+    let a = flat_spot(&w, 30.0);
+    let ci = place(&w, cart, a, 0.0);
+    let horse = add_being(&w, "Bram", "horse", &[], a + Vec3::new(10.0, 0.0, 0.0));
+    let mut s = session(&w, 68, None);
+    calm(&mut s);
+    let bea = ActorId::Traveler(1);
+    // The horse knows her: she rides it.
+    let hb = ActorId::Npc(horse);
+    s.sim.add_traveler(1, "Bea", &Default::default(), s.sim.actor(hb).unwrap().pos + Vec3::new(1.2, 0.0, 0.0), 0.0);
+    s.sim.social.bond(hb, bea, 0.6, s.sim.t);
+    let r = s.sim.act(bea, Action::Ride { target: Target::Actor(hb) });
+    assert!(r.is_ok(), "{r:?}");
+    let start = s.sim.actor(hb).unwrap().pos;
+    for _ in 0..30 {
+        s.sim.drive_as(bea, Vec3::new(0.0, 0.0, 1.0), 0.0, 0.1);
+        s.step(0.1);
+    }
+    let hp = s.sim.actor(hb).unwrap().pos;
+    assert!((hp - start).length() > 5.0, "the horse carried her ({:.1} m)", (hp - start).length());
+    let me = s.sim.travelers[&1].a.pos;
+    assert!(Vec3::new(me.x - hp.x, 0.0, me.z - hp.z).length() < 1.0, "on its back");
+    s.sim.act(bea, Action::Dismount).unwrap();
+    // The cart: in the driver's seat, she drives it.
+    s.sim.travelers.get_mut(&1).unwrap().a.pos = ground(&w, a.x + 1.5, a.z);
+    s.sim.act(bea, Action::Ride { target: Target::Instance(ci) }).unwrap();
+    let id = s.sim.travelers[&1].a.aboard.expect("in the cart");
+    let p0 = s.sim.things.get(id).unwrap().pos;
+    for _ in 0..40 {
+        s.sim.steer(bea, 1.0, 0.0, 0.0, 0.1);
+        s.step(0.1);
+    }
+    assert!((s.sim.things.get(id).unwrap().pos - p0).length() > 0.5, "the cart moved");
+    assert!((s.sim.travelers[&1].a.pos - s.sim.things.get(id).unwrap().pos).length() < 3.0, "with her in it");
+}
+
+#[test]
+fn what_a_guest_makes_is_theirs() {
+    let w = world("together made", 25);
+    let mut s = session(&w, 25, None);
+    let p = s.sim.player.pos;
+    s.sim.add_traveler(1, "Bea", &Default::default(), p, 0.0);
+    s.sim.note_creation("type:1", "made", "kite", Some(ActorId::Traveler(1)), "", p);
+    let rows = w.db.with(|c| db::creations(c)).unwrap();
+    assert_eq!(rows.iter().find(|r| r.key == "type:1").map(|r| r.made_by.as_str()), Some("Bea"), "made by Bea, not the traveler");
+}

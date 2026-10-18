@@ -23,7 +23,8 @@ pub enum Cmd {
     Genesis,
     Region((i32, i32)),
     /// `id` identifies the request (answered by `Event::Created`); `by` is a
-    /// character making something (None: the player).
+    /// character making something (None: the player), or another traveler
+    /// (their actor code, 0 or less, and name).
     Create { id: Option<u64>, by: Option<(i64, String)>, text: String, view: View, target: Vec3, yaw: f32 },
     Undo,
     History,
@@ -333,7 +334,7 @@ async fn run(ctx: Ctx, cmd: Cmd) {
                 }
                 Err(e) => {
                     crate::log::error(format!("create '{text}' failed: {e:#}"));
-                    if by.is_none() {
+                    if by.as_ref().is_none_or(|b| b.0 <= 0) {
                         ctx.log(budget_msg(&e).unwrap_or_else(|| format!("Couldn't build that: {}", short(&e.to_string()))));
                     }
                     let _ = ctx.events.send(Event::Created { id, instances: vec![] });
@@ -1521,9 +1522,12 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
     let system = prompts::builder_system(&ctx.universe(), &ctx.vocab());
     let type_list: Vec<String> = info.types.iter().map(|(_, n, tags, b)| format!("- {n} [{}] ~{:.0}×{:.0}×{:.0} m", tags.join(", "), b[0] * 2.0, b[1] * 2.0, b[2] * 2.0)).collect();
     let (who, sees) = match by {
+        Some((c, name)) if *c <= 0 => (format!("Made by: {name}, a traveler (one of the players)."), format!("What {name} sees")),
         Some((_, name)) => (format!("Made by: {name}, a character who lives here (not the player)."), format!("What {name} sees")),
         None => ("Made by: the player.".to_string(), "What the player sees".to_string()),
     };
+    // A character's making is fitted in; a player's is put where asked.
+    let by_npc = by.is_some_and(|b| b.0 > 0);
     let task = format!(
         "{}\n{who}\n{sees}:\n```json\n{}\n```\nExisting object types:\n{}\n\nThe request: \"{}\"",
         prompts::CREATE_TASK,
@@ -1580,8 +1584,8 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                 let s0 = s(&v, "summary");
                 if s0.is_empty() { text.to_string() } else { s0 }
             };
-            let kind = if by.is_some() { "npc_create" } else { "create" };
-            ctx.commit(CommitRequest { kind, summary, new_types, placements, nudge: by.is_some(), region: None, look: None }).await
+            let kind = if by_npc { "npc_create" } else { "create" };
+            ctx.commit(CommitRequest { kind, summary, new_types, placements, nudge: by_npc, region: None, look: None }).await
         }
         .await;
         match outcome {
@@ -1591,8 +1595,10 @@ async fn create(ctx: &Ctx, text: &str, view: &View, target: Vec3, yaw: f32, by: 
                 let name = ok.snapshot.instances.iter().find(|p| p.version == v).and_then(|p| ok.snapshot.type_of(p.type_id)).map(|t| t.name().to_string()).unwrap_or_else(|| "it".into());
                 let ids: Vec<i64> = ok.snapshot.instances.iter().filter(|p| p.version == v).map(|p| p.id).collect();
                 let _ = ctx.events.send(Event::Flip { snap: ok.snapshot, region: None });
-                if by.is_none() {
-                    ctx.log(format!("Built the {name}. (/undo to remove)"));
+                match by {
+                    None => ctx.log(format!("Built the {name}. (/undo to remove)")),
+                    Some((c, who)) if *c <= 0 => ctx.log(format!("{who} built the {name}. (/undo to remove)")),
+                    _ => {}
                 }
                 return Ok(ids);
             }

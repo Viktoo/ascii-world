@@ -257,13 +257,13 @@ impl Sim {
         // submarine; out of one under the water, beside it at its depth.
         let under = self.things.get(id).and_then(|t| self.snap.type_of(t.type_id)).and_then(|ty| ty.ct.meta.drive.as_ref()).is_some_and(|d| d.on == "under");
         let deep = self.snap.terrain.height(spot.x, spot.z) < self.snap.terrain.water(spot.x, spot.z) - MAX_WADE;
-        let spot = if (deep && who == ActorId::Player) || under {
+        let spot = if (deep && who.is_traveler()) || under {
             let at = self.actor(who).map(|a| a.pos.y).unwrap_or(spot.y);
             Vec3::new(spot.x, at.max(spot.y), spot.z)
         } else {
             spot
         };
-        if moves && deep && !under && who != ActorId::Player {
+        if moves && deep && !under && !who.is_traveler() {
             return fail(format!("the water is too deep to get out of the {tname} here"));
         }
         if let Some(a) = self.actor_mut(who) {
@@ -316,10 +316,10 @@ impl Sim {
                 a.pos = seat - Vec3::Y * hip;
                 a.task = match a.task.take() {
                     // A driver (or a passenger) keeps where they are going.
-                    Some(t @ super::actor::Task::Goto { .. }) if r != ActorId::Player => Some(t),
+                    Some(t @ super::actor::Task::Goto { .. }) if !r.is_traveler() => Some(t),
                     _ => None,
                 };
-                if r != ActorId::Player || !drives {
+                if !r.is_traveler() || !drives {
                     a.yaw = yaw;
                 }
             }

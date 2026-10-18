@@ -1273,11 +1273,15 @@ impl App {
                 // Flyers and submarines: Space up, c down; or, moving, the way you look.
                 let keys = self.held(' ') as i32 - self.held('c') as i32;
                 let climb = if keys != 0 { keys as f32 } else if fwd != 0 { (self.pitch * 2.0).clamp(-1.0, 1.0) } else { 0.0 };
-                self.sim.steer(ActorId::Player, fwd as f32, steer, climb, dt);
+                if !self.guest_steers(crate::net::wire::Up::Steer { throttle: fwd as f32, steer, climb }) {
+                    self.sim.steer(ActorId::Player, fwd as f32, steer, climb, dt);
+                }
                 self.dirty = true;
             } else if self.sim.player.riding.is_some() && !self.noclip {
-                // Riding: the walk keys steer the mount.
-                self.sim.drive(dir, self.pitch, dt);
+                // Riding: the walk keys steer the mount (a guest's, in the host's world).
+                if !self.guest_steers(crate::net::wire::Up::Ride { dir: dir.to_array(), pitch: self.pitch }) {
+                    self.sim.drive(dir, self.pitch, dt);
+                }
                 if dir != Vec3::ZERO {
                     self.sim.player.task = None;
                 }

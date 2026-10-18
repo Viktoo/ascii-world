@@ -45,6 +45,8 @@ pub struct Mirror {
     /// Where each being is going, as last heard (they are drawn moving
     /// there smoothly between messages).
     npc_to: HashMap<i64, crate::net::wire::Body>,
+    /// Seated: where the host last said we are.
+    me_to: Option<crate::net::wire::Body>,
 }
 
 fn hash_of<T: serde::Serialize>(v: &T) -> u64 {
@@ -70,7 +72,7 @@ fn thing_move(t: &Thing) -> ThingMove {
 fn thing_full(t: &Thing) -> ThingFull {
     let mut shape = t.shape.clone();
     shape.tilt = None;
-    let origin = Origin { made_by: None, made_from: Vec::new(), ..t.origin.clone() };
+    let origin = Origin { made_from: Vec::new(), ..t.origin.clone() };
     ThingFull {
         id: t.id,
         type_id: t.type_id,
@@ -375,6 +377,38 @@ impl Sim {
         }
     }
 
+    /// A guest seated in or on something: carried where the host says,
+    /// smoothly between what was heard.
+    pub fn take_seated(&mut self, b: crate::net::wire::Body) {
+        let far = (Vec3::from_array(b.pos) - self.player.pos).length() > 6.0;
+        if far || self.mirror.me_to.is_none() {
+            let yaw = self.player.yaw;
+            b.onto(&mut self.player);
+            self.player.yaw = yaw;
+        }
+        self.mirror.me_to = Some(b);
+    }
+
+    pub(super) fn ease_me(&mut self, dt: f32) {
+        if !self.player.carried() {
+            self.mirror.me_to = None;
+            return;
+        }
+        let Some(to) = self.mirror.me_to else { return };
+        let k = (dt * 14.0).min(1.0);
+        let p = self.player.pos;
+        self.player.pos = p + (Vec3::from_array(to.pos) - p) * k;
+        self.player.pose = to.pose;
+    }
+
+    /// What a guest sits in or on, as the host keeps it.
+    pub fn take_seat(&mut self, aboard: Option<i64>, seat_no: u8, riding: Option<i64>) {
+        let you = self.mirror.you;
+        self.player.aboard = aboard;
+        self.player.seat_no = seat_no;
+        self.player.riding = riding.map(|c| from_host(c, you));
+    }
+
     /// A guest's own lot as the host keeps it.
     pub fn take_own(&mut self, wounds: f32, fallen: bool, glow: f32) {
         self.night.wounds = wounds;
@@ -391,9 +425,10 @@ impl Sim {
         }
     }
 
-    /// The host's lot for one traveler: (wounds, fallen, glow).
-    pub fn own_of(&self, no: u8) -> Option<(f32, bool, f32)> {
-        self.travelers.get(&no).map(|t| (t.wounds, t.fallen.is_some(), t.glow))
+    /// The host's lot for one traveler: (wounds, fallen, glow, aboard,
+    /// seat, riding).
+    pub fn own_of(&self, no: u8) -> Option<(f32, bool, f32, Option<i64>, u8, Option<i64>)> {
+        self.travelers.get(&no).map(|t| (t.wounds, t.fallen.is_some(), t.glow, t.a.aboard, t.a.seat_no, t.a.riding.map(|r| r.code())))
     }
 }
 

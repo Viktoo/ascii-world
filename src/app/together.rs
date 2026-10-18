@@ -67,7 +67,9 @@ struct Guest {
     told_ready: bool,
     /// What they were last told of the world near them, and of themselves.
     seen: Seen,
-    own: Option<(f32, bool, f32)>,
+    own: Option<(f32, bool, f32, Option<i64>, u8, Option<i64>)>,
+    /// How they steer what they sit in or ride, and when they last said.
+    controls: Option<(Up, Instant)>,
 }
 
 pub struct Guesting {
@@ -85,6 +87,8 @@ pub struct Guesting {
     me: String,
     /// Who we last told the host we talk with.
     talking: Option<i64>,
+    /// How we last said we steer, and when.
+    steering: Option<(Up, Instant)>,
 }
 
 impl Hosting {
@@ -125,7 +129,7 @@ impl Hosting {
 
 impl Guesting {
     pub fn new(link: Link<Down, Up>, w: &Welcome, roster: Vec<Traveler>) -> Guesting {
-        Guesting { link, you: w.you, host: w.host.clone(), roster, heard: HashMap::new(), last_sent: Instant::now(), look: w.look.clone(), me: w.name.clone(), talking: None }
+        Guesting { link, you: w.you, host: w.host.clone(), roster, heard: HashMap::new(), last_sent: Instant::now(), look: w.look.clone(), me: w.name.clone(), talking: None, steering: None }
     }
 
     /// Do something in the host's world.
@@ -141,6 +145,11 @@ impl Guesting {
     /// Say something to everyone.
     pub fn say(&self, text: String) {
         self.link.send(Up::Say(text));
+    }
+
+    /// How we steer what we sit in or ride, for the host to move it.
+    pub fn steer(&self, c: Up) {
+        self.link.send(c);
     }
 
     /// The host's name, as they gave it.
@@ -194,9 +203,10 @@ impl App {
         let mut gone = Vec::new();
         let mut talks = Vec::new();
         let mut said = Vec::new();
-        for (&no, g) in &h.guests {
+        for (&no, g) in h.guests.iter_mut() {
             for m in g.link.drain() {
                 match m {
+                    c @ (Up::Steer { .. } | Up::Ride { .. }) => g.controls = Some((c, Instant::now())),
                     Up::Talk { cid, text } => talks.push((no, cid, text)),
                     Up::Talking(cid) => {
                         if let Some(t) = self.sim.travelers.get_mut(&no) {
@@ -204,7 +214,7 @@ impl App {
                         }
                     }
                     Up::Say(text) => said.push((g.name.clone(), text)),
-                    Up::Me(b) => self.guest_moved(no, b, g),
+                    Up::Me(b) => self.guest_moved(no, b, &*g),
                     Up::Look(look) => {
                         if let Some(t) = self.sim.travelers.get_mut(&no) {
                             t.own.look = look;
@@ -212,7 +222,7 @@ impl App {
                         }
                     }
                     Up::Bye => g.link.close(),
-                    Up::Act(json) => self.guest_acts(no, &json, g),
+                    Up::Act(json) => self.guest_acts(no, &json, &*g),
                     Up::Hello(_) => {}
                 }
             }
@@ -221,6 +231,17 @@ impl App {
             }
             if !g.told_ready && g.ready.load(Ordering::Relaxed) {
                 h.roster_dirty = true;
+            }
+        }
+        // Guests steering what they sit in or ride (the last word holds a moment).
+        let dt = self.sim.frame_dt();
+        for (&no, g) in h.guests.iter_mut() {
+            let who = ActorId::Traveler(no);
+            match g.controls.as_ref() {
+                Some((_, at)) if at.elapsed() > Duration::from_millis(400) => g.controls = None,
+                Some((Up::Steer { throttle, steer, climb }, _)) => self.sim.steer(who, *throttle, *steer, *climb, dt),
+                Some((Up::Ride { dir, pitch }, _)) => self.sim.drive_as(who, Vec3::from_array(*dir), *pitch, dt),
+                _ => {}
             }
         }
         for (no, cid, text) in talks {
@@ -276,8 +297,12 @@ impl App {
                 let own = self.sim.own_of(no);
                 if own.is_some() && own != g.own {
                     g.own = own;
-                    let (wounds, fallen, glow) = own.unwrap_or_default();
-                    g.link.send(Down::Own { wounds, fallen, glow });
+                    let (wounds, fallen, glow, aboard, seat_no, riding) = own.unwrap_or_default();
+                    g.link.send(Down::Own { wounds, fallen, glow, aboard, seat_no, riding });
+                }
+                // Seated, the host moves them: where they are now.
+                if let Some(t) = self.sim.travelers.get(&no).filter(|t| t.a.carried()) {
+                    g.link.send(Down::Seated(Body::of(&t.a, t.pitch)));
                 }
             }
         }
@@ -355,7 +380,7 @@ impl App {
         if let Some(t) = self.sim.travelers.get_mut(&no) {
             t.wounds = wounds;
         }
-        let g = Guest { name: hello.name.clone(), token, link, ready: Arc::new(AtomicBool::new(false)), told_ready: false, seen: Seen::default(), own: None };
+        let g = Guest { name: hello.name.clone(), token, link, ready: Arc::new(AtomicBool::new(false)), told_ready: false, seen: Seen::default(), own: None, controls: None };
         self.save_guest(no, &g);
         // The copy they get is the world as it is now.
         self.save_player();
@@ -554,6 +579,11 @@ impl App {
     /// A guest moved themselves: kept, unless it is too far to be a step.
     fn guest_moved(&mut self, no: TravelerNo, b: Body, g: &Guest) {
         let Some(t) = self.sim.travelers.get_mut(&no) else { return };
+        // Seated or carried, where they are is the host's; where they look is theirs.
+        if t.a.carried() {
+            t.pitch = b.pitch;
+            return;
+        }
         let to = Vec3::from_array(b.pos);
         if !to.is_finite() || (to - t.a.pos).length() > MAX_STEP {
             g.link.send(Down::Place(Body::of(&t.a, t.pitch)));
@@ -600,7 +630,11 @@ impl App {
                     }
                     Err(e) => crate::log::error(format!("taking in the host's world: {e:#}")),
                 },
-                Down::Own { wounds, fallen, glow } => self.sim.take_own(wounds, fallen, glow),
+                Down::Own { wounds, fallen, glow, aboard, seat_no, riding } => {
+                    self.sim.take_own(wounds, fallen, glow);
+                    self.sim.take_seat(aboard, seat_no, riding);
+                }
+                Down::Seated(b) => self.sim.take_seated(b),
                 Down::Token { cid, text } => self.on_event(crate::brain::Event::Token { cid, text }),
                 Down::ReplyDone { cid, ok } => self.on_event(crate::brain::Event::ReplyDone { cid, ok }),
                 Down::Acted { verb, ok, msg, thing } => {
@@ -768,6 +802,25 @@ impl App {
         }
     }
 
+    /// A guest steering what they sit in or ride: told to the host (who
+    /// moves it), now and then while it holds. False when not a guest.
+    pub(super) fn guest_steers(&mut self, c: Up) -> bool {
+        let Some(Together::Guest(g)) = self.together.as_mut() else { return false };
+        if g.steering.as_ref().is_none_or(|(last, at)| *last != c || at.elapsed() > Duration::from_millis(100)) {
+            g.steer(c.clone());
+            g.steering = Some((c, Instant::now()));
+        }
+        true
+    }
+
+    /// Playing in someone's world: our name there, and the host's.
+    pub(super) fn guest_names(&self) -> Option<(String, String)> {
+        match &self.together {
+            Some(Together::Guest(g)) => Some((g.me.clone(), g.host_name())),
+            _ => None,
+        }
+    }
+
     /// Who else is here, for the top line.
     pub(super) fn together_line(&self) -> Option<String> {
         match &self.together {
@@ -921,10 +974,11 @@ mod tests {
 
     /// A world with someone in it, hosted, and a guest joined to it.
     fn pair(tag: &str, port: u16) -> (App, App, PathBuf) {
-        pair_with(tag, port, false)
+        pair_with(tag, port, false, &|_, _| {})
     }
 
-    fn pair_with(tag: &str, port: u16, llm: bool) -> (App, App, PathBuf) {
+    /// As `pair`, with an LLM when `llm`, and `setup` adding to the world first.
+    fn pair_with(tag: &str, port: u16, llm: bool, setup: &dyn Fn(&Arc<Db>, Vec3)) -> (App, App, PathBuf) {
         let path = std::env::temp_dir().join(format!("pocket-together-{tag}-{}.pocket", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let db = Db::create(&path, 4242, "a quiet test valley", &serde_json::to_string(&crate::world::Look::default()).unwrap()).unwrap();
@@ -940,6 +994,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
+        setup(&db, spawn);
         let host = Host::start(port, "lime-otter-42".into()).unwrap();
         let addr = format!("127.0.0.1:{}", host.port);
         let mut h = game(db, Some(Together::Host(Hosting::new(host, path.clone(), "Test Vale".into(), "Hal".into(), false))), llm);
@@ -1071,7 +1126,7 @@ mod tests {
     #[test]
     fn a_guest_talks_on_what_the_host_lets_them_spend() {
         let port = 47000 + (std::process::id() % 1000) as u16 * 7 % 9000;
-        let (mut h, mut g, path) = pair_with("talk", port, true);
+        let (mut h, mut g, path) = pair_with("talk", port, true, &|_, _| {});
         until(&mut [&mut h, &mut g], "the guest to be in", |gs| gs[1].sim.travelers.contains_key(&0));
         let mara = h.sim.cast.npcs[0].def.id;
         // Bea goes up to Mara.
@@ -1093,6 +1148,45 @@ mod tests {
         h.settings.guest_budget_usd = spent * 0.5;
         g.send_talk(mara, "And again?".into());
         until(&mut [&mut h, &mut g], "the guest to be told", |gs| gs[1].log.iter().any(|l| l.text.contains("limit for you")) && gs[1].replying.is_none());
+        g.shutdown();
+        h.shutdown();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_guest_drives_a_cart_from_their_own_game() {
+        let port = 49000 + (std::process::id() % 1000) as u16 * 7 % 9000;
+        // A hand cart a few steps from the start.
+        let place_cart = |db: &Arc<Db>, spawn: Vec3| {
+            let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/vehicles/cart.js")).unwrap();
+            let ct = crate::lang::compile(&src).unwrap();
+            let rep = crate::lang::probe::probe(&ct).unwrap();
+            let meta = serde_json::json!({ "name": ct.meta.name, "bounds": ct.meta.bounds, "tags": ct.meta.tags, "bottom": rep.bottom, "top": rep.top }).to_string();
+            db.tx(|tx| {
+                let v = crate::db::add_version(tx, None, "make", "a cart", None)?;
+                let t = crate::db::add_type(tx, Some(v), &ct.meta.name, &src, &meta, "ok", "")?;
+                crate::db::add_instance(tx, t, v, spawn.x - 6.0, spawn.y - rep.bottom, spawn.z - 6.0, 0.0, 1.0, &[0.5; 8])?;
+                Ok(())
+            })
+            .unwrap();
+        };
+        let (mut h, mut g, path) = pair_with("cart", port, false, &place_cart);
+        until(&mut [&mut h, &mut g], "the guest to be in", |gs| gs[1].sim.travelers.contains_key(&0));
+        let cart = h.snap.instances.iter().find(|p| h.snap.type_of(p.type_id).is_some_and(|t| t.name() == "hand cart")).cloned().expect("the cart");
+        // Bea goes to it and gets in.
+        let by = cart.pos + Vec3::new(1.5, 0.0, 0.0);
+        g.sim.player.pos = by;
+        h.sim.travelers.get_mut(&1).unwrap().a.pos = by;
+        g.player_act(crate::sim::Action::Ride { target: crate::sim::Target::Instance(cart.id) });
+        until(&mut [&mut h, &mut g], "the guest to sit in the cart", |gs| gs[1].sim.player.aboard.is_some());
+        let id = h.sim.travelers[&1].a.aboard.expect("in the cart on the host");
+        assert_eq!(g.sim.player.aboard, Some(id));
+        let p0 = h.sim.things.get(id).unwrap().pos;
+        // She pushes on: the cart goes in the host's world, and she with it in hers.
+        g.keys.down.insert('w');
+        until(&mut [&mut h, &mut g], "the cart to go", |gs| gs[0].sim.things.get(id).is_some_and(|t| (t.pos - p0).length() > 1.0));
+        let at = h.sim.things.get(id).unwrap().pos;
+        until(&mut [&mut h, &mut g], "the guest to be carried along", |gs| (gs[1].sim.player.pos - at).length() < 3.0 && (gs[1].sim.player.pos - by).length() > 0.8);
         g.shutdown();
         h.shutdown();
         let _ = std::fs::remove_file(&path);
