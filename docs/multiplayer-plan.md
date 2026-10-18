@@ -306,6 +306,9 @@ achievements, kicking a guest, guest voices heard by others.
   other; then their keys go to the host as steering (20 times a second at
   most), the host moves the vehicle or mount, and the guest is carried where
   the host says, eased between messages.
+- **The log** is judged per guest: what happens near them is told to them
+  whole (and about them as "you"), what is far only when it changes the
+  world, whatever the host hears.
 - **Who made what**: a guest's makings are theirs by name (the builder is
   told a traveler made it; the creations page says "you" for your own on any
   machine, and names the host for theirs).
@@ -314,7 +317,7 @@ achievements, kicking a guest, guest voices heard by others.
 
 Not yet:
 
-- Notes about places far from the host but near a guest are told as the host
-  hears them (near the host).
-- Guests earn no achievements; nobody can be sent away by the host yet.
+- Guests earn no achievements (on purpose: they are checked from what
+  happens, which only the host's game has; sending it all wasn't worth it).
+- Nobody can be sent away by the host yet.
 - The ngrok tunnel was tested against its log format, not live.

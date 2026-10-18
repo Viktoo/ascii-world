@@ -376,6 +376,9 @@ pub struct Sim {
     queue: Vec<Queued>,
     budget: f32,
     pub notes: Vec<Note>,
+    /// Notes by where they happened, for other travelers (see `note_near`).
+    placed: Vec<(Vec3, f32, Note)>,
+    placed_host: std::collections::HashSet<usize>,
     pub has_llm: bool,
     /// How far up or down the player looks (radians): where "that hill" is.
     pub look_pitch: f32,
@@ -478,6 +481,8 @@ impl Sim {
             queue: Vec::new(),
             budget: 2.0,
             notes: Vec::new(),
+            placed: Vec::new(),
+            placed_host: Default::default(),
             has_llm: false,
             look_pitch: -0.12,
             talking_to: None,
@@ -673,16 +678,23 @@ impl Sim {
 
     /// Tell the player, if they are close enough to notice.
     /// Notable news from beyond earshot is still told, as far off.
+    /// With other travelers here, each is told as near or far as it is to
+    /// them (see `drain_placed`).
     pub fn note_near(&mut self, at: Vec3, range: f32, n: Note) {
-        if self.dist_to_player(at) <= range {
-            self.notes.push(n);
-        } else {
-            match n {
-                Note::Notable(text) => self.notes.push(Note::Far { text, at: at.to_array(), made: false }),
-                Note::Made(text) => self.notes.push(Note::Far { text, at: at.to_array(), made: true }),
-                _ => {}
-            }
+        if !self.travelers.is_empty() {
+            self.placed.push((at, range, n.clone()));
+            self.placed_host.insert(self.notes.len());
         }
+        if let Some(n) = told_at(n, self.dist_to_player(at), at, range) {
+            self.notes.push(n);
+        }
+    }
+
+    /// Notes told by where they happened (for the other travelers, each
+    /// judged from where they are), and which of the notes not yet drained
+    /// came from them (so they aren't passed on twice).
+    pub fn drain_placed(&mut self) -> (Vec<(Vec3, f32, Note)>, std::collections::HashSet<usize>) {
+        (std::mem::take(&mut self.placed), std::mem::take(&mut self.placed_host))
     }
 
     /// Characters within `range` of `at` who can see it remember it.
@@ -995,6 +1007,9 @@ impl Sim {
     }
 
     pub fn drain_notes(&mut self) -> Vec<Note> {
+        // (What was told by place goes with them: take that first, if wanted.)
+        self.placed.clear();
+        self.placed_host.clear();
         std::mem::take(&mut self.notes)
     }
 
@@ -1104,6 +1119,19 @@ pub fn traveler_dims(snap: &WorldSnapshot) -> crate::world::species::Dims {
     let mut d = npc::body_dims(&body, &human, &sliders, h / own);
     d.human_arms = d.arms && snap.body_root(&human.body) == "figure";
     d
+}
+
+/// A note about something at `at`, as one `dist` from it hears it: whole
+/// within `range`; beyond it, only what changes the world, as far off.
+pub fn told_at(n: Note, dist: f32, at: Vec3, range: f32) -> Option<Note> {
+    if dist <= range {
+        return Some(n);
+    }
+    match n {
+        Note::Notable(text) => Some(Note::Far { text, at: at.to_array(), made: false }),
+        Note::Made(text) => Some(Note::Far { text, at: at.to_array(), made: true }),
+        _ => None,
+    }
 }
 
 /// Short compass word for a direction.

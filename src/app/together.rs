@@ -310,15 +310,28 @@ impl App {
 
     /// What the host's log is told goes to the guests too: about the host
     /// by their name; what is said to the host alone ("you…") stays theirs.
-    pub(super) fn share_notes(&self, notes: &[Note]) {
+    /// What happened somewhere is told to each guest as near or far as it
+    /// is to them; `skip` are the notes among `notes` that were (the host's
+    /// own telling of them).
+    pub(super) fn share_notes(&self, notes: &[Note], placed: &[(Vec3, f32, Note)], skip: &std::collections::HashSet<usize>) {
         let Some(Together::Host(h)) = &self.together else { return };
         if h.guests.is_empty() {
             return;
         }
-        for n in notes {
-            let Some(w) = wire_note(n, &h.name) else { continue };
-            for g in h.guests.values().filter(|g| g.told_ready) {
-                g.link.send(Down::Note(w.clone()));
+        for (no, g) in h.guests.iter().filter(|(_, g)| g.told_ready) {
+            let Some(me) = self.sim.travelers.get(no).map(|t| t.a.pos) else { continue };
+            let flat = |p: Vec3| ((p.x - me.x).powi(2) + (p.z - me.z).powi(2)).sqrt();
+            let unplaced = notes.iter().enumerate().filter(|(i, _)| !skip.contains(i)).map(|(_, n)| n.clone());
+            let near = placed.iter().filter_map(|(at, range, n)| crate::sim::told_at(n.clone(), flat(*at), *at, *range));
+            for n in unplaced.chain(near) {
+                // An incident is near or far as it is to them.
+                let n = match n {
+                    Note::Incident { id, text, at, .. } => Note::Incident { id, text, at, near: flat(Vec3::from_array(at)) <= 60.0 },
+                    n => n,
+                };
+                if let Some(w) = wire_note(&n, &h.name) {
+                    g.link.send(Down::Note(w));
+                }
             }
         }
     }
@@ -646,7 +659,7 @@ impl App {
                     }
                 }
                 Down::Note(n) => {
-                    let n = guest_note(n, g.you, &self.sim);
+                    let n = guest_note(n, g.you, &g.me);
                     self.tell(n);
                 }
                 Down::Heard(sounds) => {
@@ -877,18 +890,19 @@ fn wire_note(n: &Note, host: &str) -> Option<wire::Note> {
     })
 }
 
-/// A note from the host, for this guest's log.
-fn guest_note(n: wire::Note, you: TravelerNo, sim: &crate::sim::Sim) -> Note {
-    let _ = sim;
+/// A note from the host, for this guest's log: about them, said to them
+/// ("Mara waves at Bea" → "Mara waves at you").
+fn guest_note(n: wire::Note, you: TravelerNo, me: &str) -> Note {
+    let y = |t: String| if t.contains(me) { super::you_as(&t, me) } else { t };
     match n {
         wire::Note::Line { id, who, text } => Note::Line { id: id.map(|c| from_host(c, you)), who, text },
-        wire::Note::Info(t) => Note::Info(t),
-        wire::Note::Ambient(t) => Note::Ambient(t),
-        wire::Note::Notable(t) => Note::Notable(t),
-        wire::Note::Made(t) => Note::Made(t),
-        wire::Note::Far { text, at, made } => Note::Far { text, at, made },
-        wire::Note::Incident { id, text, at, near } => Note::Incident { id, text, at, near },
-        wire::Note::Effect(t) => Note::Effect(t),
+        wire::Note::Info(t) => Note::Info(y(t)),
+        wire::Note::Ambient(t) => Note::Ambient(y(t)),
+        wire::Note::Notable(t) => Note::Notable(y(t)),
+        wire::Note::Made(t) => Note::Made(y(t)),
+        wire::Note::Far { text, at, made } => Note::Far { text: y(text), at, made },
+        wire::Note::Incident { id, text, at, near } => Note::Incident { id, text: y(text), at, near },
+        wire::Note::Effect(t) => Note::Effect(y(t)),
     }
 }
 
@@ -1187,6 +1201,31 @@ mod tests {
         until(&mut [&mut h, &mut g], "the cart to go", |gs| gs[0].sim.things.get(id).is_some_and(|t| (t.pos - p0).length() > 1.0));
         let at = h.sim.things.get(id).unwrap().pos;
         until(&mut [&mut h, &mut g], "the guest to be carried along", |gs| (gs[1].sim.player.pos - at).length() < 3.0 && (gs[1].sim.player.pos - by).length() > 0.8);
+        g.shutdown();
+        h.shutdown();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_guest_hears_what_happens_near_them_however_far_the_host_is() {
+        let port = 51000 + (std::process::id() % 1000) as u16 * 7 % 9000;
+        let (mut h, mut g, path) = pair("near", port);
+        until(&mut [&mut h, &mut g], "the guest to be in", |gs| gs[1].sim.travelers.contains_key(&0));
+        // Bea wanders far off.
+        let far = h.sim.player.pos + Vec3::new(150.0, 0.0, 0.0);
+        let far = Vec3::new(far.x, h.snap.terrain.height(far.x, far.z), far.z);
+        g.sim.player.pos = far;
+        h.sim.travelers.get_mut(&1).unwrap().a.pos = far;
+        let home = h.sim.player.pos;
+        h.sim.note_near(far, 20.0, Note::Ambient("Mara waves at Bea.".into()));
+        h.sim.note_near(home, 20.0, Note::Ambient("A dog barks by the well.".into()));
+        h.sim.note_near(far, 20.0, Note::Notable("The bridge gives way under Bea.".into()));
+        until(&mut [&mut h, &mut g], "the guest to hear what happened by them", |gs| gs[1].log.iter().any(|l| l.text == "Mara waves at you."));
+        assert!(g.log.iter().any(|l| l.text.contains("The bridge gives way under you")), "said to her, near");
+        assert!(!g.log.iter().any(|l| l.text.contains("dog barks")), "what is only near the host stays the host's");
+        assert!(h.log.iter().any(|l| l.text.contains("dog barks")), "the host hears it");
+        assert!(!h.log.iter().any(|l| l.text.contains("Mara waves")), "the host doesn't hear what is far from them");
+        assert!(h.log.iter().any(|l| l.text.contains("The bridge gives way under Bea")), "but is told of the bridge, far off");
         g.shutdown();
         h.shutdown();
         let _ = std::fs::remove_file(&path);

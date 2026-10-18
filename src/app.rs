@@ -1331,8 +1331,9 @@ impl App {
             }
             crate::sim::headless::forward(&self.sim, &self.brain, r);
         }
+        let (placed, skip) = self.sim.drain_placed();
         let notes = self.sim.drain_notes();
-        self.share_notes(&notes);
+        self.share_notes(&notes, &placed, &skip);
         for n in notes {
             self.tell(n);
         }
