@@ -28,6 +28,7 @@ mod term;
 mod terrain;
 mod ui;
 mod ground;
+mod inground;
 mod settle;
 mod rivers;
 mod voice;

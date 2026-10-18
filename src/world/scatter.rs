@@ -283,6 +283,7 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
         let far = max_dist_for(&ty.ct.meta.tags);
         Some(ScatterItem { inst, max_dist: if extra.is_some() { far.min(COVER_EXTRA_DIST) } else { far }, solid: ty.solid, cell: id })
     };
+    caves(snap, cx, cz, &grows, &mut out);
     for j in 0..CELLS {
         for i in 0..CELLS {
             let gx = cx * CELLS + i;
@@ -350,6 +351,75 @@ pub fn generate(snap: &WorldSnapshot, cx: i32, cz: i32) -> Vec<ScatterItem> {
         }
     }
     out
+}
+
+/// What grows in caves (`meta.grows.at: "cave"`): on their floors, out of
+/// the light, as thick as the biome over them says for its tag. Not in the
+/// rooms of shapes set into the ground. Each such thing's identity is its
+/// cell's own quarter 0 (see `sub_cell`).
+fn caves(snap: &WorldSnapshot, cx: i32, cz: i32, grows: &HashMap<&str, Vec<(u32, crate::lang::ir::Grows)>>, out: &mut Vec<ScatterItem>) {
+    let t = &snap.terrain;
+    let seed = scatter_seed(t) ^ 0xCA7E;
+    let cave_kinds: HashMap<&str, Vec<u32>> = grows
+        .iter()
+        .filter_map(|(tag, c)| {
+            let ids: Vec<u32> = c.iter().filter(|(_, g)| g.fits_cave(-1.0)).map(|(id, _)| *id).collect();
+            (!ids.is_empty()).then_some((*tag, ids))
+        })
+        .collect();
+    if cave_kinds.is_empty() {
+        return;
+    }
+    let (x0, z0) = (cx as f32 * CHUNK, cz as f32 * CHUNK);
+    // A cave reaching into this chunk is seen at one of its 16 m tiles.
+    if !(0..4).any(|j| (0..4).any(|i| t.caves_near(x0 + 8.0 + 16.0 * i as f32, z0 + 8.0 + 16.0 * j as f32))) {
+        return;
+    }
+    for j in 0..CELLS {
+        for i in 0..CELLS {
+            let (gx, gz) = (cx * CELLS + i, cz * CELLS + j);
+            let x = (gx as f32 + 0.1 + 0.8 * hseqf(seed, gx, gz, 1)) * CELL;
+            let z = (gz as f32 + 0.1 + 0.8 * hseqf(seed, gx, gz, 2)) * CELL;
+            if !t.caves_near(x, z) {
+                continue;
+            }
+            let Some(floor) = t.cave_floor_under(x, z) else { continue };
+            let at = Vec3::new(x, floor + 0.3, z);
+            if t.carve.read().ground.caves_at(x, z).any(|c| c.kind == crate::inground::KIND && c.dist(at) < 0.0) {
+                continue;
+            }
+            // The biome over it, by weight.
+            let w = t.weights(x, z);
+            let bi = (0..t.biomes.len()).max_by(|a, b| w[*a].total_cmp(&w[*b])).unwrap_or(0);
+            let biome = &t.biomes[bi];
+            let here: Vec<(&str, f32)> = biome.scatter.iter().filter_map(|(tag, d)| cave_kinds.get(tag.as_str()).map(|_| (tag.as_str(), d * CELL * CELL / 100.0))).filter(|(_, d)| *d > 0.0).collect();
+            let roll = hseqf(seed, gx, gz, 4);
+            let mut acc = 0.0;
+            let Some(tag) = here.iter().find(|(_, d)| {
+                acc += d.min(1.0);
+                roll < acc
+            }).map(|(tag, _)| *tag) else { continue };
+            let ids = &cave_kinds[tag];
+            let Some(ty) = snap.type_of(ids[(hseq(seed, gx, gz, 5) as usize) % ids.len()]) else { continue };
+            let (s0, s1) = scale_range(tag);
+            let scale = s0 + (s1 - s0) * hseqf(seed, gx, gz, 6);
+            // Room for it under the roof.
+            if t.void(Vec3::new(x, floor + (ty.top - ty.bottom) * scale + 0.1, z)) > 0.0 {
+                continue;
+            }
+            let rot = hseqf(seed, gx, gz, 7) * std::f32::consts::TAU;
+            let k = [(u2f(hseq(seed, gx, gz, 8)) * 97.0).floor(), scale, hseqf(seed, gx, gz, 9), 1.0, 0.5, 0.5, 0.5, 0.5];
+            let inst = GpuInst {
+                pos_scale: [x, floor - ty.bottom * scale - 0.03 * scale, z, scale],
+                rot: [rot.cos(), rot.sin(), ty.radius() * scale, 1.0],
+                k0: [k[0], k[1], k[2], k[3]],
+                k1: [k[4], k[5], k[6], k[7]],
+                info: ty.gpu_info(),
+                ..Default::default()
+            };
+            out.push(ScatterItem { inst, max_dist: max_dist_for(&ty.ct.meta.tags), solid: ty.solid, cell: sub_cell((gx, gz), 0) });
+        }
+    }
 }
 
 /// How the live layer changes the static one: placed objects and scatter

@@ -201,6 +201,13 @@ pub struct Meta {
     /// into a hill. The terrain inside the box is lowered to `floor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hollow: Option<Hollow>,
+    /// Set into the ground (a cliff dwelling, an earth house, a bunker, a
+    /// well): the earth is cleared exactly from its box and stays round and
+    /// over it; its floor lies this many metres under the ground before its
+    /// doorway (0: the doorway opens onto the surface, as from a hillside or
+    /// a rock face; deeper, a way is dug down to it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_ground: Option<f32>,
     /// It carries a rider who steers it (a cart, a car, a boat, a flying
     /// carpet): its top speed and what it goes on. The rider sits at its
     /// first `seat` anchor.
@@ -226,16 +233,26 @@ pub struct Grows {
     pub depth: [f32; 2],
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub surface: bool,
+    /// In hollows under the ground (cave floors), out of the light, and
+    /// never on the open land.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cave: bool,
 }
 
 impl Grows {
     /// Things that say nothing grow on dry ground, this far over the water.
-    pub const DRY: Grows = Grows { depth: [f32::NEG_INFINITY, -0.35], surface: false };
+    pub const DRY: Grows = Grows { depth: [f32::NEG_INFINITY, -0.35], surface: false, cave: false };
 
-    /// Whether it grows where the water stands `wd` metres over the ground
-    /// (negative: the ground is that far above the water).
+    /// Whether it grows on the open land where the water stands `wd` metres
+    /// over the ground (negative: the ground is that far above the water).
     pub fn fits(&self, wd: f32) -> bool {
-        wd >= self.depth[0] && wd <= self.depth[1]
+        !self.cave && wd >= self.depth[0] && wd <= self.depth[1]
+    }
+
+    /// Whether it grows on a cave's floor where the water stands `wd`
+    /// metres over it (caves under no sea are dry).
+    pub fn fits_cave(&self, wd: f32) -> bool {
+        self.cave && wd >= self.depth[0] && wd <= self.depth[1]
     }
 }
 
@@ -265,7 +282,7 @@ pub struct Drive {
 }
 
 /// What an anchor is for.
-pub const ANCHOR_KINDS: [&str; 7] = ["door", "slot", "seat", "bed", "stairs", "part", "light"];
+pub const ANCHOR_KINDS: [&str; 8] = ["door", "hatch", "slot", "seat", "bed", "stairs", "part", "light"];
 
 /// A named point on a shape (local metres; `face` in degrees, 0 = +z, the
 /// way out of a doorway or the way a seat faces).

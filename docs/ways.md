@@ -126,11 +126,15 @@ Three primitives decide where water stands; nothing knows "lake",
 A **cave** is a few capsules (a passage, a chamber) with a mouth where it
 meets the surface. The ground is solid below its surface **and outside every
 hollow**: the renderers march exactly that (rock and earth inside, the sky's
-light fading with depth, no sea inside; the 24 capsules nearest the camera
+light fading with depth, no sea inside; the 40 parts nearest the camera
 on the GPU), `Terrain::floor(x, top, z)` is the highest ground at or below a
 point (bodies stand on cave floors; cave walls and low roofs stop them;
 things fall to cave floors and bounce off walls), and people find their way
 in and out through the mouth as through a doorway.
+
+Shapes set into the ground (`meta.in_ground`) take box-shaped hollows of
+their own, and what lives in caves grows and roams on their floors: see
+[levels.md](levels.md).
 
 They come from plans (`{ "what": "cave" | "mine" | "cellar" | "crypt" …,
 "mouth", "toward", "length", "depth", "room" }`; things whose `near` names

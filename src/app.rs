@@ -2663,8 +2663,16 @@ mod tests {
         if sys.contains("You are a character") {
             return "You look like you fell from the sky.".into();
         }
+        if user.contains("is making something in the world") && user.contains("basement") {
+            // Set into the ground, and lifted by mistake: it still goes into the ground.
+            let house = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/physics/basement_house.js")).unwrap();
+            return format!("```json\n{{\"summary\": \"a house with a basement\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 0, \"lift\": 1.0}}]}}\n```\n```js\n{house}\n```");
+        }
         if user.contains("is making something in the world") {
             return format!("```json\n{{\"summary\": \"a lighthouse\", \"reuse\": null, \"placements\": [{{\"right\": 0, \"forward\": 0}}]}}\n```\n```js\n{lh}\n```");
+        }
+        if sys.contains("physics and common sense") && user.contains("basement") {
+            return r#"{"narration": "", "make": [{"text": "a house with a basement over there"}]}"#.into();
         }
         if sys.contains("physics and common sense") && user.contains("lighthouse") {
             return r#"{"narration": "", "make": [{"text": "a lighthouse on that hill"}]}"#.into();
@@ -2795,6 +2803,63 @@ mod tests {
         });
         assert!(done, "Mara was in front");
         assert!(log_has(&app, "You nod at Mara"), "log: {:?}", app.log.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        app.shutdown();
+    }
+
+    /// Conjuring a house with a basement (set into the ground): its ground
+    /// floor at the ground, the earth cleared round its basement, the
+    /// traveler walking down its stairs into it; undone, the ground is whole.
+    #[test]
+    fn a_conjured_house_with_a_basement() {
+        let (mut app, _db) = make_app();
+        app.sim.player.yaw = std::f32::consts::PI;
+        let mut phase = 0;
+        let mut cellar = Vec3::ZERO;
+        drive(&mut app, 40.0, |a, _t| {
+            match phase {
+                0 => {
+                    for c in "/a house with a basement over there".chars() {
+                        a.on_key(key(KeyCode::Char(c), KeyEventKind::Press));
+                    }
+                    a.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+                    phase = 1;
+                }
+                1 if log_has(a, "Built the basement house") => {
+                    let snap = a.snap.clone();
+                    let t = &snap.terrain;
+                    let p = snap.instances.iter().find(|p| snap.type_of(p.type_id).is_some_and(|t| t.name() == "basement house")).expect("placed").clone();
+                    let e = snap.type_of(p.type_id).unwrap();
+                    let g = p.gpu(e, 1.0);
+                    let front = g.from_local(Vec3::new(0.0, 0.0, 4.2));
+                    assert!((p.pos.y - t.height(front.x, front.z)).abs() < 0.2, "its ground floor at the ground, not lifted: {} vs {}", p.pos.y, t.height(front.x, front.z));
+                    cellar = g.from_local(Vec3::new(1.0, -1.5, 0.0));
+                    assert!(!t.solid(cellar), "air in the basement");
+                    assert!(t.solid(g.from_local(Vec3::new(3.1, -1.5, 0.0))), "earth round it");
+                    // Down the stairs from their top.
+                    a.sim.player.pos = g.from_local(Vec3::new(-1.9, 0.02, -1.8));
+                    let down = g.from_local(Vec3::new(0.0, 0.0, 1.0)) - g.from_local(Vec3::ZERO);
+                    for _ in 0..240 {
+                        a.sim.walk(ActorId::Player, down * (1.4 / 60.0));
+                        a.sim.step_footing(ActorId::Player, 1.0 / 60.0);
+                    }
+                    let me = a.sim.player.pos;
+                    assert!((me.y - (p.pos.y - 2.6)).abs() < 0.3, "walked down into the basement: {} (its floor {})", me.y, p.pos.y - 2.6);
+                    for c in "/undo".chars() {
+                        a.on_key(key(KeyCode::Char(c), KeyEventKind::Press));
+                    }
+                    a.on_key(key(KeyCode::Enter, KeyEventKind::Press));
+                    phase = 2;
+                }
+                2 if log_has(a, "Undone") => {
+                    assert!(a.snap.terrain.solid(cellar), "the ground is whole again");
+                    phase = 3;
+                    return false;
+                }
+                _ => {}
+            }
+            true
+        });
+        assert_eq!(phase, 3, "log: {:?}", app.log.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         app.shutdown();
     }
 

@@ -35,8 +35,10 @@ pub const BUILTIN_SOURCES: &[&str] = &[
     include_str!("builtin/stone.js"),
     include_str!("builtin/mushroom.js"),
     include_str!("builtin/door.js"),
+    include_str!("builtin/hatch.js"),
     include_str!("builtin/lamppost.js"),
     include_str!("builtin/bridge.js"),
+    include_str!("builtin/walkway.js"),
     include_str!("builtin/bench.js"),
     include_str!("builtin/boat.js"),
     include_str!("builtin/shot.js"),
@@ -128,6 +130,9 @@ pub struct Settlement {
     pub vehicle: Option<TypeRef>,
     /// Hollows it digs into the land: cave dwellings, mines, cellars in a hill.
     pub caves: Vec<crate::settle::CaveSpec>,
+    /// Ways off the ground between what holds them up (rope bridges
+    /// between trees, boardwalks along a cliff).
+    pub walkways: Vec<crate::settle::WalkwaySpec>,
 }
 
 pub struct CommitRequest {
@@ -169,6 +174,8 @@ pub struct WorldModel {
     saved_thing_types: HashSet<u32>,
     /// Versions that reshaped a thing (each makes a one-off type).
     reshape_versions: HashSet<i64>,
+    /// The box each type's solid fills, by type id (see `inground::solid_box`).
+    solid_boxes: Mutex<HashMap<u32, crate::inground::SolidBox>>,
 }
 
 fn meta_json(ct: &CompiledType, bottom: f32, top: f32) -> String {
@@ -290,6 +297,7 @@ impl WorldModel {
             live,
             saved_thing_types: HashSet::new(),
             reshape_versions: HashSet::new(),
+            solid_boxes: Mutex::new(HashMap::new()),
         };
         m.saved_thing_types = db
             .with(|c| {
@@ -592,8 +600,23 @@ impl WorldModel {
         let scene = Arc::new(SceneTypes { types: types.iter().map(|t| (t.entry.id, t.entry.clone())).collect(), pipeline });
         let instances = self.active_instances();
         // The ground taken away under placed shapes, and the settlements' ground.
-        let hollows: Vec<crate::terrain::Hollow> = instances.iter().filter_map(|p| Some(hollow_of(p, &ground_taken(&scene.types.get(&p.type_id)?.ct.meta)?))).collect();
+        let hollows: Vec<crate::terrain::Hollow> = instances
+            .iter()
+            .filter_map(|p| {
+                let e = scene.types.get(&p.type_id)?;
+                Some(hollow_of(p, &ground_taken(&e.ct.meta, || self.solid_box(e))?))
+            })
+            .collect();
         self.apply_ground();
+        // Hollows under shapes set into the ground, on the land as shaped.
+        let sunk: Vec<crate::ground::Cave> = instances
+            .iter()
+            .filter_map(|p| {
+                let e = scene.types.get(&p.type_id)?;
+                e.ct.meta.in_ground.is_some().then(|| crate::inground::cave(&self.terrain, p, e, &self.solid_box(e)))
+            })
+            .collect();
+        self.terrain.set_caves(crate::ground::Layer::Shapes, sunk);
         {
             let mut c = self.terrain.carve.write();
             if c.fixed != hollows {
@@ -681,6 +704,16 @@ impl WorldModel {
     }
 
     /// A built-in type by name.
+    /// The box a type's solid fills (worked out once per type).
+    fn solid_box(&self, e: &TypeEntry) -> crate::inground::SolidBox {
+        if let Some(b) = self.solid_boxes.lock().get(&e.id) {
+            return *b;
+        }
+        let b = crate::inground::solid_box(e);
+        self.solid_boxes.lock().insert(e.id, b);
+        b
+    }
+
     fn builtin(&self, name: &str) -> Option<TypeRef> {
         self.types.values().find(|t| t.entry.builtin && t.entry.name() == name).map(|t| TypeRef::Existing(t.entry.id))
     }
@@ -778,6 +811,30 @@ impl WorldModel {
             }
         }
 
+        // Ways off the ground, span by span between what holds their ends up.
+        if let Some(wt) = self.builtin("walkway").and_then(|w| self.entry_of(&w, new_entries, &req.new_types)).map(|e| e.0) {
+            for (i, w) in st.walkways.iter().enumerate() {
+                let rest = |e: Vec3| -> Option<f32> {
+                    let g = self.terrain.height(e.x, e.z);
+                    if e.y < 0.4 {
+                        return Some(g);
+                    }
+                    self.support_below(e.x, e.z, g + e.y + 1.0, g + e.y - 1.5, placed)
+                };
+                let (Some(ya), Some(yb)) = (rest(w.a), rest(w.b)) else {
+                    crate::log::info(format!("a walkway from ({:.0}, {:.0}) to ({:.0}, {:.0}) has nothing to rest on at an end", w.a.x, w.a.z, w.b.x, w.b.z));
+                    continue;
+                };
+                // Onto what holds each end a little.
+                let dir = glam::Vec2::new(w.b.x - w.a.x, w.b.z - w.a.z).normalize_or(glam::Vec2::Y);
+                let (a, b) = (Vec3::new(w.a.x - dir.x * 0.3, ya, w.a.z - dir.y * 0.3), Vec3::new(w.b.x + dir.x * 0.3, yb, w.b.z + dir.y * 0.3));
+                for (k, (c, len, rise, yaw)) in crate::settle::spans(a, b, w.style).into_iter().enumerate() {
+                    let params = [700.0 + (i * 16 + k) as f32, 1.0, ((len * 0.5 - 0.5) / 7.5).clamp(0.0, 1.0), ((w.width * 0.5 - 0.3) / 1.2).clamp(0.0, 1.0), (rise / 16.0 + 0.5).clamp(0.0, 1.0), w.style, 0.5, 0.5];
+                    placed.push((Placed { id: 0, type_id: wt.id, pos: c, rot_y: yaw, scale: 1.0, params, version: 0 }, wt.clone()));
+                }
+            }
+        }
+
         // Bridges where ways cross cuts.
         let bridge = st.bridge.clone().or_else(|| self.builtin("bridge"));
         if let Some((bt, (entry, interior))) = bridge.and_then(|b| Some((b.clone(), self.entry_of(&b, new_entries, &req.new_types)?))) {
@@ -863,7 +920,7 @@ impl WorldModel {
         const MAX_DROP: f32 = 1.5;
         let b = entry.ct.meta.bounds;
         let r = b[0].max(b[2]) * pl.scale.clamp(0.2, 6.0);
-        if pl.y.is_some() || !entry.solid || r < 1.5 || entry.ct.meta.hollow.is_some() {
+        if pl.y.is_some() || !entry.solid || r < 1.5 || entry.ct.meta.hollow.is_some() || entry.ct.meta.in_ground.is_some() {
             return None;
         }
         let t = &self.terrain;
@@ -894,12 +951,52 @@ impl WorldModel {
         best.1
     }
 
+    /// The top of whatever solid placed thing stands in the column at (x, z)
+    /// between `from` and `to` (heights, `from` above): what a thing set up
+    /// there would stand on. Earlier placements of this commit count.
+    fn support_below(&self, x: f32, z: f32, from: f32, to: f32, extra: &[(Placed, Arc<TypeEntry>)]) -> Option<f32> {
+        let mid = Vec3::new(x, (from + to) * 0.5, z);
+        let reach = (from - to) * 0.5;
+        let cands: Vec<(GpuInst, Arc<TypeEntry>)> = self
+            .insts
+            .iter()
+            .filter(|i| self.inst_active(i))
+            .filter_map(|i| self.types.get(&i.placed.type_id).map(|t| (i.placed.clone(), t.entry.clone())))
+            .chain(extra.iter().cloned())
+            .filter(|(p, e)| e.solid && (p.pos + Vec3::Y * e.sphere_cy * p.scale - mid).length() < e.sphere_r * p.scale + reach + 1.0)
+            .map(|(p, e)| (p.gpu(&e, 1.0), e))
+            .collect();
+        if cands.is_empty() {
+            return None;
+        }
+        let dist = |y: f32| cands.iter().map(|(g, e)| e.ct.sdf(g.to_local(Vec3::new(x, y, z)), &g.k()) * g.pos_scale[3]).fold(f32::MAX, f32::min);
+        let mut y = from;
+        while y > to {
+            let d = dist(y);
+            if d < 0.01 {
+                // Up out of it again, to its top.
+                let mut top = y;
+                while dist(top + 0.02) < 0.01 && top < from {
+                    top += 0.02;
+                }
+                return Some(top);
+            }
+            y -= d.clamp(0.01, 0.3);
+        }
+        None
+    }
+
     /// Check one placement against the terrain, the player, characters, the
     /// spawn point and existing instances. Returns the resolved instance.
     fn check_place(&mut self, pl: &Placement, entry: &Arc<TypeEntry>, interior: &[[f32; 3]], extra: &[(Placed, Arc<TypeEntry>)], label: &str) -> Result<Placed, String> {
         let t = self.terrain.clone();
         let scale = pl.scale.clamp(0.2, 6.0);
-        let (c, s) = (pl.rot_y.cos(), pl.rot_y.sin());
+        // Set into the ground: its floor under the ground before its doorway,
+        // turned to the open side of a hill (a height given with it is not
+        // for it: it goes into the ground, not over it).
+        let seated = (entry.ct.meta.in_ground.is_some() && !pl.under).then(|| crate::inground::seat(&t, entry, &self.solid_box(entry), pl.x, pl.z, pl.rot_y, scale));
+        let rot_y = seated.map(|s| s.1).unwrap_or(pl.rot_y);
+        let (c, s) = (rot_y.cos(), rot_y.sin());
         let (lo, hi) = footprint(&t, pl, entry);
         let ground = t.height(pl.x, pl.z);
         // On a cave's floor: stood there (the land above doesn't matter).
@@ -912,6 +1009,7 @@ impl WorldModel {
             }
         }
         let y = match pl.y {
+            _ if let Some((y, _)) = seated => y,
             // A shape that takes ground away (a cellar, a house in a hillside)
             // stands with its floor (y = 0) on the lowest ground under it;
             // the hollow clears the rest.
@@ -924,12 +1022,17 @@ impl WorldModel {
             Some(y) => {
                 let base = y + entry.bottom * scale;
                 if base - hi > 0.5 {
-                    return Err(format!("{label} floats {:.1} m above the ground (its base is at y={:.1}, the terrain at y={:.1}); omit y to sit it on the ground", base - hi, base, hi));
-                }
-                if lo - base > 3.0 {
+                    // Held up there by something standing already (a platform
+                    // in a tree, a ledge, stilts, a roof): set on its top.
+                    match self.support_below(pl.x, pl.z, base + 0.8, base - 1.5, extra) {
+                        Some(top) => top - entry.bottom * scale + 0.01,
+                        None => return Err(format!("{label} floats {:.1} m above the ground with nothing under it (its base is at y={:.1}, the terrain at y={:.1}); stand it on something placed before it (a platform, a branch, a ledge, stilts), or omit its height to sit it on the ground", base - hi, base, hi)),
+                    }
+                } else if lo - base > 3.0 {
                     return Err(format!("{label} is buried {:.1} m below the ground", lo - base));
+                } else {
+                    y
                 }
-                y
             }
         };
         // A boat set on water floats on it (as `vehicle` keeps it).
@@ -943,7 +1046,7 @@ impl WorldModel {
         }
         let mut params = pl.params;
         params[1] = scale;
-        let placed = Placed { id: 0, type_id: entry.id, pos: Vec3::new(pl.x, y, pl.z), rot_y: pl.rot_y, scale, params, version: 0 };
+        let placed = Placed { id: 0, type_id: entry.id, pos: Vec3::new(pl.x, y, pl.z), rot_y, scale, params, version: 0 };
         let gi = placed.gpu(entry, 1.0);
         let sdf_at = |p: Vec3| entry.ct.sdf(gi.to_local(p), &gi.k()) * scale;
         let live = self.live.lock().clone();
@@ -1031,13 +1134,27 @@ impl WorldModel {
             let yaw = p.rot_y + a.face.to_radians();
             let seed = p.params[0] * 31.0 + i as f32 + 1.0;
             match a.kind.as_str() {
-                "door" => {
-                    let Some(door) = by_name("door").filter(|d| d.ct.meta.joint.is_some()) else { continue };
+                "door" | "hatch" => {
+                    // Its own door (a round door, an iron gate, a stone slab, a
+                    // hide flap: anything on a hinge), or the world's.
+                    let own = a.holds.as_deref().and_then(by_name).filter(|d| d.ct.meta.joint.is_some());
+                    let Some(door) = own.clone().or_else(|| by_name(&a.kind).filter(|d| d.ct.meta.joint.is_some())) else { continue };
                     let [w, h] = a.size.unwrap_or([1.0, 2.0]).map(|v| v * p.scale);
-                    // Hinged at its left edge, seen from outside.
-                    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-                    let o = at - right * (w * 0.5);
-                    let params = [seed, 1.0, (w / 2.0).clamp(0.2, 1.1), (h / 4.0).clamp(0.15, 0.85), 0.5, 0.5, 0.5, 0.5];
+                    let params = match (&own, a.kind.as_str()) {
+                        (Some(_), _) => [seed, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+                        (None, "door") => [seed, 1.0, (w / 2.0).clamp(0.2, 1.1), (h / 4.0).clamp(0.15, 0.85), 0.5, 0.5, 0.5, 0.5],
+                        // A hatch: width and depth.
+                        _ => [seed, 1.0, (w / 2.0).clamp(0.2, 1.1), (h / 2.0).clamp(0.2, 1.0), 0.5, 0.5, 0.5, 0.5],
+                    };
+                    let o = if a.kind == "door" {
+                        // Hinged at its left edge, seen from outside.
+                        let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+                        at - right * (w * 0.5)
+                    } else {
+                        // Hinged along its back edge, lying flat, opening toward `face`.
+                        let fwd = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+                        at - fwd * (h * 0.5)
+                    };
                     out.push((Placed { id: 0, type_id: door.id, pos: o, rot_y: yaw, scale: 1.0, params, version: 0 }, door));
                 }
                 "slot" | "part" => {
@@ -1441,24 +1558,36 @@ fn is_reshape(kind: &str, summary: &str) -> bool {
 }
 
 /// The ground a shape takes away: its `meta.hollow`, or, for a shape with
-/// a doorway, the ground under its floor (so no slope pokes through it).
-pub fn ground_taken(m: &crate::lang::ir::Meta) -> Option<crate::lang::ir::Hollow> {
+/// a doorway, the ground under its floor out to its walls (so no slope pokes
+/// through it). None for a shape set into the ground (it takes a hollow of
+/// its own, see `inground`).
+pub fn ground_taken(m: &crate::lang::ir::Meta, solid: impl FnOnce() -> crate::inground::SolidBox) -> Option<crate::lang::ir::Hollow> {
+    if m.in_ground.is_some() {
+        return None;
+    }
     if let Some(h) = &m.hollow {
         return Some(h.clone());
     }
     let door = m.anchors.iter().find(|a| a.kind == "door")?;
-    Some(crate::lang::ir::Hollow { half: [m.bounds[0] * 0.92, m.bounds[2] * 0.92], floor: door.at[1] - 0.04 })
+    let b = solid();
+    // Centred on the origin: out to the nearer wall on each axis.
+    let half = [b.hi.x.min(-b.lo.x), b.hi.z.min(-b.lo.z)];
+    Some(crate::lang::ir::Hollow { half, floor: door.at[1] - 0.04 })
 }
+
+/// How far a shape's cut slopes in from its edge (m): steep, and inside its
+/// box, so the ground meets its walls with no gap.
+const SHAPE_EDGE: f32 = 0.1;
 
 /// The ground a placed shape takes away (its `meta.hollow`), in the world.
 pub fn hollow_of(p: &Placed, h: &crate::lang::ir::Hollow) -> crate::terrain::Hollow {
     crate::terrain::Hollow {
         c: [p.pos.x, p.pos.z],
         rot: [p.rot_y.cos(), p.rot_y.sin()],
-        half: [h.half[0] * p.scale, h.half[1] * p.scale],
+        half: [(h.half[0] * p.scale - SHAPE_EDGE).max(0.05), (h.half[1] * p.scale - SHAPE_EDGE).max(0.05)],
         floor: p.pos.y + h.floor * p.scale,
         round: false,
-        edge: crate::terrain::HOLLOW_EDGE,
+        edge: SHAPE_EDGE,
     }
 }
 

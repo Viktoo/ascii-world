@@ -31,6 +31,9 @@ impl Default for Needs {
 pub struct SavedState {
     pub x: f32,
     pub z: f32,
+    /// Where their feet were (off the ground: up a tree, down in a cave).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
     pub yaw: f32,
     #[serde(default)]
     pub asleep: bool,

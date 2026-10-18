@@ -554,6 +554,8 @@ pub struct Actor {
     /// Where its hands are (right, other; its own frame, metres), when its
     /// body says (see `Sim::place_hands`).
     pub hands: Option<[Vec3; 2]>,
+    /// Holding on to a ladder (its index in `Sim::climbs`, see `climb`).
+    pub ladder: Option<u32>,
 }
 
 /// Bit mask of the roles a body lists.
@@ -572,7 +574,7 @@ pub const HUMAN_ROLES: u16 = 0b1_0111_1111;
 
 impl Actor {
     pub fn new(pos: Vec3, yaw: f32) -> Actor {
-        Actor { pos, yaw, held: None, pose: [0.0; 9], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, seat_no: 0, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, swimming: false, swim: 0.0, dive_to: None, motion: None, support: None, jolt: None, perch: None, conjuring: false, hands: None }
+        Actor { pos, yaw, held: None, pose: [0.0; 9], gesture: None, task: None, phase: 0.0, moved: 0.0, asleep: false, catching: 0.0, stuck: 0.0, dims: Dims::default(), roles: HUMAN_ROLES, species: String::new(), alt: 0.0, riding: None, aboard: None, seat_no: 0, carried_by: None, carried_until: 0.0, vy: 0.0, grounded: true, crouch: 0.0, crouching: false, running: false, swimming: false, swim: 0.0, dive_to: None, motion: None, support: None, jolt: None, perch: None, conjuring: false, hands: None, ladder: None }
     }
 
     /// Sitting on something that carries it (a mount, a cart).

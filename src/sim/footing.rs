@@ -74,9 +74,14 @@ impl Sim {
     /// step down stairs, fall from ledges, land; crouch or stand up.
     pub fn step_footing(&mut self, id: ActorId, dt: f32) {
         let Some(a) = self.actor(id) else { return };
-        if a.carried() || a.alt > 0.0 {
+        if a.carried() || a.alt > 0.0 || a.ladder.is_some() {
             return;
         }
+        // Falling past a ladder: caught hold of.
+        if self.catch_ladder(id) {
+            return;
+        }
+        let Some(a) = self.actor(id) else { return };
         let (pos, mut vy, mut grounded) = (a.pos, a.vy, a.grounded);
         let full = a.dims.height;
         let (eye, swim, was_swimming, dive_to) = (a.dims.eye, a.swim, a.swimming, a.dive_to);
