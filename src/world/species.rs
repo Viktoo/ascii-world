@@ -244,6 +244,11 @@ pub struct Species {
     /// keeps above the bed.
     #[serde(default, skip_serializing_if = "is_surface")]
     pub depth: [f32; 2],
+    /// It lives in caves, under the ground and out of the light (a bat
+    /// colony, a blind salamander, cave crickets): its home is a cave's
+    /// floor, and it keeps to them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caves: bool,
     #[serde(default)]
     pub needs: NeedRates,
     /// Look ranges for this species (subsets of the body's slider ranges).

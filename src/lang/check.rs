@@ -210,6 +210,7 @@ impl<'s> Cx<'s> {
         let mut drive = None;
         let mut burst = None;
         let mut grows = None;
+        let mut in_ground = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else {
                 self.err(o.span, "spread is not allowed in meta");
@@ -296,6 +297,10 @@ impl<'s> Cx<'s> {
                     }
                     _ => self.err(p.span, "meta.hollow must be [hx, hz, floor]: the half-size of the ground taken away (each 0 < h <= 20 m) and the local height it is lowered to (-12 <= floor <= 0)"),
                 },
+                "in_ground" => match literal_num(&p.value).or(matches!(&p.value, Expression::BooleanLiteral(b) if b.value).then_some(0.0)) {
+                    Some(v) if v.is_finite() && (0.0..=30.0).contains(&v) => in_ground = Some(v),
+                    _ => self.err(p.span, "meta.in_ground must be a number: how many metres its floor lies under the ground before its doorway (0 … 30; 0 opens onto the surface, as from a hillside or rock face)"),
+                },
                 "props" => match &p.value {
                     Expression::ObjectExpression(po) => props = self.meta_props(po),
                     _ => self.err(p.span, "meta.props must be an object of numbers, e.g. { mass: 2, burns: 0.5 }"),
@@ -366,7 +371,7 @@ impl<'s> Cx<'s> {
                 self.err(o.span, "meta.tool.grip and tip must lie inside meta.bounds");
             }
         }
-        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, drive, burst, grows })
+        Some(Meta { name, bounds, tags, props, says, sounds, spawns, sound, body, fits, anchors, joint, tool, hollow, in_ground, drive, burst, grows })
     }
 
     /// A key of a small meta object.
@@ -439,6 +444,10 @@ impl<'s> Cx<'s> {
                 (Some(kind), Some(at)) => {
                     if kind == "door" && size.is_none() {
                         self.err(o.span, "a door anchor needs size: [width, height] of the opening");
+                        continue;
+                    }
+                    if kind == "hatch" && size.is_none() {
+                        self.err(o.span, "a hatch anchor needs size: [width, depth] of the opening in the floor, roof or ground");
                         continue;
                     }
                     if kind == "stairs" && to.is_none() {
@@ -657,7 +666,7 @@ impl<'s> Cx<'s> {
 
     /// `meta.grows`: { depth: [lo, hi], at: "bed" | "surface" }
     fn meta_grows(&mut self, o: &js::ObjectExpression) -> Option<Grows> {
-        let mut g = Grows { depth: [-0.35, -0.35], surface: false };
+        let mut g = Grows { depth: [-0.35, -0.35], surface: false, cave: false };
         let mut depth = None;
         for prop in o.properties.iter() {
             let js::ObjectPropertyKind::ObjectProperty(p) = prop else { continue };
@@ -668,12 +677,17 @@ impl<'s> Cx<'s> {
                     _ => self.err(p.span, "meta.grows.depth must be [lo, hi]: metres of water over the ground it grows in, lo <= hi (a negative lo: dry ground up to that high above the water)"),
                 },
                 "at" => match &p.value {
-                    Expression::StringLiteral(s) if matches!(s.value.as_str(), "bed" | "surface") => g.surface = s.value.as_str() == "surface",
-                    _ => self.err(p.span, "meta.grows.at is \"bed\" (standing on the ground under the water) or \"surface\" (floating on it)"),
+                    Expression::StringLiteral(s) if matches!(s.value.as_str(), "bed" | "surface" | "cave") => {
+                        g.surface = s.value.as_str() == "surface";
+                        g.cave = s.value.as_str() == "cave";
+                    }
+                    _ => self.err(p.span, "meta.grows.at is \"bed\" (standing on the ground under the water), \"surface\" (floating on it) or \"cave\" (on the floors of caves under the ground, never on the open land)"),
                 },
                 _ => self.err(p.span, format!("unknown meta.grows key '{key}' (depth, at)")),
             }
         }
+        // In a cave, dry floors unless it says otherwise.
+        let depth = depth.or(g.cave.then_some([f32::NEG_INFINITY, -0.05]));
         let Some(d) = depth else {
             self.err(o.span, "meta.grows needs a depth [lo, hi]");
             return None;

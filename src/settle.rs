@@ -44,6 +44,73 @@ impl CaveSpec {
     }
 }
 
+/// A way off the ground between two points (a rope bridge between trees,
+/// a boardwalk along a cliff, a stone way between towers): each end's
+/// (x, z) and height over the ground there, how wide, and its look (0 rope
+/// and planks … 0.5 timber … 1 stone). Its ends rest on what holds them
+/// up there (a platform, a ledge, a roof), or on the ground.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WalkwaySpec {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub width: f32,
+    pub style: f32,
+}
+
+/// Read a settlement's `walkways`: { "from": [dx, dz, height], "to": [dx,
+/// dz, height], "width": m, "look": "rope" | "timber" | "stone" }, ends
+/// from the settlement's middle (cx, cz).
+pub fn parse_walkways(list: &[Value], cx: f32, cz: f32) -> Vec<WalkwaySpec> {
+    let end = |v: Option<&Value>| -> Option<Vec3> {
+        let a = v?.as_array()?;
+        let n = |i: usize| a.get(i).and_then(|x| x.as_f64()).map(|x| x as f32).filter(|x| x.is_finite());
+        Some(Vec3::new(cx + n(0)?.clamp(-80.0, 80.0), n(2).unwrap_or(0.0).clamp(0.0, 80.0), cz + n(1)?.clamp(-80.0, 80.0)))
+    };
+    list.iter()
+        .take(16)
+        .filter_map(|v| {
+            let (a, b) = (end(v.get("from"))?, end(v.get("to"))?);
+            if Vec2::new(a.x - b.x, a.z - b.z).length() < 1.0 {
+                return None;
+            }
+            let look = v.get("look").or(v.get("style")).and_then(|x| x.as_str()).unwrap_or("").to_lowercase();
+            let style = if look.contains("rope") || look.contains("vine") || look.contains("hanging") {
+                0.1
+            } else if look.contains("stone") || look.contains("brick") || look.contains("concrete") || look.contains("metal") {
+                0.9
+            } else {
+                0.5
+            };
+            let width = v.get("width").and_then(|x| x.as_f64()).map(|x| x as f32).filter(|x| x.is_finite()).unwrap_or(1.2).clamp(0.6, 3.0);
+            Some(WalkwaySpec { a, b, width, style })
+        })
+        .collect()
+}
+
+/// The spans a walkway is laid in, end `a` to end `b` (their heights as
+/// found): each span's middle (its deck's top there), its length, its rise
+/// and its turn. A rope bridge sags in the middle; long ways and steep ones
+/// are cut into more spans.
+pub fn spans(a: Vec3, b: Vec3, style: f32) -> Vec<(Vec3, f32, f32, f32)> {
+    let flat = Vec2::new(b.x - a.x, b.z - a.z);
+    let d = flat.length();
+    let dir = flat / d.max(1e-4);
+    let yaw = dir.x.atan2(dir.y);
+    let sag = if style < 0.33 { d * 0.035 } else { 0.0 };
+    let n = ((d / 14.0).ceil().max(((b.y - a.y).abs() / 7.5).ceil()).max(1.0) as usize).min(12);
+    let at = |i: usize| {
+        let t = i as f32 / n as f32;
+        let p = a.lerp(b, t);
+        Vec3::new(p.x, p.y - sag * 4.0 * t * (1.0 - t), p.z)
+    };
+    (0..n)
+        .map(|i| {
+            let (p, q) = (at(i), at(i + 1));
+            ((p + q) * 0.5, Vec2::new(q.x - p.x, q.z - p.z).length() + 0.05, q.y - p.y, yaw)
+        })
+        .collect()
+}
+
 /// Words that make a ground entry a hollow dug into the land.
 fn is_hollow(what: &str) -> bool {
     ["cave", "mine", "tunnel", "grotto", "burrow", "den", "cellar", "crypt", "catacomb", "dugout", "hollow", "lair", "vault"].iter().any(|w| what.contains(w))

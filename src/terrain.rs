@@ -747,6 +747,24 @@ impl Terrain {
         None
     }
 
+    /// The floor of the cave chamber nearest (x, z) within `r`: the land's
+    /// own caves (from the seed, laid yet or not) and those dug, but not the
+    /// rooms of shapes set into the ground.
+    pub fn cave_floor_near(&self, x: f32, z: f32, r: f32) -> Option<glam::Vec3> {
+        let p = glam::Vec2::new(x, z);
+        let mut caves: Vec<crate::ground::Cave> = self.carve.read().ground.caves().iter().filter(|c| c.kind != crate::inground::KIND).cloned().collect();
+        caves.extend(self.rivers.lock().caves_near(self, p, r));
+        caves
+            .iter()
+            .filter_map(|c| {
+                let q = c.parts.last().filter(|q| q.half.is_none())?;
+                let m = (glam::Vec3::from(q.a) + glam::Vec3::from(q.b)) * 0.5;
+                Some(glam::Vec3::new(m.x, m.y - q.r + 0.05, m.z))
+            })
+            .filter(|m| (glam::Vec2::new(m.x, m.z) - p).length() < r)
+            .min_by(|a, b| (glam::Vec2::new(a.x, a.z) - p).length().total_cmp(&(glam::Vec2::new(b.x, b.z) - p).length()))
+    }
+
     /// The ground edits holding (x, z) (within `margin` of their shapes).
     pub fn edits_at(&self, x: f32, z: f32, margin: f32) -> Vec<crate::ground::Edit> {
         self.carve.read().ground.edits_at(x, z, margin).into_iter().map(|(e, _)| e.clone()).collect()
@@ -764,7 +782,7 @@ impl Terrain {
     pub fn carve_sig(&self, x0: f32, z0: f32, x1: f32, z1: f32) -> u64 {
         use std::hash::{Hash, Hasher};
         let c = self.carve.read();
-        if c.index.is_empty() && c.ground.is_empty() {
+        if c.index.is_empty() && c.ground.is_empty() && c.ground.caves().is_empty() {
             return 0;
         }
         let mut ids: Vec<u32> = Vec::new();
@@ -777,6 +795,7 @@ impl Terrain {
         ids.dedup();
         let mut h = std::collections::hash_map::DefaultHasher::new();
         c.ground.sig(x0, z0, x1, z1).hash(&mut h);
+        c.ground.cave_sig(x0, z0, x1, z1).hash(&mut h);
         for hl in ids.into_iter().filter_map(|i| c.get(i)) {
             for v in [hl.c[0], hl.c[1], hl.half[0], hl.half[1], hl.floor, hl.edge] {
                 v.to_bits().hash(&mut h);

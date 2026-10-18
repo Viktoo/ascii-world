@@ -25,7 +25,7 @@ fn canal_city(w: &W, hut: u32) -> (Vec3, crate::model::CommitOk) {
         let ty = p.frontage.as_ref().map(|_| TypeRef::Existing(hut));
         (p, ty)
     }).collect();
-    let st = Settlement { x: h.x, z: h.z, road: Some((None, 1.2)), lamps: Some(TypeRef::Existing(lamp)), ground, bridge: None, vehicle: Some(TypeRef::Existing(boat)), caves: vec![] };
+    let st = Settlement { x: h.x, z: h.z, road: Some((None, 1.2)), lamps: Some(TypeRef::Existing(lamp)), ground, bridge: None, vehicle: Some(TypeRef::Existing(boat)), caves: vec![], walkways: vec![] };
     let region = RegionCommit { r, plan_json: "{}".into(), info: Default::default(), characters: vec![], settlement: Some(st) };
     (h, commit_places(w, vec![], Some(region)))
 }

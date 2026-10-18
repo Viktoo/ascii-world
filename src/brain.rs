@@ -1308,14 +1308,25 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let ox = r.0 as f32 * REGION;
     let oz = r.1 as f32 * REGION;
     let clampl = |v: f32| v.clamp(4.0, REGION - 4.0);
+    // Set up off the ground ("height" metres), on what holds it there (a
+    // platform in a great tree, a ledge, stilts): placed before it.
+    let lifted = |v: &Value, ty: &TypeRef, x: f32, z: f32| -> Option<f32> {
+        let up = v.get("height").and_then(|h| h.as_f64()).map(|h| h as f32).filter(|h| h.is_finite() && *h > 0.3)?;
+        let bottom = match ty {
+            TypeRef::New(i) => new_types.get(*i).map(|t| t.report.bottom).unwrap_or(0.0),
+            TypeRef::Existing(_) => 0.0,
+        };
+        Some(info.terrain.height(x, z) + up.min(80.0) - bottom)
+    };
     let mut placements = Vec::new();
     for lm in plan.get("landmarks").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(3) {
         let Some(ty) = resolve(&s(lm, "type")) else { continue };
+        let (x, z) = (ox + clampl(f(lm, "x", 128.0)), oz + clampl(f(lm, "z", 128.0)));
         placements.push(Placement {
+            y: lifted(lm, &ty, x, z),
             ty,
-            x: ox + clampl(f(lm, "x", 128.0)),
-            z: oz + clampl(f(lm, "z", 128.0)),
-            y: None,
+            x,
+            z,
             under: false,
             rot_y: f(lm, "rot", 0.0).to_radians(),
             scale: f(lm, "scale", 1.0).clamp(0.3, 4.0),
@@ -1325,13 +1336,14 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     if let Some(st) = plan.get("settlement").filter(|v| v.is_object()) {
         let cx = ox + clampl(f(st, "x", 128.0));
         let cz = oz + clampl(f(st, "z", 128.0));
-        for (i, b) in st.get("buildings").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(6).enumerate() {
+        for (i, b) in st.get("buildings").and_then(|x| x.as_array()).cloned().unwrap_or_default().iter().take(8).enumerate() {
             let Some(ty) = resolve(&s(b, "type")) else { continue };
+            let (x, z) = (cx + f(b, "dx", 0.0).clamp(-60.0, 60.0), cz + f(b, "dz", 0.0).clamp(-60.0, 60.0));
             placements.push(Placement {
+                y: lifted(b, &ty, x, z),
                 ty,
-                x: cx + f(b, "dx", 0.0).clamp(-60.0, 60.0),
-                z: cz + f(b, "dz", 0.0).clamp(-60.0, 60.0),
-                y: None,
+                x,
+                z,
                 under: false,
                 rot_y: f(b, "rot", 0.0).to_radians(),
                 scale: 1.0,
@@ -1404,7 +1416,8 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
         if cave.is_none() && !wet_owner && info.terrain.height(x, z) <= info.terrain.water(x, z) + 0.2 {
             continue;
         }
-        placements.push(Placement { ty, x, z, y: None, under: cave.is_some(), rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
+        let y = if cave.is_some() { None } else { lifted(th, &ty, x, z) };
+        placements.push(Placement { ty, x, z, y, under: cave.is_some(), rot_y: a * 3.0, scale: 1.0, params: [100.0 + i as f32, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] });
     }
     // Creatures: herds, packs, pets, beasts. No voice or trade, just a
     // species, a home, maybe a name and a person they belong to.
@@ -1428,8 +1441,13 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             let name = names.get(i).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("the {}", sp.replace('-', " ")));
             let a = i as f32 * 2.399;
             let mut home = Vec3::new(cx + a.cos() * (1.5 + i as f32), 0.0, cz + a.sin() * (1.5 + i as f32));
+            // Those who live in caves: in the nearest cave's chamber.
+            let cave = book.get(&sp).is_some_and(|x| x.caves).then(|| info.terrain.cave_floor_near(cx, cz, 250.0)).flatten();
+            if let Some(f) = cave {
+                home = Vec3::new(f.x + a.cos() * 0.6 * i as f32, 0.0, f.z + a.sin() * 0.6 * i as f32);
+            }
             for k in 0..30 {
-                if lives(home.x, home.z) {
+                if cave.is_some() || lives(home.x, home.z) {
                     break;
                 }
                 let b = k as f32 * 2.399;
@@ -1474,7 +1492,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
             })
             .collect();
         let named = |k: &str| st.get(k).and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()).and_then(resolve);
-        crate::model::Settlement { x: ox + clampl(f(st, "x", 128.0)), z: oz + clampl(f(st, "z", 128.0)), road, lamps, ground, bridge: named("bridge"), vehicle: named("vehicle"), caves: caves.clone() }
+        let (sx, sz) = (ox + clampl(f(st, "x", 128.0)), oz + clampl(f(st, "z", 128.0)));
+        let walkways = crate::settle::parse_walkways(st.get("walkways").and_then(|w| w.as_array()).map(|a| a.as_slice()).unwrap_or(&[]), sx, sz);
+        crate::model::Settlement { x: sx, z: sz, road, lamps, ground, bridge: named("bridge"), vehicle: named("vehicle"), caves: caves.clone(), walkways }
     });
     let n_chars = chars.len();
     let ok = ctx
@@ -1501,29 +1521,34 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
 /// ladder up to a tree-house) that the world has no type for yet, written
 /// in parallel (at most six). Returns (the name asked for, its type).
 async fn write_contents(ctx: &Ctx, system: &str, types: &[NewType], known: &(dyn Fn(&str) -> bool + Sync), place: &str) -> Vec<(String, NewType)> {
-    let mut wanted: Vec<(String, String, bool)> = Vec::new();
+    let mut wanted: Vec<(String, String, String, Option<[f32; 2]>)> = Vec::new();
     for t in types {
         for a in &t.ct.meta.anchors {
             if let Some(h) = &a.holds {
                 let n = h.trim().to_lowercase();
-                if n != "door" && !known(&n) && !wanted.iter().any(|w| w.0 == n) && wanted.len() < 6 {
-                    wanted.push((n, t.ct.meta.name.clone(), a.kind == "part"));
+                if n != "door" && n != "hatch" && !known(&n) && !wanted.iter().any(|w| w.0 == n) && wanted.len() < 6 {
+                    wanted.push((n, t.ct.meta.name.clone(), a.kind.clone(), a.size));
                 }
             }
         }
     }
-    let futs = wanted.iter().map(|(n, b, part)| {
-        let what = if *part {
-            format!("a {n}, a part fixed to the {b} in {place} (a sign, a bell, a ladder, a lantern on its hook); size it to fit the {b}")
-        } else {
-            format!("a {n}, as it is found in the {b} in {place}. If it is worked by hand (a blade, an axe, a spade, a hammer, a bucket), give it meta.tool")
+    let futs = wanted.iter().map(|(n, b, kind, size)| {
+        let [w, h] = size.unwrap_or([1.0, 2.0]);
+        let (what, dims, tags) = match kind.as_str() {
+            "part" => (format!("a {n}, a part fixed to the {b} in {place} (a sign, a bell, a ladder, a lantern on its hook); size it to fit the {b}"), "to fit".to_string(), "[\"part\", \"fixture\"]"),
+            "door" => (
+                format!("a {n}, the door hung in a doorway of the {b} in {place}, {w:.2} m wide and {h:.2} m high, in the {b}'s own style. Its origin is the bottom of its hinged edge: the leaf runs from x = 0 to x = {w:.2}, stands from y = 0 to y = {h:.2}, and is thin in z (about 0.05–0.1 m either side of z = 0). Give it meta.joint {{ axis: \"y\", at: [0, 0, 0], open: 100 }}"),
+                format!("{w:.2} × {h:.2} × 0.1"),
+                "[\"door\", \"fixture\"]",
+            ),
+            "hatch" => (
+                format!("a {n}, the lid hung flat in an opening {w:.2} m wide and {h:.2} m deep in the {b} in {place} (a trapdoor, a hatch, a grate, a stone lid), in the {b}'s own style. Its origin is the middle of its hinged edge: the lid lies flat, its top at y = 0 and about 0.05–0.1 m thick below, running from z = 0 to z = {h:.2} and from x = -{:.2} to x = {:.2}, with a ring or handle on top. Give it meta.joint {{ axis: \"x\", at: [0, 0, 0], open: -100 }}", w * 0.5, w * 0.5),
+                format!("{w:.2} × 0.1 × {h:.2}"),
+                "[\"door\", \"hatch\", \"fixture\"]",
+            ),
+            _ => (format!("a {n}, as it is found in the {b} in {place}. If it is worked by hand (a blade, an axe, a spade, a hammer, a bucket), give it meta.tool"), "small, under 1 m".to_string(), "[\"item\"]"),
         };
-        let task = format!(
-            "Object type to write: \"{n}\"\nDescription: {what}.\nApproximate size (w × h × d, metres): {}\nTags: {}\nProperties (meta.props): choose fitting ones\n\n{}",
-            if *part { "to fit" } else { "small, under 1 m" },
-            if *part { "[\"part\"]" } else { "[\"item\"]" },
-            prompts::TYPE_TASK
-        );
+        let task = format!("Object type to write: \"{n}\"\nDescription: {what}.\nApproximate size (w × h × d, metres): {dims}\nTags: {tags}\nProperties (meta.props): choose fitting ones\n\n{}", prompts::TYPE_TASK);
         async move { (n.clone(), build_type(ctx, system, task, n, &[], &[]).await) }
     });
     futures_util::future::join_all(futs).await.into_iter().filter_map(|(n, r)| r.ok().map(|t| (n, t))).collect()

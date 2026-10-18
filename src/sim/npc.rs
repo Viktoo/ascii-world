@@ -240,7 +240,7 @@ impl Npc {
     }
 
     pub fn saved(&self, t: f64) -> SavedState {
-        SavedState { x: self.a.pos.x, z: self.a.pos.z, yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), props: Default::default(), away: self.away, seen_dead: self.seen_dead.clone() }
+        SavedState { x: self.a.pos.x, z: self.a.pos.z, y: Some(self.a.pos.y), yaw: self.a.yaw, asleep: self.a.asleep, needs: Some(self.needs), held: self.a.held, goal: self.goal.clone(), t, dead: self.dead, dressed: self.dressed, tricks: self.tricks.clone(), born: self.born, parents: self.parents.clone(), lineage: self.lineage, last_birth: self.last_birth, frights: self.frights, habit: super::surprise::habit_now(self.habit, t - self.habit_at), work: self.work(), props: Default::default(), away: self.away, seen_dead: self.seen_dead.clone() }
     }
 
     pub fn gpu(&self, body: &TypeEntry) -> GpuInst {
@@ -319,7 +319,16 @@ impl Cast {
     pub fn add(&mut self, def: Arc<CharacterDef>, snap: &WorldSnapshot, seed: u64) {
         let s = &def.state;
         let pos = if s.x == 0.0 && s.z == 0.0 { def.home } else { Vec3::new(s.x, 0.0, s.z) };
-        let pos = Vec3::new(pos.x, snap.terrain.height(pos.x, pos.z), pos.z);
+        let t = &snap.terrain;
+        let caver = snap.species.get(&def.persona.species).is_some_and(|sp| sp.caves);
+        // Where they were (up a tree, down a cave), or home: a cave's floor
+        // for those who live in caves, else the ground.
+        let y = match s.y.filter(|y| y.is_finite() && s.x != 0.0) {
+            Some(y) => t.floor(pos.x, y + 0.3, pos.z).max(y.min(t.height(pos.x, pos.z) + 80.0)),
+            None if caver => t.cave_floor_under(pos.x, pos.z).unwrap_or_else(|| t.height(pos.x, pos.z)),
+            None => t.height(pos.x, pos.z),
+        };
+        let pos = Vec3::new(pos.x, y, pos.z);
         let rng = crate::noise::pcg(def.id as u32 ^ 0xC0FFEE ^ seed as u32);
         let mut a = Actor::new(pos, s.yaw);
         a.asleep = s.asleep;
@@ -1018,6 +1027,10 @@ impl Sim {
         let dest = p;
         let p = self.route(who, p);
         let speed = speed * self.gait_factor(who);
+        // Up or down a ladder on the way.
+        if let Some(r) = self.ladder_step(who, p, speed * dt) {
+            return r;
+        }
         let d = Vec3::new(p.x - me.x, 0.0, p.z - me.z);
         let len = d.length();
         // A swimmer going into or out of a house under the water swims at
@@ -1398,10 +1411,25 @@ impl Sim {
     /// fish only in the water).
     pub(super) fn wander(&mut self, cid: i64, home: Vec3, radius: f32) {
         let who = ActorId::Npc(cid);
-        let wet = match self.cast.get_mut(cid) {
-            Some(n) => n.species.water > 0.0 && n.rand() < n.species.water,
+        let (wet, caver) = match self.cast.get_mut(cid) {
+            Some(n) => (n.species.water > 0.0 && n.rand() < n.species.water, n.species.caves),
             None => return,
         };
+        // Those who live in caves keep to their floors.
+        if caver {
+            for _ in 0..8 {
+                let (a, r) = match self.cast.get_mut(cid) {
+                    Some(n) => (n.rand() * std::f32::consts::TAU, 1.0 + n.rand() * radius.min(10.0)),
+                    None => return,
+                };
+                let p = home + Vec3::new(a.cos() * r, 0.0, a.sin() * r);
+                if let Some(f) = self.snap.terrain.cave_floor_under(p.x, p.z) {
+                    self.plan(who, vec![Action::Goto { target: Target::Point([p.x, f, p.z]), run: false }], "", false);
+                    return;
+                }
+            }
+            return;
+        }
         for _ in 0..6 {
             let (a, r) = match self.cast.get_mut(cid) {
                 Some(n) => (n.rand() * std::f32::consts::TAU, 3.0 + n.rand() * radius),

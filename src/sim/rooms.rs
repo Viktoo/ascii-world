@@ -15,6 +15,9 @@ pub struct Room {
     pub g: GpuInst,
     /// Local half-extents (its bounds).
     pub half: Vec3,
+    /// Its lowest and highest solid (local): over its roof is outside.
+    pub bottom: f32,
+    pub top: f32,
     /// Each doorway: a step outside it, and a step inside.
     pub doors: Vec<(Vec3, Vec3)>,
     /// Each stair or ladder: foot and top.
@@ -29,7 +32,7 @@ impl Room {
     /// Whether a point is inside it.
     pub fn holds(&self, p: Vec3) -> bool {
         let l = Vec3::from(self.g.to_local(p));
-        l.x.abs() < self.half.x * 0.95 && l.z.abs() < self.half.z * 0.95 && l.y > -self.half.y - 0.5 && l.y < self.half.y
+        l.x.abs() < self.half.x * 0.95 && l.z.abs() < self.half.z * 0.95 && l.y > self.bottom - 0.5 && l.y < self.top - 0.25
     }
 }
 
@@ -39,13 +42,15 @@ pub fn rooms_of(snap: &WorldSnapshot) -> Vec<Room> {
     for p in &snap.instances {
         let Some(ty) = snap.type_of(p.type_id) else { continue };
         let anchors = &ty.ct.meta.anchors;
-        if !anchors.iter().any(|a| a.kind == "door") {
+        if !anchors.iter().any(|a| a.kind == "door" || a.kind == "hatch") {
             continue;
         }
         let g = p.gpu(ty, 1.0);
         let s = p.scale.max(0.1);
         let pt = |v: [f32; 3]| g.from_local(Vec3::from_array(v));
-        let mut r = Room { g, half: Vec3::from_array(ty.ct.meta.bounds), doors: vec![], stairs: vec![], beds: vec![], seats: vec![], air: ty.ct.meta.props.iter().find(|(k, _)| k == "air").map(|(_, v)| *v).unwrap_or(0.0) };
+        let half = Vec3::from_array(ty.ct.meta.bounds);
+        let (bottom, top) = if ty.top > ty.bottom { (ty.bottom.max(-half.y), ty.top.min(half.y)) } else { (-half.y, half.y) };
+        let mut r = Room { g, half, bottom, top, doors: vec![], stairs: vec![], beds: vec![], seats: vec![], air: ty.ct.meta.props.iter().find(|(k, _)| k == "air").map(|(_, v)| *v).unwrap_or(0.0) };
         for a in anchors {
             match a.kind.as_str() {
                 "door" => {
@@ -53,6 +58,8 @@ pub fn rooms_of(snap: &WorldSnapshot) -> Vec<Room> {
                     let out_dir = Vec3::from_array(a.out());
                     r.doors.push((g.from_local(at + out_dir * (1.0 / s)), g.from_local(at - out_dir * (1.0 / s))));
                 }
+                // A hatch: over it, and under it (on the ladder or stair below).
+                "hatch" => r.doors.push((pt(a.at) + Vec3::Y * 0.3, pt(a.at) - Vec3::Y * 1.2)),
                 "stairs" => {
                     if let Some(to) = a.to {
                         r.stairs.push((pt(a.at), pt(to)));
@@ -80,22 +87,41 @@ impl Sim {
     /// up or down the stairs, or straight there.
     pub fn route(&self, who: ActorId, dest: Vec3) -> Vec3 {
         let Some(me) = self.actor(who).map(|a| a.pos) else { return dest };
-        if let Some(p) = self.cave_route(me, dest) {
-            return p;
+        // Off the ground: by stairs, ladders and walkways first.
+        let dest = self.level_route(who, me, dest).unwrap_or(dest);
+        let here = self.room_at(me);
+        let there = self.room_at(dest);
+        // Out of a room first (by its doorway), then out of the ground;
+        // within one room (a basement under it too), by its stairs.
+        if here.is_none() {
+            if let Some(p) = self.cave_route(me, dest) {
+                return p;
+            }
         }
         if self.rooms.is_empty() {
             return dest;
         }
-        let here = self.room_at(me);
-        let there = self.room_at(dest);
         let flat = |a: Vec3, b: Vec3| Vec3::new(a.x - b.x, 0.0, a.z - b.z).length();
         // Between floors of one room: by the stairs.
         let by_stairs = |r: &Room, from: Vec3, to: Vec3| -> Option<Vec3> {
             let (foot, top) = r.stairs.iter().min_by(|a, b| flat(a.0, from).total_cmp(&flat(b.0, from)))?;
+            // On the stair already: on along it.
+            let on = {
+                let (a, b) = (*foot, *top);
+                let h = ((from - a).dot(b - a) / (b - a).length_squared().max(1e-6)).clamp(0.0, 1.0);
+                let c = a + (b - a) * h;
+                h > 0.2 && h < 0.8 && (from.y - c.y).abs() < 0.5 && flat(from, c) < 0.7
+            };
+            if on {
+                // To the end nearer the height it is going to, and off there.
+                let end = if (to.y - foot.y).abs() < (to.y - top.y).abs() { *foot } else { *top };
+                return (flat(from, end) > NEAR * 0.5 || (from.y - end.y).abs() > 0.3).then_some(end);
+            }
+            // To its near end first, unless already a step along it.
             if to.y > from.y + 1.2 {
-                Some(if flat(from, *foot) > NEAR && from.y < foot.y + 0.6 { *foot } else { *top })
+                Some(if flat(from, *foot) > NEAR && from.y < foot.y + 0.15 { *foot } else { *top })
             } else if to.y < from.y - 1.2 {
-                Some(if flat(from, *top) > NEAR && from.y > top.y - 0.6 { *top } else { *foot })
+                Some(if flat(from, *top) > NEAR && from.y > top.y - 0.15 { *top } else { *foot })
             } else {
                 None
             }
@@ -121,7 +147,8 @@ impl Sim {
     }
 
     /// Into or out of a cave: by its mouth and along its way in (its first
-    /// part), as through a doorway. None when neither end is in one.
+    /// part), as through a doorway. None when neither end is in one, or once
+    /// past its mouth (a room inside it is found by its doorway).
     fn cave_route(&self, me: Vec3, dest: Vec3) -> Option<Vec3> {
         let t = &self.snap.terrain;
         let caves: Vec<crate::ground::Cave> = {
@@ -142,13 +169,13 @@ impl Sim {
             }
             let mouth = Vec3::from_array(c.mouth);
             let way = c.parts.first().map(|q| Vec3::from_array(q.b)).unwrap_or(mouth);
-            return Some(if b {
+            return if b {
                 // Going in: to the mouth, then down the way in.
-                if flat(me, mouth) > NEAR && flat(me, way) > flat(mouth, way) { mouth } else { dest }
+                (flat(me, mouth) > NEAR && flat(me, way) > flat(mouth, way)).then_some(mouth)
             } else {
                 // Coming out: up the way in to the mouth.
-                if flat(me, mouth) > NEAR { mouth } else { dest }
-            });
+                (flat(me, mouth) > NEAR).then_some(mouth)
+            };
         }
         None
     }

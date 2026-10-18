@@ -34,7 +34,7 @@ struct Globals {
   hmap2: vec4f,       // fine heightmap near the camera: origin x, origin z, cell size, cells per side (0 = none)
   jitter: vec4f,      // sub-pixel offset of every ray (x, y pixels), for blending frames
   ground: vec4f,      // ground tiles: first tile x, z, tiles across (0 = none), any water
-  voids: array<vec4f, 48>,     // caves: per capsule (a.xyz, r), (b.xyz, -)
+  voids: array<vec4f, 80>,     // caves: per capsule (a.xyz, r), (b.xyz, -); per box (c.xyz, -1), (half.xyz, yaw)
   craters: array<vec4f, 2>,    // how cratered each biome is, four to a row
 }
 
@@ -331,11 +331,19 @@ fn ground_paint(x: f32, z: f32) -> vec4f {
 // Twin of Ground::void in ground.rs.
 fn void_dist(p: vec3f) -> f32 {
   var d = 1e4;
-  let n = min(G.extra.y, 24u);
+  let n = min(G.extra.y, 40u);
   for (var i = 0u; i < n; i = i + 1u) {
     let a = G.voids[i * 2u];
     let b = G.voids[i * 2u + 1u];
     let pa = p - a.xyz;
+    if (a.w < 0.0) {
+      // A room set into the ground: a box turned about the vertical.
+      let c = cos(b.w); let s = sin(b.w);
+      let l = vec3f(c * pa.x - s * pa.z, pa.y, s * pa.x + c * pa.z);
+      let q = abs(l) - b.xyz;
+      d = min(d, length(max(q, vec3f(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0));
+      continue;
+    }
     let ba = b.xyz - a.xyz;
     let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
     d = min(d, length(pa - ba * h) - a.w);

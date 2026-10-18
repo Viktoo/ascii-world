@@ -286,20 +286,75 @@ pub struct Cave {
     pub mouth: [f32; 3],
 }
 
-/// One capsule of a cave: from `a` to `b`, `r` round.
+/// One part of a cave: a capsule from `a` to `b`, `r` round; or, with
+/// `half`, a box (a room set into the ground) centred on `a`, `half` its
+/// half-size in its own frame, turned `yaw` about the vertical.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     pub a: [f32; 3],
     pub b: [f32; 3],
     pub r: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub half: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub yaw: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Part {
+    /// A capsule from `a` to `b`, `r` round.
+    pub fn capsule(a: glam::Vec3, b: glam::Vec3, r: f32) -> Part {
+        Part { a: a.to_array(), b: b.to_array(), r, half: None, yaw: 0.0 }
+    }
+
+    /// A box centred on `c`, `half` its half-size, turned `yaw` (as a
+    /// placed shape's `rot_y`).
+    pub fn boxed(c: glam::Vec3, half: glam::Vec3, yaw: f32) -> Part {
+        Part { a: c.to_array(), b: c.to_array(), r: 0.0, half: Some(half.to_array()), yaw }
+    }
+
+    /// `p` in the box's own frame (from its centre).
+    fn local(&self, p: glam::Vec3) -> glam::Vec3 {
+        let (dx, dy, dz) = (p.x - self.a[0], p.y - self.a[1], p.z - self.a[2]);
+        let (c, s) = (self.yaw.cos(), self.yaw.sin());
+        glam::Vec3::new(c * dx - s * dz, dy, s * dx + c * dz)
+    }
+
     pub fn dist(&self, p: glam::Vec3) -> f32 {
+        if let Some(h) = self.half {
+            let q = self.local(p).abs() - glam::Vec3::from(h);
+            return q.max(glam::Vec3::ZERO).length() + q.max_element().min(0.0);
+        }
         let (a, b) = (glam::Vec3::from(self.a), glam::Vec3::from(self.b));
         let (pa, ba) = (p - a, b - a);
         let h = (pa.dot(ba) / ba.length_squared().max(1e-6)).clamp(0.0, 1.0);
         (pa - ba * h).length() - self.r
+    }
+
+    /// How far it reaches from its axis in x, z.
+    fn reach(&self) -> f32 {
+        match self.half {
+            Some(h) => (h[0] * h[0] + h[2] * h[2]).sqrt(),
+            None => self.r,
+        }
+    }
+
+    /// Distance from (x, z) to it seen from above (for sorting).
+    fn flat_dist(&self, x: f32, z: f32) -> f32 {
+        let flat = Part { a: [self.a[0], 0.0, self.a[2]], b: [self.b[0], 0.0, self.b[2]], r: self.reach(), half: None, yaw: 0.0 };
+        flat.dist(glam::Vec3::new(x, 0.0, z))
+    }
+
+    fn sane(&self) -> bool {
+        let ok = |v: [f32; 3]| v.iter().all(|x| x.is_finite() && x.abs() < 1e6);
+        let size = match self.half {
+            Some(h) => h.iter().all(|v| v.is_finite() && *v > 0.05 && *v <= 40.0) && self.yaw.is_finite(),
+            None => self.r.is_finite() && self.r > 0.3 && self.r < 40.0,
+        };
+        ok(self.a) && ok(self.b) && size
     }
 }
 
@@ -312,15 +367,16 @@ impl Cave {
     pub fn bounds(&self) -> [f32; 4] {
         let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for q in &self.parts {
+            let r = q.reach();
             for e in [q.a, q.b] {
-                b = [b[0].min(e[0] - q.r), b[1].min(e[2] - q.r), b[2].max(e[0] + q.r), b[3].max(e[2] + q.r)];
+                b = [b[0].min(e[0] - r), b[1].min(e[2] - r), b[2].max(e[0] + r), b[3].max(e[2] + r)];
             }
         }
         b
     }
     pub fn sane(&self) -> bool {
         let ok = |v: [f32; 3]| v.iter().all(|x| x.is_finite() && x.abs() < 1e6);
-        !self.parts.is_empty() && self.parts.len() <= 32 && self.parts.iter().all(|q| ok(q.a) && ok(q.b) && q.r.is_finite() && q.r > 0.3 && q.r < 40.0) && ok(self.mouth)
+        !self.parts.is_empty() && self.parts.len() <= 32 && self.parts.iter().all(|q| q.sane()) && ok(self.mouth)
     }
     /// A way into the land from `mouth` (on the surface, at its height)
     /// heading `dir` (x, z) down at `slope`, `len` metres to a chamber
@@ -345,9 +401,9 @@ impl Cave {
             kind: kind.into(),
             name: name.into(),
             parts: vec![
-                Part { a: a.to_array(), b: end.to_array(), r: w },
-                Part { a: (c - side).to_array(), b: (c + side).to_array(), r: rr },
-                Part { a: (c - deep).to_array(), b: (c + deep).to_array(), r: rr },
+                Part::capsule(a, end, w),
+                Part::capsule(c - side, c + side, rr),
+                Part::capsule(c - deep, c + deep, rr),
             ],
             mouth: mouth.to_array(),
         }
@@ -407,6 +463,9 @@ pub enum Layer {
     Places = 1,
     /// Made in play (saved with the live world).
     Made = 2,
+    /// Hollows under shapes set into the ground (caves only; rebuilt with
+    /// each world version from what is placed).
+    Shapes = 3,
 }
 
 /// All the ground edits, and their tiles.
@@ -414,7 +473,7 @@ pub enum Layer {
 pub struct Ground {
     layers: [Vec<Edit>; 3],
     /// Hollows in the ground, by layer like the edits.
-    caves: [Vec<Cave>; 3],
+    caves: [Vec<Cave>; 4],
     /// Cave ids (into `all_caves`) by tile.
     cave_index: HashMap<(i32, i32), Vec<u32>>,
     all_caves: Vec<Cave>,
@@ -581,14 +640,26 @@ impl Ground {
             .all_caves
             .iter()
             .flat_map(|c| c.parts.iter())
-            .map(|q| {
-                let d = Part { a: [q.a[0], 0.0, q.a[2]], b: [q.b[0], 0.0, q.b[2]], r: q.r }.dist(glam::Vec3::new(x, 0.0, z));
-                (d, *q)
-            })
+            .map(|q| (q.flat_dist(x, z), *q))
             .filter(|(d, _)| *d < 250.0)
             .collect();
         v.sort_by(|a, b| a.0.total_cmp(&b.0));
         v.into_iter().take(n).map(|x| x.1).collect()
+    }
+
+    /// A fingerprint of the caves reaching into the box (x0, z0)–(x1, z1).
+    pub fn cave_sig(&self, x0: f32, z0: f32, x1: f32, z1: f32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut ids: Vec<u32> = tiles_of([x0, z0, x1, z1]).flat_map(|k| self.cave_index.get(&k).into_iter().flatten().copied()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        for c in ids.into_iter().filter_map(|i| self.all_caves.get(i as usize)) {
+            for v in c.mouth.iter().chain(c.parts.iter().flat_map(|q| q.a.iter())) {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        h.finish()
     }
 
     /// A fingerprint of the tiles in the box (x0, z0)–(x1, z1): changes

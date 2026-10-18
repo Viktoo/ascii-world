@@ -63,7 +63,7 @@ pub struct Globals {
 
 pub const MAX_LIGHTS: usize = 8;
 pub const MAX_HOLLOWS: usize = 32;
-pub const MAX_VOIDS: usize = 24;
+pub const MAX_VOIDS: usize = 40;
 
 /// A light-emitting thing (lantern, fire) near the camera.
 #[derive(Clone, Copy, Debug)]
@@ -471,8 +471,11 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
     let parts = t.carve.read().ground.parts_near(cp.x, cp.z, MAX_VOIDS);
     let mut voids = [[0.0f32; 4]; MAX_VOIDS * 2];
     for (i, q) in parts.iter().enumerate() {
-        voids[i * 2] = [q.a[0], q.a[1], q.a[2], q.r];
-        voids[i * 2 + 1] = [q.b[0], q.b[1], q.b[2], 0.0];
+        // A box: (centre, -1), (half-size, yaw).
+        (voids[i * 2], voids[i * 2 + 1]) = match q.half {
+            Some(h) => ([q.a[0], q.a[1], q.a[2], -1.0], [h[0], h[1], h[2], q.yaw]),
+            None => ([q.a[0], q.a[1], q.a[2], q.r], [q.b[0], q.b[1], q.b[2], 0.0]),
+        };
     }
     let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
     let mut light_cols = [[0.0f32; 4]; MAX_LIGHTS];

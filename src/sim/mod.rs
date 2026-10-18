@@ -18,6 +18,7 @@ pub mod beings;
 pub mod carry;
 pub mod dress;
 pub mod catchup;
+pub mod climb;
 pub mod config;
 pub mod env;
 pub mod exposure;
@@ -30,6 +31,7 @@ pub mod incident;
 pub mod inspect;
 pub mod interp;
 pub mod joint;
+pub mod levels;
 pub mod life;
 pub mod mirror;
 pub mod missile;
@@ -434,6 +436,12 @@ pub struct Sim {
     pub dug_dirty: bool,
     /// The enterable shapes (see `rooms`).
     pub rooms: Vec<rooms::Room>,
+    /// Stairs and ladders (see `climb`).
+    pub climbs: Vec<climb::Climb>,
+    /// The ways between levels (see `levels`), and each body's next place
+    /// on its way there, remembered for a moment: (where to, when, next).
+    pub levels: levels::Levels,
+    level_ways: parking_lot::Mutex<HashMap<ActorId, (Vec3, f64, Vec3)>>,
     /// How fast each vehicle in use is going (m/s, forward; see `vehicle`).
     pub drives: std::collections::BTreeMap<things::ThingId, f32>,
     /// Beasts harnessed to what they pull (a cart's horse, a sledge's dogs).
@@ -516,10 +524,14 @@ impl Sim {
             routes: Default::default(),
             dug_dirty: false,
             rooms: rooms::rooms_of(&snap),
+            climbs: climb::climbs_of(&snap),
+            levels: Default::default(),
+            level_ways: Default::default(),
             weather: crate::world::weather::Weather::new(&snap.look.climate, snap.terrain.seed),
             wx: Default::default(),
             weather_st: Default::default(),
         };
+        sim.levels = levels::levels_of(&snap, &sim.climbs, &sim.rooms);
         sim.player.dims = traveler_dims(&snap);
         sim.load_own_body();
         sim.load_universe_rules();
@@ -790,6 +802,11 @@ impl Sim {
 
     /// Move an actor by `delta` with collisions (terrain, solids, other bodies).
     pub fn walk(&mut self, id: ActorId, delta: Vec3) {
+        // On a ladder, or walking onto one (people take hold on their way, see `step_toward`).
+        let held = self.actor(id).is_some_and(|a| a.ladder.is_some());
+        if (held || !matches!(id, ActorId::Npc(_))) && self.climb_walk(id, delta) {
+            return;
+        }
         let Some(from) = self.actor(id).map(|a| a.pos) else { return };
         let own = self.actor(id).map(|a| a.dims.radius).unwrap_or(0.35);
         let solids = self.solids_near(from, 4.0 + own);
@@ -878,6 +895,12 @@ impl Sim {
         }
         self.snap = snap.clone();
         self.rooms = rooms::rooms_of(&snap);
+        self.climbs = climb::climbs_of(&snap);
+        self.levels = levels::levels_of(&snap, &self.climbs, &self.rooms);
+        self.level_ways.lock().clear();
+        for id in self.actor_ids() {
+            self.off_ladder(id);
+        }
         self.weather.refresh(&snap.look.climate, snap.terrain.seed);
         self.type_props.clear();
         self.cast.sync(&snap, self.seed);

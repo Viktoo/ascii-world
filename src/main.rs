@@ -26,6 +26,7 @@ mod sim;
 mod term;
 mod terrain;
 mod ground;
+mod inground;
 mod settle;
 mod rivers;
 mod voice;
