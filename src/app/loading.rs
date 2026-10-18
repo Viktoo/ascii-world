@@ -479,7 +479,7 @@ impl App {
                     let q = world(i, j);
                     let h = terrain.height(q.x, q.z);
                     let n = terrain.normal(q.x, q.z);
-                    let c = terrain.ground_color(pal, q.x, q.z, h, n.y);
+                    let c = terrain.ground_color(pal, q.x, q.z, h, n.y, 1.0e4);
                     let shade = (0.55 + 0.55 * n.dot(sun).max(0.0)).min(1.15) * 0.85;
                     let color = [c.x, c.y, c.z].map(|v| (v * shade * 255.0).clamp(0.0, 255.0) as u8);
                     let b = &terrain.biomes[terrain.biome_at(q.x, q.z)];

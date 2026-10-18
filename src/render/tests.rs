@@ -91,7 +91,7 @@ fn landforms_agree_on_gpu_and_cpu() {
         risen += (c > 150.0) as usize;
         worst = worst.max((o[0] - c).abs() / c.abs().max(1.0));
         let pal = crate::terrain::Palette::default();
-        let col = terrain.ground_color(&pal, p[0], p[2], c, 1.0);
+        let col = terrain.ground_color(&pal, p[0], p[2], c, 1.0, 1.0e4);
         worst_c = worst_c.max((o[1] - col.x).abs().max((o[2] - col.y).abs()).max((o[3] - col.z).abs()));
     }
     assert!(risen > 50, "the range stands: {risen}");
@@ -264,7 +264,7 @@ fn ground_edits_agree_on_gpu_and_cpu() {
     let Ok(gpu) = Gpu::new() else { return };
     let pipe = gpu.build_pipeline(&shader::assemble(&[]), 1).unwrap();
     let terrain = crate::terrain::Terrain::new(77, default_biomes());
-    let e = |kind: &str, shape: Shape, mode: Mode, to: Height, edge: f32| Edit { kind: kind.into(), name: String::new(), shape, mode, to, edge, color: None, rim: None, water: None };
+    let e = |kind: &str, shape: Shape, mode: Mode, to: Height, edge: f32| Edit { pattern: None, kind: kind.into(), name: String::new(), shape, mode, to, edge, color: None, rim: None, water: None };
     let mut canal = e("canal", Shape::Line { pts: vec![[-70.0, -10.0], [10.0, 5.0], [80.0, 0.0]], half: 3.0 }, Mode::Lower, Height::At(-1.6), 0.3);
     canal.color = Some([0.2, 0.18, 0.12]);
     canal.rim = Some(([0.7, 0.68, 0.6], 0.9));

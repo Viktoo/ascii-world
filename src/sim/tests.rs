@@ -1433,7 +1433,7 @@ fn land_pictures_of(name: &str, look: crate::world::Look) {
                 let (x, z) = (ox + i as f32 * cell, oz + j as f32 * cell);
                 let h = t.height(x, z);
                 let nn = t.normal(x, z);
-                let c = if h < WATER_LEVEL { crate::terrain::rgbv(pal.water) } else { t.ground_color(pal, x, z, h, nn.y) };
+                let c = if h < WATER_LEVEL { crate::terrain::rgbv(pal.water) } else { t.ground_color(pal, x, z, h, nn.y, 1.0e4) };
                 let shade = (nn.dot(Vec3::new(-0.5, 0.75, -0.45).normalize()) * 0.75 + 0.35).clamp(0.2, 1.3);
                 let c = (c * shade).clamp(Vec3::ZERO, Vec3::ONE);
                 let k = (j * n + i) * 3;

@@ -117,10 +117,24 @@ impl Sim {
             }
         }
         let top = pos.y + if grounded && vy <= 0.0 { cap.step } else { 0.05 };
-        let ground = match cached {
+        // In the water, a swimmer finds footing a little over it (a step up
+        // out of a harbour), as it pulls itself out onto a bank.
+        let wl_here = self.snap.terrain.water(pos.x, pos.z);
+        let mut out_top = None;
+        if cap.swims && !solids.is_empty() && pos.y < wl_here - 0.3 {
+            out_top = Some(wl_here + 0.9);
+        }
+        let mut ground = match cached {
             Some(g) if grounded && vy == 0.0 => g,
             _ => support_under(&self.snap.terrain, &solids, pos, cap.radius, top),
         };
+        // Near the top only (a roof down on the bed is no step out).
+        if let Some(t) = out_top {
+            let up = support_under(&self.snap.terrain, &solids, pos, cap.radius, t);
+            if up > wl_here - 1.0 {
+                ground = ground.max(up);
+            }
+        }
         // Water too deep to stand in: a swimmer floats with its eyes just
         // over it, swims up or down, and comes up again when let be.
         if cap.swims {

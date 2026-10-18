@@ -463,3 +463,13 @@ export function color(x, y, z, k) { const cone = 2; return rgb(cone, 2, 3); }
     assert!(d([3.0, 1.0, 0.0]) < -0.25, "inside, about 0.3 across halfway");
     assert!(d([3.45, 1.9, 0.0]) > 0.0, "it narrows toward the top");
 }
+
+/// Cut away with `max(a, -b)` counts as carved, as `subtract` does; a max
+/// with a negative number doesn't.
+#[test]
+fn max_with_a_negated_shape_is_a_cut() {
+    assert!(super::cuts_by_max("const s = max(body, -min(room, door));"));
+    assert!(super::cuts_by_max("return max(box(x, y, z, 1, 1, 1), -arch);"));
+    assert!(!super::cuts_by_max("return max(box(x, y, z, 1, 1, 1), -1.0);"));
+    assert!(!super::cuts_by_max("const a = max(y - 2.0, abs(x) - 1.0);"));
+}

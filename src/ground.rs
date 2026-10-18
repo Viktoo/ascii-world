@@ -28,8 +28,8 @@ pub const TILE: i32 = 32;
 pub const STRIDE: usize = TILE as usize + 1;
 pub const TILE_M: f32 = CELL * TILE as f32;
 const SAMPLES: usize = STRIDE * STRIDE;
-/// Words per tile on the GPU: delta, paint, water.
-pub const TILE_WORDS: usize = SAMPLES * 3;
+/// Words per tile on the GPU: delta, paint, water, pattern.
+pub const TILE_WORDS: usize = SAMPLES * 4;
 /// No water stands here (lower than any ground).
 pub const NO_WATER: f32 = -1.0e4;
 /// Tiles across the window the GPU is given round the camera (640 m), and
@@ -128,6 +128,131 @@ pub struct Edit {
     /// everywhere below 0 anyway).
     #[serde(default)]
     pub water: Option<Height>,
+    /// How what covers it is laid (cobbles, setts, flagstones, planks), if
+    /// in a pattern: drawn over its colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<Pattern>,
+}
+
+/// A laid surface's pattern: its kind and the size of one piece (m).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub size: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PatternKind {
+    /// Square setts in running rows (a street, a quay).
+    Setts,
+    /// Round cobbles every which way (an old lane, a square).
+    Cobbles,
+    /// Big flat slabs in rows of different lengths (a piazza, a church step).
+    Flagstones,
+    /// Boards side by side (a pier, a deck, a boardwalk).
+    Planks,
+    /// Bricks in a herringbone (a courtyard, a garden path).
+    Bricks,
+}
+
+impl Pattern {
+    /// From words ("cobbles", "flagstones"…) and a piece size, if one fits.
+    pub fn parse(kind: &str, size: Option<f32>) -> Option<Pattern> {
+        let k = kind.trim().to_lowercase();
+        let (kind, d) = match () {
+            _ if k.contains("cobble") => (PatternKind::Cobbles, 0.18),
+            _ if k.contains("sett") || k.contains("pav") => (PatternKind::Setts, 0.22),
+            _ if k.contains("flag") || k.contains("slab") => (PatternKind::Flagstones, 0.7),
+            _ if k.contains("plank") || k.contains("board") || k.contains("deck") => (PatternKind::Planks, 0.22),
+            _ if k.contains("brick") || k.contains("herring") => (PatternKind::Bricks, 0.22),
+            _ => return None,
+        };
+        Some(Pattern { kind, size: size.filter(|s| s.is_finite()).unwrap_or(d).clamp(0.05, 12.0) })
+    }
+
+    /// Packed for the GPU: kind + 1 in the low byte, size in 1/20 m above.
+    pub fn code(&self) -> u32 {
+        let k = match self.kind {
+            PatternKind::Setts => 1,
+            PatternKind::Cobbles => 2,
+            PatternKind::Flagstones => 3,
+            PatternKind::Planks => 4,
+            PatternKind::Bricks => 5,
+        };
+        k | (((self.size * 20.0).round() as u32).clamp(1, 255) << 8)
+    }
+}
+
+/// How a laid pattern shades the ground at (x, z) seen from `dist` metres:
+/// a factor on its colour, the joints between pieces darker and each piece
+/// a little lighter or darker than the next; fading out where the joints
+/// grow thinner than a pixel. Twin of `pattern_shade` in common.wgsl.
+pub fn pattern_shade(code: u32, x: f32, z: f32, dist: f32, seed: u32) -> f32 {
+    use crate::noise::{h2, u2f};
+    let kind = code & 255;
+    if kind == 0 {
+        return 1.0;
+    }
+    let s = ((code >> 8) & 255) as f32 / 20.0;
+    let fade = smoothstep(0.35, 0.12, dist * 0.004 / s);
+    if fade <= 0.0 {
+        return 1.0;
+    }
+    let edge = |f: f32| f.min(1.0 - f);
+    let (e, cx, cz) = match kind {
+        // Cobbles: the nearest of jittered points; the joint where two meet.
+        2 => {
+            let (gx, gz) = ((x / s).floor() as i32, (z / s).floor() as i32);
+            let (mut f1, mut f2, mut best) = (9.0f32, 9.0f32, (0, 0));
+            for j in -1..=1 {
+                for i in -1..=1 {
+                    let (ix, iz) = (gx + i, gz + j);
+                    let px = ix as f32 + 0.15 + 0.7 * u2f(h2(ix, iz, seed));
+                    let pz = iz as f32 + 0.15 + 0.7 * u2f(h2(iz, ix, seed ^ 0x9e37));
+                    let d = ((x / s - px).powi(2) + (z / s - pz).powi(2)).sqrt();
+                    if d < f1 {
+                        f2 = f1;
+                        f1 = d;
+                        best = (ix, iz);
+                    } else if d < f2 {
+                        f2 = d;
+                    }
+                }
+            }
+            ((f2 - f1) * 0.5 * s, best.0, best.1)
+        }
+        // Planks: long boards across z, their ends staggered.
+        4 => {
+            let v = z / s;
+            let row = v.floor() as i32;
+            let u = x / (s * 7.0) + u2f(h2(row, 7, seed));
+            (edge(v.fract().abs()).min(edge(u - u.floor()) * 7.0) * s, u.floor() as i32, row)
+        }
+        // Bricks: two by one, rows turned each way in turn (a basket weave).
+        5 => {
+            let (bx, bz) = ((x / (2.0 * s)).floor() as i32, (z / (2.0 * s)).floor() as i32);
+            let turn = (bx + bz) & 1 == 1;
+            let (a, b) = if turn { (z, x) } else { (x, z) };
+            let (u, v) = (a / (2.0 * s), b / s);
+            (edge(u - u.floor()).min(edge(v - v.floor()) * 0.5) * 2.0 * s, bx * 2 + (v.floor() as i32 & 1), bz)
+        }
+        // Setts and flagstones: rows, each piece offset from the row before
+        // (flagstones by a different amount each row, and longer).
+        _ => {
+            let long = if kind == 3 { 1.5 } else { 1.0 };
+            let v = z / s;
+            let row = v.floor() as i32;
+            let shift = if kind == 3 { u2f(h2(row, 3, seed)) } else { 0.5 * (row & 1) as f32 };
+            let u = x / (s * long) + shift;
+            (edge(v - v.floor()).min(edge(u - u.floor()) * long) * s, u.floor() as i32, row)
+        }
+    };
+    let w = s * if kind == 2 { 0.11 } else { 0.06 };
+    let joint = smoothstep(w * 1.6, w, e);
+    let piece = 0.86 + 0.26 * u2f(h2(cx, cz, seed ^ 0x51));
+    let shade = piece + (0.5 - piece) * joint;
+    1.0 + (shade - 1.0) * fade
 }
 
 fn d_edge() -> f32 {
@@ -199,7 +324,7 @@ impl Edit {
 
     /// Apply to one point: the height `h` there, its paint (rgb, cover) and
     /// water level, in place.
-    pub fn apply_at(&self, x: f32, z: f32, h: &mut f32, paint: &mut (Vec3, f32), water: &mut f32) {
+    pub fn apply_at(&self, x: f32, z: f32, h: &mut f32, paint: &mut (Vec3, f32), water: &mut f32, pattern: &mut u32) {
         let (d, s) = self.dist(x, z);
         if d > self.reach() {
             return;
@@ -220,11 +345,19 @@ impl Edit {
             if k > 0.0 {
                 over(paint, c, k);
             }
+            if k > 0.5 {
+                *pattern = 0;
+            }
         }
         if let Some(c) = self.color {
             let k = if self.rim.is_some() { smoothstep(-0.05, -0.35, d) } else { smoothstep(0.3, -0.2, d) };
             if k > 0.0 {
                 over(paint, c, k);
+            }
+            // Its pattern where it mostly covers; plain colour laid over a
+            // pattern hides it.
+            if k > 0.5 {
+                *pattern = self.pattern.map(|p| p.code()).unwrap_or(0);
             }
         }
         if let Some(wl) = &self.water {
@@ -442,6 +575,8 @@ pub struct Tile {
     pub delta: Box<[f32]>,
     pub paint: Box<[u32]>,
     pub water: Box<[f32]>,
+    /// The laid pattern's code (`Pattern::code`, 0: none), nearest sample.
+    pub pattern: Box<[u32]>,
     pub wet: bool,
 }
 
@@ -452,6 +587,7 @@ pub struct At {
     pub color: Vec3,
     pub cover: f32,
     pub water: f32,
+    pub pattern: u32,
 }
 
 /// Which list an edit belongs to; they are applied in this order.
@@ -540,7 +676,8 @@ impl Ground {
         // Stored premultiplied by its cover, so a soft edge fades to the
         // ground and not through black.
         let color = pc.truncate() / pc.w.max(1.0 / 255.0);
-        Some(At { delta: bl(&t.delta), color, cover: pc.w, water: if t.wet { bl(&t.water) } else { NO_WATER } })
+        let near = i0 + if uz >= 0.5 { STRIDE } else { 0 } + if ux >= 0.5 { 1 } else { 0 };
+        Some(At { delta: bl(&t.delta), color, cover: pc.w, water: if t.wet { bl(&t.water) } else { NO_WATER }, pattern: t.pattern[near] })
     }
 
     /// How far the ground at (x, z) was moved (0 where no edit reaches).
@@ -694,6 +831,7 @@ impl Ground {
                 words.extend(t.delta.iter().map(|v| v.to_bits()));
                 words.extend(t.paint.iter());
                 words.extend(t.water.iter().map(|v| v.to_bits()));
+                words.extend(t.pattern.iter());
                 wet |= t.wet;
             }
         }
@@ -764,7 +902,7 @@ fn stamp_tile(all: &[Edit], ids: &[u32], k: (i32, i32), raw: &(dyn Fn(f32, f32) 
     if ids.is_empty() {
         return None;
     }
-    let mut t = Tile { delta: vec![0.0; SAMPLES].into(), paint: vec![0; SAMPLES].into(), water: vec![NO_WATER; SAMPLES].into(), wet: false };
+    let mut t = Tile { delta: vec![0.0; SAMPLES].into(), paint: vec![0; SAMPLES].into(), water: vec![NO_WATER; SAMPLES].into(), pattern: vec![0; SAMPLES].into(), wet: false };
     let mut any = false;
     for j in 0..STRIDE {
         for i in 0..STRIDE {
@@ -774,12 +912,14 @@ fn stamp_tile(all: &[Edit], ids: &[u32], k: (i32, i32), raw: &(dyn Fn(f32, f32) 
             let mut h = h0;
             let mut paint = (Vec3::ZERO, 0.0f32);
             let mut water = NO_WATER;
+            let mut pattern = 0;
             for e in ids.iter().filter_map(|i| all.get(*i as usize)) {
-                e.apply_at(x, z, &mut h, &mut paint, &mut water);
+                e.apply_at(x, z, &mut h, &mut paint, &mut water, &mut pattern);
             }
             let n = j * STRIDE + i;
             t.delta[n] = h - h0;
             t.paint[n] = pack(paint.0, paint.1);
+            t.pattern[n] = pattern;
             t.water[n] = water;
             t.wet |= water > NO_WATER;
             any |= h != h0 || paint.1 > 0.0 || water > NO_WATER;
@@ -893,7 +1033,7 @@ pub fn basin(height: &dyn Fn(f32, f32) -> f32, at: [f32; 2], up_to: f32, reach: 
         pts.pop();
         if pts.len() < 3 { Shape::Disc { c: pos(i, j), r: step } } else { Shape::Area { pts } }
     };
-    Some(Edit { kind: "water".into(), name: String::new(), shape, mode: Mode::Paint, to: Height::At(0.0), edge: step, color: None, rim: None, water: Some(Height::At(level)) })
+    Some(Edit { pattern: None, kind: "water".into(), name: String::new(), shape, mode: Mode::Paint, to: Height::At(0.0), edge: step, color: None, rim: None, water: Some(Height::At(level)) })
 }
 
 /// The cells round the edge of a joined patch of `mask` (n × n), in order.
@@ -989,7 +1129,7 @@ mod tests {
     }
 
     fn canal() -> Edit {
-        Edit { kind: "canal".into(), name: String::new(), shape: Shape::Line { pts: vec![[-40.0, 3.0], [40.0, 3.0]], half: 3.0 }, mode: Mode::Lower, to: Height::At(-1.5), edge: 0.3, color: Some([0.2, 0.2, 0.15]), rim: Some(([0.6, 0.6, 0.6], 0.8)), water: None }
+        Edit { pattern: None, kind: "canal".into(), name: String::new(), shape: Shape::Line { pts: vec![[-40.0, 3.0], [40.0, 3.0]], half: 3.0 }, mode: Mode::Lower, to: Height::At(-1.5), edge: 0.3, color: Some([0.2, 0.2, 0.15]), rim: Some(([0.6, 0.6, 0.6], 0.8)), water: None }
     }
 
     #[test]
@@ -1011,7 +1151,7 @@ mod tests {
     #[test]
     fn order_matters_and_lines_carry_heights() {
         // A road climbing from 2 m to 8 m, then the canal cutting across it.
-        let road = Edit { kind: "road".into(), name: String::new(), shape: Shape::Line { pts: vec![[0.0, -20.0], [0.0, 20.0]], half: 2.0 }, mode: Mode::Level, to: Height::Along(vec![2.0, 8.0]), edge: 2.0, color: Some([0.5, 0.4, 0.3]), rim: None, water: None };
+        let road = Edit { pattern: None, kind: "road".into(), name: String::new(), shape: Shape::Line { pts: vec![[0.0, -20.0], [0.0, 20.0]], half: 2.0 }, mode: Mode::Level, to: Height::Along(vec![2.0, 8.0]), edge: 2.0, color: Some([0.5, 0.4, 0.3]), rim: None, water: None };
         let g = ground_of(vec![road, canal()]);
         let h = |x: f32, z: f32| 5.0 + g.delta(x, z);
         assert!((h(0.0, -20.0) - 2.0).abs() < 1e-3);
@@ -1023,9 +1163,9 @@ mod tests {
 
     #[test]
     fn areas_raise_islands_and_water_stands() {
-        let lagoon = Edit { kind: "lagoon".into(), name: String::new(), shape: Shape::Disc { c: [0.0, 0.0], r: 60.0 }, mode: Mode::Lower, to: Height::At(-2.0), edge: 8.0, color: None, rim: None, water: None };
-        let island = Edit { kind: "island".into(), name: String::new(), shape: Shape::Area { pts: vec![[-20.0, -15.0], [20.0, -15.0], [20.0, 15.0], [-20.0, 15.0]] }, mode: Mode::Raise, to: Height::At(0.8), edge: 0.4, color: None, rim: None, water: None };
-        let pond = Edit { kind: "pond".into(), name: String::new(), shape: Shape::Disc { c: [100.0, 0.0], r: 6.0 }, mode: Mode::Lower, to: Height::At(3.0), edge: 2.0, color: None, rim: None, water: Some(Height::At(4.2)) };
+        let lagoon = Edit { pattern: None, kind: "lagoon".into(), name: String::new(), shape: Shape::Disc { c: [0.0, 0.0], r: 60.0 }, mode: Mode::Lower, to: Height::At(-2.0), edge: 8.0, color: None, rim: None, water: None };
+        let island = Edit { pattern: None, kind: "island".into(), name: String::new(), shape: Shape::Area { pts: vec![[-20.0, -15.0], [20.0, -15.0], [20.0, 15.0], [-20.0, 15.0]] }, mode: Mode::Raise, to: Height::At(0.8), edge: 0.4, color: None, rim: None, water: None };
+        let pond = Edit { pattern: None, kind: "pond".into(), name: String::new(), shape: Shape::Disc { c: [100.0, 0.0], r: 6.0 }, mode: Mode::Lower, to: Height::At(3.0), edge: 2.0, color: None, rim: None, water: Some(Height::At(4.2)) };
         let g = ground_of(vec![lagoon, island, pond]);
         let h = |x: f32, z: f32| 5.0 + g.delta(x, z);
         assert!((h(40.0, 40.0) - -2.0).abs() < 1e-3, "the lagoon: {}", h(40.0, 40.0));
@@ -1041,7 +1181,7 @@ mod tests {
         let mut g = ground_of(vec![canal()]);
         let n = g.tile_count();
         assert!(n >= 6, "{n} tiles");
-        let far = Edit { kind: "square".into(), name: String::new(), shape: Shape::Disc { c: [500.0, 500.0], r: 4.0 }, mode: Mode::Level, to: Height::At(6.0), edge: 1.0, color: None, rim: None, water: None };
+        let far = Edit { pattern: None, kind: "square".into(), name: String::new(), shape: Shape::Disc { c: [500.0, 500.0], r: 4.0 }, mode: Mode::Level, to: Height::At(6.0), edge: 1.0, color: None, rim: None, water: None };
         let (all, keys) = g.plan(Layer::Made, std::slice::from_ref(&far)).unwrap();
         assert!(keys.len() <= 4, "only the square's tiles: {}", keys.len());
         let tiles = stamp(&all, &keys, &flat);

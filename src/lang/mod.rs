@@ -167,8 +167,38 @@ pub fn compile(source: &str) -> Result<CompiledType, Vec<Diag>> {
         progs[i] = Some(vm::compile_behavior(f, n).map_err(tr)?);
     }
     let [tick, use_fn, touch] = progs;
-    let carved = wgsl.contains("api_subtract") || wgsl.contains("api_smooth_subtract") || source.contains("subtract(");
+    let carved = wgsl.contains("api_subtract") || wgsl.contains("api_smooth_subtract") || source.contains("subtract(") || cuts_by_max(source);
     Ok(CompiledType { meta: module.meta, source: source.to_string(), wgsl, sdf, color, parts, tick, use_fn, touch, prop_names: module.prop_names, carved })
+}
+
+/// A shape cut away the other common way, `max(a, -b)`: a negated shape
+/// (a call or a name, not a number) given to `max`.
+fn cuts_by_max(source: &str) -> bool {
+    let b = source.as_bytes();
+    source.match_indices("max(").any(|(i, _)| {
+        // Within this call's own brackets, an argument starting with "-x" or "-(".
+        let mut depth = 0;
+        let mut j = i + 4;
+        let mut start = true;
+        while j < b.len() {
+            match b[j] {
+                b'(' => depth += 1,
+                b')' if depth == 0 => return false,
+                b')' => depth -= 1,
+                b',' if depth == 0 => start = true,
+                b' ' => {}
+                b'-' if start && depth == 0 => {
+                    if b.get(j + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'(' || *c == b'_') {
+                        return true;
+                    }
+                    start = false;
+                }
+                _ => start = false,
+            }
+            j += 1;
+        }
+        false
+    })
 }
 
 #[cfg(test)]

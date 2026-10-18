@@ -197,7 +197,7 @@ impl River {
                 let line: Vec<[f32; 2]> = self.pts[i..=j].iter().map(|p| p.to_array()).collect();
                 // Its banks: where the land beside it lies lower than its
                 // water, a low bank holds it in (a levee).
-                out.push(Edit {
+                out.push(Edit { pattern: None,
                     kind: "riverbank".into(),
                     name: String::new(),
                     shape: Shape::Line { pts: line.clone(), half: half + 2.0 + half * 0.7 },
@@ -208,7 +208,7 @@ impl River {
                     rim: None,
                     water: None,
                 });
-                out.push(Edit {
+                out.push(Edit { pattern: None,
                     kind: "river".into(),
                     name: String::new(),
                     shape: Shape::Line { pts: line, half },
@@ -227,7 +227,7 @@ impl River {
             let (end, s) = (self.pts[n - 1], self.surface[n - 1]);
             if (end - near).length() < r + 40.0 {
                 let rr = 10.0 + self.half[n - 1] * 2.0;
-                out.push(Edit {
+                out.push(Edit { pattern: None,
                     kind: "pond".into(),
                     name: String::new(),
                     shape: Shape::Disc { c: end.to_array(), r: rr },

@@ -224,7 +224,7 @@ export function color(x, y, z, k) { return rgb(150, 120, 90); }
     /// Land laid at 20 m over the sea, rising `slope` per metre northward (+z).
     fn land(slope: f32) -> Terrain {
         let t = Terrain::new(1, crate::terrain::default_biomes());
-        let e = crate::ground::Edit {
+        let e = crate::ground::Edit { pattern: None,
             kind: "test".into(),
             name: String::new(),
             shape: crate::ground::Shape::Line { pts: vec![[0.0, -60.0], [0.0, 60.0]], half: 60.0 },

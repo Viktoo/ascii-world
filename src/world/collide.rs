@@ -49,6 +49,14 @@ pub fn step_for(height: f32) -> f32 {
     (height * 0.25).clamp(0.08, 1.2)
 }
 
+/// Just above its step, a body only meets what stands up past the step:
+/// a sample there reaches out no further than its height above the step, so
+/// the next tread of a stair (its top below the step) is no wall, and a
+/// riser or wall standing higher still is.
+fn under_step(y: f32, feet: f32, b: Capsule) -> f32 {
+    (b.radius - (y - feet - b.step).max(0.0)).max(0.0)
+}
+
 impl Obstacles<'_> {
     /// Distance from a person-sized column standing on the ground at (x, z)
     /// to the nearest obstacle.
@@ -73,7 +81,7 @@ impl Obstacles<'_> {
             let n = (((hi - lo) / 0.7).ceil() as usize).clamp(1, 8);
             for i in 0..=n {
                 let y = lo + (hi - lo) * i as f32 / n as f32;
-                d = d.min(s.sdf(Vec3::new(x, y, z)));
+                d = d.min(s.sdf(Vec3::new(x, y, z)) + under_step(y, feet, b));
             }
         }
         for (o, r) in self.bodies {
@@ -119,7 +127,7 @@ impl Obstacles<'_> {
                 if d0 < 0.0 {
                     return false;
                 }
-                if d0 >= b.radius {
+                if d0 + under_step(y, feet, b) >= b.radius {
                     continue;
                 }
                 // An uncarved shape's distance is true enough: it touches.
@@ -213,17 +221,26 @@ pub fn too_steep(terrain: &Terrain, from: Vec2, to: Vec2, feet: f32) -> bool {
 /// position (its height unchanged: footing settles it, see `sim::footing`).
 pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b: Capsule) -> Vec3 {
     let radius = b.radius;
-    let feet = from.y;
-    let dist = |x: f32, z: f32| obs.dist_body(x, z, feet, b);
-    // Clear by the fast distance, or (near a carved opening) by the rim.
-    let ok = |x: f32, z: f32, d: f32| d >= radius || obs.clear(x, z, feet, b);
     let start = Vec2::new(from.x, from.z);
     // A swimmer goes into deep water and, in it or at its edge, pulls
     // itself out onto a bank (however sheer) no higher than a little over
     // the water.
     let wl = terrain.water(start.x, start.y);
     let out = wl + 0.9;
-    let afloat = b.swims && feet < out && [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.0, 0.0)].iter().any(|(dx, dz)| terrain.height(start.x + dx, start.y + dz) < wl - 0.05);
+    let afloat = b.swims && from.y < out && [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.0, 0.0)].iter().any(|(dx, dz)| terrain.height(start.x + dx, start.y + dz) < wl - 0.05);
+    // Afloat, what stands no higher than that (a step, a slipway, a
+    // pontoon) is somewhere to climb onto, not a wall in the way.
+    let feet = if afloat && !obs.solids.is_empty() {
+        let q = Vec3::new(from.x + delta.x, from.y, from.z + delta.z);
+        let up = support_under(terrain, obs.solids, q, radius, out);
+        // Only near the top: a roof down on the bed is no way out.
+        if up > wl - 1.0 { from.y.max(up) } else { from.y }
+    } else {
+        from.y
+    };
+    let dist = |x: f32, z: f32| obs.dist_body(x, z, feet, b);
+    // Clear by the fast distance, or (near a carved opening) by the rim.
+    let ok = |x: f32, z: f32, d: f32| d >= radius || obs.clear(x, z, feet, b);
     let here = wl - terrain.height(start.x, start.y);
     let water_ok = |q: Vec2| {
         if b.needs_water > 0.0 {

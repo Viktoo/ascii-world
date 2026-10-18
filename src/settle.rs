@@ -254,6 +254,7 @@ pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
             color: color(v.get("color")),
             rim,
             water: v.get("water").and_then(num).map(|w| Height::At(w.clamp(-20.0, 80.0))),
+            pattern: v.get("pattern").and_then(|p| p.as_str()).and_then(|p| crate::ground::Pattern::parse(p, v.get("pattern_size").and_then(num).map(|n| n as f32))),
         };
         out.push(LandPlan { edit, follow, frontage });
     }
@@ -271,7 +272,7 @@ pub fn shaped_water(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, sea: f32, x: 
     let mut h = raw(x, z);
     let (mut paint, mut water) = ((Vec3::ZERO, 0.0), crate::ground::NO_WATER);
     for e in edits {
-        e.apply_at(x, z, &mut h, &mut paint, &mut water);
+        e.apply_at(x, z, &mut h, &mut paint, &mut water, &mut 0);
     }
     (h, water.max(sea))
 }
@@ -489,7 +490,7 @@ mod tests {
 
     #[test]
     fn streets_cross_canals_at_bridges() {
-        let e = |pts: Vec<[f32; 2]>, half: f32, mode: Mode| Edit { kind: String::new(), name: String::new(), shape: Shape::Line { pts, half }, mode, to: Height::At(0.0), edge: 0.3, color: None, rim: Some(([1.0; 3], 1.0)), water: None };
+        let e = |pts: Vec<[f32; 2]>, half: f32, mode: Mode| Edit { pattern: None, kind: String::new(), name: String::new(), shape: Shape::Line { pts, half }, mode, to: Height::At(0.0), edge: 0.3, color: None, rim: Some(([1.0; 3], 1.0)), water: None };
         let street = e(vec![[0.0, -30.0], [0.0, 30.0]], 1.5, Mode::Level);
         let canal = e(vec![[-50.0, 5.0], [50.0, 5.0]], 3.0, Mode::Lower);
         let x = crossings(&street, &canal);

@@ -290,7 +290,7 @@ impl Road {
     /// shoulders, in its colour.
     pub fn edit(&self, raw: &dyn Fn(f32, f32) -> f32) -> crate::ground::Edit {
         let (pts, hs) = crate::ground::lay(&[self.a, self.b], 3.0, 12.0, raw);
-        crate::ground::Edit {
+        crate::ground::Edit { pattern: None,
             kind: "road".into(),
             name: String::new(),
             shape: crate::ground::Shape::Line { pts, half: self.half },
@@ -859,7 +859,7 @@ impl Terrain {
     }
 
     /// Ground colour (linear 0..1), mirroring `ground_color` in the shader.
-    pub fn ground_color(&self, pal: &Palette, x: f32, z: f32, h: f32, ny: f32) -> glam::Vec3 {
+    pub fn ground_color(&self, pal: &Palette, x: f32, z: f32, h: f32, ny: f32, dist: f32) -> glam::Vec3 {
         let w = self.weights(x, z);
         let v = vnoise2(x * 0.11, z * 0.11, self.seed.wrapping_add(303));
         let v2 = vnoise2(x * 0.023, z * 0.023, self.seed.wrapping_add(304));
@@ -883,7 +883,8 @@ impl Terrain {
         let mut c = c.lerp(snow, snowy);
         let carve = self.carve.read();
         if let Some(g) = carve.ground.at(x, z) {
-            c = c.lerp(g.color * (0.9 + 0.2 * v), g.cover);
+            let lay = crate::ground::pattern_shade(g.pattern, x, z, dist, self.seed);
+            c = c.lerp(g.color * (0.9 + 0.2 * v) * lay, g.cover);
         }
         let (_, dug) = carve.apply(x, z, h);
         c.lerp(EARTH * (0.8 + 0.3 * v), dug * 0.85)

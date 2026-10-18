@@ -263,7 +263,7 @@ pub fn render(req: &FrameRequest, terrain: &Terrain, palette: &crate::terrain::P
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
     let rows_per = h.div_ceil(threads).max(1);
     let ro = v3(g.cam_pos);
-    let ground = |x: f32, z: f32, hh: f32, ny: f32| terrain.ground_color(palette, x, z, hh, ny);
+    let ground = |x: f32, z: f32, hh: f32, ny: f32| terrain.ground_color(palette, x, z, hh, ny, (Vec3::new(x, hh, z) - ro).length());
     std::thread::scope(|s| {
         for (ci, chunk) in px.chunks_mut(rows_per * w).enumerate() {
             let sc = &sc;

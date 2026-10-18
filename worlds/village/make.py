@@ -88,7 +88,7 @@ class Plan:
         self.creatures = []
         self.items = []
 
-    def line(self, what, pts, width, how, height=None, sides=None, color=None, rim=None, rim_width=None, name="", water=None):
+    def line(self, what, pts, width, how, height=None, sides=None, color=None, rim=None, rim_width=None, name="", water=None, pattern=None, pattern_size=None):
         e = {"what": what, "name": name, "line": [[round(x, 2), round(z, 2)] for x, z in pts], "width": width, "how": how}
         if height is not None:
             e["height"] = height
@@ -100,9 +100,13 @@ class Plan:
             e["rim"], e["rim_width"] = list(rim), rim_width or 0.6
         if water is not None:
             e["water"] = water
+        if pattern:
+            e["pattern"] = pattern
+            if pattern_size:
+                e["pattern_size"] = pattern_size
         self.ground.append(e)
 
-    def area(self, what, pts, how, height=None, sides=None, color=None, rim=None, rim_width=None, name="", water=None):
+    def area(self, what, pts, how, height=None, sides=None, color=None, rim=None, rim_width=None, name="", water=None, pattern=None, pattern_size=None):
         e = {"what": what, "name": name, "outline": [[round(x, 2), round(z, 2)] for x, z in pts], "how": how}
         if height is not None:
             e["height"] = height
@@ -114,6 +118,10 @@ class Plan:
             e["rim"], e["rim_width"] = list(rim), rim_width or 0.6
         if water is not None:
             e["water"] = water
+        if pattern:
+            e["pattern"] = pattern
+            if pattern_size:
+                e["pattern_size"] = pattern_size
         self.ground.append(e)
 
     def rect(self, what, x0, z0, x1, z1, how, **kw):
@@ -144,7 +152,7 @@ def lay_ground(p, nat):
     # Terraces, each a level shelf held by a stone wall at its foot.
     for z0, z1, h in TERRACES:
         p.rect("terrace", -WALL_X - 6, z0, WALL_X + 6, z1, "level", height=h, sides=0.7, color=COBBLE if z0 < -11 else PAVING,
-               rim=STONE, rim_width=0.5, name="the quay" if z0 < -11 else "")
+               rim=STONE, rim_width=0.5, name="the quay" if z0 < -11 else "", pattern="setts" if z0 < -11 else "flagstones")
     # Behind the wall the hill comes down to the meadows, softly.
     p.rect("hill", -WALL_X - 6, 106, WALL_X + 6, 118, "level", height=16.6, sides=22)
     # The harbour: a basin dug to the sea bed, its quay wall sheer.
@@ -155,11 +163,11 @@ def lay_ground(p, nat):
         p.line("beach", [(x, -18), (x, -32), (x, -48), (x, -70)], 20, "level", height=[3.0, 1.4, -0.2, -2.0], sides=6)
     p.rect("sand", -210, -70, -100, -16, "paint", color=SAND, name="Spiaggia della Conca")
     # Streets: the quay promenade, two ramps up the sides, the piazza.
-    p.line("ramp", [(-74, -16), (-74, 104)], 6, "level", height=[1.8, 16.6], sides=1.2, color=COBBLE, name="Via del Ponente")
-    p.line("ramp", [(76, -16), (76, 104)], 6, "level", height=[1.8, 16.6], sides=1.2, color=COBBLE, name="Via del Levante")
-    p.rect("piazza", -44, 36, 46, 56, "paint", color=(196, 140, 108), name="Piazza del Mare")
+    p.line("ramp", [(-74, -16), (-74, 104)], 6, "level", height=[1.8, 16.6], sides=1.2, color=COBBLE, name="Via del Ponente", pattern="cobbles")
+    p.line("ramp", [(76, -16), (76, 104)], 6, "level", height=[1.8, 16.6], sides=1.2, color=COBBLE, name="Via del Levante", pattern="cobbles")
+    p.rect("piazza", -44, 36, 46, 56, "paint", color=(196, 140, 108), name="Piazza del Mare", pattern="bricks")
     for z0, z1, h in TERRACES[1:]:
-        p.line("lane", [(-WALL_X + 6, z0 + 3), (WALL_X - 6, z0 + 3)], 4.2, "paint", color=COBBLE, name="")
+        p.line("lane", [(-WALL_X + 6, z0 + 3), (WALL_X - 6, z0 + 3)], 4.2, "paint", color=COBBLE, name="", pattern="cobbles")
     # Roads out of the gate: north to the woods, east and west along the coast,
     # down to the cove and out to the lighthouse on the cape.
     p.line("road", [(0, 112), (12, 150), (34, 210), (70, 300), (100, 400), (124, 458), (128, 492)], 4.0, "level", color=DIRT, name="the woodcutters' road")

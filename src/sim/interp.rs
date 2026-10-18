@@ -1061,7 +1061,7 @@ impl Sim {
         }));
         // Where it runs lowest the ground water seeps in first.
         let bottom = if cut && water.is_none() { pts.iter().zip(&hs).min_by(|a, b| a.1.total_cmp(b.1)).map(|(p, _)| glam::Vec2::from_array(*p)) } else { None };
-        let edit = Edit {
+        let edit = Edit { pattern: None,
             kind: word,
             name: String::new(),
             shape: Shape::Line { pts, half: wide * 0.5 },

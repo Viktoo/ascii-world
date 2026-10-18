@@ -322,7 +322,7 @@ fn ground_cell(x: f32, z: f32) -> GCell {
   if (dx < 0 || dz < 0 || dx >= n || dz >= n) { return out; }
   let e = gtiles[u32(dz * n + dx)];
   if (e == 0u) { return out; }
-  out.base = u32(n * n) + (e - 1u) * GSAMPLES * 3u;
+  out.base = u32(n * n) + (e - 1u) * GSAMPLES * 4u;
   out.i0 = u32(iz - (tz << 5u)) * GCELLS + u32(ix - (tx << 5u));
   out.ux = fx - cx;
   out.uz = fz - cz;
@@ -359,6 +359,73 @@ fn ground_paint(x: f32, z: f32) -> vec4f {
   let a = unpack4x8unorm(gtiles[i]); let b = unpack4x8unorm(gtiles[i + 1u]);
   let d = unpack4x8unorm(gtiles[i + GCELLS]); let e = unpack4x8unorm(gtiles[i + GCELLS + 1u]);
   return mix(mix(a, b, c.ux), mix(d, e, c.ux), c.uz);
+}
+
+// The laid pattern's code at (x, z), from the nearest sample (0: none).
+fn ground_pattern(x: f32, z: f32) -> u32 {
+  let c = ground_cell(x, z);
+  if (c.base == 0u) { return 0u; }
+  var i = c.base + GSAMPLES * 3u + c.i0;
+  if (c.uz >= 0.5) { i = i + GCELLS; }
+  if (c.ux >= 0.5) { i = i + 1u; }
+  return gtiles[i];
+}
+
+fn pedge(f: f32) -> f32 { return min(f, 1.0 - f); }
+
+// How a laid pattern shades the ground at (x, z) seen from `dist`: twin of
+// ground.rs: pattern_shade.
+fn pattern_shade(code: u32, x: f32, z: f32, dist: f32, seed: u32) -> f32 {
+  let kind = code & 255u;
+  if (kind == 0u) { return 1.0; }
+  let s = f32((code >> 8u) & 255u) / 20.0;
+  let fade = sstep(0.35, 0.12, dist * 0.004 / s);
+  if (fade <= 0.0) { return 1.0; }
+  var e = 0.0; var cx = 0; var cz = 0;
+  if (kind == 2u) {
+    let gx = i32(floor(x / s)); let gz = i32(floor(z / s));
+    var f1 = 9.0; var f2 = 9.0;
+    for (var j = -1; j <= 1; j = j + 1) {
+      for (var i = -1; i <= 1; i = i + 1) {
+        let ix = gx + i; let iz = gz + j;
+        let px = f32(ix) + 0.15 + 0.7 * u2f(h2(ix, iz, seed));
+        let pz = f32(iz) + 0.15 + 0.7 * u2f(h2(iz, ix, seed ^ 0x9e37u));
+        let d = length(vec2f(x / s - px, z / s - pz));
+        if (d < f1) { f2 = f1; f1 = d; cx = ix; cz = iz; } else if (d < f2) { f2 = d; }
+      }
+    }
+    e = (f2 - f1) * 0.5 * s;
+  } else if (kind == 4u) {
+    let v = z / s;
+    let row = i32(floor(v));
+    let u = x / (s * 7.0) + u2f(h2(row, 7, seed));
+    e = min(pedge(abs(fract(v))), pedge(u - floor(u)) * 7.0) * s;
+    cx = i32(floor(u)); cz = row;
+  } else if (kind == 5u) {
+    let bx = i32(floor(x / (2.0 * s))); let bz = i32(floor(z / (2.0 * s)));
+    let turn = ((bx + bz) & 1) == 1;
+    var a = x; var b = z;
+    if (turn) { a = z; b = x; }
+    let u = a / (2.0 * s); let v = b / s;
+    e = min(pedge(u - floor(u)), pedge(v - floor(v)) * 0.5) * 2.0 * s;
+    cx = bx * 2 + (i32(floor(v)) & 1); cz = bz;
+  } else {
+    var long = 1.0;
+    if (kind == 3u) { long = 1.5; }
+    let v = z / s;
+    let row = i32(floor(v));
+    var shift = 0.5 * f32(row & 1);
+    if (kind == 3u) { shift = u2f(h2(row, 3, seed)); }
+    let u = x / (s * long) + shift;
+    e = min(pedge(v - floor(v)), pedge(u - floor(u)) * long) * s;
+    cx = i32(floor(u)); cz = row;
+  }
+  var w = s * 0.06;
+  if (kind == 2u) { w = s * 0.11; }
+  let joint = sstep(w * 1.6, w, e);
+  let piece = 0.86 + 0.26 * u2f(h2(cx, cz, seed ^ 0x51u));
+  let shade = piece + (0.5 - piece) * joint;
+  return 1.0 + (shade - 1.0) * fade;
 }
 
 // Distance to the nearest cave hollow (negative inside; 1e4 with none).
@@ -535,7 +602,10 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
   let snowy = sstep(46.0, 56.0, h + v * 6.0) * sstep(0.6, 0.8, ny);
   c = mix(c, G.snow.xyz, snowy);
   let gp = ground_paint(x, z);
-  if (gp.w > 0.0) { c = mix(c, gp.xyz / max(gp.w, 1.0 / 255.0) * (0.9 + 0.2 * v), gp.w); }
+  if (gp.w > 0.0) {
+    let lay = pattern_shade(ground_pattern(x, z), x, z, length(vec3f(x, h, z) - G.cam_pos.xyz), s);
+    c = mix(c, gp.xyz / max(gp.w, 1.0 / 255.0) * (0.9 + 0.2 * v) * lay, gp.w);
+  }
   if (G.extra.x > 0u) {
     let dug = carve(x, z, h).y;
     c = mix(c, vec3f(0.29, 0.22, 0.16) * (0.8 + 0.3 * v), dug * 0.85);
