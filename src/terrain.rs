@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_BIOMES: usize = 6;
 pub const BIOME_SHARPNESS: f32 = 26.0;
+/// The sea's level in most lands (a world may set its own, or have none).
 pub const WATER_LEVEL: f32 = 0.0;
 
 /// Climate centres biomes are pinned to, in order. Spreading them over the
@@ -205,6 +206,12 @@ pub struct Terrain {
     stamping: std::sync::Arc<parking_lot::Mutex<()>>,
     /// Rivers from the seed (see `rivers`).
     pub rivers: std::sync::Arc<parking_lot::Mutex<crate::rivers::Rivers>>,
+    /// The sea's level: water stands over all ground below it (`NO_WATER`
+    /// in a land with no sea).
+    pub sea: f32,
+    /// How far under the land's own surface the ground water lies, if any:
+    /// ground dug deeper than it fills up to it.
+    pub groundwater: Option<f32>,
 }
 
 /// A box (or round pit) of ground taken away, down to `floor`.
@@ -403,7 +410,19 @@ impl Terrain {
         // Offsets stay zero: per-field seeds decorrelate the noise, and any offset
         // would cost precision (and CPU/GPU parity) far from the origin.
         let o = |_i: u32| 0.0f32;
-        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default(), rivers: Default::default() }
+        Terrain { seed, off: [o(1), o(2), o(3), o(4), o(5), o(6)], biomes, carve: Default::default(), stamping: Default::default(), rivers: Default::default(), sea: WATER_LEVEL, groundwater: None }
+    }
+
+    /// With the world's sea (None: no sea) and ground water.
+    pub fn with_water(mut self, sea: Option<f32>, groundwater: Option<f32>) -> Self {
+        self.sea = sea.unwrap_or(crate::ground::NO_WATER);
+        self.groundwater = groundwater;
+        self
+    }
+
+    /// The level ground water stands at under (x, z), if the land has any.
+    pub fn groundwater_at(&self, x: f32, z: f32) -> Option<f32> {
+        self.groundwater.map(|d| self.raw_height(x, z) - d)
     }
 
     pub fn center(i: usize) -> [f32; 2] {
@@ -587,7 +606,7 @@ impl Terrain {
     /// it is above the ground.
     pub fn water(&self, x: f32, z: f32) -> f32 {
         let c = self.carve.read();
-        c.ground.at(x, z).map(|a| a.water.max(WATER_LEVEL)).unwrap_or(WATER_LEVEL)
+        c.ground.at(x, z).map(|a| a.water.max(self.sea)).unwrap_or(self.sea)
     }
 
     /// How deep the water is at (x, z) (0 on dry land).
@@ -812,7 +831,7 @@ impl Terrain {
         let strata = smoothstep(0.3, 0.7, vnoise2(h * 0.9, (x + z) * 0.015, self.seed.wrapping_add(305)));
         let bed = rock * (0.55 + 0.25 * v + 0.45 * strata);
         c = c.lerp(bed * glam::Vec3::new(1.0 + 0.1 * strata, 1.0, 1.0 - 0.1 * strata), steep);
-        let beach = smoothstep(WATER_LEVEL + 1.4, WATER_LEVEL + 0.3, h);
+        let beach = smoothstep(self.sea + 1.4, self.sea + 0.3, h);
         c = c.lerp(sand, beach);
         let snowy = smoothstep(46.0, 56.0, h + v * 6.0) * smoothstep(0.6, 0.8, ny);
         let mut c = c.lerp(snow, snowy);

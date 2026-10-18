@@ -187,17 +187,17 @@ pub fn parse(list: &[Value], ox: f32, oz: f32) -> Vec<LandPlan> {
 /// The height (x, z) has once `edits` are applied over the land `raw`,
 /// worked out directly (the tiles do the same, for everyone, once laid).
 pub fn shaped(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, x: f32, z: f32) -> f32 {
-    shaped_water(edits, raw, x, z).0
+    shaped_water(edits, raw, crate::ground::NO_WATER, x, z).0
 }
 
 /// As `shaped`, and the water standing there (the sea's level at least).
-pub fn shaped_water(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, x: f32, z: f32) -> (f32, f32) {
+pub fn shaped_water(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, sea: f32, x: f32, z: f32) -> (f32, f32) {
     let mut h = raw(x, z);
     let (mut paint, mut water) = ((Vec3::ZERO, 0.0), crate::ground::NO_WATER);
     for e in edits {
         e.apply_at(x, z, &mut h, &mut paint, &mut water);
     }
-    (h, water.max(crate::terrain::WATER_LEVEL))
+    (h, water.max(sea))
 }
 
 /// Lay the plans in order: heights that follow the land are read off the
@@ -205,13 +205,13 @@ pub fn shaped_water(edits: &[Edit], raw: &dyn Fn(f32, f32) -> f32, x: f32, z: f3
 /// sits on the island). Cuts along lines (canals, ditches) go last, after
 /// the streets and `extra` (roads), so they cut through them and bridges
 /// can cross them.
-pub fn realize(plans: &[LandPlan], extra: &[LandPlan], raw: &dyn Fn(f32, f32) -> f32) -> Vec<Edit> {
+pub fn realize(plans: &[LandPlan], extra: &[LandPlan], raw: &dyn Fn(f32, f32) -> f32, sea: f32) -> Vec<Edit> {
     let mut done: Vec<Edit> = Vec::new();
     for p in plans.iter().filter(|p| !is_cut(&p.edit)).chain(extra) {
-        done.push(follow(p, &done, raw));
+        done.push(follow(p, &done, raw, sea));
     }
     for p in plans.iter().filter(|p| is_cut(&p.edit)) {
-        done.push(follow(p, &done, raw));
+        done.push(follow(p, &done, raw, sea));
     }
     done
 }
@@ -255,7 +255,7 @@ pub fn spurs(fronts: &[Vec3], ways: &[&Edit], color: [f32; 3], half: f32, reach:
     out
 }
 
-fn follow(p: &LandPlan, before: &[Edit], raw: &dyn Fn(f32, f32) -> f32) -> Edit {
+fn follow(p: &LandPlan, before: &[Edit], raw: &dyn Fn(f32, f32) -> f32, sea: f32) -> Edit {
     let mut e = p.edit.clone();
     if !p.follow {
         return e;
@@ -267,7 +267,7 @@ fn follow(p: &LandPlan, before: &[Edit], raw: &dyn Fn(f32, f32) -> f32) -> Edit 
             // over a river it keeps its height (and the river is cut through
             // again, under a bridge).
             let (pts, hs) = lay(pts, 3.0, 12.0, &|x, z| {
-                let (h, w) = shaped_water(before, raw, x, z);
+                let (h, w) = shaped_water(before, raw, sea, x, z);
                 h.max(w + 0.35)
             });
             let lower = e.mode == Mode::Lower;
@@ -385,7 +385,7 @@ mod tests {
         assert!(p[3].follow && p[3].edit.mode == Mode::Level, "a street follows the land");
         assert_eq!(p[4].edit.mode, Mode::Paint, "a square with no height only paints");
         // Laid: the canal goes last and the street sits on the island.
-        let edits = realize(&p, &[], &flat);
+        let edits = realize(&p, &[], &flat, crate::terrain::WATER_LEVEL);
         assert!(is_cut(edits.last().unwrap()) && is_way(&edits[2]));
         assert_eq!(edits.last().unwrap().kind, "canal");
         let Height::Along(hs) = &edits[2].to else { panic!("{:?}", edits[2].to) };

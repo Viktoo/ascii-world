@@ -155,6 +155,7 @@ impl Sim {
             let half = (depth * 1.5 - edge).max(depth * 0.75);
             let hollow = crate::terrain::Hollow { c: [at.x, at.z], rot: [1.0, 0.0], half: [half, half], floor: ground - depth, round: true, edge };
             self.open_hollow(at, hollow);
+            self.seep(glam::Vec2::new(at.x, at.z), half + edge * 2.0 + 4.0);
         }
 
         // Holes torn in what stands close (a wall, a cart, a tree).

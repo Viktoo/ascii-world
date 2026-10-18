@@ -16,6 +16,8 @@ export function sdf(x, y, z, k) {
   d = smoothUnion(d, roof, 0.2);
   d = subtract(d, sphere(q.x, q.y - 1.0, q.z, 0.7));
   d = min(d, torus(q.x, q.y + 3.2, q.z, 3.0, 0.15), ellipsoid(q.x, q.y - 2.6, q.z, 0.3, 0.6, 0.3));
+  // A pennant and a horn.
+  d = min(d, triangle(q.x, q.y, q.z, 0.2, -2.0, 0.0, 1.2, -1.7, 0.1, 0.2, -1.4, -0.1, 0.03), cone(q.x, q.y, q.z, -2.0, -0.8, 0.0, -2.6, -1.9, 0.4, 0.25, 0.02));
   if (d > 10 || !(d < 100)) {
     d = 10;
   }

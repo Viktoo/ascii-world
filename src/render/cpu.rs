@@ -3,7 +3,7 @@
 //! to run at reduced resolution.
 
 use super::{Frame, FrameRequest, GpuInst, Globals, RenderHandle, RenderMsg};
-use crate::terrain::{Terrain, WATER_LEVEL, smoothstep};
+use crate::terrain::{Terrain, smoothstep};
 use crate::world::{SceneTypes, TypeEntry};
 use glam::Vec3;
 use std::sync::Arc;
@@ -211,9 +211,9 @@ impl Scene<'_> {
         let wl = if t_hit < f32::MAX {
             let ph = ro + rd * t_hit;
             let lw = self.terrain.water(ph.x, ph.z);
-            if self.terrain.void(ph) < 0.3 && ph.y < self.terrain.height(ph.x, ph.z) - 0.3 { f32::MIN } else if lw > ph.y { lw } else { WATER_LEVEL }
+            if self.terrain.void(ph) < 0.3 && ph.y < self.terrain.height(ph.x, ph.z) - 0.3 { f32::MIN } else if lw > ph.y { lw } else { self.terrain.sea }
         } else {
-            WATER_LEVEL
+            self.terrain.sea
         };
         if rd.y < 0.0 && ro.y > wl {
             let tw = (wl - ro.y) / rd.y;

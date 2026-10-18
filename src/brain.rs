@@ -10,7 +10,7 @@ use crate::llm::{Llm, Msg, Req, Role, extract_code, extract_json};
 use crate::model::{CommitOk, CommitRequest, NewType, Placement, RegionCommit, TypeRef, WorldModel, region_info_from_plan};
 use crate::pace::{self, Pacer, Task};
 use crate::prompts;
-use crate::terrain::{Terrain, WATER_LEVEL};
+use crate::terrain::Terrain;
 use crate::world::characters::Decision;
 use crate::world::describe::View;
 use crate::world::{Look, Persona, REGION, WorldSnapshot};
@@ -1046,7 +1046,7 @@ fn region_notes(t: &Terrain, r: (i32, i32)) -> String {
         for j in 1..n - 1 {
             for i in 1..n - 1 {
                 let k = j * n + i;
-                let ok = if under { water_at(k) - h[k] >= 1.5 } else { !wet[k] && h[k] >= WATER_LEVEL + 1.0 };
+                let ok = if under { water_at(k) - h[k] >= 1.5 } else { !wet[k] && h[k] >= t.sea + 1.0 };
                 if !ok {
                     continue;
                 }

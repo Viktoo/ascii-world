@@ -13,7 +13,7 @@
 
 use crate::ground::{Edit, Height, Mode, Shape};
 use crate::noise::{hseqf, vnoise2};
-use crate::terrain::{Terrain, WATER_LEVEL};
+use crate::terrain::Terrain;
 use glam::Vec2;
 use std::collections::HashMap;
 
@@ -74,7 +74,7 @@ pub fn natural_cave(t: &Terrain, density: f32, c: (i32, i32)) -> Option<crate::g
         let e = 3.0;
         let g = Vec2::new(t.raw_height(p.x + e, p.y) - t.raw_height(p.x - e, p.y), t.raw_height(p.x, p.y + e) - t.raw_height(p.x, p.y - e)) / (2.0 * e);
         let slope = g.length();
-        if h < WATER_LEVEL + 4.0 || !(0.25..0.9).contains(&slope) {
+        if h < t.sea + 4.0 || !(0.25..0.9).contains(&slope) {
             continue;
         }
         // Into the hill: up its slope, the passage running level-ish while
@@ -155,7 +155,7 @@ pub fn trace(t: &Terrain, from: Vec2) -> Option<River> {
         let s = s_prev.min(h - 0.6);
         // The water can't climb: land in the way is cut through, up to a point.
         if h - s > MAX_CUT + 0.6 || flat_for > 12 {
-            pond = h > WATER_LEVEL;
+            pond = h > t.sea;
             break;
         }
         // Not back on itself.
@@ -167,7 +167,7 @@ pub fn trace(t: &Terrain, from: Vec2) -> Option<River> {
         surface.push(s);
         len += STEP;
         // Out into the sea a little way, then it is the sea.
-        if s < WATER_LEVEL - 0.5 {
+        if s < t.sea - 0.5 {
             break;
         }
     }
@@ -178,7 +178,7 @@ pub fn trace(t: &Terrain, from: Vec2) -> Option<River> {
     let half: Vec<f32> = (0..n).map(|i| 1.6 + (i as f32 * STEP).sqrt() * 0.13).collect();
     let bed: Vec<f32> = (0..n).map(|i| surface[i] - (0.7 + half[i] * 0.18)).collect();
     // Into the sea the surface is the sea's.
-    let surface = surface.into_iter().map(|s| s.max(WATER_LEVEL - 0.05)).collect();
+    let surface = surface.into_iter().map(|s| s.max(t.sea - 0.05)).collect();
     Some(River { pts, surface, bed, half, pond })
 }
 
@@ -336,7 +336,7 @@ mod tests {
                 // It ends at the sea, in a pond, or far away.
                 let end = *r.surface.last().unwrap();
                 let len = (r.pts.len() - 1) as f32 * STEP;
-                assert!(end < WATER_LEVEL + 0.1 || r.pond || len > MAX_LEN - STEP * 2.0, "ends somewhere: {end} after {len} m");
+                assert!(end < crate::terrain::WATER_LEVEL + 0.1 || r.pond || len > MAX_LEN - STEP * 2.0, "ends somewhere: {end} after {len} m");
             }
         }
         assert!(found >= 3, "a land of springs has rivers ({found})");
