@@ -546,6 +546,12 @@ impl App {
             }
             return;
         }
+        if k.code == KeyCode::F(5) && self.together.is_some() {
+            if k.kind == KeyEventKind::Press {
+                self.copy_invite();
+            }
+            return;
+        }
         if k.code == KeyCode::F(2) {
             if k.kind == KeyEventKind::Press {
                 self.inspect = !self.inspect;
@@ -942,6 +948,13 @@ impl App {
             "" => {}
             // Playing together: words for everyone here.
             "say" if self.together.is_some() && !rest.is_empty() => self.say_to_all(rest.to_string()),
+            "invite" if self.together.is_some() => self.copy_invite(),
+            "name" if !rest.is_empty() => {
+                let name: String = rest.chars().filter(|c| !c.is_control()).take(24).collect();
+                self.settings.name = name.trim().to_string();
+                self.settings.save();
+                self.say(None, &format!("You'll be {} when playing together (from the next game).", self.settings.name), DIM);
+            }
             "help" | "?" => {
                 for l in [
                     "/ <anything> — do or make anything, at what the middle of the view points at:",

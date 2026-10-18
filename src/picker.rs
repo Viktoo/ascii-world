@@ -26,6 +26,10 @@ pub struct World {
 pub enum Choice {
     Open(PathBuf),
     New(String),
+    /// Open a world for others to join (over the internet too, when true).
+    Host(PathBuf, bool),
+    /// Join someone's world: their address and code.
+    Join(String, String),
     Quit,
 }
 
@@ -440,7 +444,7 @@ fn draw(scr: &mut Screen, list: &[World], sel: usize, deleting: bool, note: Opti
         let x = scr.text(w.saturating_sub(n) / 2, fy, &q, ACCENT, BG, true);
         scr.hints(x + 3, fy, "Y delete   Any other key keep", DIM, BG);
     } else {
-        let keys = if list.is_empty() { "N new world   Q quit" } else { "↑↓ choose   Enter open   N new world   S share   D delete   Q quit" };
+        let keys = if list.is_empty() { "N new world   J join   Q quit" } else { "↑↓ choose   Enter open   N new   H host   J join   S share   D delete   Q quit" };
         scr.hints(w.saturating_sub(hint_width(keys)) / 2, fy, keys, DIM, BG);
     }
 }
@@ -491,6 +495,16 @@ pub fn pick(win: &mut Win, note: Option<String>) -> Choice {
             }
             match k.code {
                 KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if !list.is_empty() => deleting = true,
+                KeyCode::Char('h') | KeyCode::Char('H') if !list.is_empty() => match host_on(win, &mut scr, &list[sel]) {
+                    None => return Choice::Quit,
+                    Some(Some(internet)) => return Choice::Host(list[sel].path.clone(), internet),
+                    Some(None) => {}
+                },
+                KeyCode::Char('j') | KeyCode::Char('J') => match join_on(win, &mut scr) {
+                    None => return Choice::Quit,
+                    Some(Some((addr, code))) => return Choice::Join(addr, code),
+                    Some(None) => {}
+                },
                 KeyCode::Char('s') | KeyCode::Char('S') if !list.is_empty() => {
                     if !share_on(win, &mut scr, &list[sel]) {
                         return Choice::Quit;
@@ -602,6 +616,224 @@ fn share_on(win: &mut Win, scr: &mut Screen, wd: &World) -> bool {
             }
         }
     }
+}
+
+/// The host screen: who can join, and how. None when the window closed,
+/// Some(None) back, Some(Some(over the internet)) host.
+fn host_on(win: &mut Win, scr: &mut Screen, wd: &World) -> Option<Option<bool>> {
+    let ngrok = crate::net::ngrok::find().is_some();
+    loop {
+        fit(win, scr);
+        let (w, h) = (scr.w, scr.h);
+        blank(scr);
+        let cx = w as f32 / 2.0;
+        let top = (h as f32 * 0.30 - 7.0).max(0.0) as u16;
+        scr.title(cx, top as f32 + 2.6, "Play together", 2.6, ACCENT);
+        let cw = (w as usize).saturating_sub(10).clamp(20, 66).min(w as usize);
+        let x0 = ((w as usize - cw) / 2) as u16;
+        let width = cw.saturating_sub(4);
+        let y0 = top + 6;
+        let mut lines: Vec<(String, [u8; 3])> = vec![
+            ("Friends join this world and play in it with you.".into(), TEXT),
+            (String::new(), TEXT),
+            ("It runs here, and what they say and make is asked of".into(), DIM),
+            ("your LLM: you pay for it (each guest up to what you set".into(), DIM),
+            ("in settings). They need no key and no copy of the world.".into(), DIM),
+            (String::new(), TEXT),
+            ("You get an address and a code to give them; they press".into(), DIM),
+            ("J on their worlds list. Games on this network show there".into(), DIM),
+            ("by themselves.".into(), DIM),
+            (String::new(), TEXT),
+        ];
+        if ngrok {
+            lines.push(("I: from anywhere too, through ngrok (installed here).".into(), TEXT));
+        } else {
+            lines.push(("From outside this network: install ngrok (ngrok.com/download)".into(), DIM));
+            lines.push(("and sign in once; then I hosts through it.".into(), DIM));
+        }
+        scr.deco(Deco::panel(x0 as f32, y0 as f32 - 1.0, cw as f32, lines.len() as f32 + 4.0, CARD).border(CARD_EDGE));
+        scr.labels.push(Label { x: x0 as f32 + 2.0, y: y0 as f32 - 0.25, text: clip(&wd.name, width), size: 1.45, color: ACCENT, face: Face::Title, center: false });
+        for (i, (l, c)) in lines.iter().enumerate() {
+            scr.text(x0 + 2, y0 + 2 + i as u16, &clip(l, width), *c, BG, false);
+        }
+        let hint = if ngrok { "Enter host on this network   I host for anyone   Esc back" } else { "Enter host on this network   Esc back" };
+        let y = (y0 + lines.len() as u16 + 5).min(h.saturating_sub(2));
+        scr.hints(w.saturating_sub(hint_width(hint)) / 2, y, hint, DIM, BG);
+        win.present(scr, 0, None);
+        for ev in win.pump(Duration::from_millis(500)) {
+            let k = match ev {
+                Ev::Close => return None,
+                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
+                _ => continue,
+            };
+            match k.code {
+                KeyCode::Esc => return Some(None),
+                KeyCode::Enter => return Some(Some(false)),
+                KeyCode::Char('i') | KeyCode::Char('I') if ngrok => return Some(Some(true)),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// What the join screen has typed in.
+#[derive(Default)]
+struct JoinForm {
+    addr: String,
+    code: String,
+    /// Typing the code (else the address).
+    on_code: bool,
+    /// The game picked from those heard on the network.
+    pick: Option<usize>,
+}
+
+impl JoinForm {
+    /// Text pasted: an invite ("address code") fills both.
+    fn paste(&mut self, t: &str) {
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        match parts.as_slice() {
+            [a, c] => {
+                self.addr = a.to_string();
+                self.code = c.to_string();
+                self.on_code = true;
+            }
+            _ => {
+                let field = if self.on_code { &mut self.code } else { &mut self.addr };
+                field.push_str(t.trim());
+            }
+        }
+    }
+}
+
+/// The join screen: games heard on this network, or an address and the
+/// code typed (or pasted). None when the window closed, Some(None) back.
+fn join_on(win: &mut Win, scr: &mut Screen) -> Option<Option<(String, String)>> {
+    let mut listen = crate::net::discover::Listen::start();
+    let mut f = JoinForm::default();
+    let mut found = Vec::new();
+    let mut note: Option<String> = None;
+    loop {
+        if let Some(l) = listen.as_mut() {
+            found = l.hosts();
+        }
+        if f.pick.is_some_and(|i| i >= found.len()) {
+            f.pick = None;
+        }
+        fit(win, scr);
+        draw_join(scr, &f, &found, note.as_deref());
+        win.present(scr, 0, None);
+        for ev in win.pump(Duration::from_millis(300)) {
+            let k = match ev {
+                Ev::Close => return None,
+                Ev::Paste(t) => {
+                    f.paste(&t);
+                    continue;
+                }
+                Ev::Key(k) if k.kind != KeyEventKind::Release => k,
+                _ => continue,
+            };
+            note = None;
+            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::SUPER);
+            match k.code {
+                KeyCode::Esc => return Some(None),
+                KeyCode::Char('v') if ctrl => {
+                    if let Some(t) = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()) {
+                        f.paste(&t);
+                    }
+                }
+                KeyCode::Down if !found.is_empty() => {
+                    let i = f.pick.map_or(0, |i| (i + 1).min(found.len() - 1));
+                    f.pick = Some(i);
+                    f.addr = found[i].addr.clone();
+                    f.on_code = true;
+                }
+                KeyCode::Up => {
+                    if let Some(i) = f.pick {
+                        if i == 0 {
+                            f.pick = None;
+                        } else {
+                            f.pick = Some(i - 1);
+                            f.addr = found[i - 1].addr.clone();
+                        }
+                    }
+                }
+                KeyCode::Tab => f.on_code = !f.on_code,
+                KeyCode::Backspace => {
+                    let field = if f.on_code { &mut f.code } else { &mut f.addr };
+                    field.pop();
+                    if !f.on_code {
+                        f.pick = None;
+                    }
+                }
+                KeyCode::Enter => {
+                    if f.addr.trim().is_empty() {
+                        note = Some("Type the host's address, or pick a game heard on this network (↓).".into());
+                    } else if f.code.trim().is_empty() {
+                        f.on_code = true;
+                        note = Some("Now the code the host gave you.".into());
+                    } else {
+                        return Some(Some((f.addr.trim().to_string(), f.code.trim().to_string())));
+                    }
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    if c == ' ' && !f.on_code && !f.addr.is_empty() {
+                        f.on_code = true;
+                    } else {
+                        let field = if f.on_code { &mut f.code } else { &mut f.addr };
+                        field.push(c);
+                        if !f.on_code {
+                            f.pick = None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_join(scr: &mut Screen, f: &JoinForm, found: &[crate::net::discover::Found], note: Option<&str>) {
+    let (w, h) = (scr.w, scr.h);
+    blank(scr);
+    let cx = w as f32 / 2.0;
+    let top = (h as f32 * 0.25 - 6.0).max(0.0) as u16;
+    scr.title(cx, top as f32 + 2.6, "Join a world", 2.6, ACCENT);
+    let cw = (w as usize).saturating_sub(10).clamp(20, 66).min(w as usize);
+    let x0 = ((w as usize - cw) / 2) as u16;
+    let width = cw.saturating_sub(4);
+    let mut y = top + 6;
+    scr.text(x0 + 2, y, "On this network", DIM, BG, false);
+    y += 1;
+    if found.is_empty() {
+        scr.text(x0 + 2, y + 1, &clip("No games heard yet (a host on this Wi-Fi shows here by itself).", width), DIM, BG, false);
+        y += 3;
+    }
+    for (i, g) in found.iter().enumerate().take(5) {
+        let sel = f.pick == Some(i);
+        let card = Deco::panel(x0 as f32, y as f32 + 0.4, cw as f32, 2.2, if sel { CARD_SEL } else { CARD });
+        scr.deco(if sel { card.border(ACCENT) } else { card });
+        let build = if g.same_build { String::new() } else { format!(" · another build ({})", g.build) };
+        scr.text(x0 + 2, y + 1, &clip(&format!("{}'s “{}”  {}{build}", g.host, g.world, g.addr), width), if sel { ACCENT } else { TEXT }, BG, false);
+        y += 3;
+    }
+    y += 1;
+    let field = |scr: &mut Screen, y: u16, label: &str, v: &str, on: bool| {
+        scr.text(x0 + 2, y, label, DIM, BG, false);
+        let card = Deco::panel(x0 as f32, y as f32 + 1.0, cw as f32, 1.6, CARD);
+        scr.deco(if on { card.border(ACCENT) } else { card });
+        let shown = if on { format!("{v}▏") } else { v.to_string() };
+        scr.text(x0 + 2, y + 1, &clip(&shown, width), TEXT, BG, false);
+    };
+    field(scr, y, "Address (192.168.1.20:7777, or an https://….ngrok-free.app link)", &f.addr, !f.on_code);
+    y += 4;
+    field(scr, y, "Code", &f.code, f.on_code);
+    y += 4;
+    if let Some(n) = note {
+        scr.center_text(cx, y, &clip(n, w.saturating_sub(4) as usize), ACCENT);
+    }
+    let hint = "↑↓ pick a game   Tab address/code   ⌘V paste an invite   Enter join   Esc back";
+    let hy = h.saturating_sub(2);
+    scr.hints(w.saturating_sub(hint_width(hint)) / 2, hy, hint, DIM, BG);
 }
 
 /// A title and a line in the middle (while a world opens).

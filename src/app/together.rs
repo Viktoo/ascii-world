@@ -49,6 +49,11 @@ pub struct Hosting {
     watch: crossbeam_channel::Sender<Watch>,
     /// Beings answering a guest now: who asked, and what.
     talks: HashMap<i64, (TravelerNo, String)>,
+    /// Calling out on the local network, and the way in from outside (ngrok).
+    _beacon: Option<crate::net::discover::Beacon>,
+    tunnel: Option<crate::net::ngrok::Tunnel>,
+    /// The tunnel's state last told in the log.
+    told_tunnel: Option<crate::net::ngrok::State>,
     /// Each guest's talk with each being (theirs, the being's), for the next reply.
     convs: HashMap<(TravelerNo, i64), Vec<(bool, String)>>,
 }
@@ -83,11 +88,29 @@ pub struct Guesting {
 }
 
 impl Hosting {
-    pub fn new(host: Host, path: PathBuf, world: String, name: String) -> Hosting {
+    /// Host `world` (its file at `path`) as `name`; over the internet too
+    /// (an ngrok tunnel) when `internet`.
+    pub fn new(host: Host, path: PathBuf, world: String, name: String, internet: bool) -> Hosting {
+        let beacon = crate::net::discover::Beacon::start(&name, &world, host.port);
+        let tunnel = if internet { crate::net::ngrok::Tunnel::start(host.port) } else { None };
         let (watch, rx) = crossbeam_channel::unbounded();
         let p = path.clone();
         let _ = std::thread::Builder::new().name("host-rows".into()).spawn(move || crate::net::rows::watch(p, rx));
-        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false, watch, talks: HashMap::new(), convs: HashMap::new() }
+        Hosting { host, path, world, name, guests: BTreeMap::new(), last_bodies: Instant::now(), roster_dirty: false, watch, talks: HashMap::new(), convs: HashMap::new(), _beacon: beacon, told_tunnel: (internet && tunnel.is_none()).then(|| crate::net::ngrok::State::Failed(String::new())), tunnel }
+    }
+
+    /// Where guests join: the public address when there is one, else this
+    /// machine's on the local network.
+    pub fn address(&self) -> String {
+        match self.tunnel.as_ref().map(|t| t.state()) {
+            Some(crate::net::ngrok::State::Up(url)) => url,
+            _ => self.host.lan_address(),
+        }
+    }
+
+    /// What to give someone to join: the address and the code.
+    pub fn invite(&self) -> String {
+        format!("{} {}", self.address(), self.host.code)
     }
 
     /// How many are here besides the host.
@@ -150,6 +173,20 @@ impl App {
     }
 
     fn host_tick(&mut self, h: &mut Hosting) {
+        // The way in from outside, as it comes up (or doesn't).
+        let ts = h.tunnel.as_ref().map(|t| t.state());
+        if ts != h.told_tunnel && ts != Some(crate::net::ngrok::State::Starting) {
+            match &ts {
+                Some(crate::net::ngrok::State::Up(url)) => self.say(None, &format!("Open over the internet at {url} (F5 copies the invite)."), ACCENT),
+                Some(crate::net::ngrok::State::Failed(why)) => self.say(None, &format!("Only on this network: {why}."), DIM),
+                _ => {}
+            }
+            h.told_tunnel = ts;
+        }
+        if h.told_tunnel == Some(crate::net::ngrok::State::Failed(String::new())) {
+            h.told_tunnel = Some(crate::net::ngrok::State::Failed("ngrok isn't installed".into()));
+            self.say(None, "Only on this network: to let friends join from anywhere, install ngrok (ngrok.com/download), sign in once, and host again.", DIM);
+        }
         for a in h.host.arrivals() {
             self.let_in(h, a);
         }
@@ -702,6 +739,17 @@ impl App {
         }
     }
 
+    /// The invite (address and code) to the clipboard, and said in the log.
+    pub(super) fn copy_invite(&mut self) {
+        let line = match &self.together {
+            Some(Together::Host(h)) => h.invite(),
+            Some(Together::Guest(g)) => format!("in {}'s world: ask them for the invite", g.host_name()),
+            None => return,
+        };
+        let copied = matches!(self.together, Some(Together::Host(_))) && arboard::Clipboard::new().and_then(|mut c| c.set_text(line.clone())).is_ok();
+        self.say(None, &if copied { format!("Copied: {line}. Whoever joins presses J on their worlds list and pastes it.") } else { line }, ACCENT);
+    }
+
     /// Something said to everyone playing ("/say").
     pub(super) fn say_to_all(&mut self, text: String) {
         let text: String = text.chars().take(400).collect();
@@ -728,7 +776,7 @@ impl App {
                     0 => "nobody has joined yet".to_string(),
                     _ => format!("with {}", h.names().join(", ")),
                 };
-                Some(format!("hosting at {} · code {} · {who}", h.host.lan_address(), h.host.code))
+                Some(format!("hosting at {} · code {} · {who} · F5 copy", h.address(), h.host.code))
             }
             Some(Together::Guest(g)) => Some(format!("in {}'s world", g.host_name())),
             None => None,
@@ -894,7 +942,7 @@ mod tests {
         .unwrap();
         let host = Host::start(port, "lime-otter-42".into()).unwrap();
         let addr = format!("127.0.0.1:{}", host.port);
-        let mut h = game(db, Some(Together::Host(Hosting::new(host, path.clone(), "Test Vale".into(), "Hal".into()))), llm);
+        let mut h = game(db, Some(Together::Host(Hosting::new(host, path.clone(), "Test Vale".into(), "Hal".into(), false))), llm);
 
         // The guest joins on another thread while the host's game runs.
         let joining = std::thread::spawn(move || crate::net::guest::join(&addr, "lime-otter-42", "Bea", "tok-bea", |_, _| {}));

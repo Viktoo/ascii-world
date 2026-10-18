@@ -9,8 +9,10 @@
 //!
 //! See `docs/multiplayer-plan.md`.
 
+pub mod discover;
 pub mod guest;
 pub mod host;
+pub mod ngrok;
 pub mod rows;
 pub mod wire;
 

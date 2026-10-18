@@ -49,8 +49,9 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
                                          start on the new-world screen: check or edit the
                                          prompt (a random one if none given), then step in
   pocket prompts [--sample N]            print N random prompts (default 20)
-  pocket host [FILE] [--port 7777] [--code CODE]
+  pocket host [FILE] [--port 7777] [--code CODE] [--ngrok]
                                          open a world (or your last) for others to join
+                                         (--ngrok: from anywhere, through an ngrok tunnel)
   pocket join ADDRESS CODE               join someone's world: their address (192.168.1.20:7777,
                                          or an ngrok https URL) and the code they gave you
 
@@ -121,7 +122,7 @@ fn run(args: Vec<String>) -> Result<()> {
                 None => picker::last().or_else(|| picker::worlds().into_iter().next().map(|w| w.path)).context("no world to host: make one first")?,
             };
             let code = flag(&args, "--code").or_else(|| std::env::var("POCKET_HOST_CODE").ok()).unwrap_or_else(net::new_code);
-            session(Start::Host(path, port, code), None, None, shot)
+            session(Start::Host(path, port, code, has(&args, "--ngrok")), None, None, shot)
         }
         Some("join") => {
             let addr = args.get(1).filter(|a| !a.starts_with("--")).context("usage: pocket join ADDRESS CODE")?.clone();
@@ -233,8 +234,9 @@ enum Start {
     New(Option<String>),
     Create(String),
     Play(PathBuf, bool),
-    /// Open a world for others to join, on a port, with a code.
-    Host(PathBuf, u16, String),
+    /// Open a world for others to join, on a port, with a code; over the
+    /// internet too (ngrok) when asked.
+    Host(PathBuf, u16, String, bool),
     /// Join someone's world: their address and code.
     Join(String, String),
 }
@@ -264,6 +266,8 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
             Start::List => match picker::pick(&mut win, note.take()) {
                 picker::Choice::Open(p) => Start::Play(p, false),
                 picker::Choice::New(prompt) => Start::Create(prompt),
+                picker::Choice::Host(p, internet) => Start::Host(p, net::PORT, net::new_code(), internet),
+                picker::Choice::Join(addr, code) => Start::Join(addr, code),
                 picker::Choice::Quit => break,
             },
             Start::New(given) => match picker::compose(&mut win, given.as_deref()) {
@@ -286,7 +290,7 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                 }
                 (false, _) => break,
             },
-            Start::Host(path, port, code) => match play(&mut win, &path, false, remember, Some((port, code)), &stop)? {
+            Start::Host(path, port, code, internet) => match play(&mut win, &path, false, remember, Some((port, code, internet)), &stop)? {
                 (true, why) => {
                     note = why;
                     Start::List
@@ -312,7 +316,7 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
 
 /// Play one world in the window (hosting it on `host`, a port, if given);
 /// true when the player went back to their worlds, and why if not by choice.
-fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: Option<(u16, String)>, stop: &AtomicBool) -> Result<(bool, Option<String>)> {
+fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: Option<(u16, String, bool)>, stop: &AtomicBool) -> Result<(bool, Option<String>)> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if remember {
         let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
@@ -331,10 +335,10 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
     };
     let (cols, rows, _) = win.grid();
     let together = match host {
-        Some((port, code)) => {
+        Some((port, code, internet)) => {
             let (me, _) = settings::Settings::load().player();
             let h = net::host::Host::start(port, code)?;
-            Some(app::together::Together::Host(app::together::Hosting::new(h, path.clone(), name.clone(), me)))
+            Some(app::together::Together::Host(app::together::Hosting::new(h, path.clone(), name.clone(), me, internet)))
         }
         None => None,
     };
