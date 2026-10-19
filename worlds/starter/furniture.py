@@ -20,6 +20,58 @@ def t(slug, desc, name, bounds, tags, props, sdf, color, anchors=None, extra=Non
     ALL.append(slug)
 
 
+def pumpkin_js(v, cx, cy, cz, R, squash=1.35, ribs=5):
+    """JS lines for one ribbed pumpkin centred at (cx, cy, cz), radius R:
+    lobes round it, flattened, a dimple on top; its distance is `v`."""
+    return f"""  const {v}x = x - ({cx});
+  const {v}y = y - ({cy});
+  const {v}z = z - ({cz});
+  const {v}a = atan2({v}z, {v}x);
+  const {v}r = {R} * (0.9 + 0.1 * abs(cos({v}a * {ribs / 2:.1f})));
+  const {v}b = (length3({v}x, {v}y * {squash}, {v}z) - {v}r) * 0.72;
+  const {v} = smoothSubtract({v}b, sphere({v}x, {v}y - {R / squash + 0.02:.3f}, {v}z, {R * 0.28:.3f}), {R * 0.12:.3f});
+  const {v}s = capsule({v}x, {v}y, {v}z, 0, {R / squash - 0.04:.3f}, 0, {R * 0.12:.3f}, {R / squash + R * 0.32:.3f}, {R * 0.05:.3f}, {R * 0.09:.3f});"""
+
+
+def pumpkin_col(v, cx, cy, cz, R, squash=1.35, ribs=5, base="rgb(222, 108, 24)"):
+    """JS colour for the pumpkin `v`: stalk, grooves darker, the lobes lit."""
+    return f"""  {{
+    const px = x - ({cx});
+    const py = y - ({cy});
+    const pz = z - ({cz});
+    if (length3(px, py * {squash}, pz) < {R * 1.08:.3f} || (py > {R / squash - 0.06:.3f} && length2(px, pz) < {R * 0.2:.3f})) {{
+      if (py > {R / squash - 0.05:.3f} && length2(px, pz) < {R * 0.16:.3f}) return mix(rgb(96, 104, 54), rgb(130, 120, 70), noise3(px * 40, py * 40, pz * 40));
+      const g = abs(cos(atan2(pz, px) * {ribs / 2:.1f}));
+      return {base} * (0.62 + 0.38 * g) * (0.88 + 0.12 * noise3(px * 20, py * 20, pz * 20)) * (0.85 + 0.15 * clamp(py / {R:.3f} + 0.6, 0, 1));
+    }}
+  }}"""
+
+
+def fish_rows(px, pz, y0, wx=0.075, wz=0.13, L=0.1):
+    """JS lines: a layer of fish side by side, one to each cell of a grid
+    (px, pz the cell size), lying along z at height y0; distance `fish`."""
+    return f"""  const fcx = x - {px} * floor(x / {px} + 0.5);
+  const fcz = z - {pz} * floor(z / {pz} + 0.5) + (fract(floor(x / {px} + 0.5) * 0.5) - 0.25) * 0.06;
+  const fbody = ellipsoid(fcx, y - {y0}, fcz, {wx * 0.42:.3f}, {wx * 0.3:.3f}, {L:.3f});
+  const ftail = triangle(fcx, y - {y0}, fcz, 0, 0, -{L * 0.85:.3f}, -{wx * 0.4:.3f}, 0, -{L * 1.25:.3f}, {wx * 0.4:.3f}, 0, -{L * 1.25:.3f}, {wx * 0.06:.3f});
+  const fish = min(fbody, ftail);"""
+
+
+def fish_col(px, pz, y0, wx=0.075, L=0.1):
+    """JS colour of those fish: a blue-grey back, a silver side, a white
+    belly, a dark eye."""
+    return f"""  {{
+    const fcx = x - {px} * floor(x / {px} + 0.5);
+    const fcz = z - {pz} * floor(z / {pz} + 0.5) + (fract(floor(x / {px} + 0.5) * 0.5) - 0.25) * 0.06;
+    if (abs(y - {y0}) < {wx * 0.34:.3f} && abs(fcx) < {wx * 0.5:.3f}) {{
+      if (fcz > {L * 0.7:.3f} && abs(y - {y0} - {wx * 0.08:.3f}) < {wx * 0.1:.3f} && abs(fcx) > {wx * 0.25:.3f}) return rgb(20, 20, 24);
+      if (y - {y0} > {wx * 0.12:.3f}) return mix(rgb(60, 80, 100), rgb(90, 110, 120), hash(floor(x / {px} + 0.5), 3));
+      if (y - {y0} > -{wx * 0.1:.3f}) return mix(rgb(196, 204, 210), rgb(230, 234, 236), noise3(x * 60, y * 60, z * 60));
+      return rgb(240, 240, 236);
+    }}
+  }}"""
+
+
 WOOD = "mix(rgb(120, 82, 52), rgb(150, 108, 68), noise3(x * 6, y * 18, z * 6))"
 DARK = "mix(rgb(84, 56, 38), rgb(104, 72, 48), noise3(x * 6, y * 18, z * 6))"
 
@@ -69,24 +121,6 @@ t("wardrobe", "A tall wardrobe of dark walnut, two doors with brass handles, car
   f"""  if (z > 0.29 && abs(abs(x) - 0.06) < 0.025 && abs(y - 1.0) < 0.12) return rgb(200, 160, 60);
   if (z > 0.29 && abs(x) < 0.012) return rgb(40, 28, 20);
   return {DARK};""")
-
-t("kitchen", "A home's kitchen along a wall: a counter of white tiles with a sink and a\ngas stove with a pot of sauce on it, a shelf of jars and copper pans above,\nstrings of garlic and peppers. The cook stands at its front (+z).",
-  "kitchen", (1.25, 1.95, 0.32), '["furniture", "kitchen"]', "{ mass: 200, burns: 0.3, heat: 60 }",
-  """  const counter = box(x, y - 0.45, z, 1.22, 0.45, 0.3);
-  const sink = box(x + 0.6, y - 0.86, z, 0.28, 0.1, 0.2);
-  const pot = cylinder(x - 0.55, y - 1.0, z + 0.02, 0.14, 0.11);
-  const shelf = box(x, y - 1.55, z + 0.12, 1.15, 0.025, 0.16);
-  const jars = max(cylinder(x - 0.3 * floor(x / 0.3 + 0.5), y - 1.66, z + 0.12, 0.06, 0.09), abs(x) - 1.1);
-  const pans = sphere(x + 0.3 * floor(-x / 0.3 + 0.5) * 0.0 - 0.2, y - 1.3, z + 0.25, 0.1);
-  return min(min(max(counter, -sink), pot), min(shelf, min(jars, pans)));""",
-  """  if (y > 1.5) return y > 1.6 ? hsv(fract(floor(x / 0.3) * 0.27), 0.5, 0.8) : rgb(130, 90, 56);
-  if (y > 0.89 && abs(x - 0.6) < 0.3) return rgb(190, 196, 200);
-  if (y > 0.89 && abs(x + 0.55) < 0.16) return y > 1.08 ? rgb(190, 40, 30) : rgb(70, 70, 76);
-  if (y > 1.1) return rgb(196, 120, 70);
-  if (z > 0.28 && y < 0.82) return fract(x * 1.6) < 0.04 ? rgb(60, 60, 60) : rgb(70, 140, 170);
-  if (y > 0.86) return (fract(x * 6.0) < 0.06 || fract(z * 6.0) < 0.06) ? rgb(180, 180, 180) : rgb(240, 238, 232);
-  return rgb(240, 238, 232);""",
-  ['{ kind: "light", at: [0, 1.8, 0.2] }'])
 
 t("dining-table", "The family table: a long wooden table under a red-and-white checked cloth,\nfour chairs round it, laid with bowls of stew, a loaf of brown bread\nand a jug of cider. Four can sit and eat.",
   "dining table", (1.0, 1.0, 0.95), '["furniture", "table"]', "{ mass: 50, burns: 0.6 }",
@@ -237,20 +271,6 @@ shelves("liquor-shelves", "liquor shelves", "Shelves of bottles behind the taver
     return rgb(40, 100, 50);""")
 shelves("book-shelves", "book shelves", "The bookseller's shelves, full of books new and old, sea charts of the coast\nand almanacs.",
         """    return hsv(h, 0.55, 0.5 + 0.3 * hash(k.seed, i));""")
-t("fish-counter", "The fish counter in the fish shed: a sloping bed of crushed ice on a wooden\nstand, laid with cod, haddock, mackerel, red lobsters and a heap of clams.",
-  "fish counter", (1.15, 1.0, 0.45), '["furniture", "counter", "shop"]', "{ mass: 140, wet: 0.5 }",
-  """  const stand = box(x, y - 0.4, z, 1.1, 0.4, 0.4);
-  const ice = max(box(x, y - 0.85, z, 1.1, 0.1, 0.4), (y - 0.9) - (z + 0.4) * 0.25);
-  const fish = max(ellipsoid(x - 0.25 * floor(x / 0.25 + 0.5), y - 0.88 - (z + 0.4) * 0.25 * 0.0, z, 0.1, 0.04, 0.28), abs(x) - 1.0);
-  return min(stand, min(ice, fish));""",
-  """  if (y > 0.82) {
-    const i = floor(x / 0.25 + 0.5);
-    const h = hash(i, k.seed);
-        if (abs(x - i * 0.25) < 0.1) return h < 0.4 ? rgb(196, 206, 214) : h < 0.7 ? rgb(214, 90, 70) : rgb(120, 70, 90);
-    return rgb(236, 244, 248);
-  }
-  return (fract(x * 6.0) < 0.05 || fract(y * 6.0) < 0.05) ? rgb(200, 210, 210) : rgb(70, 140, 170);""")
-
 t("bar-counter", "The tavern's bar: a long counter of dark polished wood, three brass beer\ntaps at one end, mugs stacked on it, a jar of pickled eggs and a bowl of\npeanuts.",
   "bar counter", (1.6, 1.4, 0.4), '["furniture", "counter", "shop"]', "{ mass: 200, heat: 30 }",
   """  const body = box(x, y - 0.52, z, 1.55, 0.52, 0.32);
@@ -263,16 +283,6 @@ t("bar-counter", "The tavern's bar: a long counter of dark polished wood, three 
   if (y > 1.08 && abs(x + 0.5) < 0.22) return rgb(210, 190, 140);
   if (y > 1.08) return rgb(226, 170, 60);
   if (y > 1.03) return rgb(70, 46, 30);
-  return {WOOD};""")
-
-t("beer-barrels", "Three oak barrels on their sides on a rack, each with a spigot: the\ntavern's amber ale, its dark stout and the autumn cider.",
-  "beer barrels", (1.3, 1.2, 0.5), '["furniture", "prop"]', "{ mass: 300, burns: 0.5, fuel: 0.4 }",
-  """  const bx = x - 0.85 * floor(x / 0.85 + 0.5);
-  const barrels = max(max(length2(bx, y - 0.62) - 0.38 - 0.05 * (1.0 - abs(z) / 0.45), abs(z) - 0.45), abs(x) - 1.25);
-  const rack = box(x, y - 0.12, z, 1.25, 0.12, 0.4);
-  return min(barrels, rack);""",
-  f"""  const bx = x - 0.85 * floor(x / 0.85 + 0.5);
-  if (abs(abs(z) - 0.32) < 0.03 || abs(z) > 0.43) return rgb(60, 60, 62);
   return {WOOD};""")
 
 t("tavern-table", "A heavy tavern table of scrubbed pine, four chairs round it, laid with\na pot of clam chowder, foaming mugs of beer and a basket of bread.",
@@ -350,14 +360,6 @@ def item(slug, name, desc, bounds, props, sdf, color, tags='["item"]', extra=Non
 item("newspaper", "newspaper", "This week's Cove Gazette, folded: the tides, the fishing, the harvest supper on the green.", (0.17, 0.02, 0.12), "{ mass: 0.2, burns: 0.95 }",
      """  return box(x, y - 0.01, z, 0.16, 0.01, 0.11);""",
      """  return fract(z * 18.0) < 0.4 ? rgb(70, 70, 70) : rgb(236, 232, 220);""")
-item("book", "book", "A cloth-bound book of stories, its corners worn.", (0.12, 0.03, 0.09), "{ mass: 0.5, burns: 0.9 }",
-     """  return box(x, y - 0.025, z, 0.11, 0.025, 0.085);""",
-     """  if (abs(x) < 0.1 && abs(z) < 0.08 && abs(y - 0.025) < 0.018) return rgb(240, 232, 210);
-  return hsv(hash(k.seed), 0.6, 0.5);""")
-item("bunch-of-flowers", "bunch of flowers", "A bunch of flowers wrapped in paper: roses, daisies and sprigs of lavender.", (0.1, 0.25, 0.1), "{ mass: 0.3, alive: 1, burns: 0.6 }",
-     """  return min(cappedCone(x, y - 0.1, z, 0.1, 0.02, 0.07), sphere(x, y - 0.2, z, 0.09));""",
-     """  if (y < 0.18) return rgb(236, 224, 200);
-  return hsv(fract(noise3(x * 30, y * 30, z * 30) * 2.0), 0.6, 0.9);""")
 item("broom", "broom", "A broom of yellow straw on a long wooden handle, for sweeping the step.", (0.15, 0.7, 0.06), "{ mass: 0.8, burns: 0.8 }",
      """  return min(cylinder(x, y - 0.22, z, 0.014, 0.48), max(cappedCone(x, y + 0.42, z, 0.18, 0.15, 0.04) * 0.0 + box(x, y + 0.5, z, 0.13 - (y + 0.5) * 0.25, 0.18, 0.04), -0.0 - 1.0));""",
      """  if (y < -0.32) return rgb(220, 190, 90);
@@ -405,13 +407,6 @@ item("mug-of-beer", "mug of beer", "A heavy glass mug of the tavern's amber ale,
      """  return min(cylinder(x, y - 0.075, z, 0.05, 0.075), max(abs(length2(x - 0.065, y - 0.08) - 0.035) - 0.008, abs(z) - 0.01));""",
      """  if (y > 0.13) return rgb(250, 246, 232);
   return glow(rgb(214, 150, 40), 0.15);""", tags='["item", "food", "drink"]')
-item("fiddle", "fiddle", "A well-worn fiddle of honey-coloured maple and its bow, for the dances at the tavern.", (0.12, 0.06, 0.32), "{ mass: 0.5, fragile: 0.6, burns: 0.8 }",
-     """  const body = max(min(ellipsoid(x, y - 0.03, z + 0.08, 0.1, 0.03, 0.09), ellipsoid(x, y - 0.03, z - 0.06, 0.085, 0.03, 0.075)), -ellipsoid(abs(x) - 0.11, y - 0.03, z, 0.035, 0.05, 0.04));
-  const neck = box(x, y - 0.04, z - 0.22, 0.016, 0.012, 0.09);
-  const scroll = sphere(x, y - 0.045, z - 0.31, 0.02);
-  return min(body, min(neck, scroll));""",
-     """  if (z < -0.12) return rgb(40, 30, 26);
-  return mix(rgb(160, 84, 34), rgb(196, 120, 50), noise3(x * 30, y * 30, z * 8));""", tags='["item", "instrument"]')
 item("basket-of-apples", "basket of apples", "A bushel basket heaped with red and gold apples from the orchards.", (0.25, 0.32, 0.25), "{ mass: 8, edible: 0.8, burns: 0.6 }",
      """  const basket = max(cappedCone(x, y - 0.14, z, 0.14, 0.17, 0.23), -cappedCone(x, y - 0.17, z, 0.14, 0.16, 0.22));
   const heap = max(ellipsoid(x, y - 0.26, z, 0.21, 0.07, 0.21) + (noise3(x * 18, y * 18, z * 18) - 0.5) * 0.05, -y + 0.2);
@@ -432,35 +427,25 @@ item("carving", "carving", "A little deer whittled from birch wood, smooth and p
   const head = sphere(x, y - 0.09, z - 0.05, 0.016);
   return min(min(b, legs), head);""",
      """  return mix(rgb(220, 200, 160), rgb(236, 220, 186), noise3(x * 40, y * 40, z * 40));""", tags='["item", "toy"]')
-item("pumpkin", "pumpkin", "A big ribbed orange pumpkin from the garden, its stalk still on.", (0.25, 0.4, 0.25), "{ mass: 7, edible: 0.6, burns: 0.3 }",
-     """  const a = atan2(z, x);
-  const r = 0.23 - 0.018 * abs(sin(a * 5.0));
-  const body = (length3(x, (y - 0.17) * 1.35, z) - r) * 0.7;
-  return min(body, capsule(x, y, z, 0, 0.26, 0, 0.02, 0.36, 0.01, 0.022));""",
-     """  if (y > 0.3) return rgb(96, 110, 50);
-  return mix(rgb(214, 100, 20), rgb(236, 130, 30), noise3(x * 10, y * 10, z * 10));""", tags='["item", "food"]')
+item("pumpkin", "pumpkin", "A big ribbed orange pumpkin from the garden, deep grooves between its\nlobes, a dimple on top and its curled green stalk still on.", (0.27, 0.42, 0.27), "{ mass: 7, edible: 0.6, burns: 0.3 }",
+     pumpkin_js("p", 0, 0.18, 0, 0.25) + """
+  return min(p, ps);""",
+     pumpkin_col("p", 0, 0.18, 0, 0.25) + """
+  return rgb(222, 108, 24);""", tags='["item", "food"]')
 item("hand-lantern", "hand lantern", "A tin hand lantern with a glass chimney, its wick burning warm.", (0.08, 0.3, 0.08), "{ mass: 1.2, fragile: 0.5, light: 1, heat: 30 }",
      """  return min(min(cylinder(x, y - 0.03, z, 0.07, 0.03), cylinder(x, y - 0.13, z, 0.045, 0.07)), max(abs(length2(x, y - 0.24) - 0.05) - 0.006, abs(z) - 0.006));""",
      """  if (abs(y - 0.13) < 0.07) return glow(rgb(255, 200, 110), 0.9);
   return rgb(80, 80, 76);""", tags='["item", "tool"]')
 
 # ------------------------------------------------------------- outdoors
-t("pumpkins", "A heap of pumpkins and squash by a door or a porch step: big orange\npumpkins, little white ones and warty green gourds.",
-  "pumpkins", (0.9, 0.5, 0.6), '["prop", "decoration"]', "{ mass: 40, edible: 0.6, burns: 0.3 }",
-  """  const a = length3(x + 0.4, (y - 0.2) * 1.3, z) - 0.24;
-  const b = length3(x - 0.15, (y - 0.17) * 1.3, z + 0.15) - 0.2;
-  const c = length3(x - 0.55, (y - 0.12) * 1.3, z - 0.15) - 0.14;
-  const d = length3(x + 0.05, (y - 0.42) * 1.3, z + 0.05) - 0.12;
-  return min(min(a, b), min(c, d)) * 0.7;""",
-  """  if (x > 0.38) return rgb(236, 230, 210);
-  if (y > 0.33) return rgb(100, 120, 50);
-  return mix(rgb(214, 100, 20), rgb(236, 130, 30), noise3(x * 10, y * 10, z * 10));""")
-t("hay-bale", "A round bale of golden hay, a pumpkin or two set against it.",
-  "hay bale", (0.75, 1.2, 0.7), '["prop"]', "{ mass: 250, burns: 0.95, fuel: 0.5 }",
-  """  const bale = roundBox(x, y - 0.6, z, 0.6, 0.6, 0.6, 0.45);
-  return min(bale, (length3(x - 0.3, (y - 0.15) * 1.3, z - 0.62) - 0.17) * 0.7);""",
-  """  if (z > 0.5 && y < 0.35) return rgb(220, 110, 24);
-  return mix(rgb(196, 160, 80), rgb(226, 196, 110), noise3(x * 14, y * 4, z * 14));""")
+t("pumpkins", "A heap of pumpkins and squash by a door or a porch step: a big ribbed orange\npumpkin and a smaller one on it, a little white pumpkin and a warty green\ngourd, their stalks still on.",
+  "pumpkins", (0.95, 0.62, 0.62), '["prop", "decoration"]', "{ mass: 40, edible: 0.6, burns: 0.3 }",
+  pumpkin_js("a", -0.38, 0.2, 0, 0.27) + pumpkin_js("b", 0.18, 0.15, 0.12, 0.2) + pumpkin_js("c", 0.62, 0.1, -0.18, 0.13, 1.5, 4) + pumpkin_js("d", -0.3, 0.47, 0.02, 0.13) + """
+  const gourd = (length3(x - 0.2, (y - 0.09) * 1.0, (z + 0.32) * 0.7) - 0.09 + noise3(x * 30, y * 30, z * 30) * 0.02) * 0.6;
+  return min(min(min(a, as), min(b, bs)), min(min(min(c, cs), min(d, ds)), gourd));""",
+  pumpkin_col("d", -0.3, 0.47, 0.02, 0.13, base="rgb(236, 140, 36)") + pumpkin_col("a", -0.38, 0.2, 0, 0.27) + pumpkin_col("b", 0.18, 0.15, 0.12, 0.2, base="rgb(214, 96, 22)") + pumpkin_col("c", 0.62, 0.1, -0.18, 0.13, 1.5, 4, base="rgb(240, 236, 220)") + """
+  if (z < -0.2) return mix(rgb(70, 110, 50), rgb(200, 190, 90), step(0.6, noise3(x * 25, y * 25, z * 25)));
+  return rgb(222, 108, 24);""")
 t("picket-fence", "A length of white picket fence, 2 m, round a cottage garden.",
   "picket fence", (1.05, 1.0, 0.08), '["prop", "fence"]', "{ mass: 40, burns: 0.6 }",
   """  const px = x - 0.16 * floor(x / 0.16 + 0.5);
@@ -604,20 +589,6 @@ t("smithy", "The smithy: an open-fronted shed of dark boards under a slate-grey 
   ['{ kind: "light", at: [1.6, 1.0, 2.1] }'])
 
 # ------------------------------------------------------------- the beach
-t("seashells", "A scatter of seashells on the sand: blue mussel shells, ribbed white and\npink scallops, a whelk, a moon snail, washed up along the tide line.",
-  "seashells", (0.6, 0.06, 0.6), '["prop", "shell", "nonsolid"]', "{ mass: 0.3, fragile: 0.5 }",
-  """  let d = 10.0;
-  for (let i = 0; i < 6; i++) {
-    const a = i * 2.39996 + hash(k.seed, i) * 1.3;
-    const r = 0.1 + hash(k.seed, i, 2) * 0.45;
-    d = min(d, ellipsoid(x - cos(a) * r, y - 0.01, z - sin(a) * r, 0.045, 0.02, 0.035));
-  }
-  return d;""",
-  """  const i = floor(hash(floor(x * 6.0), floor(z * 6.0), k.seed) * 4.0);
-  if (i < 1) return rgb(40, 50, 80);
-  if (i < 2) return fract(atan2(z, x) * 6.0) < 0.5 ? rgb(244, 230, 220) : rgb(226, 176, 170);
-  if (i < 3) return rgb(230, 214, 190);
-  return rgb(246, 244, 238);""")
 item("beach-ball", "beach ball", "A big beach ball striped red, yellow, blue and white, light and bouncy.", (0.25, 0.5, 0.25), "{ mass: 0.15, toy: 1, bounce: 0.85 }",
      """  return sphere(x, y - 0.24, z, 0.24);""",
      """  const a = atan2(z, x);
@@ -708,13 +679,6 @@ t("scarecrow", "A scarecrow on a pole over the hay: a straw-stuffed plaid shirt 
   if (y > 1.33) return step(0.5, fract(x * 6.0)) + step(0.5, fract(y * 6.0)) == 1 ? rgb(170, 40, 34) : rgb(60, 70, 120);
   if (y > 0.88) return rgb(70, 96, 140);
   return rgb(120, 100, 70);""")
-t("tree-stump", "An old stump left from a felled tree, its top sawn flat and grey, moss\nround its roots; a handy seat.",
-  "tree stump", (0.55, 0.55, 0.55), '["prop", "seat", "wood"]', "{ mass: 300, burns: 0.5 }",
-  """  return min(cappedCone(x, y - 0.25, z, 0.25, 0.48, 0.38), max(cylinder(x, y - 0.06, z, 0.55, 0.06), length2(x, z) - 0.52 + noise3(x * 6, 0, z * 6) * 0.2));""",
-  """  if (y > 0.48) return fract(length2(x, z) * 14.0) < 0.2 ? rgb(150, 130, 100) : rgb(186, 170, 140);
-  if (y < 0.14) return rgb(80, 110, 50);
-  return mix(rgb(70, 58, 46), rgb(98, 82, 64), noise3(x * 8, y * 8, z * 8));""",
-  ['{ kind: "seat", at: [0, 0.5, 0], face: 0 }'])
 t("fallen-leaves", "A drift of fallen leaves on the ground, red maple, gold birch and brown\noak, blown into a loose patch.",
   "fallen leaves", (1.7, 0.06, 1.7), '["prop", "leaves", "nonsolid"]', "{ mass: 1, burns: 0.95 }",
   """  const r = length2(x, z) - 1.0 - (noise3(x * 1.4, k.seed * 0.01, z * 1.4) - 0.5) * 1.2;
@@ -751,3 +715,235 @@ t("easel", "An artist's easel set up on the sand facing the cove, a half-finishe
   if (length2(x + 0.4, z - 0.5) < 0.09 && y < 0.17) return rgb(200, 220, 230);
   return {WOOD};""",
   ['{ kind: "seat", at: [0, 0.48, 0.8], face: 180 }'])
+
+
+# ------------------------------------------------------------- detail pass
+t("kitchen", "A cottage kitchen along a wall: cream-painted cupboards with brass knobs\nunder a butcher-block counter, a deep white sink, a black cast-iron stove\nwith a kettle and a pot of stew on it, a shelf of jars, crocks and blue\nplates above, copper pans hung under it. The cook stands at its front (+z).",
+  "kitchen", (1.25, 1.95, 0.32), '["furniture", "kitchen", "oven"]', "{ mass: 200, burns: 0.3, heat: 60 }",
+  """  const counter = box(x - 0.35, y - 0.45, z, 0.88, 0.45, 0.3);
+  const top = box(x - 0.35, y - 0.915, z + 0.01, 0.9, 0.035, 0.31);
+  const sink = box(x - 0.75, y - 0.86, z + 0.02, 0.26, 0.1, 0.2);
+  const stove = roundBox(x - 0.89, y - 0.42, z, 0.36, 0.42, 0.28, 0.03);
+  const flue = cylinder(x - 0.89, y - 1.5, z + 0.18, 0.05, 0.65);
+  const kettle = min(ellipsoid(x - 0.78, y - 0.95, z - 0.02, 0.09, 0.07, 0.09), capsule(x, y, z, 0.86, 0.94, -0.02, 0.95, 1.0, -0.02, 0.012));
+  const pot = cylinder(x - 1.02, y - 0.94, z + 0.05, 0.1, 0.09);
+  const knobs = max(sphere(x - 0.3 * floor(x / 0.3 + 0.5) - 0.1, y - 0.62, z - 0.31, 0.018), x - 0.5);
+  const shelf = box(x - 0.2, y - 1.55, z + 0.14, 0.95, 0.02, 0.14);
+  const jars = max(cylinder(x - 0.22 * floor(x / 0.22 + 0.5), y - 1.65, z + 0.13, 0.055 + 0.02 * hash(floor(x / 0.22 + 0.5)), 0.08), abs(x + 0.2) - 0.9);
+  const pans = max(cylinder(x - 0.3 * floor(x / 0.3 + 0.5), y - 1.3, z + 0.27, 0.09, 0.012), abs(x + 0.3) - 0.5);
+  return min(min(min(max(min(counter, top), -sink), stove), min(flue, min(kettle, pot))), min(min(knobs, shelf), min(jars, pans)));""",
+  """  if (x > 0.5 && y < 1.05 && y > 0.86) return abs(x - 1.02) < 0.11 && y > 0.98 ? rgb(130, 70, 40) : rgb(50, 50, 54);
+  if (x > 0.5 && y < 0.86) return abs(y - 0.42) < 0.2 && z > 0.27 && abs(x - 0.89) < 0.22 ? glow(rgb(255, 120, 40), 0.4) : rgb(36, 36, 40);
+  if (abs(x - 0.89) < 0.06 && y > 0.86) return rgb(40, 40, 44);
+  if (y > 1.55) return hsv(fract(floor(x / 0.22 + 0.5) * 0.31), 0.45, 0.75);
+  if (y > 1.52) return rgb(130, 90, 56);
+  if (y > 1.2 && y < 1.4) return rgb(196, 110, 60);
+  if (y > 0.88 && y < 0.96 && abs(x + 0.75) < 0.27 && abs(z) < 0.22) return rgb(236, 238, 240);
+  if (y > 0.88 && y < 0.96) return mix(rgb(176, 130, 84), rgb(200, 156, 104), noise3(x * 3, y * 30, z * 30));
+  if (abs(y - 0.62) < 0.03 && z > 0.29) return rgb(200, 170, 70);
+  if (z > 0.28 && (fract((x + 0.35) / 0.44) < 0.04 || abs(y - 0.7) < 0.015)) return rgb(200, 190, 166);
+  return rgb(236, 226, 196);""",
+  ['{ kind: "light", at: [0, 1.8, 0.2] }'])
+
+t("beer-barrels", "Three oak barrels on their sides on a rack, iron hoops round them and a\nbrass spigot in each head, chalked AMBER, STOUT and CIDER: the tavern's\nale, its dark stout and the autumn cider.",
+  "beer barrels", (1.3, 1.2, 0.52), '["furniture", "prop"]', "{ mass: 300, burns: 0.5, fuel: 0.4 }",
+  """  const bx = x - 0.85 * floor(x / 0.85 + 0.5);
+  const bulge = 0.38 + 0.05 * (1.0 - (z / 0.45) * (z / 0.45));
+  const barrels = max(max(length2(bx, y - 0.62) - bulge, abs(z) - 0.45), abs(x) - 1.25);
+  const heads = max(max(length2(bx, y - 0.62) - 0.34, abs(z - 0.43) - 0.02), abs(x) - 1.25);
+  const spigots = max(min(capsule(bx, y, z, 0, 0.5, 0.44, 0, 0.5, 0.56, 0.025), capsule(bx, y, z, 0, 0.5, 0.56, 0, 0.44, 0.58, 0.02)), abs(x) - 1.25);
+  const rack = min(box(x, y - 0.1, abs(z) - 0.3, 1.25, 0.1, 0.06), box(abs(x - 0.85 * floor(x / 0.85 + 0.5)) - 0.3, y - 0.2, z, 0.06, 0.06, 0.4));
+  return min(min(barrels, heads), min(spigots, rack));""",
+  f"""  const bx = x - 0.85 * floor(x / 0.85 + 0.5);
+  const r = length2(bx, y - 0.62);
+  if (z > 0.43 && r < 0.35) {{
+    if (abs(y - 0.5) < 0.04 && abs(bx) < 0.04) return rgb(200, 160, 60);
+    if (abs(y - 0.72) < 0.05 && abs(bx) < 0.2) return rgb(236, 232, 220);
+    return (fract(bx * 9.0) < 0.08 ? 0.7 : 1.0) * mix(rgb(150, 108, 66), rgb(176, 130, 80), noise3(bx * 8, y * 8, 1.0));
+  }}
+  if (z > 0.44 && y < 0.6) return rgb(200, 160, 60);
+  if (abs(abs(z) - 0.12) < 0.03 || abs(abs(z) - 0.38) < 0.025) return rgb(60, 60, 62);
+  return (fract(atan2(y - 0.62, bx) * 3.2) < 0.06 ? 0.75 : 1.0) * {WOOD};""")
+
+item("book", "book", "A cloth-bound book of stories, its corners worn, gold letters on its spine\nand a red ribbon marking the page.", (0.12, 0.035, 0.09), "{ mass: 0.5, burns: 0.9 }",
+     """  const cover = max(box(x, y - 0.0275, z, 0.11, 0.0275, 0.085), -box(x + 0.012, y - 0.0275, z, 0.1, 0.02, 0.08));
+  const pages = box(x + 0.006, y - 0.0275, z, 0.1, 0.019, 0.078);
+  const spine = capsule(x, y, z, -0.108, 0.0275, -0.085, -0.108, 0.0275, 0.085, 0.026);
+  const ribbon = box(x - 0.04, y - 0.01, z - 0.09, 0.006, 0.01, 0.012);
+  return min(min(cover, pages), min(max(spine, x + 0.098), ribbon));""",
+     """  if (abs(x - 0.04 + 0.08) < 0.008 && z > 0.07) return rgb(180, 30, 30);
+  if (x > -0.1 && abs(y - 0.0275) < 0.019 && (abs(z) > 0.076 || x > 0.1)) return fract(y * 300.0) < 0.5 ? rgb(236, 228, 206) : rgb(214, 204, 180);
+  if (x < -0.09 && abs(abs(z) - 0.04) < 0.008) return rgb(210, 176, 80);
+  return hsv(hash(k.seed), 0.55, 0.42) * (0.9 + 0.1 * noise3(x * 50, y * 50, z * 50));""")
+
+item("bunch-of-flowers", "bunch of flowers", "A bunch of garden flowers wrapped in brown paper and tied with string: rust\nand gold mums, purple asters, a few sprigs of goldenrod.", (0.12, 0.32, 0.12), "{ mass: 0.3, alive: 1, burns: 0.6 }",
+     """  const paper = max(max(cappedCone(x, y - 0.11, z, 0.11, 0.025, 0.08), -cappedCone(x, y - 0.13, z, 0.1, 0.015, 0.07)), y - 0.22);
+  let d = paper;
+  for (let i = 0; i < 7; i++) {
+    const a = i * 2.39996;
+    const r = 0.015 + (i % 3) * 0.025;
+    const hx = cos(a) * r;
+    const hz = sin(a) * r;
+    const hy = 0.24 + hash(i, 2) * 0.05;
+    d = min(d, capsule(x, y, z, 0, 0.04, 0, hx, hy, hz, 0.005));
+    d = min(d, ellipsoid(x - hx, y - hy, z - hz, 0.032, 0.022, 0.032));
+  }
+  return d;""",
+     """  if (y < 0.215) return abs(y - 0.12) < 0.006 ? rgb(230, 220, 200) : mix(rgb(176, 140, 96), rgb(196, 160, 112), noise3(x * 40, y * 40, z * 40));
+  const a = atan2(z, x);
+  const i = floor(fract(a / 6.2832 * 2.0 + y * 3.0) * 4.0);
+  if (y < 0.235 && length2(x, z) < 0.05) return rgb(70, 110, 50);
+  const petal = 0.85 + 0.15 * step(0.5, fract(atan2(z, x) * 4.0));
+  if (i < 1) return rgb(196, 90, 30) * petal;
+  if (i < 2) return rgb(236, 180, 40) * petal;
+  if (i < 3) return rgb(140, 80, 190) * petal;
+  return rgb(170, 40, 50) * petal;""")
+
+t("fish-counter", "The fish counter in the fish shed: a sloping bed of crushed ice on a stand\nof weathered boards, laid with rows of silver mackerel and cod, two red\nlobsters and a heap of clams at one end, a slate with the day's prices.",
+  "fish counter", (1.15, 1.25, 0.45), '["furniture", "counter", "shop"]', "{ mass: 140, wet: 0.5 }",
+  """  const stand = box(x, y - 0.4, z, 1.1, 0.4, 0.4);
+  const tray = max(box(x, y - 0.84, z, 1.12, 0.06, 0.42), -box(x, y - 0.9, z, 1.06, 0.06, 0.36));
+  const ice = box(x, y - 0.83, z, 1.06, 0.04, 0.36) + (noise3(x * 30, y * 30, z * 30) - 0.5) * 0.01;
+""" + fish_rows(0.14, 0.32, 0.9) + """
+  const fishes = max(fish, max(max(x - 0.55, -x - 1.0), abs(z) - 0.34));
+  const lob = ellipsoid(x - 0.68, y - 0.9, abs(z) - 0.16, 0.06, 0.04, 0.14);
+  const clams = max(ellipsoid(x - 0.95, y - 0.88, z, 0.12, 0.06, 0.3) + (noise3(x * 30, y * 30, z * 30) - 0.5) * 0.03, -y + 0.86);
+  const slate = box(x + 0.9, y - 1.05, z + 0.38, 0.18, 0.13, 0.01);
+  return min(min(min(stand, tray), min(ice, fishes)), min(min(lob, clams), slate));""",
+  fish_col(0.14, 0.32, 0.9) + """
+  if (abs(x + 0.9) < 0.18 && y > 0.92) return abs(y - 1.05) < 0.08 && fract(x * 30.0) < 0.5 && fract(y * 40.0) < 0.4 ? rgb(230, 230, 220) : rgb(50, 54, 58);
+  if (abs(x - 0.68) < 0.09 && y > 0.86) return rgb(200, 50, 36);
+  if (x > 0.83 && y > 0.86) return noise3(x * 40, y * 40, z * 40) > 0.5 ? rgb(170, 160, 150) : rgb(110, 104, 100);
+  if (y > 0.8 && abs(x) < 1.07 && abs(z) < 0.37) return mix(rgb(220, 232, 236), rgb(250, 252, 252), noise3(x * 40, y * 40, z * 40));
+  if (y > 0.78) return rgb(120, 116, 110);
+  return (fract(x * 4.0) < 0.05 ? 0.75 : 1.0) * mix(rgb(140, 132, 120), rgb(168, 160, 146), noise3(x * 3, y * 20, z * 3));""")
+
+t("fish-crates", "A stack of wooden fish crates on the landing, slatted and weathered, the\nboat's name stencilled on their ends, the top one full of silver fish on ice.",
+  "fish crates", (0.75, 0.9, 0.52), '["prop"]', "{ mass: 40, burns: 0.6 }",
+  """  const s = hash(k.seed) * 0.2;
+  const a = max(box(x + 0.36, y - 0.15, z, 0.34, 0.15, 0.24), -box(x + 0.36, y - 0.2, z, 0.31, 0.12, 0.21));
+  const b = max(box(x + 0.34, y - 0.45, z + 0.03, 0.34, 0.15, 0.24), -box(x + 0.34, y - 0.5, z + 0.03, 0.31, 0.12, 0.21));
+  const c = max(box(x - 0.36, y - 0.15, z - 0.06 + s, 0.34, 0.15, 0.24), -box(x - 0.36, y - 0.2, z - 0.06 + s, 0.31, 0.12, 0.21));
+  const ice = box(x + 0.34, y - 0.52, z + 0.03, 0.31, 0.04, 0.21);
+  const iceb = box(x + 0.36, y - 0.22, z, 0.31, 0.04, 0.21);
+""" + fish_rows(0.1, 0.4, 0.58, 0.07, 0.09) + """
+  const fishes = max(fish, box(x + 0.34, y - 0.58, z + 0.03, 0.3, 0.06, 0.2));
+  return min(min(min(a, b), min(c, ice)), min(iceb, fishes));""",
+  fish_col(0.1, 0.4, 0.58, 0.07, 0.09) + """
+  if (y > 0.47 && y < 0.57 && x > 0.02 && abs(z - 0.03) < 0.215) return mix(rgb(220, 232, 236), rgb(250, 252, 252), noise3(x * 40, y * 40, z * 40));
+  if (abs(z) > 0.23 && abs(y - 0.15 - 0.3 * floor(y / 0.3)) < 0.04 && fract(x * 12.0) < 0.6) return rgb(60, 70, 100);
+  if (fract(y / 0.3 * 3.0) < 0.12) return rgb(90, 70, 50);
+  return mix(rgb(150, 132, 104), rgb(180, 160, 128), noise3(x * 6, y * 20, z * 6));""")
+
+item("fiddle", "fiddle", "A well-worn fiddle of honey-coloured maple: a waisted body with two f-holes,\na dark fingerboard and four strings over its bridge, a scroll at the head,\nits bow beside it. For the dances at the tavern.", (0.13, 0.07, 0.34), "{ mass: 0.5, fragile: 0.6, burns: 0.8 }",
+     """  const lower = ellipsoid(x, y - 0.035, z + 0.1, 0.105, 0.032, 0.095);
+  const upper = ellipsoid(x, y - 0.035, z - 0.05, 0.085, 0.032, 0.08);
+  const waist = ellipsoid(abs(x) - 0.105, y - 0.035, z - 0.025, 0.035, 0.05, 0.04);
+  const body = smoothSubtract(smoothUnion(lower, upper, 0.03), waist, 0.01);
+  const neck = box(x, y - 0.055, z + 0.19, 0.016, 0.012, 0.08);
+  const scroll = max(abs(length2(x, z + 0.3) - 0.018) - 0.008, abs(y - 0.06) - 0.015);
+  const pegs = box(x, y - 0.06, z + 0.265, 0.03, 0.006, 0.006);
+  const bridge = box(x, y - 0.075, z - 0.06 + 0.08, 0.04, 0.008, 0.004);
+  const bow = capsule(x, y, z, 0.12, 0.012, -0.32, 0.12, 0.012, 0.3, 0.006);
+  return min(min(min(body, neck), min(scroll, pegs)), min(bridge, bow));""",
+     """  if (x > 0.108) return abs(z) > 0.28 ? rgb(40, 30, 26) : rgb(236, 230, 210);
+  if (z < -0.11 || (y > 0.064 && abs(x) < 0.018 && z < 0.07)) return z < -0.26 ? rgb(150, 70, 30) : rgb(30, 26, 24);
+  if (y > 0.06 && abs(x) < 0.02 && abs(fract(x * 80.0) - 0.5) < 0.12) return rgb(220, 220, 210);
+  if (y > 0.06 && abs(abs(x) - 0.045) < 0.006 && abs(z - 0.03) < 0.035) return rgb(30, 20, 16);
+  if (abs(z - 0.02) < 0.006 && y > 0.065) return rgb(236, 214, 170);
+  return mix(rgb(150, 70, 26), rgb(206, 120, 44), clamp(1.0 - length2(x * 1.4, z - 0.03) * 6.0, 0, 1)) * (0.92 + 0.08 * noise3(x * 30, y * 30, z * 8));""", tags='["item", "instrument"]')
+
+t("hay-bale", "A round bale of golden hay, its straw wound round and round in a tight\nspiral, loose wisps at its edges and bound with twine; a pumpkin or two\nset against it.",
+  "hay bale", (0.75, 1.2, 0.88), '["prop"]', "{ mass: 250, burns: 0.95, fuel: 0.5 }",
+  """  // The bale lies on its side, its round faces to ±z.
+  const body = max(length2(x, y - 0.6) - 0.6, abs(z) - 0.55) + noise3(x * 9, y * 9, z * 9) * 0.035;
+""" + pumpkin_js("p", 0.32, 0.17, 0.72 - 0.05, 0.18) + """
+  return min(body * 0.85, min(p, ps));""",
+  pumpkin_col("p", 0.32, 0.17, 0.67, 0.18) + """
+  const r = length2(x, y - 0.6);
+  if (abs(z) > 0.53) return (fract(r * 22.0 + atan2(y - 0.6, x) * 0.16) < 0.35 ? 0.78 : 1.0) * mix(rgb(196, 160, 80), rgb(228, 198, 116), noise3(x * 20, y * 20, z * 20));
+  if (abs(abs(z) - 0.25) < 0.015) return rgb(170, 140, 90);
+  return (fract(atan2(y - 0.6, x) * 9.0 + noise3(x * 4, y * 4, z * 30) * 0.5) < 0.3 ? 0.82 : 1.0) * mix(rgb(196, 160, 80), rgb(226, 194, 112), noise3(x * 30, y * 6, z * 30));""")
+
+t("tree-stump", "An old stump left from a felled maple, its top sawn flat, grey and ringed\nwith the years, its bark rough, roots spreading into the ground with moss\nbetween them; a handy seat.",
+  "tree stump", (0.6, 0.55, 0.6), '["prop", "seat", "wood"]', "{ mass: 300, burns: 0.5 }",
+  """  const a = atan2(z, x);
+  const rough = 0.3 + 0.02 * sin(a * 9.0) + noise3(x * 8, y * 4, z * 8) * 0.03;
+  const trunk = max(length2(x, z) - rough - max(0.12 - y, 0.0) * 0.8, max(y - 0.5 + noise3(x * 5, 0, z * 5) * 0.02, -y));
+  let roots = 10.0;
+  for (let i = 0; i < 5; i++) {
+    const ra = i * 1.2566 + 0.3;
+    roots = min(roots, capsule(x, y, z, cos(ra) * 0.2, 0.12, sin(ra) * 0.2, cos(ra) * 0.55, -0.02, sin(ra) * 0.55, 0.06));
+  }
+  return min(trunk * 0.8, roots);""",
+  """  if (y > 0.47) return (fract(length2(x, z) * 28.0 + noise3(x * 6, 0, z * 6) * 0.4) < 0.25 ? rgb(140, 120, 92) : rgb(190, 172, 140)) * (length2(x, z) > 0.28 ? 0.6 : 1.0);
+  if (y < 0.05 && noise3(x * 10, y * 10, z * 10) > 0.62) return mix(rgb(70, 100, 46), rgb(100, 130, 60), noise3(x * 30, y * 30, z * 30));
+  return (fract(atan2(z, x) * 4.0 + noise3(x * 3, y * 6, z * 3)) < 0.2 ? 0.7 : 1.0) * mix(rgb(70, 58, 46), rgb(100, 84, 66), noise3(x * 8, y * 8, z * 8));""",
+  ['{ kind: "seat", at: [0, 0.5, 0], face: 0 }'])
+
+t("seashells", "Seashells strewn on the sand: blue-black mussel shells, ribbed scallops\nin white, pink and apricot, a spiralled whelk, a round moon snail, a\nbleached sand dollar, washed up along the tide line.",
+  "seashells", (0.62, 0.07, 0.62), '["prop", "shell", "nonsolid"]', "{ mass: 0.3, fragile: 0.5 }",
+  """  let d = 10.0;
+  for (let i = 0; i < 6; i++) {
+    const a = i * 2.39996 + hash(k.seed, i) * 1.3;
+    const r = 0.08 + hash(k.seed, i, 2) * 0.48;
+    const q = rotY(x - cos(a) * r, y, z - sin(a) * r, a * 3.0);
+    const kind = i % 3;
+    let sh = 10.0;
+    if (kind == 0) sh = max(ellipsoid(q.x, q.y - 0.006, q.z, 0.05, 0.022, 0.048), max(-q.y, q.z * 0.6 - 0.03));
+    if (kind == 1) sh = ellipsoid(q.x, q.y - 0.008, q.z, 0.022, 0.014, 0.045);
+    if (kind == 2) sh = min(cappedCone(q.x, q.y - 0.018, q.z, 0.018, 0.024, 0.004), sphere(q.x, q.y - 0.012, q.z, 0.02));
+    d = min(d, sh);
+  }
+  return d;""",
+  """  const cell = floor(hash(floor(x * 5.0 + 50.0), floor(z * 5.0 + 50.0), k.seed) * 4.0);
+  const ribs = fract(atan2(z, x) * 5.0 + length2(x, z) * 30.0) < 0.3 ? 0.82 : 1.0;
+  if (y < 0.004) return rgb(214, 200, 166);
+  if (cell < 1) return mix(rgb(30, 34, 60), rgb(70, 90, 130), noise3(x * 60, y * 60, z * 60));
+  if (cell < 2) return rgb(244, 214, 200) * ribs;
+  if (cell < 3) return mix(rgb(236, 190, 140), rgb(250, 236, 220), fract(length2(x, z) * 60.0)) * ribs;
+  return rgb(244, 240, 228) * ribs;""")
+item("basket-of-fish", "basket of fish", "A woven basket of the morning's catch: silver mackerel and a cod or two\nlaid head to tail, a handful of seaweed over them.", (0.28, 0.24, 0.28), "{ mass: 6, edible: 0.7, wet: 0.6, burns: 0.4 }",
+     """  const basket = max(cappedCone(x, y - 0.1, z, 0.1, 0.2, 0.26), -cappedCone(x, y - 0.14, z, 0.1, 0.17, 0.23));
+  const rim = max(abs(length2(x, z) - 0.255) - 0.018, abs(y - 0.2) - 0.018);
+""" + fish_rows(0.07, 0.22, 0.18, 0.08, 0.1) + """
+  const fishes = max(fish, length2(x, z) - 0.22);
+  const weed = max(ellipsoid(x + 0.08, y - 0.2, z - 0.05, 0.08, 0.02, 0.06), -y + 0.18);
+  return min(min(basket, rim), min(fishes, weed));""",
+     fish_col(0.07, 0.22, 0.18, 0.08, 0.1) + """
+  if (y > 0.19 && length2(x + 0.08, z - 0.05) < 0.08) return rgb(60, 90, 40);
+  if (abs(length2(x, z) - 0.255) < 0.025 && y > 0.18) return rgb(120, 86, 50);
+  return (fract(y * 30.0) < 0.4 != fract(atan2(z, x) * 6.0) < 0.5) ? rgb(130, 96, 56) : rgb(176, 136, 80);""".replace("(fract(y * 30.0) < 0.4 != fract(atan2(z, x) * 6.0) < 0.5)", "step(0.4, fract(y * 30.0)) + step(0.5, fract(atan2(z, x) * 6.0)) == 1"), tags='["item", "food"]')
+item("fishing-net", "fishing net", "A fisherman's net bundled up for carrying: folds of green mesh with a line\nof orange cork floats along one edge and a coil of rope tied round it.", (0.42, 0.24, 0.32), "{ mass: 3, burns: 0.7 }",
+     """  const heap = (ellipsoid(x, y - 0.04, z, 0.38, 0.17, 0.28) + (noise3(x * 6, y * 6, z * 6) - 0.5) * 0.08) * 0.8;
+  const fx = x - 0.12 * floor(x / 0.12 + 0.5);
+  const floats = max(ellipsoid(fx, y - 0.14 + x * 0.1, z - 0.2 + abs(x) * 0.15, 0.04, 0.03, 0.03), abs(x) - 0.34);
+  const rope = max(abs(length2(x - 0.1, y - 0.04) - 0.15) - 0.014, abs(z) - 0.022);
+  return min(max(heap, -y), min(floats, max(rope, -y)));""",
+     """  if (abs(length2(x - 0.1, y - 0.04) - 0.15) < 0.02 && abs(z) < 0.03) return fract(atan2(y - 0.05, x - 0.1) * 6.0) < 0.5 ? rgb(196, 170, 120) : rgb(170, 146, 100);
+  if (abs(z - 0.2 + abs(x) * 0.15) < 0.04 && y > 0.1) return rgb(240, 130, 40);
+  const m = step(0.82, fract(x * 18.0 + z * 18.0)) + step(0.82, fract(x * 18.0 - z * 18.0));
+  return m > 0.0 ? rgb(90, 140, 100) : rgb(36, 70, 46) * (0.8 + 0.2 * noise3(x * 10, y * 10, z * 10));""", tags='["item", "tool"]')
+t("pots-of-mums", "Clay pots of autumn mums by a doorway or on porch steps, two or three\ntogether: domes thick with small flowers in rust, gold and wine red over\ndark green leaves.",
+  "pots of mums", (0.62, 0.66, 0.36), '["flower", "prop"]', "{ mass: 12, alive: 1, fragile: 0.5 }",
+  """  const px = x - 0.42 * floor(x / 0.42 + 0.5);
+  const pots = max(max(cappedCone(px, y - 0.15, z, 0.15, 0.1, 0.15), -cappedCone(px, y - 0.2, z, 0.12, 0.09, 0.13)), abs(x) - 0.58);
+  const rim = max(max(abs(length2(px, z) - 0.15) - 0.02, abs(y - 0.29) - 0.025), abs(x) - 0.6);
+  // The dome of blooms: small bumps, one flower to each cell.
+  const fx = px - 0.05 * floor(px / 0.05 + 0.5);
+  const fz = z - 0.05 * floor(z / 0.05 + 0.5);
+  const dome = ellipsoid(px, y - 0.36, z, 0.2, 0.16, 0.2);
+  const blooms = max(dome - 0.012 + length2(fx, fz) * 0.35, -dome - 0.04);
+  return min(min(pots, rim), max(min(dome, blooms), abs(x) - 0.6));""",
+  """  if (y < 0.31) return abs(y - 0.29) < 0.03 ? rgb(170, 84, 50) : mix(rgb(166, 82, 50), rgb(196, 104, 62), noise3(x * 8, y * 8, z * 8));
+  const px = x - 0.42 * floor(x / 0.42 + 0.5);
+  const fx = px - 0.05 * floor(px / 0.05 + 0.5);
+  const fz = z - 0.05 * floor(z / 0.05 + 0.5);
+  const pot = floor(x / 0.42 + 0.5 + k.seed);
+  let c = rgb(200, 90, 30);
+  if (fract(pot / 3.0) > 0.3) c = rgb(236, 176, 40);
+  if (fract(pot / 3.0) > 0.6) c = rgb(150, 30, 50);
+  if (y < 0.4 && length2(px, z) > 0.17) return rgb(46, 80, 40);
+  const r = length2(fx, fz);
+  if (r < 0.006) return c * 0.6;
+  return c * (0.75 + 0.25 * step(0.5, fract(atan2(fz, fx) * 1.9))) * (0.85 + 0.15 * (1.0 - r / 0.035));""")

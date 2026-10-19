@@ -178,6 +178,24 @@ def height_map():
     return nat
 
 
+def lineup(p, nat):
+    """Every small type in rows on a paved pad, to look them over (only with
+    LINEUP=1; never in the shipped world)."""
+    import re
+    small = []
+    for f in sorted(os.listdir(os.path.join(HERE, "types"))):
+        src = open(os.path.join(HERE, "types", f)).read()
+        m = re.search(r'name: "([^"]+)"', src)
+        b = re.search(r"bounds: \[([\d.]+), ([\d.]+), ([\d.]+)\]", src)
+        if m and b and max(float(v) for v in b.groups()) < 2.7 and '"body"' not in src and "sign" not in m.group(1):
+            small.append(m.group(1))
+    h = round(nat(60, 140), 2)
+    p.rect("lineup", 40, 126, 100, 172, "level", height=h, sides=3, color=(150, 150, 150))
+    for i, ty in enumerate(small):
+        p.put(ty, 44 + (i % 12) * 4.5, 131 + (i // 12) * 5.0, 270, y=h)
+    print("lineup", len(small), h)
+
+
 def lay_ground(p, nat, gnat):
     import village
     # The landing: a granite quay laid in setts along the water, the pier
@@ -393,6 +411,8 @@ def main():
     village.lay(p, nat, round(gnat["cape"], 2), round(gnat["cross"], 2))
     import beach
     beach.lay(p)
+    if os.environ.get("LINEUP"):
+        lineup(p, nat)
     hamlet.lay(p, clearing)
     people.lay(p, round(gnat["cape"], 2), clearing)
     regions = write_regions(p)
