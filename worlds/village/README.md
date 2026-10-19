@@ -21,13 +21,18 @@ That writes `worlds/village/village.pocket` (about 0.7 MB, 20 s).
 
 - `make.py`: the land (landforms, terraces, harbour, roads, the clearing),
   cutting everything into region plans, `world.json`.
-- `village.py`: Marinella's houses, church, piazza, stairs, balustrades,
-  lanterns, harbour things, walls, gate, watchtower, the cape lighthouse.
-- `hamlet.py`: Boscoverde's cabins, shrine oak, fire pit, kiln and the rest.
-- `people.py`: the 14 villagers, 8 woodcutters, their things, the animals.
+- `village.py`: the layout: every building (a business with its family's
+  home over it), stairs, balustrades, the church, piazza, harbour, walls.
+- `shells.py`: the shop-house and hotel types, with floors and stairs inside.
+- `interiors.py`: what is in each building, its trade's fittings downstairs
+  and the home upstairs.
+- `furniture.py`: furniture, shop fittings, goods, things to pick up and to
+  ride; `signs.py`: the lettered shop signs.
+- `people.py`, `newcomers.py`: the villagers, households, their things,
+  rides and animals; `hamlet.py`: Boscoverde.
 - `walls.py`, `glyphs.py`: the wall, gate (MARINELLA lettering) and tower.
 - `genesis.json`, `base/*.js`: palette, climate, biomes, landforms, species,
   and the scattered plants. `types/*.js`: every placed type, by slug.
 - `regions/`, `world.json`: written by `make.py`; don't edit by hand.
 
-World metres: +x east, +z north, the piazza at (0, 45), the bay to the south.
+World metres: +x east, +z north, the piazza fountain at (6, 18), the bay to the south.
