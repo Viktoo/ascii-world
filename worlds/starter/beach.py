@@ -30,7 +30,12 @@ def lay(p):
     put("beach ball", -71.0, -24.0)
     # Someone's easel down by the water, a painting of the sunset half done,
     # and a smooth rock beside it to sit on and look.
+    # Easel, painting, stool, palette and brushes: each its own thing.
     put("easel", -62.0, -25.5, 0)
+    p.put("half-finished painting", -62.0, -25.5 + 0.0915, 0, y=round(sand_h(-25.5), 2) + 0.74)
+    put("painter's stool", -62.0, -24.7, 180)
+    p.put("paint palette", -62.18, -24.74, 20, y=round(sand_h(-24.7), 2) + 0.485)
+    put("jar of brushes", -61.6, -25.0)
     put("granite boulder", -60.0, -27.6, 30)
     put("driftwood log", -64.5, -22.0, 100)
     # A fire ring of stones with driftwood logs round it, for evenings.

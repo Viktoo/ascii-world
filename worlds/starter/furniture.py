@@ -734,39 +734,53 @@ t("fallen-leaves", "A drift of fallen leaves on the ground, red maple, gold birc
   """  const g = hash(floor(x * 8.0), floor(z * 8.0), k.seed);
   if (g < 0.15) return rgb(110, 76, 40);
   return hsv(g * 0.13, 0.8, 0.5 + 0.3 * hash(floor(z * 8.0), floor(x * 8.0)));""")
-t("easel", "An artist's easel set up on the sand facing the cove, a half-finished\npainting on it: the sunset over the water, the sky and sun done in reds and\ngolds, the sea and the pier still bare pencil on white canvas. A folding\nstool before it with a palette of paint blobs and a jar of brushes. The\npainting faces +z, where the painter sits; beyond it, the view.",
-  "easel", (0.55, 1.75, 0.95), '["furniture", "art", "seat"]', "{ mass: 8, burns: 0.8 }",
+t("easel", "An artist's wooden easel, three legs splayed, a ledge across its front legs\nto stand a canvas on, a peg at the top to hold it. The canvas leans on its\nfront (+z), where the painter sits.",
+  "easel", (0.36, 1.75, 0.5), '["furniture", "art"]', "{ mass: 6, burns: 0.8 }",
   """  const legs = min(capsule(abs(x), y, z, 0.32, 0.0, 0.1, 0.05, 1.7, 0.0, 0.022), capsule(x, y, z, 0, 0.0, -0.45, 0, 1.6, -0.05, 0.02));
-  const ledge = box(x, y - 0.72, z - 0.1, 0.38, 0.02, 0.05);
-  // The canvas leans back with the front legs, just in front of them.
-  const canvas = box(x, y - 1.08, z - 0.135 + y * 0.0588, 0.36, 0.34, 0.012);
-  const stool = min(cylinder(x, y - 0.46, z - 0.8, 0.18, 0.025), box(abs(x) - 0.13, y - 0.22, abs(z - 0.8) - 0.0, 0.02, 0.22, 0.12));
-  const palette = cylinder(x - 0.18, y - 0.495, z - 0.76, 0.1, 0.008);
-  const jar = cappedCone(x + 0.4, y - 0.08, z - 0.5, 0.08, 0.05, 0.045);
-  const brushes = capsule(x, y, z, -0.4, 0.1, 0.5, -0.38, 0.32, 0.52, 0.006);
-  return min(min(min(legs, ledge), min(canvas, stool)), min(palette, min(jar, max(brushes, -1.0))));""",
-  f"""  // The painting: the upper part done (sky, sun, its path on the water),
-  // the lower still pencil lines on white.
-  if (abs(x) < 0.355 && abs(y - 1.08) < 0.335 && z - 0.135 + y * 0.0588 > 0.004) {{
-    const u = x / 0.355;
-    const v = (y - 1.08) / 0.335;
-    if (v > -0.1) {{
-      const sun = length2(u + 0.15, (v - 0.15) * 1.4);
-      if (sun < 0.16) return rgb(255, 236, 170);
-      return mix(rgb(250, 170, 80), rgb(200, 90, 110), clamp(v, 0, 1)) * (0.92 + 0.08 * noise3(x * 60, y * 60, 1.0));
-    }}
-    if (v > -0.3 && u < 0.2) return abs(u + 0.15) < 0.08 ? rgb(250, 200, 110) : rgb(60, 80, 120);
-    if (abs(v + 0.35) < 0.012 || (abs(v + 0.6) < 0.01 && u > 0.1) || (abs(u - 0.5) < 0.01 && v < -0.35)) return rgb(120, 120, 120);
-    return rgb(246, 244, 238);
-  }}
-  if (length2(x - 0.18, z - 0.76) < 0.1 && y > 0.49) return hsv(floor(atan2(z - 0.76, x - 0.18) * 1.6) * 0.17, 0.7, 0.9);
-  if (abs(z - 0.8) < 0.2 && y > 0.43 && y < 0.49) return rgb(60, 110, 90);
-  if (length2(x + 0.4, z - 0.5) < 0.09 && y < 0.17) return rgb(200, 220, 230);
+  const ledge = box(x, y - 0.72, z - 0.1, 0.36, 0.02, 0.05);
+  const peg = box(x, y - 1.46, z - 0.05, 0.08, 0.02, 0.04);
+  return min(min(legs, ledge), peg);""",
+  f"""  return {WOOD};""")
+t("half-finished-painting", "A half-finished painting on canvas of the sunset over the cove: the sky,\nthe sun and its path on the water done in reds and golds, the sea and the\npier still bare pencil lines on white. It leans back a little, as on an\neasel; its painted face is +z.",
+  "half-finished painting", (0.38, 0.7, 0.06), '["item", "art"]', "{ mass: 0.6, burns: 0.9, fragile: 0.3 }",
+  """  return box(x, y - 0.34, z + y * 0.0588, 0.36, 0.34, 0.012);""",
+  """  if (z + y * 0.0588 < 0.004) return mix(rgb(220, 210, 186), rgb(236, 228, 206), noise3(x * 30, y * 30, 1.0));
+  const u = x / 0.355;
+  const v = (y - 0.34) / 0.335;
+  if (abs(u) > 0.97 || abs(v) > 0.97) return rgb(150, 112, 70);
+  if (v > -0.1) {
+    const sun = length2(u + 0.15, (v - 0.15) * 1.4);
+    if (sun < 0.16) return rgb(255, 236, 170);
+    return mix(rgb(250, 170, 80), rgb(200, 90, 110), clamp(v, 0, 1)) * (0.92 + 0.08 * noise3(x * 60, y * 60, 1.0));
+  }
+  if (v > -0.3 && u < 0.2) return abs(u + 0.15) < 0.08 ? rgb(250, 200, 110) : rgb(60, 80, 120);
+  if (abs(v + 0.35) < 0.012 || (abs(v + 0.6) < 0.01 && u > 0.1) || (abs(u - 0.5) < 0.01 && v < -0.35)) return rgb(120, 120, 120);
+  return rgb(246, 244, 238);""")
+t("painter-s-stool", "A folding wooden stool with a round green-painted seat, for sitting at the\neasel.",
+  "painter's stool", (0.2, 0.5, 0.2), '["furniture", "seat"]', "{ mass: 3, burns: 0.8 }",
+  """  return min(cylinder(x, y - 0.46, z, 0.18, 0.025), box(abs(x) - 0.13, y - 0.22, z, 0.02, 0.22, 0.12));""",
+  f"""  if (y > 0.43) return rgb(60, 110, 90);
   return {WOOD};""",
-  ['{ kind: "seat", at: [0, 0.48, 0.8], face: 180 }'])
+  ['{ kind: "seat", at: [0, 0.48, 0], face: 0 }'])
+item("paint-palette", "paint palette", "A wooden painter's palette with a thumb hole, dabbed with blobs of oil paint:\ncrimson, cadmium orange, gold, cobalt, white, and a muddle where they mixed.", (0.13, 0.03, 0.1), "{ mass: 0.3, burns: 0.8 }",
+     """  const board = max(max(cylinder(x, y - 0.006, z, 0.12, 0.006), -cylinder(x + 0.07, y - 0.006, z - 0.03, 0.018, 0.01)), -cylinder(x + 0.12, y - 0.006, z + 0.06, 0.05, 0.01));
+  const ax = atan2(z, x);
+  const blobs = max(sphere(x - cos(floor(ax * 1.6 + 0.5) / 1.6) * 0.085, y - 0.012, z - sin(floor(ax * 1.6 + 0.5) / 1.6) * 0.085, 0.017), y - 0.025);
+  return min(board, blobs);""",
+     """  if (y > 0.0135) return hsv(fract(floor(atan2(z, x) * 1.6 + 0.5) * 0.17), 0.75, 0.9);
+  if (length2(x - 0.02, z) < 0.04) return mix(rgb(150, 100, 90), rgb(120, 110, 100), noise3(x * 60, 1.0, z * 60));
+  return mix(rgb(176, 130, 84), rgb(200, 156, 104), noise3(x * 30, 1.0, z * 8));""", tags='["item", "art", "tool"]')
+item("jar-of-brushes", "jar of brushes", "A glass jar of cloudy water with paintbrushes standing in it.", (0.06, 0.26, 0.06), "{ mass: 0.5, fragile: 0.7, wet: 0.5 }",
+     """  const jar = cappedCone(x, y - 0.06, z, 0.06, 0.045, 0.04);
+  let brushes = 10.0;
+  for (let i = 0; i < 3; i++) {
+    const a = i * 2.1;
+    brushes = min(brushes, capsule(x, y, z, cos(a) * 0.01, 0.02, sin(a) * 0.01, cos(a) * 0.035, 0.24, sin(a) * 0.035, 0.005));
+  }
+  return min(jar, brushes);""",
+     """  if (y > 0.12) return y > 0.21 ? rgb(40, 30, 26) : rgb(170, 60, 40);
+  return y > 0.09 ? rgb(200, 220, 230) : rgb(150, 160, 170);""", tags='["item", "art"]')
 
-
-# ------------------------------------------------------------- detail pass
 t("kitchen", "A cottage kitchen along a wall: cream-painted cupboards with brass knobs\nunder a butcher-block counter, a deep white sink, a black cast-iron stove\nwith a kettle and a pot of stew on it, a shelf of jars, crocks and blue\nplates above, copper pans hung under it. The cook stands at its front (+z).",
   "kitchen", (1.25, 1.95, 0.32), '["furniture", "kitchen", "oven"]', "{ mass: 200, burns: 0.3, heat: 60 }",
   """  const counter = box(x - 0.35, y - 0.45, z, 0.88, 0.45, 0.3);
