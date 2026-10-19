@@ -658,3 +658,67 @@ t("driftwood-log", "A long driftwood log, bleached silver-grey by the sea and sm
   return min(log, knot);""",
   """  return mix(rgb(170, 164, 152), rgb(206, 200, 188), noise3(x * 3, y * 20, z * 20));""",
   ['{ kind: "seat", at: [-0.8, 0.44, 0], face: 0 }', '{ kind: "seat", at: [0, 0.44, 0], face: 0 }', '{ kind: "seat", at: [0.8, 0.44, 0], face: 0 }'])
+t("quay-ladder", "A wooden ladder fixed to the granite face of the landing, its rungs green\nwith weed below the tide line, its rails rising over the edge for a hand\nto hold: the way up out of the water. It faces +z, out to sea.",
+  "quay ladder", (0.32, 4.0, 0.12), '["ladder", "prop"]', "{ mass: 40, burns: 0.5 }",
+  """  const rails = box(abs(x) - 0.25, y - 1.95, z, 0.04, 1.95, 0.04);
+  const ry = y - 0.3 * floor(y / 0.3) - 0.15;
+  const rungs = max(max(box(x, ry, z, 0.25, 0.022, 0.025), y - 3.0), 0.05 - y);
+  return min(rails, rungs);""",
+  """  if (y < 1.3) return mix(rgb(54, 76, 44), rgb(80, 96, 56), noise3(x * 8, y * 8, z * 8));
+  return mix(rgb(120, 100, 76), rgb(146, 124, 96), noise3(x * 8, y * 20, z * 8));""",
+  ['{ kind: "stairs", at: [0, 0, 0.5], to: [0, 3.0, -0.5], face: 180 }'])
+
+# ------------------------------------------------------------- autumn
+t("leaf-pile", "A heap of raked-up autumn leaves, red, orange, gold and brown, the kind\nchildren jump into; a rake leaning on it.",
+  "leaf pile", (1.3, 0.75, 1.2), '["prop", "leaves", "nonsolid"]', "{ mass: 15, burns: 0.95, fuel: 0.3 }",
+  """  const heap = ellipsoid(x, y - 0.05, z, 1.2, 0.6, 1.05) + (noise3(x * 3, y * 3, z * 3) - 0.5) * 0.25;
+  const rake = capsule(x, y, z, 1.0, 0.0, 0.4, 0.55, 1.35, 0.1, 0.02);
+  return min(max(heap * 0.8, -y), max(rake, y - 0.74));""",
+  """  if (length2(x - 0.8, z - 0.3) < 0.35 && y > 0.3) return rgb(150, 110, 70);
+  const g = hash(floor(x * 9.0), floor(y * 9.0) * 13 + floor(z * 9.0));
+  return hsv(0.0 + g * 0.12, 0.8, 0.45 + 0.35 * noise3(x * 12, y * 12, z * 12));""")
+t("harvest-table", "A long trestle table for the harvest supper on the green, laid with a\nwhite cloth, pumpkins and gourds down its middle, apple pies, jugs of\ncider and loaves of bread, benches along both sides. Long along x.",
+  "harvest table", (2.6, 1.0, 0.95), '["furniture", "table"]', "{ mass: 120, burns: 0.6 }",
+  """  const top = box(x, y - 0.76, z, 2.5, 0.03, 0.45);
+  const legs = box(abs(x) - 2.2, y - 0.38, z, 0.06, 0.38, 0.38);
+  const benches = box(x, y - 0.44, abs(z) - 0.75, 2.4, 0.03, 0.15);
+  const blegs = box(abs(x) - 2.1, y - 0.22, abs(z) - 0.75, 0.05, 0.22, 0.12);
+  const px = x - 1.1 * floor(x / 1.1 + 0.5);
+  const pumpkins = max(length3(px, (y - 0.88) * 1.3, z) - 0.11, abs(x) - 2.3);
+  const pies = max(cylinder(px - 0.45, y - 0.8, z - 0.24, 0.13, 0.02), abs(x) - 2.3);
+  const jugs = max(cappedCone(px + 0.45, y - 0.88, z + 0.22, 0.09, 0.06, 0.04), abs(x) - 2.3);
+  return min(min(min(top, legs), min(benches, blegs)), min(pumpkins, min(pies, jugs)));""",
+  f"""  if (y > 0.79 && length2(x - 1.1 * floor(x / 1.1 + 0.5), z) < 0.13) return rgb(222, 110, 24);
+  if (y > 0.79 && z > 0.1) return rgb(200, 140, 70);
+  if (y > 0.79 && z < -0.1) return rgb(196, 150, 90);
+  if (abs(y - 0.76) < 0.035 && abs(z) < 0.46) return rgb(246, 244, 236);
+  return {WOOD};""",
+  ['{ kind: "seat", at: [-1.6, 0.46, 0.75], face: 180 }', '{ kind: "seat", at: [0, 0.46, 0.75], face: 180 }', '{ kind: "seat", at: [1.6, 0.46, 0.75], face: 180 }',
+   '{ kind: "seat", at: [-1.6, 0.46, -0.75], face: 0 }', '{ kind: "seat", at: [0, 0.46, -0.75], face: 0 }', '{ kind: "seat", at: [1.6, 0.46, -0.75], face: 0 }'])
+t("scarecrow", "A scarecrow on a pole over the hay: a straw-stuffed plaid shirt and patched\noveralls, a burlap face with a stitched smile, a battered straw hat.",
+  "scarecrow", (0.8, 2.1, 0.25), '["prop", "decoration"]', "{ mass: 10, burns: 0.95 }",
+  """  const pole = box(x, y - 0.9, z, 0.04, 0.9, 0.04);
+  const arms = capsule(x, y, z, -0.7, 1.45, 0, 0.7, 1.45, 0, 0.07);
+  const body = roundBox(x, y - 1.2, z, 0.22, 0.32, 0.12, 0.08);
+  const head = sphere(x, y - 1.7, z, 0.15);
+  const hat = min(cylinder(x, y - 1.82, z, 0.3, 0.015), cylinder(x, y - 1.9, z, 0.14, 0.08));
+  return min(min(pole, arms), min(min(body, head), hat));""",
+  """  if (y > 1.8) return rgb(214, 186, 110);
+  if (y > 1.55) return abs(y - 1.66) < 0.012 && z > 0.12 ? rgb(60, 40, 30) : rgb(196, 170, 120);
+  if (y > 1.33) return step(0.5, fract(x * 6.0)) + step(0.5, fract(y * 6.0)) == 1 ? rgb(170, 40, 34) : rgb(60, 70, 120);
+  if (y > 0.88) return rgb(70, 96, 140);
+  return rgb(120, 100, 70);""")
+t("tree-stump", "An old stump left from a felled tree, its top sawn flat and grey, moss\nround its roots; a handy seat.",
+  "tree stump", (0.55, 0.55, 0.55), '["prop", "seat", "wood"]', "{ mass: 300, burns: 0.5 }",
+  """  return min(cappedCone(x, y - 0.25, z, 0.25, 0.48, 0.38), max(cylinder(x, y - 0.06, z, 0.55, 0.06), length2(x, z) - 0.52 + noise3(x * 6, 0, z * 6) * 0.2));""",
+  """  if (y > 0.48) return fract(length2(x, z) * 14.0) < 0.2 ? rgb(150, 130, 100) : rgb(186, 170, 140);
+  if (y < 0.14) return rgb(80, 110, 50);
+  return mix(rgb(70, 58, 46), rgb(98, 82, 64), noise3(x * 8, y * 8, z * 8));""",
+  ['{ kind: "seat", at: [0, 0.5, 0], face: 0 }'])
+t("fallen-leaves", "A drift of fallen leaves on the ground, red maple, gold birch and brown\noak, blown into a loose patch.",
+  "fallen leaves", (1.7, 0.06, 1.7), '["prop", "leaves", "nonsolid"]', "{ mass: 1, burns: 0.95 }",
+  """  const r = length2(x, z) - 1.0 - (noise3(x * 1.4, k.seed * 0.01, z * 1.4) - 0.5) * 1.2;
+  return max(box(x, y - 0.015, z, 1.65, 0.015, 1.65), r);""",
+  """  const g = hash(floor(x * 8.0), floor(z * 8.0), k.seed);
+  if (g < 0.15) return rgb(110, 76, 40);
+  return hsv(g * 0.13, 0.8, 0.5 + 0.3 * hash(floor(z * 8.0), floor(x * 8.0)));""")

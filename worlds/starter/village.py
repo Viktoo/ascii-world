@@ -8,7 +8,7 @@ front looks: 0 inland, 90 along +x, 180 out to sea."""
 import math
 import random
 
-SPAWN = (2.0, 28.0)
+SPAWN = (0.0, 24.5)
 LANDING_H = 1.8
 PIER_X = 4.0
 GREEN = (0.0, 34.0)
@@ -170,6 +170,32 @@ def green(p, gh, rnd):
     p.put("hay bale", gx - 15.5, gz + 9.0, 30, y=gh)
     p.put("hay bale", gx - 13.6, gz + 11.0, 75, y=gh)
     p.put("pumpkins", gx - 12.2, gz + 8.8, 160, y=gh)
+    p.put("scarecrow", gx - 15.0, gz + 11.6, 160, y=gh)
+    # Set out for the harvest supper: two long tables north of the gazebo.
+    for x in (-6.5, 6.5):
+        p.put("harvest table", gx + x, gz + 9.5, 0, y=gh)
+    # Flowers round the gazebo and along the green's edges, pumpkins by its
+    # steps, leaves raked into piles under the maples.
+    for i in range(10):
+        a = math.radians(i * 36 + 18)
+        if abs(math.degrees(a) - 180) > 25:
+            p.put("autumn wildflowers", gx + math.sin(a) * 5.4, gz + math.cos(a) * 5.4, i * 50, y=gh)
+    for x in range(-18, 19, 4):
+        for z in (gz - 11.5, gz + 12.5):
+            if rnd.random() < 0.7 and abs(x) > 3:
+                p.put("autumn wildflowers", gx + x + rnd.uniform(-1, 1), z + rnd.uniform(-0.5, 0.5), rnd.uniform(0, 360), y=gh)
+    for z in range(int(gz - 9), int(gz + 11), 4):
+        for x in (gx - 19.0, gx + 19.0):
+            if rnd.random() < 0.6:
+                p.put("autumn wildflowers", x + rnd.uniform(-0.8, 0.8), z, rnd.uniform(0, 360), y=gh)
+    for x in (-2.2, 2.2):
+        p.put("pumpkins", gx + x, gz - 4.6, 180 + x * 20, y=gh)
+    for x, z in ((-17.5, -10.0), (16.0, -9.0), (17.0, 11.0), (-9.0, 12.0)):
+        p.put("leaf pile", gx + x, gz + z, rnd.uniform(0, 360), y=gh)
+    for i in range(10):
+        p.put("fallen leaves", gx + rnd.uniform(-18, 18), gz + rnd.choice((-1, 1)) * rnd.uniform(6, 12), rnd.uniform(0, 360), y=gh)
+    for x, z in ((-19.0, -1.0), (19.5, 4.0), (-19.5, 9.0)):
+        p.put("blueberry bush", gx + x, gz + z, rnd.uniform(0, 360), y=gh)
 
 
 def lanes(p, nat, rnd):
@@ -208,10 +234,10 @@ def landing(p):
         p.put("park bench", x, -28.4, 180, y=h)
     for x in (-38, -12, 14, 40):
         p.put("street lantern", x, -29.0, 180, y=h)
-    # Steps down into the water at either end: a way out for anyone who
+    # Ladders up the quay's face at either end: a way out for anyone who
     # falls in.
     for x in (-38.0, 38.0):
-        p.put("stone stairs", x, -31.1 - 1.8, 180, y=h - 3.0)
+        p.put("quay ladder", x, -31.45, 180, y=h - 3.0)
     p.put("dory", 30.0, -24.0, 80, y=h)
 
 
