@@ -4,9 +4,9 @@
 //! all, with filters, and news from beyond earshot. A line said again soon
 //! after is counted on the old line instead of added.
 
-use super::{ACCENT, App, DIM, PANEL_BG, TEXT, speaker_color};
+use super::{ACCENT, App, DIM, TEXT, hud, speaker_color};
 use crate::sim::Note;
-use crate::term::Cell;
+use crate::term::{Cell, Deco, Face};
 use glam::Vec3;
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,60 @@ const LIFE: [u8; 3] = [128, 133, 150];
 const NOTABLE: [u8; 3] = [238, 226, 196];
 const MARK: [u8; 3] = [255, 205, 120];
 const FAR: [u8; 3] = [150, 162, 190];
-const FAINT: [u8; 3] = [90, 94, 110];
+/// Lines in the feed at most.
+const FEED_ROWS: usize = 6;
+/// Rows one line may take in the feed.
+const FEED_LINE_ROWS: usize = 2;
+/// Marks a wrapped row (hung under the first) in the feed.
+const HANG: char = '\u{1}';
+
+/// How long a line stays in the feed: long enough to read it.
+fn feed_for(l: &LogLine) -> Duration {
+    let n = l.text.chars().count() as u64;
+    Duration::from_millis((12_000 + n * 60).min(30_000))
+}
+
+/// Styled text as runs of one colour and weight.
+fn runs(row: &Styled) -> Vec<(String, [u8; 3], bool)> {
+    let mut out: Vec<(String, [u8; 3], bool)> = Vec::new();
+    for &(ch, c, b) in row.iter().filter(|c| c.0 != HANG) {
+        match out.last_mut() {
+            Some(r) if (r.1 == c && r.2 == b) || ch == ' ' => r.0.push(ch),
+            _ => out.push((ch.to_string(), c, b)),
+        }
+    }
+    out
+}
+
+/// Word-wrap styled text by its set width in cells (the first row `first`
+/// wide, the rest `rest`); rows after the first start with `HANG`.
+fn wrap_measured(s: &Styled, first: f32, rest: f32, space: f32) -> Vec<Styled> {
+    let cw = |c: &(char, [u8; 3], bool)| hud::width(&c.0.to_string(), if c.2 { Face::Bold } else { Face::Body }, hud::SIZE);
+    let mut rows: Vec<Styled> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (wi, word) in s.split(|c| c.0 == ' ' || c.0 == '\n').enumerate() {
+        let ww: f32 = word.iter().map(cw).sum();
+        let room = if rows.len() == 1 { first } else { rest };
+        let row = rows.last_mut().unwrap();
+        let hard = wi > 0 && hard_break_before(s, wi);
+        if hard || (used > 0.0 && used + space + ww > room) {
+            rows.push(vec![(HANG, TEXT, false)]);
+            used = 0.0;
+        } else if wi > 0 && used > 0.0 {
+            let sp = row.last().map(|c| (' ', c.1, false)).unwrap_or((' ', TEXT, false));
+            row.push(sp);
+            used += space;
+        }
+        rows.last_mut().unwrap().extend_from_slice(word);
+        used += ww;
+    }
+    rows
+}
+
+/// Whether the `wi`th word of `s` follows a line break.
+fn hard_break_before(s: &Styled, wi: usize) -> bool {
+    s.iter().filter(|c| c.0 == ' ' || c.0 == '\n').nth(wi - 1).is_some_and(|c| c.0 == '\n')
+}
 
 /// What a line is, which decides where it shows and for how long.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,13 +161,6 @@ impl Filter {
     }
 }
 
-/// What came in since the journal was last open, for the count on the log.
-#[derive(Default)]
-pub(super) struct Unseen {
-    pub life: u32,
-    pub far: u32,
-}
-
 type Styled = Vec<(char, [u8; 3], bool)>;
 
 /// Word-wrap styled text: the first row `first` wide, the rest `rest` wide.
@@ -165,11 +211,6 @@ impl App {
 
     /// Add a line, or count it on the same line said a moment ago.
     pub(super) fn log_push(&mut self, line: LogLine) {
-        match line.kind {
-            Kind::Life => self.unseen.life += 1,
-            Kind::Far => self.unseen.far += 1,
-            _ => {}
-        }
         let now = Instant::now();
         let same = self.log.iter().rev().take(SQUASH_LOOKBACK).position(|l| {
             l.streaming.is_none() && l.kind == line.kind && l.speaker == line.speaker && l.text == line.text && now.duration_since(l.at) < SQUASH_WITHIN
@@ -251,16 +292,17 @@ impl App {
         }
     }
 
-    /// Is this line in the open view: the small log keeps what matters now,
-    /// the journal what its filter asks for.
+    /// Is this line in the open view: the feed keeps what was said and
+    /// done a moment ago, the journal what its filter asks for.
     fn in_view(&self, l: &LogLine, now: Instant) -> bool {
         if self.log_view > 0 {
             return self.journal_filter.keeps(l);
         }
+        let age = now.duration_since(l.at);
         match l.kind {
             Kind::Far => false,
-            Kind::Life => now.duration_since(l.at) < LIFE_FOR,
-            _ => true,
+            Kind::Life => age < LIFE_FOR,
+            _ => l.streaming.is_some() || age < feed_for(l),
         }
     }
 
@@ -285,20 +327,16 @@ impl App {
         s
     }
 
-    /// The rows of the open view, oldest first, scrolled back `log_scroll`.
-    fn log_view_rows(&mut self, width: usize, rows: usize) -> Vec<Styled> {
+    /// The rows of the open view, oldest first, scrolled back `log_scroll`,
+    /// wrapped by `wrap`.
+    fn log_view_rows(&mut self, rows: usize, wrap: impl Fn(&Styled) -> Vec<Styled>) -> Vec<Styled> {
         let now = Instant::now();
         let mut out: Vec<Styled> = Vec::new();
         for l in self.log.iter().rev() {
             if !self.in_view(l, now) {
                 continue;
             }
-            // Wrapped lines hang under the first, so they read as the same line.
-            let mut wrapped = wrap_styled(&Self::styled(l), width, width.saturating_sub(2));
-            for r in wrapped.iter_mut().skip(1) {
-                r.splice(0..0, [(' ', TEXT, false), (' ', TEXT, false)]);
-            }
-            out.extend(wrapped.into_iter().rev());
+            out.extend(wrap(&Self::styled(l)).into_iter().rev());
             if out.len() >= rows + self.log_scroll {
                 break;
             }
@@ -309,65 +347,123 @@ impl App {
         shown
     }
 
-    /// The log or journal, from the separator at `top` down `rows` lines.
-    /// `x` is where the separator's mode tag ends.
-    pub(super) fn draw_log(&mut self, w: u16, top: u16, rows: u16, x: u16) {
-        let journal = self.log_view > 0;
-        let mut x = x;
-        if journal {
-            x = self.screen.text(x + 1, top, " journal ", ACCENT, PANEL_BG, true);
-            for f in Filter::ALL {
-                let on = f == self.journal_filter;
-                let label = if on { format!("[{}]", f.name()) } else { format!(" {} ", f.name()) };
-                x = self.screen.text(x, top, &label, if on { TEXT } else { DIM }, PANEL_BG, on);
-            }
-            let help = " Tab filter · 1 size · Esc close ";
-            let rx = w.saturating_sub(help.chars().count() as u16 + 1);
-            if rx > x + 1 {
-                self.screen.text(rx, top, help, FAINT, PANEL_BG, false);
-            }
-        } else {
-            // What the small log leaves out, so you know there is more.
-            let mut parts = Vec::new();
-            if self.unseen.life > 0 {
-                parts.push(format!("{} stirring nearby", self.unseen.life));
-            }
-            if self.unseen.far > 0 {
-                parts.push(format!("{} elsewhere", self.unseen.far));
-            }
-            if !parts.is_empty() {
-                let s = format!(" {} · 1 journal ", parts.join(" · "));
-                let rx = w.saturating_sub(s.chars().count() as u16 + 1);
-                if rx > x + 1 {
-                    self.screen.text(rx, top, &s, FAINT, PANEL_BG, false);
+    /// Bottom left, over the world: the last few things said and done,
+    /// each going after a while (the journal keeps them all).
+    pub(super) fn draw_feed(&mut self, w: f32, h: f32) {
+        if self.log_view > 0 {
+            return;
+        }
+        // Beside the input line when there is room, else over it.
+        let side = (w - hud::input_w(w)) * 0.5 - 3.2;
+        let (fw, bottom) = if side >= 34.0 { (side.min(60.0), h - 0.8) } else { ((w - 3.2).min(60.0), h - 7.0) };
+        let x = 1.6;
+        let inner = fw - 2.0;
+        let space = hud::width(" ", Face::Body, hud::SIZE);
+        let rows = self.log_view_rows(FEED_ROWS, |s| {
+            // A long line keeps to a few rows here (the journal has it all).
+            let mut r = wrap_measured(s, inner, inner - 1.5, space);
+            if r.len() > FEED_LINE_ROWS {
+                r.truncate(FEED_LINE_ROWS);
+                if let Some(last) = r.last_mut() {
+                    let c = last.last().map(|c| c.1).unwrap_or(TEXT);
+                    while last.len() > 1 && last.iter().map(|c| hud::width(&c.0.to_string(), Face::Body, hud::SIZE)).sum::<f32>() > inner - 3.0 {
+                        last.pop();
+                    }
+                    last.push(('…', c, false));
                 }
             }
+            r
+        });
+        // Everyday lines leave on their own: redraw when the next one goes.
+        let now = Instant::now();
+        self.log_expiry = self.log.iter().filter(|l| l.kind != Kind::Far && l.streaming.is_none()).map(|l| l.at + if l.kind == Kind::Life { LIFE_FOR } else { feed_for(l) }).filter(|t| *t > now).min();
+        if rows.is_empty() {
+            return;
         }
-        let width = (w as usize).saturating_sub(2);
-        let lines = self.log_view_rows(width, rows as usize);
-        if self.log_scroll > 0 {
-            self.screen.text(x + 1, top, &format!(" ↑ {} lines back · PgDn ", self.log_scroll), DIM, PANEL_BG, false);
-        }
-        for i in 0..rows {
-            let y = top + 1 + i;
-            self.screen.fill_row(y, Cell { bg: PANEL_BG, ..Cell::BLANK });
-            if let Some(row) = lines.get(i as usize) {
-                for (j, (ch, fg, bold)) in row.iter().enumerate() {
-                    self.screen.set(1 + j as u16, y, Cell { ch: crate::term::narrow(*ch), fg: *fg, bg: PANEL_BG, bold: *bold });
-                }
+        const LINE: f32 = 1.3;
+        let ph = rows.len() as f32 * LINE + 0.9;
+        let y0 = bottom - ph;
+        let s = &mut self.screen;
+        hud::shade(s, x, y0, fw, ph, 0.7);
+        let mut y = y0 + 0.45;
+        for (i, row) in rows.iter().enumerate() {
+            let mid = y + LINE * 0.5;
+            let indent = if i > 0 && row.first().is_some_and(|c| c.0 == HANG) { 1.5 } else { 0.0 };
+            let mut px = x + 1.0 + indent;
+            for (text, color, bold) in runs(row) {
+                let face = if bold { Face::Bold } else { Face::Body };
+                px = hud::words(s, px, mid, &text, hud::SIZE, color, face);
             }
+            y += LINE;
         }
-        // Everyday lines leave the small log on their own: redraw when the next one goes.
-        self.log_expiry = if journal { None } else { self.log.iter().filter(|l| l.kind == Kind::Life && l.at.elapsed() < LIFE_FOR).map(|l| l.at + LIFE_FOR).min() };
     }
 
-    /// Open the journal at a size (0 closes it); opening it counts all as seen.
+    /// Rows in the journal panel.
+    pub(super) fn journal_rows(&self) -> usize {
+        (self.screen.h as usize).saturating_sub(13).max(3)
+    }
+
+    /// The journal (key 1): a panel over the view with everything kept,
+    /// filtered (Tab), scrolled back (PgUp, the wheel).
+    pub(super) fn draw_journal(&mut self, w: u16, h: u16) {
+        let (wf, hf) = (w as f32, h as f32);
+        let pw = (wf - 4.0).min(110.0);
+        let (x, y, ph) = ((wf - pw) * 0.5, 1.5, hf - 3.0);
+        let s = &mut self.screen;
+        s.deco(Deco { x: 0.0, y: 0.0, w: wf, h: hf, fill: [6, 7, 12], alpha: 0.35, radius: 0.0, shadow: false, border: None });
+        s.deco(Deco::panel(x, y, pw, ph, crate::ui::PANEL).border(crate::ui::PANEL_EDGE));
+        s.labels.push(crate::ui::left(x + 2.0, y + 2.0, "Journal", 1.8, ACCENT, Face::Title));
+        // The filters, as tabs.
+        let mut tx = x + 2.0;
+        let ty = y + 4.4;
+        for f in Filter::ALL {
+            let on = f == self.journal_filter;
+            let name = f.name();
+            let tw = hud::width(name, Face::Bold, 0.9) + 2.4;
+            let d = Deco::pill(tx, ty - 0.85, tw, 1.7, if on { ACCENT } else { crate::ui::BUTTON });
+            s.deco(if on { d } else { d.border(crate::ui::BUTTON_EDGE) });
+            s.labels.push(crate::term::Label { x: tx + tw * 0.5, y: ty, text: name.to_string(), size: 0.9, color: if on { crate::ui::ON_ACCENT } else { TEXT }, face: Face::Bold, center: true });
+            tx += tw + 0.8;
+        }
+        if self.log_scroll > 0 {
+            hud::words(s, tx + 1.0, ty, &format!("↑ {} lines back", self.log_scroll), 0.85, DIM, Face::Body);
+        }
+        // The lines, in cells (the panel under them).
+        let rows = self.journal_rows();
+        let width = ((pw - 4.0) as usize).max(10);
+        let lines = self.log_view_rows(rows, |s| {
+            let mut wrapped = wrap_styled(s, width, width.saturating_sub(2));
+            for r in wrapped.iter_mut().skip(1) {
+                r.splice(0..0, [(' ', TEXT, false), (' ', TEXT, false)]);
+            }
+            wrapped
+        });
+        let top = (y + 6.4).ceil() as u16;
+        let lx = (x + 2.0).ceil() as u16;
+        for (i, row) in lines.iter().enumerate() {
+            let yy = top + i as u16;
+            for (j, (ch, fg, bold)) in row.iter().enumerate() {
+                self.screen.over(lx + j as u16, yy, |c| Cell { ch: crate::term::narrow(*ch), fg: *fg, bold: *bold, ..c });
+            }
+        }
+        if lines.is_empty() {
+            self.screen.labels.push(crate::ui::left(x + 2.0, top as f32 + 0.5, "Nothing here yet.", 0.95, DIM, Face::Body));
+        }
+        // The keys, along the bottom.
+        let s = &mut self.screen;
+        let mid = y + ph - 1.5;
+        let mut kx = x + 2.0;
+        for (key, what) in [("Tab", "filter"), ("PgUp/PgDn", "scroll back"), ("1", "close")] {
+            kx = hud::keycap(s, kx, mid, key);
+            kx = hud::words(s, kx + 0.6, mid, what, 0.9, DIM, Face::Body) + 1.8;
+        }
+        self.log_expiry = None;
+    }
+
+    /// Open (1) or close (0) the journal.
     pub(super) fn set_log_view(&mut self, v: u8) {
         self.log_view = v;
         self.log_scroll = 0;
-        if v > 0 {
-            self.unseen = Unseen::default();
-        }
         self.last_frame = None;
         self.dirty = true;
     }

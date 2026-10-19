@@ -1,5 +1,5 @@
-//! The "working on" box, above the log on the left (clear of what the
-//! traveler holds, on the right): slow work in progress
+//! Work in progress, top left under where you are (clear of what the
+//! traveler holds, on the right): slow work
 //! (a deed the world is deciding, a thing being made or reshaped, a new
 //! gesture), from when it starts until it is done, so there is always a sign
 //! that something is happening. Its kinds are the sim's `WorkKind`s; the land
@@ -8,7 +8,7 @@
 //! conjuring shows in the world as a violet sigil where the thing will
 //! appear (see `sim::render`), and from far off as a mark to find it by.
 
-use super::{App, DIM, TEXT};
+use super::{App, DIM, TEXT, hud};
 use crate::settings::ShowWork;
 use crate::sim::ActorId;
 use crate::sim::interp::WorkKind;
@@ -21,7 +21,6 @@ const DONE_FOR: f32 = 3.0;
 const MAX_ROWS: usize = 5;
 /// Lines one entry may wrap to before it is cut.
 const MAX_LINES: usize = 4;
-const BG: [u8; 3] = [20, 20, 30];
 const DONE: [u8; 3] = [130, 200, 140];
 /// The land's own row (no request id).
 const LAND: u64 = u64::MAX;
@@ -139,25 +138,21 @@ impl App {
         }
     }
 
-    /// The box itself, floating bottom left of the view, a little off the
-    /// edge and the log. Each line is written out in full, wrapped.
+    /// The work, top left under where you are: a small card each, newest
+    /// at the bottom, each written out in full, wrapped.
     pub(super) fn draw_work(&mut self, w: u16, vh: u16) {
-        if self.work.rows.is_empty() || self.log_view == 2 || self.menu.is_some() {
+        if self.work.rows.is_empty() {
             return;
         }
-        // Cells are about twice as tall as wide: two columns and one row
-        // look like the same gap.
-        let (mx, my) = (2u16, 1u16);
+        use crate::term::Face;
+        const SIZE: f32 = 0.9;
+        const LINE: f32 = 1.2;
         let (me, yaw) = (self.pos(), self.yaw());
-        let bw = (w as usize).saturating_sub(2 * mx as usize).min(60);
-        if bw < 24 {
-            return;
-        }
-        // The text sits in its own column after the verb, before the time.
-        const TEXT_X: usize = 13;
-        // Room for the time, and how far and which way ("24m ↖ 12s").
-        let room = bw.saturating_sub(TEXT_X + 13).max(8);
-        let entries: Vec<(String, [u8; 3], Vec<String>, String, bool)> = self
+        let cw = (w as f32 * 0.35).clamp(30.0, 44.0).min(w as f32 - 4.0);
+        let (x, mut y) = (1.6, 3.4);
+        let budget = vh as f32 * 0.45;
+        let text_x = 1.0 + ["doing", "conjuring", "making", "reshaping", "learning", "shaping"].iter().map(|v| hud::width(v, Face::Bold, SIZE)).fold(0.0, f32::max) + 1.0;
+        let entries: Vec<(String, [u8; 3], String, String, bool)> = self
             .work
             .rows
             .iter()
@@ -166,56 +161,57 @@ impl App {
                     Some(who) => format!("{who}: {}", r.what),
                     None => r.what.clone(),
                 };
-                let mut lines = crate::term::wrap(&what, room);
-                if lines.len() > MAX_LINES {
-                    lines.truncate(MAX_LINES);
-                    let last = &mut lines[MAX_LINES - 1];
-                    let keep = last.chars().count().min(room - 1);
-                    *last = last.chars().take(keep).collect::<String>() + "…";
-                }
                 match r.done {
-                    Some(_) => ("✓ done".to_string(), DONE, lines, String::new(), true),
+                    Some(_) => ("✓ done".to_string(), DONE, what, String::new(), true),
                     None => {
                         let mut time = elapsed(r.since.elapsed().as_secs());
                         if let Some(at) = r.at {
                             time = format!("{} {time}", where_from(me, yaw, at));
                         }
-                        (format!("◌ {}", r.verb), r.color, lines, time, false)
+                        (r.verb.to_string(), r.color, what, time, false)
                     }
                 }
             })
             .collect();
-        // Newest at the bottom, nearest the log; older ones give way first.
-        let budget = (vh as usize).saturating_sub(my as usize + 4);
-        let mut used = 1;
+        // Newest last; older ones give way when there is no room.
+        let laid: Vec<(Vec<String>, f32)> = entries
+            .iter()
+            .map(|(_, _, what, time, _)| {
+                let tw = if time.is_empty() { 0.0 } else { hud::width(time, Face::Body, SIZE) + 1.0 };
+                let room = cw - text_x - 1.0;
+                let mut lines = hud::wrap(what, room - tw, room, Face::Body, SIZE);
+                if lines.len() > MAX_LINES {
+                    lines.truncate(MAX_LINES);
+                    let last = lines[MAX_LINES - 1].clone();
+                    lines[MAX_LINES - 1] = hud::fit(&format!("{last}…"), room - 1.0, Face::Body, SIZE);
+                }
+                let h = lines.len() as f32 * LINE + 0.6;
+                (lines, h)
+            })
+            .collect();
         let mut first = entries.len();
-        while first > 0 && entries.len() - first < MAX_ROWS && used + entries[first - 1].2.len() <= budget {
+        let mut used = 0.0;
+        while first > 0 && entries.len() - first < MAX_ROWS && used + laid[first - 1].1 + 0.4 <= budget {
             first -= 1;
-            used += entries[first].2.len();
+            used += laid[first].1 + 0.4;
         }
-        if first == entries.len() {
-            return;
+        let s = &mut self.screen;
+        if first > 0 {
+            hud::words(s, x + 1.0, y + 0.5, &format!("+{first} earlier"), 0.8, DIM, Face::Body);
+            y += 1.2;
         }
-        let more = first;
-        let height = used as u16;
-        let x0 = mx;
-        let y0 = vh - my - height;
-        for row in 0..height {
-            for col in 0..bw {
-                self.screen.set(x0 + col as u16, y0 + row, Cell { ch: ' ', fg: TEXT, bg: BG, bold: false });
+        for (i, (head, color, _, time, done)) in entries.into_iter().enumerate().skip(first) {
+            let (lines, h) = &laid[i];
+            hud::shade(s, x, y, cw, *h, 0.55);
+            let mid = y + 0.3 + LINE * 0.5;
+            hud::words(s, x + 1.0, mid, &head, SIZE, color, if done { Face::Body } else { Face::Bold });
+            if !time.is_empty() {
+                hud::words(s, x + cw - 1.0 - hud::width(&time, Face::Body, SIZE), mid, &time, SIZE, DIM, Face::Body);
             }
-        }
-        let head = if more > 0 { format!("Working on  (+{more} earlier)") } else { "Working on".to_string() };
-        self.screen.text(x0 + 1, y0, &head, DIM, BG, true);
-        let mut y = y0 + 1;
-        for (head, color, lines, time, done) in entries.into_iter().skip(first) {
-            self.screen.text(x0 + 1, y, &head, color, BG, !done);
-            let tx = x0 + bw as u16 - 1 - time.chars().count() as u16;
-            self.screen.text(tx, y, &time, DIM, BG, false);
-            for line in lines {
-                self.screen.text(x0 + TEXT_X as u16, y, &line, if done { DIM } else { TEXT }, BG, false);
-                y += 1;
+            for (j, line) in lines.iter().enumerate() {
+                hud::words(s, x + text_x, mid + j as f32 * LINE, line, SIZE, if done { DIM } else { TEXT }, Face::Body);
             }
+            y += h + 0.4;
         }
     }
 }

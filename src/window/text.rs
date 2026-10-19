@@ -89,6 +89,35 @@ pub fn shape(ch: char) -> u8 {
     }
 }
 
+/// How wide `text` is set in `face`, `size` rows tall, in cells (a cell is
+/// half a row wide): what a free label or a pill around words needs.
+pub fn measure(text: &str, face: Face, size: f32) -> f32 {
+    static FONTS: std::sync::OnceLock<Vec<fontdue::Font>> = std::sync::OnceLock::new();
+    let fonts = FONTS.get_or_init(|| [BODY, BOLD, TITLE].iter().map(|b| fontdue::Font::from_bytes(*b, fontdue::FontSettings::default()).expect("bundled font")).collect());
+    let f = match face {
+        Face::Body => 0,
+        Face::Bold => 1,
+        Face::Title => 2,
+    };
+    let adv: f32 = text
+        .chars()
+        .map(|ch| {
+            let main = if fonts[f].lookup_glyph_index(ch) != 0 { &fonts[f] } else { &fonts[f.min(1)] };
+            let arrow = ('\u{2190}'..='\u{21FF}').contains(&ch);
+            match () {
+                // A symbol from a fallback font (big, read only to draw):
+                // about this wide; arrows half again as big (see `glyph`).
+                _ if arrow => 120.0,
+                _ if ch != ' ' && main.lookup_glyph_index(ch) == 0 => 85.0,
+                _ => main.metrics(ch, 100.0).advance_width,
+            }
+        })
+        .sum();
+    // Advances scale with the size: measured at 100 px, a label is
+    // size × cell_h / 1.32 px and a cell cell_h / 2 wide.
+    adv / 100.0 * size / 1.32 * 2.0
+}
+
 impl Text {
     pub fn new() -> Text {
         let opts = fontdue::FontSettings::default;

@@ -26,6 +26,7 @@ mod creations;
 mod journal;
 mod loading;
 mod ears;
+mod hud;
 mod menu;
 pub mod together;
 mod voices;
@@ -38,8 +39,6 @@ const LOOK_SPEED: f32 = 1.2;
 const PITCH_MIN: f32 = -0.95;
 const PITCH_MAX: f32 = 0.6;
 const FOV_Y: f32 = 1.05;
-const STATUS_BG: [u8; 3] = [38, 40, 52];
-const PANEL_BG: [u8; 3] = [14, 15, 20];
 /// At most this many speech boxes over heads at once (the nearest speakers).
 const BUBBLES: usize = 3;
 /// A speech box stays at most this long.
@@ -196,14 +195,14 @@ pub struct App {
     menu: Option<menu::Menu>,
     /// The controls of the menus over the world (mouse and keys).
     pub ui: crate::ui::Ui,
-    /// The log: 0 a few lines, 1 half the screen, 2 the whole screen (key 1 cycles).
+    /// The journal is open (key 1): 0 shut, 1 open.
     log_view: u8,
     /// Log lines scrolled back from the newest (PgUp / PgDn).
     log_scroll: usize,
     /// Which lines the journal shows (Tab cycles).
     journal_filter: journal::Filter,
-    /// What came in since the journal was last open.
-    unseen: journal::Unseen,
+    /// Wheel steps not yet a whole line of the journal.
+    wheel_rows: f32,
     /// When the next everyday line leaves the small log.
     log_expiry: Option<Instant>,
     dirty: bool,
@@ -232,6 +231,12 @@ pub struct App {
     toasts: VecDeque<(&'static crate::achievements::Def, Option<Instant>)>,
     /// The "working on" box: slow work in progress, and just done.
     work: work::WorkBox,
+    /// What the traveler is doing now (driving, holding…) and since when,
+    /// and whether its key tips show this time.
+    state_since: Option<(&'static str, Instant)>,
+    state_tips: bool,
+    /// Walked this session (until then, how to move shows).
+    moved: bool,
     /// The sound device, while sound is on and there is one.
     sound: Option<crate::audio::Output>,
     /// What the world sounds like, read off the sim each frame.
@@ -358,7 +363,7 @@ impl App {
             log_view: 0,
             log_scroll: 0,
             journal_filter: journal::Filter::default(),
-            unseen: journal::Unseen::default(),
+            wheel_rows: 0.0,
             log_expiry: None,
             dirty: true,
             llm: s.llm.clone(),
@@ -373,6 +378,9 @@ impl App {
             achievements,
             toasts: VecDeque::new(),
             work: work::WorkBox::default(),
+            state_since: None,
+            state_tips: false,
+            moved: false,
             sound: None,
             foley: Default::default(),
             sound_cmds: Vec::new(),
@@ -401,7 +409,7 @@ impl App {
         app.sync_ears();
         app.unstick();
         let name = app.snap.look.name.clone();
-        app.say(None, &format!("Welcome{}. W/A/S/D move, the mouse looks, Enter talks, / does or makes anything, e uses, g picks up. Esc pauses.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
+        app.say(None, &format!("Welcome{}.", if name.is_empty() { String::new() } else { format!(" to {name}") }), DIM);
         match s.llm.as_ref().map(|l| l.describe()) {
             Some(d) => crate::log::info(format!("LLM: {d}")),
             None if app.is_guest() => {}
@@ -484,21 +492,10 @@ impl App {
         }
     }
 
-    /// Viewport size in cells.
+    /// Viewport size in cells: the whole window (what floats over it
+    /// takes no rows of its own).
     fn layout(&self) -> (u16, u16, u16) {
-        let h = self.screen.h;
-        let log_rows: u16 = if h >= 44 { 6 } else if h >= 30 { 5 } else if h >= 22 { 4 } else { 3 };
-        // Half or whole screen: the view keeps half (the whole log is drawn over it).
-        let log_rows = if self.log_view > 0 { log_rows.max(h.saturating_sub(3) / 2) } else { log_rows };
-        let ui = log_rows + 3; // separator, log, input, status
-        let vh = h.saturating_sub(ui).max(4);
-        (self.screen.w, vh, log_rows)
-    }
-
-    /// Rows of log on screen: over the whole view when it is full screen.
-    fn log_rows_shown(&self) -> usize {
-        let (_, vh, log_rows) = self.layout();
-        if self.log_view == 2 { (vh + 1 + log_rows) as usize } else { log_rows as usize }
+        (self.screen.w, self.screen.h, 0)
     }
 
     fn pixel_size(&self) -> (u32, u32, f32) {
@@ -597,7 +594,7 @@ impl App {
             return;
         }
         if matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) {
-            let page = self.log_rows_shown().saturating_sub(1).max(1);
+            let page = self.journal_rows().saturating_sub(1).max(1);
             self.log_scroll = if k.code == KeyCode::PageUp { self.log_scroll + page } else { self.log_scroll.saturating_sub(page) };
             self.dirty = true;
             return;
@@ -619,6 +616,13 @@ impl App {
                 if matches!(c, 'a' | 'd' | 'w' | 's') {
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT) || matches!(k.code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
                     self.shift_run = shift;
+                    // Walked: how to move has been learnt, this time.
+                    if !self.moved {
+                        self.moved = true;
+                        if self.tip_ok("move") {
+                            self.tip_shown("move");
+                        }
+                    }
                 }
                 self.keys.down.insert(c);
                 return;
@@ -676,7 +680,7 @@ impl App {
                     self.start_hearing();
                 }
             }
-            KeyCode::Char('1') => self.set_log_view((self.log_view + 1) % 3),
+            KeyCode::Char('1') => self.set_log_view(if self.log_view > 0 { 0 } else { 1 }),
             _ => {}
         }
     }
@@ -1076,10 +1080,6 @@ impl App {
         }
         self.sim.t = t;
         self.say(None, &format!("Time jumps to {:02}:{:02} ({}).", hour as u32, ((hour.fract()) * 60.0).round() as u32, sky::time_label(t)), DIM);
-    }
-
-    fn talk_verb(&self, id: i64) -> &'static str {
-        if self.sim.speaks(ActorId::Npc(id)) { "talk to" } else { "call" }
     }
 
     fn talk_context(&mut self) -> String {
@@ -1604,9 +1604,9 @@ impl App {
     }
 
     fn compose(&mut self) {
-        let (w, vh, log_rows) = self.layout();
+        let (w, vh, _) = self.layout();
         self.screen.clear_decor();
-        // Viewport.
+        // The view: the whole window.
         if self.win.is_some() {
             self.screen.fill_world(vh);
         } else if let Some(f) = &self.last_frame {
@@ -1616,199 +1616,29 @@ impl App {
                 self.screen.fill_row(y, Cell { bg: [0, 0, 0], ..Cell::BLANK });
             }
         }
-        self.draw_work_marks(w, vh);
-        self.draw_labels(w, vh);
-        self.draw_pointer(w, vh);
+        let journal = self.log_view > 0;
+        if self.menu.is_none() && !journal {
+            self.draw_work_marks(w, vh);
+            self.draw_labels(w, vh);
+            self.draw_pointer(w, vh);
+        }
         if self.debug {
             self.draw_debug();
         }
         if self.inspect {
             self.draw_inspect(w, vh);
         }
-        self.draw_work(w, vh);
         self.draw_hurt(w, vh);
         self.draw_fallen(w, vh);
-        self.draw_toast(w, vh);
-        // Separator with mode (at the top when the log fills the screen).
-        let sep = vh;
-        let full = self.log_view == 2;
-        let top = if full { 0 } else { sep };
-        let rows = self.log_rows_shown() as u16 - full as u16;
-        self.screen.fill_row(top, Cell { ch: '─', fg: [60, 64, 80], bg: PANEL_BG, bold: false });
-        let tag = match self.mode {
-            Mode::Walk => " walk ".to_string(),
-            Mode::Talk(id) => format!(" talking to {} ", self.sim.cast.get(id).map(|n| n.name()).unwrap_or("?")),
-            Mode::Command => " do ".to_string(),
-        };
-        let x = self.screen.text(2, top, &tag, ACCENT, PANEL_BG, true);
-        self.draw_log(w, top, rows, x);
-        if self.menu.is_some() && !full {
+        if self.menu.is_some() {
             self.draw_menu(w, vh, true);
+        } else if journal {
+            self.draw_journal(w, vh);
+        } else {
+            self.draw_work(w, vh);
+            self.draw_hud(w, vh);
         }
-        // Input line.
-        let iy = sep + 1 + log_rows;
-        self.screen.fill_row(iy, Cell { bg: PANEL_BG, ..Cell::BLANK });
-        match self.mode {
-            Mode::Walk => {
-                let near = self.pointed.as_ref().filter(|p| p.dist < 3.2 && !matches!(p.target, Target::Point(_)));
-                let me = ActorId::Player;
-                let hint = match (&self.talk_hint, near, self.sim.player.held) {
-                    _ if self.sim.player.aboard.is_some() => {
-                        let name = self.sim.player.aboard.map(|v| self.sim.thing_name(v)).unwrap_or_default();
-                        let kmh = self.sim.vehicle_speed(me).unwrap_or(0.0).abs() * 3.6;
-                        let updown = if matches!(self.sim.vehicle_on(me).as_deref(), Some("under" | "air")) { "   Space/c up/down" } else { "" };
-                        format!("driving the {name}: W/S speed and brake   A/D steer{updown}   e get out   {kmh:.0} km/h")
-                    }
-                    _ if self.sim.player.riding.is_some() => {
-                        let name = self.sim.player.riding.map(|m| self.sim.actor_name(m)).unwrap_or_default();
-                        format!("riding {name}: W/A/S/D go   e get down   / do anything")
-                    }
-                    _ if self.sim.carried_of(me).is_some() => {
-                        let name = self.sim.carried_of(me).map(|c| self.sim.actor_name(c)).unwrap_or_default();
-                        format!("carrying {name}: e pet   g put down   / do anything")
-                    }
-                    (Some((id, n)), _, _) => {
-                        let e = match self.being_in_front() {
-                            Some(o) => self.sim.approach_words(me, o),
-                            None => self.sim.approach_words(me, ActorId::Npc(*id)),
-                        };
-                        let g = if self.sim.mind_of(ActorId::Npc(*id)) != crate::world::species::Mind::Sapient { "   g pick up" } else { "" };
-                        format!("Enter: {} {n}   e {e}{g}   / do anything   F2 inspect", self.talk_verb(*id))
-                    }
-                    (None, Some(p), None) if matches!(p.target, Target::Actor(ActorId::Traveler(_))) => format!("{}: /say to talk to everyone   / do anything{}   F2 inspect", p.name, if self.is_guest() { "" } else { "   /kick to send away" }),
-                    (None, Some(p), None) if self.sim.target_drive(&p.target).is_some() => format!("{}: e get in   / do anything to it   F2 inspect", p.name),
-                    (None, Some(p), None) if self.sim.target_seats(&p.target) => format!("{}: e sit   / do anything to it   F2 inspect", p.name),
-                    (None, Some(p), None) if self.pointed_loose => format!("{}: e pick up   / do anything to it   F2 inspect", p.name),
-                    (None, Some(p), None) => format!("{}: e use   g pick up   / do anything to it   F2 inspect", p.name),
-                    (None, _, Some(h)) if self.sim.burst_of(h).is_some() => match self.sim.things.get(h).and_then(|t| t.shape.fuse_at) {
-                        Some(at) => format!("the {} is LIT ({:.0} s): f throw it!", self.sim.thing_name(h), (at - self.sim.t).max(0.0)),
-                        None => format!("holding the {}: e light   f throw   g put down   / do", self.sim.thing_name(h)),
-                    },
-                    (None, p, Some(h)) if self.sim.launch_of(h).is_some() => {
-                        let l = self.sim.launch_of(h);
-                        let left = self.sim.shots_left(h).map(|n| format!(" ({n} left)")).unwrap_or_default();
-                        match p {
-                            Some(p) if self.sim.liven_peek_pub(&p.target).is_some_and(|id| l.as_ref().is_some_and(|l| self.sim.is_ammo_for(l, id))) => format!("{}: e load it into the {}{left}   g put down", p.name, self.sim.thing_name(h)),
-                            Some(p) => format!("e shoot the {} at the {}{left}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
-                            None => format!("holding the {}: e shoot{left}   f throw   g put down   / do", self.sim.thing_name(h)),
-                        }
-                    }
-                    (None, Some(p), Some(h)) => format!("e use the {} on the {}   f throw   g put down   / do", self.sim.thing_name(h), p.name),
-                    (None, None, Some(h)) => format!("holding the {}: e use   f throw   g put down   / do", self.sim.thing_name(h)),
-                    (None, None, None) => "W/A/S/D move   / do or make anything   e use   g grab   1 journal   Esc menu".into(),
-                };
-                let hint = if self.sim.fallen() { "You lie where you fell.   Enter wake   Esc menu".to_string() } else { hint };
-                let hint = if (self.settings.show_hints || self.sim.fallen()) && self.menu.is_none() { hint } else { String::new() };
-                if self.win.is_some() {
-                    self.screen.hints(1, iy, &hint, DIM, PANEL_BG);
-                } else {
-                    self.screen.text(1, iy, &hint, DIM, PANEL_BG, false);
-                }
-            }
-            _ => {
-                let prompt = match self.mode {
-                    Mode::Command => "",
-                    _ => "> ",
-                };
-                let full = format!("{prompt}{}", self.input);
-                let blink = (self.start.elapsed().as_millis() / 500) % 2 == 0;
-                // The mark at the right: the words make room for it.
-                let mark = self.hearing_mark().or_else(|| self.replying.is_some().then(|| ("(listening)".to_string(), DIM)));
-                let room = w.saturating_sub(3 + mark.as_ref().map_or(0, |(m, _)| m.chars().count() as u16 + 2));
-                if self.win.is_some() {
-                    // Set freely: as many words fit as their real width allows.
-                    self.screen.field = Some(crate::term::Field { x: 1, y: iy, w: room, text: full, color: TEXT, caret: blink.then_some(ACCENT) });
-                } else {
-                    let n = full.chars().count();
-                    let shown: String = if n > room as usize { full.chars().skip(n - room as usize).collect() } else { full };
-                    let x = self.screen.text(1, iy, &shown, TEXT, PANEL_BG, false);
-                    self.screen.set(x, iy, Cell { ch: if blink { '▏' } else { ' ' }, fg: ACCENT, bg: PANEL_BG, bold: false });
-                }
-                if let Some((mark, fg)) = mark {
-                    let n = mark.chars().count() as u16;
-                    if n + 4 < w {
-                        self.screen.text(w - n - 1, iy, &mark, fg, PANEL_BG, false);
-                    }
-                }
-            }
-        }
-        // Status bar.
-        let sy = iy + 1;
-        self.screen.fill_row(sy, Cell { bg: STATUS_BG, ..Cell::BLANK });
-        let me = self.pos();
-        let pr = region_of(me.x, me.z);
-        let place = self.snap.region_name(pr).map(str::to_string).unwrap_or_else(|| {
-            let b = self.snap.terrain.biome_at(me.x, me.z);
-            let n = self.snap.terrain.biomes[b].name.clone();
-            let mut c = n.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-        });
-        let mut parts = vec![place, sky::time_label(self.sim.t).to_string(), self.sim.wx.name.clone()];
-        parts.extend(self.sim.night_status());
-        if let Some(h) = self.sim.player.held {
-            parts.push(format!("holding {}", self.sim.thing_name(h)));
-        }
-        if self.building > 0 {
-            parts.push(format!("◌ building {}", self.building));
-        }
-        let spent = self.spent();
-        if self.brain.has_llm {
-            parts.push(format!("${spent:.2}"));
-        }
-        let left = format!(" {}", parts.join(" · "));
-        self.screen.text(0, sy, &left, TEXT, STATUS_BG, false);
-        let mut right = String::new();
-        if let Some(n) = &self.llm_note {
-            right = n.clone();
-        }
-        if let Some(t) = self.together_line() {
-            right = t;
-        }
-        if self.budget_paused {
-            right = "budget reached: generation paused (Esc to change)".into();
-        }
-        if self.render.cpu_fallback {
-            right = format!("{right}{}CPU renderer", if right.is_empty() { "" } else { " · " });
-        }
-        let bar = self.draw_health(w, sy);
-        let rx = bar.saturating_sub(right.chars().count() as u16 + 2);
-        if !right.is_empty() {
-            self.screen.text(rx, sy, &right, ACCENT, STATUS_BG, false);
-        }
-    }
-
-    /// The traveler's health at the right of the status bar: a heart and a
-    /// bar that runs green, amber, red as it empties, the heart flashing when
-    /// hurt. Returns the column it starts at.
-    fn draw_health(&mut self, w: u16, y: u16) -> u16 {
-        const CELLS: usize = 12;
-        const TRACK: [u8; 3] = [58, 60, 76];
-        let health = self.sim.health();
-        let x0 = w.saturating_sub(CELLS as u16 + 4);
-        let flash = self.hurt_flash.map(|t| t.elapsed().as_secs_f32()).filter(|s| *s < 0.6);
-        let tint = health_color(health);
-        let heart = match flash {
-            Some(s) if (s * 10.0) as u32 % 2 == 0 => [255, 255, 255],
-            _ => tint,
-        };
-        self.screen.set(x0, y, Cell { ch: '♥', fg: heart, bg: STATUS_BG, bold: true });
-        let fill = health * CELLS as f32;
-        const PART: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-        for i in 0..CELLS {
-            // A little light along the bar, brighter toward its head.
-            let k = 0.75 + 0.25 * (i as f32 + 1.0) / CELLS as f32;
-            let fg = tint.map(|c| (c as f32 * k).min(255.0) as u8);
-            let left = fill - i as f32;
-            let cell = if left >= 1.0 {
-                Cell { ch: '█', fg, bg: TRACK, bold: false }
-            } else if left > 0.0 {
-                Cell { ch: PART[((left * 8.0) as usize).min(7)], fg, bg: TRACK, bold: false }
-            } else {
-                Cell { ch: ' ', fg, bg: TRACK, bold: false }
-            };
-            self.screen.set(x0 + 2 + i as u16, y, cell);
-        }
-        x0
+        self.draw_toast(w, vh);
     }
 
     /// Wake from the fall: at the world's beginning, in the morning.
@@ -1956,10 +1786,12 @@ impl App {
         }
     }
 
-    /// The achievement popup: slides in at the top right, stays a while,
-    /// slides out. Its frame grows more ornate with the tier.
-    fn draw_toast(&mut self, w: u16, vh: u16) {
-        const IN: f32 = 0.35;
+    /// The achievement popup: a card that slides down at the top middle
+    /// (clear of where you are, your health and what you look at), stays a
+    /// while and goes back up. Its medal is the one in the list.
+    fn draw_toast(&mut self, w: u16, _vh: u16) {
+        use crate::term::{Deco, Face};
+        const IN: f32 = 0.4;
         const HOLD: f32 = 5.0;
         const OUT: f32 = 0.4;
         let Some((d, since)) = self.toasts.front_mut() else { return };
@@ -1971,82 +1803,40 @@ impl App {
             self.dirty = true;
             return;
         }
-        use crate::achievements::Tier;
+        self.dirty = true;
         let color = menu::tier_color(d.tier);
-        let bg = [20, 20, 30];
-        let inner = 42.min((w as usize).saturating_sub(10)).max(16);
-        let body = term::wrap(d.text, inner - 6);
-        let head = format!("Achievement · {}", menu::tier_name(d.tier));
-        let bw = inner + 2;
-        let bh = body.len().min(3) + 4;
-        if (vh as usize) < bh + 2 {
-            return;
-        }
-        // Slide: eased in from the right, then back out.
+        let cw = (w as f32 - 8.0).min(54.0);
+        let text_x = 8.6;
+        let body = hud::wrap(d.text, cw - text_x - 1.6, cw - text_x - 1.6, Face::Body, 0.9);
+        let body: Vec<String> = body.into_iter().take(2).collect();
+        let ch = 4.4 + body.len() as f32 * 1.1;
         let ease = |p: f32| 1.0 - (1.0 - p.clamp(0.0, 1.0)).powi(3);
         let shown = if age < IN { ease(age / IN) } else if age > IN + HOLD { 1.0 - ease((age - IN - HOLD) / OUT) } else { 1.0 };
-        let x0 = w as i32 - 2 - (bw as f32 * shown) as i32;
-        let y0 = 1u16;
+        let x = (w as f32 - cw) * 0.5;
+        let y = -ch + (ch + 0.8) * shown;
+        // Diamond: the edge brightens and fades, slowly.
         let t = self.start.elapsed().as_secs_f32();
-        // Diamond shimmers: a bright band sweeps along the frame.
-        let shade = |x: usize| -> [u8; 3] {
-            if d.tier != Tier::Diamond {
-                return color;
-            }
-            let k = ((x as f32 * 0.35 - t * 6.0).sin() * 0.5 + 0.5).powi(6);
-            [0, 1, 2].map(|i| (color[i] as f32 + (255.0 - color[i] as f32) * k) as u8)
+        let edge = if d.tier == crate::achievements::Tier::Diamond {
+            let k = 0.5 + 0.5 * (t * 2.5).sin();
+            color.map(|c| (c as f32 + (255.0 - c as f32) * k * 0.6) as u8)
+        } else {
+            color
         };
-        let (tl, tr, bl, br, h, v) = match d.tier {
-            Tier::Bronze => ('┌', '┐', '└', '┘', '─', '│'),
-            Tier::Silver => ('╭', '╮', '╰', '╯', '─', '│'),
-            _ => ('╔', '╗', '╚', '╝', '═', '║'),
-        };
-        // Ornaments along the top and bottom edges.
-        let edge = |i: usize| -> char {
-            match d.tier {
-                Tier::Gold if i == 2 || i == bw - 3 || i == bw / 2 => '◆',
-                Tier::Diamond if i == bw / 2 => '◆',
-                Tier::Diamond if i % 4 == 2 => '◇',
-                _ => h,
-            }
-        };
-        for row in 0..bh {
-            let y = y0 + row as u16;
-            for col in 0..bw {
-                let x = x0 + col as i32;
-                if x < 0 || x >= w as i32 {
-                    continue;
-                }
-                let last = row == bh - 1;
-                let ch = match (row, col) {
-                    (0, 0) => tl,
-                    (0, c) if c == bw - 1 => tr,
-                    (r, 0) if r == bh - 1 => bl,
-                    (r, c) if r == bh - 1 && c == bw - 1 => br,
-                    (0, c) => edge(c),
-                    (_, c) if last => edge(c),
-                    (_, 0) => v,
-                    (_, c) if c == bw - 1 => v,
-                    _ => ' ',
-                };
-                self.screen.set(x as u16, y, Cell { ch, fg: shade(col + row), bg, bold: false });
-            }
+        let s = &mut self.screen;
+        // Over everything else (a menu's words too): its shapes and words go on top.
+        let (d0, l0) = (s.decor.len(), s.labels.len());
+        s.deco(Deco { x, y, w: cw, h: ch, fill: crate::ui::PANEL, alpha: 0.95, radius: 0.8, shadow: true, border: Some(edge) });
+        menu::medal(s, x + 1.4, y + (ch - 2.8) * 0.5 - 0.2, 2.8, d.tier, true);
+        let tx = x + text_x;
+        hud::words(s, tx, y + 1.3, &format!("Achievement · {}", menu::cap(menu::tier_name(d.tier))), 0.8, [150, 155, 172], Face::Body);
+        hud::words(s, tx, y + 2.6, d.title, 1.3, color, Face::Title);
+        for (i, l) in body.iter().enumerate() {
+            hud::words(s, tx, y + 3.95 + i as f32 * 1.1, l, 0.9, TEXT, Face::Body);
         }
-        // Medal, heading, title, what you did.
-        let put = |s: &mut Screen, col: usize, row: usize, text: &str, fg: [u8; 3], bold: bool| {
-            for (i, ch) in text.chars().enumerate() {
-                let x = x0 + (col + i) as i32;
-                if x >= 0 && x < w as i32 && col + i < bw - 1 {
-                    s.set(x as u16, y0 + row as u16, Cell { ch: term::narrow(ch), fg, bg, bold });
-                }
-            }
-        };
-        put(&mut self.screen, 2, 1, menu::icon(d.tier), shade(2), true);
-        put(&mut self.screen, 6, 1, &head, DIM, false);
-        put(&mut self.screen, 6, 2, d.title, color, true);
-        for (i, l) in body.iter().take(3).enumerate() {
-            put(&mut self.screen, 6, 3 + i, l, TEXT, false);
-        }
+        let decor: Vec<_> = s.decor.drain(d0..).collect();
+        let labels: Vec<_> = s.labels.drain(l0..).collect();
+        s.over_decor.extend(decor);
+        s.over_labels.extend(labels);
     }
 
     fn draw_labels(&mut self, w: u16, vh: u16) {
@@ -2084,40 +1874,42 @@ impl App {
         let mut boxes = 0;
         let mut taken: Vec<(i32, i32, i32, i32)> = Vec::new();
         let mut draw = Vec::new();
+        use crate::term::Face;
+        const SAY: f32 = 0.92;
         for (_, col, row, id, name) in labels {
             let said = if boxes < BUBBLES { self.said_lately(id, now) } else { None };
             let lines = said.map(|t| bubble_lines(&t)).unwrap_or_default();
             boxes += !lines.is_empty() as usize;
-            let bw = lines.iter().map(|l| l.chars().count() as i32 + 2).max().unwrap_or(0).max(name.chars().count() as i32);
+            let text_w = lines.iter().map(|l| hud::width(l, Face::Body, SAY)).fold(0.0, f32::max);
+            let bw = (text_w + 2.0).max(hud::width(&name, Face::Bold, SAY) + 1.6).ceil() as i32;
             let x0 = (col - bw / 2).clamp(0, (w as i32 - bw).max(0));
             // Nearer ones are placed first; a farther one that would cover them moves up.
             let mut bottom = row;
-            let mut top = bottom - lines.len() as i32;
+            let mut top = bottom - lines.len() as i32 - (!lines.is_empty()) as i32;
             while let Some(t) = taken.iter().find(|t| x0 < t.2 && t.0 < x0 + bw && top <= t.3 && t.1 <= bottom) {
                 bottom = t.1 - 1;
-                top = bottom - lines.len() as i32;
+                top = bottom - lines.len() as i32 - (!lines.is_empty()) as i32;
             }
             taken.push((x0, top, x0 + bw, bottom));
             draw.push((col, top, name, lines, x0, bw));
         }
         for (col, top, name, lines, x0, bw) in draw.into_iter().rev() {
-            for (i, l) in lines.iter().enumerate() {
-                let y = top + 1 + i as i32;
-                if y < 0 || y >= vh as i32 {
-                    continue;
-                }
-                let s = format!(" {l:<width$} ", width = bw as usize - 2);
-                self.screen.text(x0 as u16, y as u16, &s, [235, 235, 240], [24, 26, 36], false);
-            }
-            if top < 0 || top >= vh as i32 {
+            if top < -1 || top >= vh as i32 {
                 continue;
             }
-            let len = name.chars().count() as i32;
-            let nx = (col - len / 2).clamp(0, (w as i32 - len).max(0));
-            for (i, ch) in name.chars().enumerate() {
-                let x = nx as u16 + i as u16;
-                self.screen.over(x, top as u16, |c| Cell { ch: term::narrow(ch), fg: [255, 255, 255], bg: c.bg.map(|v| v / 3), bold: true });
+            let s = &mut self.screen;
+            if !lines.is_empty() {
+                // The words in a soft box under the name.
+                let (by, bh) = (top as f32 + 1.0, lines.len() as f32 * 1.1 + 0.6);
+                s.deco(crate::term::Deco { x: x0 as f32, y: by, w: bw as f32, h: bh, fill: [24, 26, 36], alpha: 0.86, radius: 0.55, shadow: false, border: None });
+                for (i, l) in lines.iter().enumerate() {
+                    s.labels.push(crate::ui::left(x0 as f32 + 1.0, by + 0.3 + 0.55 + i as f32 * 1.1, l, SAY, [238, 238, 242], Face::Body));
+                }
             }
+            let nw = hud::width(&name, Face::Bold, SAY) + 1.4;
+            let cx = (col as f32 + 0.5).clamp(nw * 0.5, w as f32 - nw * 0.5);
+            hud::shade(s, cx - nw * 0.5, top as f32 + 0.1, nw, 1.3, 0.65);
+            s.labels.push(crate::term::Label { x: cx, y: top as f32 + 0.75, text: name, size: SAY, color: [255, 255, 255], face: Face::Bold, center: true });
         }
     }
 
@@ -2137,20 +1929,11 @@ impl App {
         None
     }
 
-    /// A small reticle in the middle of the view (what you point at) and the
-    /// name of what is there.
+    /// A small reticle in the middle of the view: what you point at (its
+    /// name and keys are under it, see `hud`).
     fn draw_pointer(&mut self, w: u16, vh: u16) {
-        let (cx, cy) = (w / 2, vh / 2);
-        if self.mode == Mode::Walk {
-            self.screen.over(cx, cy, |c| Cell { ch: '+', fg: [255, 255, 255], bold: true, ..c });
-        }
-        if let Some(p) = &self.pointed {
-            if p.dist < 12.0 && !matches!(p.target, Target::Point(_)) {
-                let label = format!(" {} ", p.name);
-                let x = (cx as i32 + 2).clamp(0, (w as i32 - label.chars().count() as i32).max(0)) as u16;
-                let y = cy.saturating_sub(1);
-                self.screen.text(x, y, &label, [255, 245, 200], [30, 30, 40], false);
-            }
+        if self.mode == Mode::Walk && !self.sim.fallen() {
+            self.screen.over(w / 2, vh / 2, |c| Cell { ch: '+', fg: [255, 255, 255], bold: true, ..c });
         }
     }
 
@@ -2821,7 +2604,8 @@ mod tests {
             }
             if a.talk_hint.is_some() {
                 a.compose();
-                assert!(screen_text(a).contains("e nod"), "the hint says what e does:\n{}", screen_text(a));
+                let shown = screen_text(a);
+                assert!(shown.contains("E nod") && shown.contains("Enter talk to Mara"), "the keys say what they do:\n{shown}");
                 a.on_key(key(KeyCode::Char('e'), KeyEventKind::Press));
                 done = true;
                 return false;
@@ -3112,33 +2896,35 @@ mod tests {
     }
 
     #[test]
-    fn log_opens_half_and_full_and_scrolls_back() {
+    fn feed_shows_the_last_lines_and_the_journal_all() {
         let (mut app, _db) = make_app();
         for i in 0..80 {
             app.say(None, &format!("line number {i}"), TEXT);
         }
         app.compose();
         let small = screen_text(&app);
-        assert!(small.contains("line number 79") && !small.contains("line number 60"));
-        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
-        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
-        assert_eq!(app.log_view, 2);
+        assert!(small.contains("line number 79") && !small.contains("line number 60"), "{small}");
+        // Lines said a while ago leave the feed.
+        for l in app.log.iter_mut() {
+            l.at -= Duration::from_secs(40);
+        }
         app.compose();
-        let full = screen_text(&app);
-        assert!(full.contains("line number 79") && full.contains("line number 60"), "{full}");
+        assert!(!screen_text(&app).contains("line number 79"));
+        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
+        assert_eq!(app.log_view, 1);
+        app.compose();
+        let all = screen_text(&app);
+        assert!(all.contains("Journal") && all.contains("line number 79") && all.contains("line number 60"), "{all}");
         app.on_key(key(KeyCode::PageUp, KeyEventKind::Press));
         app.compose();
         let back = screen_text(&app);
         assert!(back.contains("lines back") && !back.contains("line number 79"), "{back}");
         app.on_key(key(KeyCode::Esc, KeyEventKind::Press));
         assert_eq!(app.log_view, 0);
-        assert!(app.menu.is_none(), "Esc closes the log first");
-        app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
-        assert_eq!(app.log_view, 1);
-        assert!(app.layout().1 < app.screen.h / 2 + 2);
+        assert!(app.menu.is_none(), "Esc closes the journal first");
         app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
         app.on_key(key(KeyCode::Char('1'), KeyEventKind::Press));
-        assert_eq!(app.log_view, 0, "1 cycles back to small");
+        assert_eq!(app.log_view, 0, "1 opens and closes it");
     }
 
     /// The small log keeps talk and what changes the world; everyday life
@@ -3159,8 +2945,7 @@ mod tests {
         assert!(small.contains("The horse gives a snort. ×3"), "{small}");
         assert!(small.contains("✦ Ganzorig made a felt saddle."), "{small}");
         assert!(!small.contains("drying rack"), "far news waits in the journal: {small}");
-        assert!(small.contains("3 stirring nearby · 1 elsewhere"), "{small}");
-        assert!(small.contains("\n   Any word from the stone grandfather?"), "wrapped lines hang under the speaker: {small}");
+        assert!(small.contains("Ganzorig: Hoy!"), "{small}");
         // Everyday life gives way after a while.
         for l in app.log.iter_mut().filter(|l| l.kind == journal::Kind::Life) {
             l.at -= Duration::from_secs(30);
@@ -3173,6 +2958,7 @@ mod tests {
         app.compose();
         let all = screen_text(&app);
         assert!(all.contains("snort") && all.contains("✧ Oyunaa made a drying rack.") && !all.contains("stirring nearby"), "{all}");
+        assert!(all.contains("\n    Any word from the stone grandfather?") || all.contains("   Any word from the stone grandfather?"), "wrapped lines hang under the speaker: {all}");
         for _ in 0..4 {
             app.on_key(key(KeyCode::Tab, KeyEventKind::Press));
         }
@@ -3222,6 +3008,11 @@ mod tests {
         app.compose();
         let s = screen_text(&app);
         assert!(s.contains("1 of 40 earned") && s.contains("Second Draft") && s.contains("just now"), "{s}");
+        // Two fingers (or the wheel) scroll the list, and it stays scrolled.
+        app.scroll(-2.0);
+        app.compose();
+        app.compose();
+        assert!(app.menu.as_ref().is_some_and(|m| m.ach_scroll > 0.0), "the list scrolls");
         press(&mut app, KeyCode::Esc);
         assert!(screen_text(&app).contains("Paused"));
         press(&mut app, KeyCode::Esc);
@@ -3239,24 +3030,24 @@ mod tests {
         app.update_work();
         app.compose();
         let s = screen_text(&app);
-        assert!(s.contains("Working on") && s.contains("◌ doing") && s.contains("whittle a flute"), "{s}");
+        assert!(s.contains("doing") && s.contains("whittle a flute"), "{s}");
         // A long deed is written out in full, wrapped, not cut short.
         app.sim.act(ActorId::Player, Action::Do { text: "carve a long wooden stick into a sunwheel and set it turning on the mill by the river bend".into(), on: None, at: None }).unwrap();
         app.update_work();
         app.compose();
         let s = screen_text(&app);
-        assert!(s.contains("river bend") && !s.contains('…'), "{s}");
+        assert!(s.contains("river bend") && !s.lines().any(|l| l.contains("sunwheel") && l.contains('…')), "{s}");
         // No LLM here, so the world answers "nothing happens" at once.
         drive(&mut app, 0.5, |a, _| !a.sim.work().is_empty());
         app.update_work();
         app.compose();
         let s = screen_text(&app);
         assert!(s.contains("✓ done") && s.contains("whittle a flute"), "{s}");
-        // Off: no box.
+        // Off: none shown.
         app.settings.show_work = crate::settings::ShowWork::Off;
         app.update_work();
         app.compose();
-        assert!(!screen_text(&app).contains("Working on"));
+        assert!(!screen_text(&app).contains("whittle"));
     }
 
     #[test]
@@ -3332,7 +3123,7 @@ mod tests {
         }
         press(&mut app, KeyCode::Enter);
         let shown = screen_text(&app);
-        assert!(shown.contains("Settings") && shown.contains("Video") && shown.contains("Detail"), "{shown}");
+        assert!(shown.contains("Settings") && shown.contains("Video") && shown.contains("Quality"), "{shown}");
         // Walking keys do nothing while it is open.
         let before = app.pos();
         app.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
@@ -3342,8 +3133,8 @@ mod tests {
         app.ui.focus = Some(2);
         press(&mut app, KeyCode::Enter);
         assert!(screen_text(&app).contains("Who answers"), "{}", screen_text(&app));
-        // Low on the page: the page scrolls to it first.
-        app.ui.focus = Some(12);
+        // After who answers and the key.
+        app.ui.focus = Some(8);
         app.compose();
         press(&mut app, KeyCode::Left);
         assert_eq!(app.settings.budget(), Some(50.0));
@@ -3394,6 +3185,28 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert!(app.menu.is_none());
+    }
+
+    /// Tips that teach keys show at first, then stop: how to move until you
+    /// walk, what to do with what you hold the first few times.
+    #[test]
+    fn key_tips_show_a_few_times_then_stop() {
+        let (mut app, _db) = make_app();
+        app.compose();
+        assert!(screen_text(&app).contains("W/A/S/D move"), "{}", screen_text(&app));
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Press));
+        app.on_key(key(KeyCode::Char('w'), KeyEventKind::Release));
+        app.compose();
+        assert!(!screen_text(&app).contains("W/A/S/D move"), "walked: learnt for this time");
+        let stick = app.sim.type_by_name("stick").unwrap().id;
+        let id = app.sim.spawn_thing(stick, app.pos(), 0.0, 1.0, Default::default(), true).unwrap();
+        for i in 0..4 {
+            app.sim.player.held = Some(id);
+            app.compose();
+            assert_eq!(screen_text(&app).contains("F throw"), i < 3, "time {i}: {}", screen_text(&app));
+            app.sim.player.held = None;
+            app.compose();
+        }
     }
 
     #[test]

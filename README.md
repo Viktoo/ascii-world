@@ -71,7 +71,7 @@ plays FILE; `pocket list --shot … --keys n` shows the new-world screen. Work o
 ## Build
 
 Rust (stable) and a GPU with Metal, Vulkan or DirectX 12. Without a GPU adapter it
-falls back to a CPU renderer at reduced resolution (with a warning in the status bar).
+falls back to a CPU renderer at reduced resolution (with a notice at the top right).
 
 ```bash
 cargo build --release      # → target/release/pocket
@@ -82,13 +82,22 @@ cargo build --release      # → target/release/pocket
 | Mode | Enter with | Keys |
 |---|---|---|
 | Walk (default) | `Esc` | `W`/`S` move, `A`/`D` strafe, `←` `→` turn, `↑` `↓` look up/down, `Space` jump, `c` crouch (to get under something low), `Shift` with a move key (or `r`, to keep it on) run, click the view to look with the mouse, `F1` stats, `F2` inspect; quit from the `Esc` pause menu |
-| Log | (any time) | Keeps what matters now: talk, answers to you, and what changes the world (marked `✦`; a fire or other incident is one line, updated as it goes); everyday life nearby (a snort, a wave) shows for 20 s, and a line said again counts up (`×3`). The top edge counts what it left out (`12 stirring nearby · 2 elsewhere`). `PgUp`/`PgDn` scroll back |
-| Journal | `1` (in walk) | Everything, half the screen, then the whole screen, then back to the log (`Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`) |
+| Feed | (any time) | Bottom left, over the view: the last few things said and done (talk, answers to you, what changes the world, marked `✦`; a fire or other incident is one line, updated as it goes), each fading after a while (everyday life, a snort or a wave, after 20 s); a line said again counts up (`×3`). Above it, what it left out (`12 stirring nearby · 2 elsewhere`) |
+| Journal | `1` (in walk) | A panel with everything (`1` or `Esc` closes). `Tab` filters: all, talk, notable, life, made (things and beings made or remade, near and far), elsewhere (what changed the world beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`). `PgUp`/`PgDn` or the wheel scroll back |
 | Pause menu | `Esc` (in walk) or `F10` | Buttons: Back to game, Achievements (`F3`), Creations, World options (difficulty, creature limit, life speed, hunting, conjured beings), Settings (tabs: Video, Sound, AI, Together, General, Controls), Save and quit to title, Quit game (`q`). Mouse or `↑` `↓` `←` `→` `Enter` `Esc`. Settings are saved in `~/.pocket/settings.json` (world options with the world); an environment variable still wins for its run. |
 | Creations | Creations in the pause menu | Everything made in this world since it began: what lasts first (built, things, reshaped, beings), then food & drink and what the world changed by itself. Each shows who made it, from what, how many times, and whether it is still here (`here · 40 m north` or `gone`). `Tab` groups by kind, by maker, or newest. Worlds from before makers were recorded list theirs as "not recorded". |
 | Hands | (in walk) | `e` use (what you hold, on what you point at; a door opens or shuts; a held tool swings, chops, thrusts, digs or pours, by what it is and what you point at), `g` pick up / put down, `f` throw, `y`/`n` answer someone's question |
 | Talk | `Enter` when someone is within 4 m and in view | type, `Enter` sends, `Esc` back to walk (animals don't talk: `Enter` calls them, and they answer with a noise and their body). Ask for something and they may really do it: make it and hand it to you, show the way, follow. |
 | Do | `/` | anything you do or make, in words: `/a lighthouse on that hill`, `/punch a hole here`, `/add the stick to this wall`, `/rub the stone on the lantern` |
+
+The view fills the window. Over it: where you are, the time and weather (top left)
+with work in progress under it; health and any notice (top right); under the `+`, the
+name of what you look at and the one or two keys that act on it (`Enter talk to Mara`,
+`E pet`); at the bottom, the line to do or make anything (`/`), which is also where you
+talk, and over it what you are doing (driving, a lit firework). An achievement drops
+in as a card at the top middle, with its medal, and goes again. Tips that teach keys
+(how to move, throw, steer) show the first few times only; Settings → General → Key
+prompts and tips turns all of them off.
 
 You point with the middle of the view (the small `+`). Whatever you type after `/`
 goes to the world, which decides from the words, what you point at and what you hold
@@ -140,7 +149,7 @@ you every night, because you can make things out of nothing:
   to do, the one who did it remembers it too, and the dark turns to whoever else is
   about. Enter wakes you where the world began, in the morning, whole. What you dropped
   stays where you fell.
-- The status bar shows `night in 3m`, and at night what is near: `1 walker · 1 phantom near`.
+- The place line (top left) shows `night in 3m`, and at night what is near: `1 walker · 1 phantom near`.
 
 Species can keep hours (`"active": "night"`: owls, moths), go after something
 (`"want"`), touch it (`"touch"`: a glow, needs, `hurt`), shun a property
@@ -227,7 +236,8 @@ code) and for characters, `claude-haiku-5-5` for the fast decider and summariser
 Set `POCKET_MODEL_DECIDER` / `POCKET_MODEL_SUMMARIZER` to `claude-haiku-4-5` to keep the
 older Haiku.
 Opus requests opt into server-side refusal fallbacks. The running cost of the session
-is in the status bar, and every call is recorded in the `llm_usage` table.
+is under Paused (and at the top right once it nears the budget), and every call is
+recorded in the `llm_usage` table.
 
 With no key at all, the procedural world still works fully; stories and dialogue are
 switched off with a one-line notice.

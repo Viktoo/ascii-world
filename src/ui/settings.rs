@@ -44,6 +44,8 @@ pub struct Out {
 pub struct Page {
     pub tab: usize,
     scroll: f32,
+    /// The tab's rarer settings are open (under "More options").
+    more: bool,
 }
 
 /// The next value along `list` from the one nearest `cur`.
@@ -56,12 +58,29 @@ fn money(v: f64) -> String {
     if v <= 0.0 { "no limit".into() } else { format!("${v:.2}") }
 }
 
-/// The detail steps by name.
+/// The detail steps by name: how sharp, in plain words.
 fn detail_name(d: u32) -> String {
     match d {
         settings::AUTO => "Auto".into(),
-        0 => "Full".into(),
-        l => format!("{l}p"),
+        0 => "Sharpest".into(),
+        l if l <= 180 => "Lowest".into(),
+        l if l <= 240 => "Low".into(),
+        l if l <= 360 => "Medium".into(),
+        l if l <= 480 => "High".into(),
+        l if l <= 720 => "Higher".into(),
+        _ => "Very high".into(),
+    }
+}
+
+impl Page {
+    /// A quiet row that opens or shuts the tab's rarer settings; whether they show.
+    fn more_row(&mut self, ui: &mut Ui, s: &mut Screen, rows: &mut Rows) -> bool {
+        let r = rows.next(ROW);
+        let b = R::new(r.x + 0.4, r.y + 0.3, 18.0, r.h - 0.6);
+        if ui.button(s, b, if self.more { "Fewer options" } else { "More options" }, Kind::Quiet) {
+            self.more = !self.more;
+        }
+        self.more
     }
 }
 
@@ -150,6 +169,14 @@ pub fn models(ui: &mut Ui, s: &mut Screen, rows: &mut Rows, st: &mut Settings) -
 
 /// The AI rows: who answers, the key, the models.
 pub fn ai(ui: &mut Ui, s: &mut Screen, rows: &mut Rows, st: &mut Settings) -> bool {
+    let mut changed = ai_who(ui, s, rows, st);
+    rows.head(s, "Models");
+    changed |= models(ui, s, rows, st);
+    changed
+}
+
+/// Who answers, and the key.
+fn ai_who(ui: &mut Ui, s: &mut Screen, rows: &mut Rows, st: &mut Settings) -> bool {
     let mut changed = false;
     let providers = vec!["Claude (Anthropic)".to_string(), "Other (OpenAI-compatible)".to_string()];
     let r = rows.next(ROW);
@@ -165,8 +192,6 @@ pub fn ai(ui: &mut Ui, s: &mut Screen, rows: &mut Rows, st: &mut Settings) -> bo
     let r = rows.next(ROW);
     let hint = if st.provider == "other" { "if it needs one" } else { "sk-ant-… from console.anthropic.com" };
     changed |= ui.field(s, r, "API key", &mut st.api_key, hint, true, settings::env_key(&st.provider));
-    rows.head(s, "Models");
-    changed |= models(ui, s, rows, st);
     changed
 }
 
@@ -179,6 +204,7 @@ impl Page {
         if let Some(t) = ui.tabs(s, area.x + 2.0, area.y + 3.6, TABS, self.tab) {
             self.tab = t;
             self.scroll = 0.0;
+            self.more = false;
         }
         let top = area.y + 6.2;
         let bottom = area.y + area.h - 3.2;
@@ -217,7 +243,7 @@ impl Page {
                 rows.note(s, live.ears_note.as_deref().unwrap_or("Say what you want to say instead of typing it."));
             }
             "AI" => {
-                out.ai |= ai(ui, s, &mut rows, st);
+                out.ai |= ai_who(ui, s, &mut rows, st);
                 rows.head(s, "Spending");
                 let r = rows.next(ROW);
                 let d = ui.choice(s, r, "Budget per session", &money(st.budget_usd), settings::env_budget());
@@ -237,6 +263,10 @@ impl Page {
                     let b = R::new(r.x + r.w - 13.0, r.y + 0.3, 12.0, r.h - 0.6);
                     out.details |= ui.button(s, b, "Details", Kind::Normal);
                 }
+                if self.more_row(ui, s, &mut rows) {
+                    rows.head(s, "Models");
+                    out.ai |= models(ui, s, &mut rows, st);
+                }
                 rows.note(s, "Changes to who answers and the models take effect when a world opens.");
             }
             "Together" => {
@@ -252,9 +282,9 @@ impl Page {
             }
             "General" => {
                 let r = rows.next(ROW);
-                ui.toggle(s, r, "Key hints at the bottom", &mut st.show_hints, false);
+                ui.toggle(s, r, "Key prompts and tips", &mut st.show_hints, false);
                 let r = rows.next(ROW);
-                let d = ui.choice(s, r, "Show work in progress", &cap(st.show_work.name()), false);
+                let d = ui.choice(s, r, "Show what's being made", &cap(st.show_work.name()), false);
                 if d != 0 {
                     st.show_work = st.show_work.next(d);
                 }
@@ -284,22 +314,27 @@ impl Page {
 
     fn video(&mut self, ui: &mut Ui, s: &mut Screen, rows: &mut Rows, st: &mut Settings, live: &Live) {
         let r = rows.next(ROW);
-        let d = ui.choice(s, r, "Detail", &detail_name(st.window_detail), std::env::var_os("POCKET_WINDOW_DETAIL").is_some());
+        let d = ui.choice(s, r, "Quality", &detail_name(st.window_detail), std::env::var_os("POCKET_WINDOW_DETAIL").is_some());
         if d != 0 {
             let i = settings::DETAILS.iter().position(|x| *x == st.window_detail).unwrap_or(1) as i32;
             st.window_detail = settings::DETAILS[(i + d).clamp(0, settings::DETAILS.len() as i32 - 1) as usize];
         }
-        let now = live.detail_now.as_ref().map(|n| format!("Drawn at {n} now. ")).unwrap_or_default();
-        rows.note(s, &format!("{now}Auto keeps the game smooth; higher is sharper and slower."));
-        let r = rows.next(ROW);
-        ui.toggle(s, r, "Smooth edges (blend frames)", &mut st.blend_frames, settings::env_blend());
-        let r = rows.next(ROW);
-        ui.toggle(s, r, "Shadows", &mut st.shadows, settings::env_shadows());
+        rows.note(s, "Auto keeps the game smooth; higher is sharper and slower.");
         let r = rows.next(ROW);
         let d = ui.choice(s, r, "View distance", view_name(st.region_radius), settings::env_region_radius());
         if d != 0 {
             st.region_radius = (st.region_radius + d).clamp(0, 4);
         }
+        if !self.more_row(ui, s, rows) {
+            return;
+        }
+        if let Some(n) = &live.detail_now {
+            rows.note(s, &format!("Drawn at {n} now."));
+        }
+        let r = rows.next(ROW);
+        ui.toggle(s, r, "Smooth edges (blend frames)", &mut st.blend_frames, settings::env_blend());
+        let r = rows.next(ROW);
+        ui.toggle(s, r, "Shadows", &mut st.shadows, settings::env_shadows());
         let r = rows.next(ROW);
         let d = ui.choice(s, r, "Frame rate cap", &format!("{:.0} fps", st.fps), settings::env_fps());
         if d != 0 {

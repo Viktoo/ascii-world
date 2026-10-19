@@ -52,8 +52,10 @@ pub struct Settings {
     pub base_url: String,
     /// The model for each job (builder, characters, choices, memories); empty: the default.
     pub models: [String; 4],
-    /// The key hints along the bottom while walking.
+    /// The keys shown for what you look at, and tips the first few times.
     pub show_hints: bool,
+    /// How many times each tip has been shown (they stop after a few).
+    pub tips: std::collections::BTreeMap<String, u32>,
     /// The welcome (asking for a key) was seen and answered or skipped.
     pub welcomed: bool,
 }
@@ -66,7 +68,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true, provider: "anthropic".into(), api_key: String::new(), base_url: String::new(), models: Default::default(), show_hints: true, welcomed: false }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true, provider: "anthropic".into(), api_key: String::new(), base_url: String::new(), models: Default::default(), show_hints: true, tips: Default::default(), welcomed: false }
     }
 }
 
@@ -264,6 +266,7 @@ impl Settings {
         out.base_url = self.base_url.clone();
         out.models = self.models.clone();
         out.show_hints = self.show_hints;
+        out.tips = self.tips.clone();
         out.welcomed = self.welcomed;
         let _ = std::fs::create_dir_all(crate::log::dir());
         if let Ok(t) = serde_json::to_string_pretty(&out) {

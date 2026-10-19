@@ -245,7 +245,8 @@ impl App {
         let view = bottom - top;
         b.scroll = (b.scroll - ui.wheel * 3.0).clamp(0.0, (len - view).max(0.0));
         let sel_row = order.get(sel).copied();
-        if focused || sel != b.sel {
+        // Keep the chosen row in view when the keys move it (not over the wheel).
+        if sel != b.sel {
             if let Some(k) = items.iter().position(|it| matches!(it, Item::Row(i) if Some(*i) == sel_row)) {
                 // Keep its heading in view too when it is the first under one.
                 let sy = if k > 0 && matches!(items[k - 1], Item::Head(_)) { ys[k - 1] } else { ys[k] };

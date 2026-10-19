@@ -33,7 +33,7 @@ pub struct Menu {
     details: Option<(f64, Vec<(f64, String, f64)>)>,
     /// The chosen achievement on that page, and how far it is scrolled.
     ach_sel: usize,
-    ach_scroll: f32,
+    pub(super) ach_scroll: f32,
     /// The creations page, when open.
     pub creations: Option<super::creations::Book>,
     settings: crate::ui::settings::Page,
@@ -51,6 +51,50 @@ pub fn icon(t: Tier) -> &'static str {
         Tier::Gold => "«★»",
         Tier::Diamond => "✧◆✧",
     }
+}
+
+/// A medal drawn at `x`, `y`, `h` rows tall (twice as many cells wide, so
+/// round): a ribbon behind, a rim, a face and the tier's mark on it (one,
+/// two, three stars; a diamond). Not yet earned: grey, a question mark, the
+/// tier's colour faintly round its rim. Its width.
+pub fn medal(s: &mut crate::term::Screen, x: f32, y: f32, h: f32, t: Tier, earned: bool) -> f32 {
+    use crate::term::{Deco, Face, Label};
+    let w = h * 2.0;
+    let cx = x + w * 0.5;
+    let c = tier_color(t);
+    let shade = |c: [u8; 3], k: f32| c.map(|v| (v as f32 * k).min(255.0) as u8);
+    let disc = |s: &mut crate::term::Screen, inset: f32, fill: [u8; 3], border: Option<[u8; 3]>| {
+        let (hh, ww) = (h - 2.0 * inset, w - 4.0 * inset);
+        s.deco(Deco { x: cx - ww * 0.5, y: y + inset, w: ww, h: hh, fill, alpha: 1.0, radius: hh * 0.5, shadow: false, border });
+    };
+    if !earned {
+        disc(s, 0.0, [40, 43, 60], Some(shade(c, 0.45)));
+        disc(s, h * 0.14, [30, 32, 46], None);
+        s.labels.push(Label { x: cx, y: y + h * 0.5, text: "?".into(), size: h * 0.42, color: [92, 96, 120], face: Face::Bold, center: true });
+        return w;
+    }
+    // The ribbon's two tails, under the medal.
+    let ribbon = match t {
+        Tier::Bronze => [170, 62, 52],
+        Tier::Silver => [64, 104, 176],
+        Tier::Gold => [176, 36, 64],
+        Tier::Diamond => [104, 70, 190],
+    };
+    for (dx, k) in [(-0.62, 1.0), (0.12, 0.8)] {
+        s.deco(Deco { x: cx + dx * h, y: y + h * 0.55, w: h * 0.5, h: h * 0.62, fill: shade(ribbon, k), alpha: 1.0, radius: 0.08, shadow: false, border: None });
+    }
+    disc(s, 0.0, shade(c, 0.62), Some(shade(c, 1.25)));
+    disc(s, h * 0.13, c, None);
+    // A soft light on its upper half.
+    s.deco(Deco { x: cx - w * 0.28, y: y + h * 0.2, w: w * 0.56, h: h * 0.3, fill: [255, 255, 255], alpha: 0.1, radius: h * 0.15, shadow: false, border: None });
+    let (mark, size) = match t {
+        Tier::Bronze => ("★", 0.62),
+        Tier::Silver => ("★★", 0.5),
+        Tier::Gold => ("★★★", 0.42),
+        Tier::Diamond => ("◆", 0.62),
+    };
+    s.labels.push(Label { x: cx, y: y + h * 0.52, text: mark.into(), size: h * size, color: shade(c, 0.32), face: Face::Bold, center: true });
+    w
 }
 
 pub fn tier_color(t: Tier) -> [u8; 3] {
@@ -152,10 +196,13 @@ impl App {
         if self.menu.is_some() {
             self.ui.feed(&crate::window::Ev::Scroll(d));
             self.dirty = true;
-        } else {
-            // The journal scrolls back with the wheel.
-            let rows = d.round() as i32;
-            self.log_scroll = (self.log_scroll as i32 + rows).max(0) as usize;
+        } else if self.log_view > 0 {
+            // The journal scrolls back with the wheel; two fingers on a
+            // trackpad send small steps, added up to whole lines.
+            self.wheel_rows += d;
+            let rows = self.wheel_rows.trunc();
+            self.wheel_rows -= rows;
+            self.log_scroll = (self.log_scroll as i32 + rows as i32).max(0) as usize;
             self.dirty = true;
         }
     }
@@ -274,8 +321,11 @@ impl App {
         let n = 6.0 + (hosting || can_open) as i32 as f32;
         let mut y = ((h - (n * (bh + gap) + 4.0)) * 0.5).max(0.5);
         s.title(cx, y + 1.4, "Paused", 2.8, ACCENT);
-        if !name.is_empty() {
-            crate::ui::note(s, cx, y + 3.3, &name, DIM);
+        // The world's name, and what has been spent on words this time.
+        let spent = self.brain.has_llm.then(|| format!("${:.2} spent this session", self.spent()));
+        let line = [Some(name).filter(|n| !n.is_empty()), spent].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        if !line.is_empty() {
+            crate::ui::note(s, cx, y + 3.3, &line, DIM);
         }
         y += 4.6;
         let row = |y: f32| R::new(x, y, bw, bh);
@@ -332,7 +382,7 @@ impl App {
     fn world_page(&mut self, ui: &mut crate::ui::Ui, s: &mut crate::term::Screen, w: u16, vh: u16) {
         use crate::ui::settings::{ROW, Rows, step};
         let pw = 76.0f32.min(w as f32 - 2.0);
-        let area = R::new((w as f32 - pw) * 0.5, 1.0, pw, (vh as f32 - 2.0).min(22.0));
+        let area = R::new((w as f32 - pw) * 0.5, 1.0, pw, (vh as f32 - 2.0).min(24.0));
         s.deco(crate::term::Deco::panel(area.x, area.y, area.w, area.h, crate::ui::PANEL).border(crate::ui::PANEL_EDGE));
         s.labels.push(crate::ui::left(area.x + 2.0, area.y + 2.0, "World options", 1.8, ACCENT, crate::term::Face::Title));
         let mut rows = Rows { x: area.x + 1.0, y: area.y + 3.8, w: area.w - 2.0, top: area.y + 3.0, bottom: area.y + area.h - 3.0 };
@@ -343,6 +393,7 @@ impl App {
             let v = (self.sim.cfg.difficulty as i32 + d).clamp(0, levels.len() as i32 - 1);
             self.set_world("difficulty", v as f64);
         }
+        rows.head(s, "Life in this world");
         let r = rows.next(ROW);
         let d = ui.choice(s, r, "Most of one kind of creature", &format!("{} a region", self.sim.cfg.max_creatures), false);
         if d != 0 {
@@ -578,10 +629,11 @@ impl App {
             }
         }
         let len = y + if col > 0 { ch } else { 0.0 };
-        // Scroll: the wheel, and the chosen card kept in view.
+        // Scroll: the wheel (or two fingers), and the chosen card kept in
+        // view when the keys move it.
         let view = bottom - top;
         m.ach_scroll = (m.ach_scroll - ui.wheel * 3.0).clamp(0.0, (len - view).max(0.0));
-        if focused || sel != m.ach_sel {
+        if sel != m.ach_sel {
             let sy = place[sel].1;
             if sy < m.ach_scroll {
                 m.ach_scroll = (sy - 2.0).max(0.0);
@@ -611,20 +663,9 @@ impl App {
                     m.ach_sel = i;
                 }
             }
-            // The medal: its tier's colour when earned, grey until then.
-            let medal = if earned.is_some() { tier_color(d.tier) } else { [58, 62, 80] };
-            // Cells are half as wide as tall: twice the columns for a round medal.
-            let mx = r.x + 1.0;
-            s.deco(Deco::pill(mx, r.y + 0.7, 4.4, 2.2, medal).border(if earned.is_some() { [255, 244, 220] } else { [80, 84, 104] }));
-            let glyph = match d.tier {
-                Tier::Bronze => "•",
-                Tier::Silver => "✦",
-                Tier::Gold => "★",
-                Tier::Diamond => "◆",
-            };
-            s.labels.push(Label { x: mx + 2.2, y: r.y + 1.8, text: if earned.is_some() { glyph.into() } else { "?".into() }, size: if d.tier == Tier::Bronze && earned.is_some() { 1.8 } else { 1.1 }, color: if earned.is_some() { [40, 26, 8] } else { FAINT }, face: Face::Bold, center: true });
-            let tx = r.x + 6.4;
-            let tw = r.w - 7.4;
+            medal(s, r.x + 1.1, r.y + 0.6, 2.4, d.tier, earned.is_some());
+            let tx = r.x + 7.0;
+            let tw = r.w - 8.0;
             s.labels.push(left(tx, r.y + 0.95, &crate::ui::fit(d.title, tw - 10.0, 1.0), 1.0, if earned.is_some() { TEXT } else { DIM }, Face::Bold));
             let when = match earned {
                 Some(t) => ago(now - t),
@@ -649,7 +690,7 @@ fn first_focus(p: Page) -> usize {
     }
 }
 
-fn cap(s: &str) -> String {
+pub(super) fn cap(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }

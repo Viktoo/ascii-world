@@ -8,7 +8,7 @@
 
 mod gfx;
 pub(crate) mod taa;
-mod text;
+pub mod text;
 
 pub use taa::jitter;
 
@@ -39,7 +39,7 @@ pub struct Shot {
     pub scale: f32,
     pub after: f32,
     /// Keys pressed a second before the shot (`esc,down,f1` or single
-    /// characters); with a `+` (`+w,+right`), held down from the start.
+    /// characters); with a `+` (`+w,+right`), held down from `keys_at` on.
     pub keys: Vec<String>,
     /// `--keys-at SECS`: press them this long before the shot instead.
     pub keys_at: f32,
@@ -243,8 +243,12 @@ impl Win {
             let left = Duration::from_secs_f32(s.shot.after).saturating_sub(s.start.elapsed());
             std::thread::sleep(d.min(Duration::from_millis(2)).min(left));
             let mut out = std::mem::take(&mut self.h.events);
-            out.extend(s.held.drain(..).map(|k| Ev::Key(press(k))));
-            if !s.keys.is_empty() && left <= Duration::from_secs_f32(s.shot.keys_at) {
+            let now = left <= Duration::from_secs_f32(s.shot.keys_at);
+            // Held keys go down with the others (not while the world loads, which ignores them).
+            if now {
+                out.extend(s.held.drain(..).map(|k| Ev::Key(press(k))));
+            }
+            if !s.keys.is_empty() && now {
                 // One key a pump, as fingers would: each screen sees the last one's result.
                 let k = s.keys.remove(0);
                 out.push(Ev::Key(press(k)));

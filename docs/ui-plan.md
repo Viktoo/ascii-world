@@ -48,13 +48,42 @@ In a world, Esc → Paused
               [Save and quit to title]
 
 Settings (same screen from the title and from Paused), tabs:
-  Video     detail, smooth frames, shadows, frame-rate cap, view distance
+  Video     quality, view distance; More options: smooth frames, shadows, frame-rate cap
   Sound     sound, volume, voices, voice volume, speak to talk
-  AI        provider, API key, model per job, budget, spent (+ reset, details)
+  AI        provider, API key, budget, spent (+ reset, details); More options: model per job
   Together  your name, what each guest may spend
-  General   show work in progress, key hints, tell me about new releases
+  General   key prompts and tips, show what's being made, tell me about new releases
   Controls  the keys (read only)
 ```
+
+## In the world
+
+The view is the whole window; nothing takes rows of its own (`app::hud`).
+Over it, each where the eye already is:
+
+```
+ (Maple Cove · dusk · crisp and clear)                         (♥ ━━━━━━)
+ [conjuring  a lantern on the post   12m ↖ 3s]
+                                  Mara
+                               (words in a box)
+                                     +
+                          [Enter talk to Mara] [E nod]
+
+ [ 3 stirring nearby  1 journal ]
+ [ Mara: Lovely evening.        ]     (The cart · 42 km/h  [A/D] steer …)
+ [ ✦ Finn made a fiddle.        ]  (✦ Do or make anything…            /)
+```
+
+- Keys show for what you look at, at most two or three, never a bar of all keys.
+- What you are doing shows over the input line; its keys only the first few
+  times (counted in settings.json, `tips`), its words when they matter (speed,
+  shots left, a lit fuse).
+- The feed fades; the journal (`1`) keeps everything.
+- An achievement is the one thing that pops up: a card at the top middle (over
+  nothing that matters), drawn above everything, with the same medal as the list
+  (`menu::medal`: ribbon, rim, one to three stars or a diamond; grey with "?" until earned).
+- Spend is not shown while playing: under Paused, and as a notice once it
+  nears the budget.
 
 ## Rules
 

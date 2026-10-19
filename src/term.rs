@@ -31,13 +31,6 @@ impl Cell {
     pub const BLANK: Cell = Cell { ch: ' ', fg: [200, 200, 200], bg: [0, 0, 0], bold: false };
 }
 
-/// Whether a hint's first word names a key ("Enter", "F2", "W/S", "e"), not a thing.
-pub fn is_key(k: &str) -> bool {
-    const NAMED: &[&str] = &["Enter", "Esc", "Tab", "Space", "Shift", "PgUp", "PgDn", "Home", "End", "Backspace"];
-    let n = k.chars().count();
-    n > 0 && (n <= 2 || NAMED.contains(&k) || k.contains('/') || k.contains('+') || (k.starts_with('F') && k[1..].chars().all(|c| c.is_ascii_digit())))
-}
-
 pub const KEYCAP: [u8; 3] = [52, 56, 76];
 pub const KEYCAP_EDGE: [u8; 3] = [92, 98, 130];
 pub const KEYCAP_TEXT: [u8; 3] = [236, 232, 220];
@@ -233,57 +226,30 @@ impl Screen {
         self.labels.push(Label { x: cx, y, text: text.to_string(), size: rows, color, face: Face::Title, center: true });
     }
 
-    /// A key drawn as a keycap; returns the column after it. The cells under
-    /// it are left blank (the cap and its letters are drawn over them).
-    pub fn keycap(&mut self, x: u16, y: u16, key: &str, bg: [u8; 3]) -> u16 {
-        let n = key.chars().count().max(1) as u16 + 1;
-        for i in 0..n {
-            self.set(x + i, y, Cell { ch: ' ', fg: KEYCAP_TEXT, bg, bold: false });
-        }
-        self.decor.push(Deco { x: x as f32 + 0.05, y: y as f32 + 0.1, w: n as f32 - 0.1, h: 0.8, fill: KEYCAP, alpha: 1.0, radius: 0.22, shadow: false, border: Some(KEYCAP_EDGE) });
-        // Arrows are small in the face: larger, so they read.
-        let size = if key.chars().any(|c| c.is_alphanumeric()) { 0.74 } else { 1.0 };
-        self.labels.push(Label { x: x as f32 + n as f32 * 0.5, y: y as f32 + 0.5, text: key.to_string(), size, color: KEYCAP_TEXT, face: Face::Bold, center: true });
-        x + n
-    }
-
-    /// A line of hints, "KEY what   KEY what": each key as a keycap, the rest as text.
-    /// Returns the column after it.
-    pub fn hints(&mut self, x: u16, y: u16, s: &str, fg: [u8; 3], bg: [u8; 3]) -> u16 {
-        let mut cx = x;
-        for (i, part) in s.split("  ").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
-            if cx >= self.w {
-                break;
-            }
-            if i > 0 {
-                cx += 3;
-            }
-            // "the axe: e pick up": the name as words, then the key.
-            let part = match part.split_once(": ") {
-                Some((name, rest)) if !is_key(name) && rest.split_once(' ').is_some_and(|(k, _)| is_key(k)) => {
-                    cx = self.text(cx, y, &format!("{name}: "), fg, bg, false);
-                    rest
-                }
-                _ => part,
-            };
-            match part.split_once(' ') {
-                Some((k, rest)) if is_key(k.trim_end_matches(':')) => {
-                    cx = self.keycap(cx, y, k.trim_end_matches(':'), bg);
-                    cx = self.text(cx + 1, y, rest, fg, bg, false);
-                }
-                _ => cx = self.text(cx, y, part, fg, bg, false),
-            }
-        }
-        cx
-    }
-
-    /// What the screen says, cells and free text together (for tests and agents).
+    /// What the screen says, cells and free text together (for tests and
+    /// agents). Free words are set narrower than cells: a run of them on
+    /// one row is written one after the other, not over each other.
     pub fn plain_text(&self) -> String {
         let mut rows: Vec<Vec<char>> = (0..self.h).map(|y| (0..self.w).map(|x| self.get(x, y).map_or(' ', |c| c.ch)).collect()).collect();
-        for l in self.labels.iter().chain(&self.over_labels) {
-            let n = l.text.chars().count() as f32;
-            let x0 = if l.center { l.x - n * 0.5 } else { l.x }.max(0.0) as usize;
-            let y = l.y.max(0.0) as usize;
+        let mut placed: Vec<(usize, usize, &Label)> = self
+            .labels
+            .iter()
+            .chain(&self.over_labels)
+            .map(|l| {
+                let n = l.text.chars().count() as f32;
+                let x0 = if l.center { l.x - n * 0.5 } else { l.x }.max(0.0) as usize;
+                // The row of its middle (a centred label is placed by it).
+                let mid = if l.center { l.y } else { l.y + l.size * 0.52 };
+                (mid.max(0.0) as usize, x0, l)
+            })
+            .collect();
+        placed.sort_by_key(|p| (p.0, p.1));
+        let mut end = (usize::MAX, 0, ' ');
+        for (y, x0, l) in placed {
+            // Started inside (or right at) the words before it on this row:
+            // after them, a space between unless one of them has it.
+            let gap = (end.2 != ' ' && !l.text.starts_with(' ')) as usize;
+            let x0 = if end.0 == y && x0 <= end.1 { end.1 + gap } else { x0 };
             if let Some(row) = rows.get_mut(y) {
                 for (i, ch) in l.text.chars().enumerate() {
                     if let Some(c) = row.get_mut(x0 + i) {
@@ -291,6 +257,7 @@ impl Screen {
                     }
                 }
             }
+            end = (y, x0 + l.text.chars().count(), l.text.chars().last().unwrap_or(' '));
         }
         rows.into_iter().map(|r| r.into_iter().collect::<String>()).collect::<Vec<_>>().join("\n")
     }
@@ -443,16 +410,6 @@ mod tests {
         let t = String::from_utf8_lossy(&out);
         assert!(t.contains("\x1b[2;4H") && t.contains('x'));
         assert!(out.len() < first);
-    }
-
-    #[test]
-    fn hints_draw_keys_as_caps() {
-        let mut s = Screen::new(60, 2, true);
-        s.hints(0, 0, "Enter begin   Rusty axe: e pick up  F2 inspect", [200, 200, 200], [0, 0, 0]);
-        let t = s.plain_text();
-        assert!(t.contains("Enter") && t.contains("begin") && t.contains("Rusty axe:") && t.contains("F2"), "{t}");
-        assert_eq!(s.decor.len(), 3, "Enter, e and F2 are keys; 'Rusty' is not");
-        assert!(is_key("W/S") && is_key("e") && is_key("Ctrl+U") && is_key("F10") && !is_key("Rusty"));
     }
 
     #[test]
