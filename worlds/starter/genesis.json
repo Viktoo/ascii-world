@@ -1,0 +1,1006 @@
+{
+ "name": "Maple Cove",
+ "land": "A quiet northern coast in the middle of autumn: a cove of shingle and sand facing the sunset over a cold blue sea, a little fishing village of single-storey cottages with bright roofs round its green and its wooden pier, meadows of goldenrod and asters, apple orchards on the hills, and woods of red and orange maple, gold birch, russet oak and dark pine where the woodcutters live. Friendly, cozy and unhurried; woodsmoke, falling leaves and long golden evenings.",
+ "start": "The green in Maple Cove, a fishing village of bright-roofed cottages above its wooden pier, on a golden autumn afternoon.",
+ "rivers": 0.25,
+ "caves": 0.05,
+ "sea": 0,
+ "groundwater": 3,
+ "gravity": 9.81,
+ "air": 1,
+ "palette": {
+  "sky_day": [
+   96,
+   150,
+   214
+  ],
+  "horizon_day": [
+   206,
+   216,
+   226
+  ],
+  "sky_dusk": [
+   92,
+   78,
+   150
+  ],
+  "horizon_dusk": [
+   255,
+   150,
+   78
+  ],
+  "sky_night": [
+   10,
+   14,
+   36
+  ],
+  "horizon_night": [
+   34,
+   38,
+   68
+  ],
+  "sun": [
+   255,
+   240,
+   214
+  ],
+  "water": [
+   34,
+   92,
+   128
+  ],
+  "rock": [
+   150,
+   146,
+   140
+  ],
+  "snow": [
+   240,
+   240,
+   240
+  ],
+  "sand": [
+   214,
+   200,
+   166
+  ],
+  "fog": 0.75
+ },
+ "climate": {
+  "kinds": [
+   {
+    "name": "crisp and clear",
+    "often": 4,
+    "hours": [
+     10,
+     40
+    ],
+    "clouds": 0.1,
+    "wind": 0.25,
+    "feel": "cool, clear autumn air smelling of leaves and woodsmoke"
+   },
+   {
+    "name": "fair weather clouds",
+    "often": 2.5,
+    "hours": [
+     6,
+     24
+    ],
+    "clouds": 0.4,
+    "wind": 0.3
+   },
+   {
+    "name": "sea breeze",
+    "often": 1.2,
+    "hours": [
+     4,
+     12
+    ],
+    "clouds": 0.25,
+    "wind": 0.55,
+    "feel": "fresh and salty off the water, leaves blowing"
+   },
+   {
+    "name": "morning mist",
+    "often": 0.8,
+    "hours": [
+     2,
+     6
+    ],
+    "clouds": 0.5,
+    "wind": 0.05,
+    "fog": 2.2,
+    "feel": "still and soft, mist lying over the cove"
+   },
+   {
+    "name": "soft rain",
+    "often": 0.4,
+    "hours": [
+     2,
+     8
+    ],
+    "clouds": 0.85,
+    "wind": 0.3,
+    "fog": 1.4,
+    "falls": {
+     "what": "rain",
+     "amount": 0.4,
+     "color": [
+      176,
+      190,
+      210
+     ],
+     "look": "streak",
+     "props": {
+      "wet": 1
+     }
+    }
+   }
+  ]
+ },
+ "biomes": [
+  {
+   "name": "autumn meadows",
+   "base": 7,
+   "amp": 5,
+   "rough": 0.1,
+   "cliffs": 0,
+   "ground": [
+    118,
+    146,
+    64
+   ],
+   "ground2": [
+    172,
+    150,
+    76
+   ],
+   "scatter": {
+    "grass": 1.5,
+    "flower": 4.5,
+    "tallgrass": 1.8,
+    "tree": 0.07,
+    "birch": 0.05,
+    "oak": 0.03,
+    "bush": 0.25,
+    "rock": 0.06
+   },
+   "clump": {
+    "flower": 1.0,
+    "tallgrass": 0.85,
+    "tree": 0.8,
+    "birch": 0.8,
+    "oak": 0.8
+   }
+  },
+  {
+   "name": "the sea",
+   "base": -10,
+   "amp": 3,
+   "rough": 0.0,
+   "cliffs": 0,
+   "ground": [
+    176,
+    168,
+    140
+   ],
+   "ground2": [
+    140,
+    144,
+    124
+   ],
+   "scatter": {
+    "grass": 0,
+    "seagrass": 0.8
+   },
+   "clump": {
+    "seagrass": 0.8
+   }
+  },
+  {
+   "name": "maple woods",
+   "base": 16,
+   "amp": 10,
+   "rough": 0.3,
+   "cliffs": 0,
+   "ground": [
+    150,
+    104,
+    56
+   ],
+   "ground2": [
+    116,
+    112,
+    52
+   ],
+   "scatter": {
+    "tree": 0.3,
+    "birch": 0.16,
+    "oak": 0.12,
+    "pine": 0.05,
+    "bush": 0.35,
+    "fern": 0.9,
+    "grass": 1.0,
+    "mushroom": 0.3,
+    "rock": 0.14
+   },
+   "clump": {
+    "tree": 0.4,
+    "birch": 0.6,
+    "oak": 0.5,
+    "pine": 0.7,
+    "fern": 0.7
+   }
+  },
+  {
+   "name": "rocky point",
+   "base": 10,
+   "amp": 14,
+   "rough": 0.5,
+   "cliffs": 0.45,
+   "ground": [
+    130,
+    132,
+    82
+   ],
+   "ground2": [
+    150,
+    128,
+    90
+   ],
+   "scatter": {
+    "bush": 0.7,
+    "rock": 0.4,
+    "flower": 0.4,
+    "grass": 1.3,
+    "pine": 0.12
+   }
+  },
+  {
+   "name": "orchard hills",
+   "base": 14,
+   "amp": 8,
+   "rough": 0.15,
+   "cliffs": 0,
+   "ground": [
+    132,
+    148,
+    72
+   ],
+   "ground2": [
+    160,
+    152,
+    84
+   ],
+   "scatter": {
+    "apple": 0.45,
+    "grass": 1.8,
+    "flower": 1.2,
+    "tallgrass": 1.0,
+    "tree": 0.06,
+    "bush": 0.2,
+    "rock": 0.08
+   },
+   "clump": {
+    "apple": 0.85,
+    "flower": 0.9,
+    "tree": 0.8
+   }
+  }
+ ],
+ "looks": {
+  "human": {
+   "skin": [
+    0.02,
+    0.7
+   ],
+   "undertone": [
+    0.3,
+    0.9
+   ],
+   "eyes": [
+    0.0,
+    0.9
+   ],
+   "eye_shape": [
+    0.2,
+    0.6
+   ],
+   "nose": [
+    0.2,
+    0.6
+   ],
+   "hair_color": [
+    0.0,
+    0.9
+   ],
+   "height": [
+    1.55,
+    1.9
+   ]
+  }
+ },
+ "species": [
+  {
+   "name": "harbor seal",
+   "plural": "harbor seals",
+   "body": "seal",
+   "body_description": "a plump, spotted grey harbor seal lying along +z, a round head with big dark eyes and whiskers, front flippers and hind flippers that sweep side to side",
+   "size": 0.9,
+   "mind": "simple",
+   "speech": "sounds",
+   "social": "pack",
+   "diet": {
+    "plants": 0,
+    "meat": 0.4
+   },
+   "temper": {
+    "bold": 0.4,
+    "wary": 0.5,
+    "playful": 0.7,
+    "tame": 0.3
+   },
+   "move": {
+    "walk": 0,
+    "run": 0,
+    "fly": 0,
+    "swim": 5
+   },
+   "life": {
+    "sleep": [
+     1,
+     4
+    ]
+   },
+   "mass": 90,
+   "water": 1,
+   "depth": [
+    0,
+    8
+   ],
+   "sounds": [
+    "grunt",
+    "bark"
+   ],
+   "voice": [
+    [
+     {
+      "kind": "voice",
+      "hz": [
+       260,
+       200,
+       150
+      ],
+      "len": 0.7,
+      "vowel": "ou",
+      "rough": 6,
+      "loud": 0.5
+     }
+    ],
+    [
+     {
+      "kind": "voice",
+      "hz": [
+       480,
+       420,
+       360
+      ],
+      "len": 0.2,
+      "vowel": "a",
+      "rough": 4,
+      "times": 2,
+      "gap": 0.2,
+      "loud": 0.5
+     }
+    ]
+   ],
+   "description": "harbor seals who bob round the pier after the fishermen's scraps and watch people with their big dark eyes"
+  }
+ ],
+ "landforms": [
+  {
+   "name": "the coast",
+   "biome": "autumn meadows",
+   "outline": [
+    [
+     -2500,
+     3000
+    ],
+    [
+     -2500,
+     -3000
+    ],
+    [
+     3000,
+     -3000
+    ],
+    [
+     3000,
+     3000
+    ]
+   ],
+   "edge": 400
+  },
+  {
+   "name": "the orchard hills",
+   "biome": "orchard hills",
+   "outline": [
+    [
+     320.0,
+     264.6
+    ],
+    [
+     451.5,
+     271.0
+    ],
+    [
+     512.8,
+     314.9
+    ],
+    [
+     666.0,
+     458.3
+    ],
+    [
+     614.9,
+     560.0
+    ],
+    [
+     621.3,
+     711.3
+    ],
+    [
+     551.1,
+     824.8
+    ],
+    [
+     428.6,
+     881.8
+    ],
+    [
+     320.0,
+     907.8
+    ],
+    [
+     181.5,
+     867.7
+    ],
+    [
+     127.3,
+     809.3
+    ],
+    [
+     4.0,
+     699.3
+    ],
+    [
+     51.9,
+     560.0
+    ],
+    [
+     18.4,
+     415.2
+    ],
+    [
+     51.3,
+     306.2
+    ],
+    [
+     172.4,
+     229.0
+    ]
+   ],
+   "edge": 160,
+   "rise": 8,
+   "rugged": 0.3
+  },
+  {
+   "name": "the far orchards",
+   "biome": "orchard hills",
+   "outline": [
+    [
+     260.0,
+     -832.5
+    ],
+    [
+     345.8,
+     -830.2
+    ],
+    [
+     436.6,
+     -752.0
+    ],
+    [
+     529.1,
+     -716.1
+    ],
+    [
+     491.1,
+     -600.0
+    ],
+    [
+     478.8,
+     -499.0
+    ],
+    [
+     414.9,
+     -440.2
+    ],
+    [
+     376.5,
+     -387.2
+    ],
+    [
+     260.0,
+     -305.8
+    ],
+    [
+     172.7,
+     -330.9
+    ],
+    [
+     66.8,
+     -430.1
+    ],
+    [
+     -14.3,
+     -491.3
+    ],
+    [
+     43.0,
+     -600.0
+    ],
+    [
+     3.3,
+     -703.7
+    ],
+    [
+     99.8,
+     -784.3
+    ],
+    [
+     176.8,
+     -837.7
+    ]
+   ],
+   "edge": 160,
+   "rise": 6,
+   "rugged": 0.3
+  },
+  {
+   "name": "the village slope",
+   "biome": "autumn meadows",
+   "outline": [
+    [
+     60.0,
+     -152.9
+    ],
+    [
+     121.5,
+     -145.1
+    ],
+    [
+     173.2,
+     -110.1
+    ],
+    [
+     197.8,
+     -53.1
+    ],
+    [
+     213.6,
+     0.0
+    ],
+    [
+     190.0,
+     61.1
+    ],
+    [
+     161.8,
+     105.5
+    ],
+    [
+     118.1,
+     139.6
+    ],
+    [
+     60.0,
+     138.3
+    ],
+    [
+     -1.2,
+     133.7
+    ],
+    [
+     -40.3,
+     110.6
+    ],
+    [
+     -70.6,
+     60.1
+    ],
+    [
+     -81.0,
+     -0.0
+    ],
+    [
+     -86.8,
+     -52.8
+    ],
+    [
+     -41.2,
+     -101.1
+    ],
+    [
+     -0.8,
+     -149.3
+    ]
+   ],
+   "edge": 120,
+   "rise": 4
+  },
+  {
+   "name": "the west wood",
+   "biome": "maple woods",
+   "outline": [
+    [
+     170.0,
+     77.7
+    ],
+    [
+     209.6,
+     72.6
+    ],
+    [
+     225.8,
+     106.4
+    ],
+    [
+     239.4,
+     134.7
+    ],
+    [
+     236.5,
+     169.5
+    ],
+    [
+     225.4,
+     200.5
+    ],
+    [
+     203.8,
+     216.2
+    ],
+    [
+     170.0,
+     240.8
+    ],
+    [
+     138.4,
+     208.1
+    ],
+    [
+     98.2,
+     192.8
+    ],
+    [
+     82.5,
+     170.0
+    ],
+    [
+     84.4,
+     129.9
+    ],
+    [
+     100.1,
+     91.2
+    ],
+    [
+     130.4,
+     84.9
+    ]
+   ],
+   "edge": 60,
+   "rise": 3,
+   "rugged": 0.2
+  },
+  {
+   "name": "the east wood",
+   "biome": "maple woods",
+   "outline": [
+    [
+     175.0,
+     -203.2
+    ],
+    [
+     213.3,
+     -211.7
+    ],
+    [
+     227.9,
+     -182.5
+    ],
+    [
+     252.8,
+     -158.3
+    ],
+    [
+     253.5,
+     -124.6
+    ],
+    [
+     240.1,
+     -95.2
+    ],
+    [
+     203.9,
+     -82.7
+    ],
+    [
+     175.0,
+     -53.0
+    ],
+    [
+     138.5,
+     -78.9
+    ],
+    [
+     124.6,
+     -90.8
+    ],
+    [
+     97.1,
+     -123.0
+    ],
+    [
+     97.4,
+     -154.5
+    ],
+    [
+     120.2,
+     -179.7
+    ],
+    [
+     146.3,
+     -196.3
+    ]
+   ],
+   "edge": 60,
+   "rise": 3,
+   "rugged": 0.2
+  },
+  {
+   "name": "the maple woods",
+   "biome": "maple woods",
+   "outline": [
+    [
+     660.0,
+     -456.4
+    ],
+    [
+     746.1,
+     -414.0
+    ],
+    [
+     844.9,
+     -336.3
+    ],
+    [
+     921.6,
+     -304.8
+    ],
+    [
+     968.4,
+     -219.2
+    ],
+    [
+     987.2,
+     -130.0
+    ],
+    [
+     938.0,
+     -30.9
+    ],
+    [
+     916.0,
+     48.4
+    ],
+    [
+     839.2,
+     90.4
+    ],
+    [
+     746.2,
+     181.4
+    ],
+    [
+     660.0,
+     197.3
+    ],
+    [
+     571.9,
+     184.8
+    ],
+    [
+     467.8,
+     83.1
+    ],
+    [
+     421.3,
+     62.5
+    ],
+    [
+     400.6,
+     -48.6
+    ],
+    [
+     378.8,
+     -130.0
+    ],
+    [
+     367.1,
+     -235.3
+    ],
+    [
+     406.0,
+     -290.5
+    ],
+    [
+     460.8,
+     -362.5
+    ],
+    [
+     566.9,
+     -450.4
+    ]
+   ],
+   "edge": 110,
+   "rise": 12,
+   "rugged": 0.25
+  },
+  {
+   "name": "the cove",
+   "biome": "the sea",
+   "outline": [
+    [
+     -70,
+     3000
+    ],
+    [
+     -60,
+     900
+    ],
+    [
+     -58,
+     420
+    ],
+    [
+     -52,
+     240
+    ],
+    [
+     -40,
+     190
+    ],
+    [
+     -34,
+     150
+    ],
+    [
+     -30,
+     112
+    ],
+    [
+     -26,
+     96
+    ],
+    [
+     -24,
+     60
+    ],
+    [
+     -24,
+     0
+    ],
+    [
+     -24,
+     -60
+    ],
+    [
+     -26,
+     -100
+    ],
+    [
+     -32,
+     -135
+    ],
+    [
+     -60,
+     -160
+    ],
+    [
+     -130,
+     -185
+    ],
+    [
+     -205,
+     -215
+    ],
+    [
+     -215,
+     -245
+    ],
+    [
+     -170,
+     -275
+    ],
+    [
+     -95,
+     -300
+    ],
+    [
+     -60,
+     -340
+    ],
+    [
+     -58,
+     -520
+    ],
+    [
+     -64,
+     -900
+    ],
+    [
+     -70,
+     -3000
+    ],
+    [
+     -3000,
+     -3000
+    ],
+    [
+     -3000,
+     3000
+    ]
+   ],
+   "edge": 45
+  },
+  {
+   "name": "Lantern Point",
+   "biome": "rocky point",
+   "outline": [
+    [
+     -30,
+     -140
+    ],
+    [
+     -110,
+     -170
+    ],
+    [
+     -205,
+     -215
+    ],
+    [
+     -196,
+     -262
+    ],
+    [
+     -100,
+     -300
+    ],
+    [
+     -40,
+     -320
+    ],
+    [
+     10,
+     -230
+    ]
+   ],
+   "edge": 30,
+   "rise": 12,
+   "rugged": 0.5
+  }
+ ]
+}

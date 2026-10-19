@@ -1,0 +1,77 @@
+// Dale's General Store: a single storey of butter-yellow clapboard under a
+// blue roof, a porch out front with barrels and a bench, a big window full of
+// goods, the storekeepers' rooms at the back. Its door faces +z.
+export const meta = {
+  name: "general store",
+  bounds: [5.30, 7.38, 6.55],
+  tags: ['building', 'house', 'shop'],
+  props: { mass: 60000, burns: 0.5, light: 1 },
+  sound: { hard: 0.6, dry: 0.8, ring: 0.05 },
+  anchors: [
+    { kind: "door", at: [0.0, 0, 4.0], face: 0, size: [1.1, 2.2] },
+    { kind: "light", at: [0.90, 2.3, 4.15] },
+    { kind: "light", at: [0, 2.6, 0] },
+  ],
+};
+
+export function sdf(x, y, z, k) {
+  const body = box(x, y - 1.55, z, 4.8, 1.55, 4.0);
+  const rooms = box(x, y - 1.450, z, 4.6, 1.450, 3.8);
+  const door = box(x - (0.0), y - 1.1, z - 4.0, 0.55, 1.1, 0.4);
+  const wins = min(min(box(x - (-2.6), y - 1.45, z, 0.45, 0.62, 4.3) , box(x - (2.6), y - 1.45, z, 0.45, 0.62, 4.3)), box(abs(x) - 4.8, y - 1.45, z, 0.4, 0.62, 0.45));
+  const shell = max(body, -min(min(rooms, door), wins));
+  const floor0 = box(x, y - 0.025, z, 4.609999999999999, 0.025, 3.8099999999999996);
+  const glass = min(box(abs(x) - 4.74, y - 1.45, z, 0.02, 0.6, 0.42), min(box(x - (-2.6), y - 1.45, abs(z) - 3.92, 0.45, 0.62, 0.02) , box(x - (2.6), y - 1.45, abs(z) - 3.92, 0.45, 0.62, 0.02)));
+  // The roof: a steep shell over the gable walls, the gables clapboard.
+  const pl = ((y - 6.580) + abs(z) * 0.8) * 0.7809;
+  const roof = max(max(abs(pl + 0.09) - 0.09, abs(x) - 5.1499999999999995), max(2.9 - y, abs(z) - 4.35));
+  const gable = max(pl, max(abs(x) - 4.8, 3.0500000000000003 - y));
+  const chim = box(x + 2.64, y - 5.19, z + 0.5, 0.32, 2.09, 0.32);
+  const inner = min(10.0, max(box(x - (0.0), y - 1.450, z - (-0.8), 4.6, 1.450, 0.08), -box(x - (3.4), y - 1.05, z - (-0.8), 0.5, 1.05, 0.3)));
+  const hearth = 10.0;
+  const porch = min(min(min(box(x, y - 0.1, z - 5.00, 4.8, 0.1, 1.00), box(abs(x) - 4.65, y - 1.55, z - 5.85, 0.08, 1.55, 0.08)), box(x, y - (3.02 - (z - 4.0) * 0.22), z - 5.10, 4.95, 0.06, 1.25)), box(abs(x) - 1.60, y - 1.55, z - 5.85, 0.08, 1.55, 0.08));
+  return min(min(min(shell, floor0), min(glass, roof)), min(min(gable, chim), min(min(inner, hearth), porch)));
+}
+
+export function color(x, y, z, k) {
+  const n = noise3(x * 1.3, y * 1.3, z * 1.3);
+  let wall = rgb(236, 210, 140);
+  const cwall = floor(hash(k.seed, 4) * 1);
+  let roof = rgb(46, 80, 160);
+  const croof = floor(hash(k.seed, 5) * 1);
+  let shut = rgb(40, 60, 46);
+  const cshut = floor(hash(k.seed, 6) * 4);
+  if (cshut == 1) shut = rgb(34, 40, 60);
+  if (cshut == 2) shut = rgb(30, 30, 34);
+  if (cshut == 3) shut = rgb(120, 40, 36);
+  const pl = ((y - 6.580) + abs(z) * 0.8) * 0.7809;
+  if (abs(x + 2.64) < 0.34 && abs(z + 0.5) < 0.34 && y > 3.3000000000000003) return y > 7.13 ? rgb(60, 54, 50) : mix(rgb(140, 64, 48), rgb(166, 84, 60), noise3(x * 8, y * 8, z * 8));
+  if (pl > -0.2 && y > 2.9 && (abs(x) > 4.79 || pl > -0.17)) return roof * (fract((y - abs(z) * 0.8) * 3.0) < 0.12 ? 0.82 : 1.0) * (0.92 + 0.08 * n);
+  if (z > 4.02 && y < 0.21) return fract(x * 5.0) < 0.08 ? rgb(110, 90, 70) : rgb(170, 146, 116);
+  if (z > 4.05 && y > 2.50) return roof * 0.85;
+  if (z > 4.05) return rgb(244, 242, 236);
+  const inside = abs(x) < 4.619999999999999 && abs(z) < 3.82;
+
+  if (inside) {
+    // Wide pine floorboards, whitewashed walls, beams overhead.
+    if (y < 0.07) return fract(x * 3.0) < 0.06 ? rgb(110, 80, 52) : mix(rgb(176, 130, 84), rgb(196, 150, 100), noise3(x * 3, 1, z * 12));
+    if (y > 2.65) return fract(x * 0.7) < 0.12 ? rgb(110, 80, 56) : rgb(236, 228, 210);
+    return rgb(240, 234, 220);
+  }
+  // Glass: warm with lamplight.
+  if (abs(y - 1.45) < 0.62 && ((abs(abs(x) - 4.74) < 0.04 && abs(z) < 0.44) || abs(abs(z) - 3.92) < 0.04)) return glow(mix(rgb(90, 76, 60), rgb(255, 200, 120), 0.65), 0.75);
+  // Window frames and shutters.
+  const fw = abs(z) > 3.97 || abs(x) > 4.77;
+  if (fw && abs(y - 1.45) < 0.72) {
+    const wx = abs(z) > 3.97 ? x : z;
+    const near = abs(abs(wx - (-2.6)) - 0.45) < 0.07 || abs(abs(wx - (2.6)) - 0.45) < 0.07 || (abs(x) > 4.77 && abs(abs(z) - 0.45) < 0.07);
+    if (near) return rgb(246, 244, 238);
+    const sh = abs(abs(wx - (-2.6)) - 0.7) < 0.18 || abs(abs(wx - (2.6)) - 0.7) < 0.18 || (abs(x) > 4.77 && abs(abs(z) - 0.7) < 0.18);
+    if (sh && abs(y - 1.45) < 0.64) return shut * (fract(y * 10.0) < 0.3 ? 0.8 : 1.0);
+  }
+  if (abs(z - 4.0) < 0.06 && abs(x - (0.0)) < 0.67 && y < 2.32) return rgb(246, 244, 238);
+  if (y < 0.3) return mix(rgb(120, 118, 112), rgb(150, 146, 138), noise3(x * 4, y * 4, z * 4));
+  // Corner boards, then the clapboard.
+  if (abs(abs(x) - 4.8) < 0.14 && abs(abs(z) - 4.0) < 0.14) return rgb(246, 244, 238);
+  return wall * (fract(y * 5.0) < 0.14 ? 0.86 : 1.0) * (0.95 + 0.05 * n);
+}
