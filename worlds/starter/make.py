@@ -183,17 +183,19 @@ def lay_ground(p, nat, gnat):
     # The landing: a granite quay laid in setts along the water, the pier
     # going out from it; the cove under the pier kept shallow for the piles.
     h = village.LANDING_H
+    p.rect("cove floor", -40, -86, 40, -36, "level", height=-3.5, sides=5)
     p.rect("landing", -44, -31, 44, -10, "level", height=h, sides=0.7, color=COBBLE, rim=STONE, rim_width=0.5, name="the landing", pattern="setts")
-    p.rect("cove floor", -40, -86, 40, -31, "level", height=-3.5, sides=10)
     # A grassy bank from the landing up to the village.
     for x in range(-48, 49, 8):
         p.line("bank", [(x, -10.5), (x, 8)], 9.0, "level", height=[h, round(nat(x, 8), 2)], sides=3)
     p.line("lane", [(-8, -12), (-8, 8), (-4, 21)], 4.0, "level", height=[h, round(nat(-8, 8), 2), round(nat(-4, 21), 2)], sides=2.0, color=COBBLE, name="Pier Lane", pattern="cobbles")
     # The cove beach along the shore past the west lane: shingle and sand.
-    for x in range(-150, -46, 12):
-        top = round(nat(x, -8), 2)
-        p.line("beach", [(x, -8), (x, -24), (x, -40), (x, -62)], 14, "level", height=[top, 1.2, -0.3, -2.2], sides=6)
-    p.rect("sand", -152, -60, -50, -14, "paint", color=SAND, name="Sunset Beach")
+    import beach
+    for x in range(-152, -45, 8):
+        zs = [z for z, _ in beach.PROFILE]
+        hs = [round(nat(x, -6), 2)] + [hh for _, hh in beach.PROFILE[1:]]
+        p.line("beach", [(x, z) for z in zs], 10, "level", height=hs, sides=5)
+    p.rect("sand", -154, -64, -47, -12, "paint", color=SAND, name="Sunset Beach")
     # The green, level, and the lanes round it and away.
     gx, gz = village.GREEN
     gh = round(nat(gx, gz), 2)
@@ -389,6 +391,8 @@ def main():
     p = Plan()
     clearing, gh = lay_ground(p, nat, gnat)
     village.lay(p, nat, round(gnat["cape"], 2), round(gnat["cross"], 2))
+    import beach
+    beach.lay(p)
     hamlet.lay(p, clearing)
     people.lay(p, round(gnat["cape"], 2), clearing)
     regions = write_regions(p)

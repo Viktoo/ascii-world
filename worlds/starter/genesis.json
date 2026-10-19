@@ -326,7 +326,7 @@
    "plural": "harbor seals",
    "body": "seal",
    "body_description": "a plump, spotted grey harbor seal lying along +z, a round head with big dark eyes and whiskers, front flippers and hind flippers that sweep side to side",
-   "size": 0.9,
+   "size": 0.45,
    "mind": "simple",
    "speech": "sounds",
    "social": "pack",
@@ -395,6 +395,55 @@
     ]
    ],
    "description": "harbor seals who bob round the pier after the fishermen's scraps and watch people with their big dark eyes"
+  },
+  {
+   "name": "rock crab",
+   "plural": "rock crabs",
+   "body": "crab",
+   "body_description": "a rock crab with its front to +z: a broad reddish-brown shell, stalked eyes, a big claw each side, four legs a side that scuttle",
+   "size": 0.12,
+   "mind": "simple",
+   "speech": "sounds",
+   "social": "solitary",
+   "diet": {
+    "plants": 0.4,
+    "meat": 0.6
+   },
+   "temper": {
+    "bold": 0.3,
+    "wary": 0.8,
+    "playful": 0.2,
+    "tame": 0.1
+   },
+   "move": {
+    "walk": 0.4,
+    "run": 1.2,
+    "fly": 0,
+    "swim": 0.5
+   },
+   "life": {
+    "sleep": [
+     10,
+     16
+    ]
+   },
+   "mass": 0.6,
+   "sounds": [
+    "a clicking scuttle"
+   ],
+   "voice": [
+    [
+     {
+      "kind": "knock",
+      "hz": 2600,
+      "len": 0.02,
+      "times": 5,
+      "gap": 0.04,
+      "loud": 0.25
+     }
+    ]
+   ],
+   "description": "rock crabs that scuttle sideways along the tide line and pinch at curious fingers"
   }
  ],
  "landforms": [

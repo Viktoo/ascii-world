@@ -602,3 +602,59 @@ t("smithy", "The smithy: an open-fronted shed of dark boards under a slate-grey 
   if (length2(x - 2.6, z - 2.0) < 0.5) return y > 0.6 ? rgb(60, 90, 110) : rgb(110, 80, 50);
   return mix(rgb(70, 56, 44), rgb(90, 72, 56), noise3(x * 3, y * 12, z * 3));""",
   ['{ kind: "light", at: [1.6, 1.0, 2.1] }'])
+
+# ------------------------------------------------------------- the beach
+t("seashells", "A scatter of seashells on the sand: blue mussel shells, ribbed white and\npink scallops, a whelk, a moon snail, washed up along the tide line.",
+  "seashells", (0.6, 0.06, 0.6), '["prop", "shell", "nonsolid"]', "{ mass: 0.3, fragile: 0.5 }",
+  """  let d = 10.0;
+  for (let i = 0; i < 6; i++) {
+    const a = i * 2.39996 + hash(k.seed, i) * 1.3;
+    const r = 0.1 + hash(k.seed, i, 2) * 0.45;
+    d = min(d, ellipsoid(x - cos(a) * r, y - 0.01, z - sin(a) * r, 0.045, 0.02, 0.035));
+  }
+  return d;""",
+  """  const i = floor(hash(floor(x * 6.0), floor(z * 6.0), k.seed) * 4.0);
+  if (i < 1) return rgb(40, 50, 80);
+  if (i < 2) return fract(atan2(z, x) * 6.0) < 0.5 ? rgb(244, 230, 220) : rgb(226, 176, 170);
+  if (i < 3) return rgb(230, 214, 190);
+  return rgb(246, 244, 238);""")
+item("beach-ball", "beach ball", "A big beach ball striped red, yellow, blue and white, light and bouncy.", (0.25, 0.5, 0.25), "{ mass: 0.15, toy: 1, bounce: 0.85 }",
+     """  return sphere(x, y - 0.24, z, 0.24);""",
+     """  const a = atan2(z, x);
+  const s = floor(fract(a / 6.2832 + 0.5) * 6.0);
+  if (abs(y - 0.24) > 0.22) return rgb(250, 250, 246);
+  if (s < 1 || s == 3) return rgb(220, 40, 40);
+  if (s == 1 || s == 4) return rgb(250, 210, 40);
+  return rgb(40, 100, 200);""", tags='["item", "toy", "ball"]')
+t("adirondack-chair", "A wooden Adirondack chair, wide-armed and low, its slatted back leaning far\nback, painted barn red, sea green or white, for sitting on the sand and\nwatching the sun go down. It faces +z.",
+  "adirondack chair", (0.42, 1.0, 0.55), '["furniture", "seat"]', "{ mass: 15, burns: 0.6 }",
+  """  const seat = max(box(x, y - 0.36 + z * 0.15, z, 0.3, 0.025, 0.28), 0.0 - 1.0);
+  const sx = x - 0.12 * floor(x / 0.12 + 0.5);
+  const back = max(max(box(sx, y - 0.62, z + 0.3 + (y - 0.35) * 0.5, 0.045, 0.32, 0.02), abs(x) - 0.3), (y - 0.95) + abs(x) * 0.4);
+  const arms = box(abs(x) - 0.36, y - 0.55, z - 0.02, 0.06, 0.02, 0.32);
+  const legs = box(abs(x) - 0.33, y - 0.27, abs(z) - 0.26, 0.025, 0.27, 0.025);
+  return min(min(seat, back), min(arms, legs));""",
+  """  const c = floor(hash(k.seed) * 3.0);
+  const n = 0.92 + 0.08 * noise3(x * 8, y * 8, z * 8);
+  if (c < 1) return rgb(160, 50, 40) * n;
+  if (c < 2) return rgb(80, 150, 130) * n;
+  return rgb(240, 238, 230) * n;""",
+  ['{ kind: "seat", at: [0, 0.38, -0.05], face: 0 }'])
+t("picnic-blanket", "A red-and-white checked picnic blanket spread on the sand, a wicker basket\non it with a loaf, apples and a thermos of cider.",
+  "picnic blanket", (1.0, 0.35, 0.8), '["prop", "seat", "nonsolid"]', "{ mass: 4, burns: 0.8 }",
+  """  const cloth = box(x, y - 0.01, z, 0.95, 0.01, 0.75);
+  const basket = box(x - 0.5, y - 0.14, z + 0.35, 0.22, 0.13, 0.15);
+  const handle = max(abs(length2(x - 0.5, y - 0.27) - 0.15) - 0.015, abs(z - 0.35) - 0.015);
+  const apples = min(sphere(x + 0.3, y - 0.05, z - 0.2, 0.045), sphere(x + 0.2, y - 0.05, z - 0.3, 0.045));
+  return min(min(cloth, basket), min(max(handle, 0.27 - y), apples));""",
+  """  if (y > 0.03 && abs(x + 0.25) < 0.1) return rgb(196, 30, 30);
+  if (y > 0.03) return y > 0.26 ? rgb(150, 110, 64) : (fract(y * 20.0) < 0.4 ? rgb(150, 110, 64) : rgb(196, 156, 100));
+  return step(0.5, fract(x * 5.0)) + step(0.5, fract(z * 5.0)) == 1 ? rgb(200, 40, 40) : rgb(246, 242, 236);""",
+  ['{ kind: "seat", at: [0.3, 0.05, 0.2], face: 0 }', '{ kind: "seat", at: [-0.3, 0.05, -0.2], face: 0 }'])
+t("driftwood-log", "A long driftwood log, bleached silver-grey by the sea and smooth from\nyears of waves, washed up on the sand: a seat for three by the fire ring.",
+  "driftwood log", (1.6, 0.5, 0.35), '["prop", "seat", "wood"]', "{ mass: 120, burns: 0.8, fuel: 0.8 }",
+  """  const log = capsule(x, y, z, -1.4, 0.24, 0.0, 1.4, 0.2, 0.05, 0.22 - abs(x) * 0.03);
+  const knot = capsule(x, y, z, 0.6, 0.3, 0.05, 0.85, 0.45, 0.25, 0.05);
+  return min(log, knot);""",
+  """  return mix(rgb(170, 164, 152), rgb(206, 200, 188), noise3(x * 3, y * 20, z * 20));""",
+  ['{ kind: "seat", at: [-0.8, 0.44, 0], face: 0 }', '{ kind: "seat", at: [0, 0.44, 0], face: 0 }', '{ kind: "seat", at: [0.8, 0.44, 0], face: 0 }'])
