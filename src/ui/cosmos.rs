@@ -23,7 +23,7 @@ use std::f32::consts::{PI, TAU};
 const MAX_W: f32 = 1280.0;
 /// Seconds between rings, and how long one is seen.
 const PULSE: f32 = 3.0;
-const RING_LIFE: f32 = 7.0;
+const RING_LIFE: f32 = 4.5;
 /// A template's surface map, longitude × latitude.
 #[cfg(not(test))]
 const TEX_W: usize = 512;
@@ -582,17 +582,18 @@ impl Cosmos {
         let now = (t / PULSE).floor() as i64;
         let radius = |g: i64| -> f32 {
             let a = t - g as f32 * PULSE;
-            if a < 0.0 { -1e9 } else { (wf * wf + hf * hf).sqrt() * 0.62 * (1.0 - (-a / 1.7).exp()) }
+            // The first ring leaves only after one quiet beat.
+            if a < 0.0 || g < 1 { -1e9 } else { (wf * wf + hf * hf).sqrt() * 0.62 * (1.0 - (-a / 0.85).exp()) }
         };
-        for g in ((now as f32 - RING_LIFE / PULSE).floor() as i64).max(0)..=now {
+        for g in ((now as f32 - RING_LIFE / PULSE).floor() as i64).max(1)..=now {
             let a = t - g as f32 * PULSE;
             if !(0.0..RING_LIFE).contains(&a) {
                 continue;
             }
             let r = radius(g);
             // Its edge stays crisp; the glow behind it widens as it goes.
-            let wd = (1.2 + a * 0.5) * sc.max(0.3);
-            let trail = (34.0 + a * 46.0) * sc.max(0.3);
+            let wd = (1.2 + a * 1.0) * sc.max(0.3);
+            let trail = (34.0 + a * 92.0) * sc.max(0.3);
             // Half as bright as it could be: a background, not the thing to look at.
             let i = 0.55 * (1.0 - a / RING_LIFE).powf(1.5) * (a * 8.0).min(1.0);
             let (dmin, dmax) = ((r - trail).max(0.0), r + 5.0 * wd);
@@ -636,7 +637,7 @@ impl Cosmos {
             for m in 0..(160.0 * sc.max(0.4)) as u32 {
                 let ang = hash(gs, m) * TAU;
                 let lag = hash(gs, m + 500).powf(1.5) * trail * 1.4;
-                let rr = r - lag - a * 4.0 * hash(gs, m + 900);
+                let rr = r - lag - a * 8.0 * hash(gs, m + 900);
                 if rr <= 0.0 {
                     continue;
                 }
@@ -660,7 +661,7 @@ impl Cosmos {
             }
         }
         for g in [now, now + 1] {
-            if g >= 0 && !self.asked.contains(&(g as u64)) {
+            if g >= 1 && !self.asked.contains(&(g as u64)) {
                 if let Some(a) = &self.ask {
                     let _ = a.send((g as u64, w, h));
                 }
@@ -714,7 +715,8 @@ impl Cosmos {
         }
         // The light itself, swelling a little as each ring leaves it, in
         // the rings' colours, drifting slowly from one to the next.
-        let flare = 0.85 + 0.1 * (t * 0.9).sin() + 0.45 * (-(t.rem_euclid(PULSE)) / 0.5).exp();
+        let swell = if t >= PULSE { 0.45 * (-(t.rem_euclid(PULSE)) / 0.5).exp() } else { 0.0 };
+        let flare = 0.85 + 0.1 * (t * 0.9).sin() + swell;
         let tint = mix(mix([0.70, 0.52, 1.0], [0.42, 0.88, 1.0], 0.5 + 0.5 * (t * 0.21).cos()), [1.0, 0.84, 0.55], (0.5 + 0.5 * (t * 0.13).sin()).powi(2) * 0.7);
         let (lx, ly) = (light.0 as i32, light.1 as i32);
         let n = 2 * self.core_r + 1;
