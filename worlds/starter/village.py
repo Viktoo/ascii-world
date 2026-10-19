@@ -39,7 +39,7 @@ ON_LANDING = {"tavern", "fishshed", "boatshop"}
 # The lanes out from the green, along the bluff west and east and up north
 # toward the woods. Cottages stand along them, doors to the lane.
 LANES = {
-    "west": [(-22.0, 26.0), (-50.0, 22.0), (-78.0, 15.0), (-104.0, 9.0), (-126.0, 5.0)],
+    "west": [(-22.0, 26.0), (-50.0, 24.0), (-78.0, 20.0), (-104.0, 17.0), (-126.0, 15.0)],
     "east": [(22.0, 26.0), (50.0, 24.0), (78.0, 19.0), (104.0, 14.0), (124.0, 12.0)],
     "north": [(22.0, 50.0), (26.0, 72.0), (30.0, 112.0)],
 }
@@ -79,7 +79,7 @@ def door_of(key, out=1.0):
     x, z, b, h, ty = PLACED[key]
     W, D, dx, porch = SHAPE[ty]
     px, pz = local(key, dx, D + porch + out)
-    return px, pz, h + (0.2 if porch else 0.0)
+    return px, pz, h
 
 
 def yard(key):
@@ -178,9 +178,9 @@ def dress(p, rnd):
         W, D, dx, porch = SHAPE[ty]
         r = rnd.random()
         if r < 0.55:
-            p.put("pumpkins", *local(key, dx + 1.6, D + porch + 0.8), b + rnd.uniform(-20, 20), y=h + (0.2 if porch else 0.0))
+            p.put("pumpkins", *local(key, dx + 1.6, D + porch + 0.8), b + rnd.uniform(-20, 20), y=h)
         if r > 0.35:
-            p.put("pots of mums", *local(key, dx - 1.5, D + porch + 0.5), b, y=h + (0.2 if porch else 0.0))
+            p.put("pots of mums", *local(key, dx - 1.5, D + porch + 0.5), b, y=h)
         if ty in ("cottage", "family cottage"):
             if rnd.random() < 0.6:
                 # Fence along the front garden, a gap for the path.
@@ -296,7 +296,10 @@ def trees(p, nat, rnd):
     def free(x, z, r):
         return all(math.hypot(x - a, z - b) > r + c for a, b, c in taken)
 
+    reach = {"red oak": 4.6, "sugar maple": 3.8, "paper birch": 2.4, "white pine": 2.6, "apple tree": 2.6}
+
     def plant(ty, x, z, r=3.5):
+        r = max(r, reach.get(ty, r))
         if z < -6 or not free(x, z, r):
             return
         taken.append((x, z, r))

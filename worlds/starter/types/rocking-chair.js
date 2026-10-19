@@ -11,7 +11,7 @@ export const meta = {
 
 export function sdf(x, y, z, k) {
   const seat = box(x, y - 0.45, z, 0.25, 0.03, 0.22);
-  const back = box(x, y - 0.8, z + 0.24 - (y - 0.45) * 0.2, 0.25, 0.35, 0.02);
+  const back = box(x, y - 0.8, z + 0.22 + (y - 0.45) * 0.22, 0.25, 0.35, 0.02);
   const rock = max(abs(length2(z, y - 1.4) - 1.38) - 0.02, max(abs(abs(x) - 0.23) - 0.02, abs(z) - 0.4));
   const legs = box(abs(x) - 0.23, y - 0.25, abs(z) - 0.18, 0.02, 0.22, 0.02);
   return min(min(seat, back), min(rock, legs));

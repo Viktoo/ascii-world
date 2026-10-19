@@ -155,9 +155,12 @@ SAND = (214, 200, 166)
 def height_map():
     """The land's natural heights over the village (before anything is laid),
     read once on a 4 m grid; `nat(x, z)` in plan metres between them."""
-    x0, z0 = W(-140, -40)
-    x1, z1 = W(140, 130)
-    out = subprocess.run([POCKET, "author", "heights", os.path.join(WORK, "land.pocket"), f"{min(x0, x1)},{min(z0, z1)},{max(x0, x1)},{max(z0, z1)}", "4"],
+    x0, z0 = W(-180, -50)
+    x1, z1 = W(180, 150)
+    # On the 4 m grid itself, so every lookup lands on its samples.
+    snap = lambda v, f: int(f(v / 4) * 4)
+    box = f"{snap(min(x0, x1), math.floor)},{snap(min(z0, z1), math.floor)},{snap(max(x0, x1), math.ceil)},{snap(max(z0, z1), math.ceil)}"
+    out = subprocess.run([POCKET, "author", "heights", os.path.join(WORK, "land.pocket"), box, "4"],
                          capture_output=True, text=True, check=True).stdout.splitlines()
     xs = [float(v) for v in out[0].split()[1:]]
     grid = {}
@@ -210,11 +213,11 @@ def lay_ground(p, nat, gnat):
     p.line("lane", [(-8, -12), (-8, 8), (-4, 21)], 4.0, "level", height=[h, round(nat(-8, 8), 2), round(nat(-4, 21), 2)], sides=2.0, color=COBBLE, name="Pier Lane", pattern="cobbles")
     # The cove beach along the shore past the west lane: shingle and sand.
     import beach
-    for x in range(-152, -45, 8):
+    for x in range(-152, -51, 8):
         zs = [z for z, _ in beach.PROFILE]
         hs = [round(nat(x, -6), 2)] + [hh for _, hh in beach.PROFILE[1:]]
         p.line("beach", [(x, z) for z in zs], 10, "level", height=hs, sides=5)
-    p.rect("sand", -154, -64, -47, -12, "paint", color=SAND, name="Sunset Beach")
+    p.rect("sand", -154, -64, -50, -12, "paint", color=SAND, name="Sunset Beach")
     # The green, level, and the lanes round it and away.
     gx, gz = village.GREEN
     gh = round(nat(gx, gz), 2)
@@ -227,7 +230,7 @@ def lay_ground(p, nat, gnat):
     p.line("road", [(30, 112), (34, 210), (70, 300), (100, 400), (124, 458), (128, 492)], 4.0, "level", color=DIRT, name="the woodcutters' road")
     p.line("road", [(34, 210), (-90, 226), (-220, 240), (-380, 262)], 4.0, "level", color=DIRT, name="the coast road")
     p.line("road", [(34, 210), (150, 196), (290, 190), (420, 186)], 4.0, "level", color=DIRT, name="the coast road")
-    p.line("path", [(-126, 5), (-150, 60), (-176, 150), (-200, 236)], 2.6, "level", color=GRAVEL, name="the beach path")
+    p.line("path", [(-126, 15), (-150, 60), (-176, 150), (-200, 236)], 2.6, "level", color=GRAVEL, name="the beach path")
     p.line("path", [(124, 12), (190, 60), (250, 100), (250, 0), (238, -110), (236, -178)], 2.6, "level", color=GRAVEL, name="the lighthouse path")
     # The woodcutters' clearing, levelled, and their pond.
     fx, fz = FOREST_AT

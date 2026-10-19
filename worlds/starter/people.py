@@ -326,9 +326,13 @@ def lay(p, cape_h, clearing):
     for ty, who in ITEMS:
         x, z = homes[who]
         p.item(ty, who, x, z)
+    # Bikes lean by their owners' doors, on the level yard.
     for ty, who in RIDES:
-        c = by_name[who]
-        p.put(ty, c["home_x"] - 1.6, c["home_z"] - 1.4, 90, y=c["y"])
+        key = next(k for k, names in HOUSEHOLDS.items() if who in names)
+        x, z, b, h, kind = village.PLACED[key]
+        W, D, dx, porch = village.SHAPE[kind]
+        side = 1 if dx < 0 else -1
+        p.put(ty, *village.local(key, dx + side * (W * 0.5 + 0.8), D + porch + 1.0), b + 90, y=h)
     p.creatures += creatures(clearing)
     households = {key: (key in COUPLES, sum(1 for n in names if n in CHILDREN), HOBBY.get(key)) for key, names in HOUSEHOLDS.items()}
     interiors.lay(p, households)
