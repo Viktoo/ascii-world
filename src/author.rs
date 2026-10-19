@@ -38,6 +38,12 @@ struct Spec {
     regions: Vec<[i32; 2]>,
     #[serde(default)]
     difficulty: Option<String>,
+    /// The hour a traveler first arrives at (0–24), and the way they face
+    /// then (degrees, as `--at` takes them).
+    #[serde(default)]
+    start_hour: Option<f64>,
+    #[serde(default)]
+    facing: Option<f32>,
 }
 
 const USAGE: &str = "usage: pocket author DIR [--out FILE] [--genesis-only]
@@ -206,6 +212,13 @@ fn build(dir: &Path, out: Option<PathBuf>, genesis_only: bool) -> Result<()> {
             db.kv_set("spawn", &serde_json::to_string(&[x, y, z])?)?;
         }
     }
+    if let Some(h) = spec.start_hour {
+        db.kv_set("start.hour", &h.to_string())?;
+    }
+    if let Some(f) = spec.facing {
+        db.kv_set("start.yaw", &f.to_radians().to_string())?;
+    }
+    db.kv_set("authored.source", &source_hash(dir))?;
     let rep = report.lock();
     if !rep.missing.is_empty() || !rep.failed.is_empty() || !rep.unknown.is_empty() {
         eprintln!("{}", summary(&rep));
@@ -225,6 +238,33 @@ fn build(dir: &Path, out: Option<PathBuf>, genesis_only: bool) -> Result<()> {
         bail!("{} missing, {} failed", rep.missing.len(), rep.failed.len());
     }
     Ok(())
+}
+
+/// A fingerprint of what a world is made from (world.json, genesis.json,
+/// base/, types/, regions/), kept in the file it makes: a file older than
+/// its folder is easy to tell.
+pub fn source_hash(dir: &Path) -> String {
+    let mut files: Vec<PathBuf> = ["world.json", "genesis.json"].iter().map(|f| dir.join(f)).collect();
+    for sub in ["base", "types", "regions"] {
+        if let Ok(rd) = std::fs::read_dir(dir.join(sub)) {
+            files.extend(rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()));
+        }
+    }
+    files.sort();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |b: &[u8]| {
+        for &x in b {
+            h = (h ^ x as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for f in &files {
+        eat(f.strip_prefix(dir).unwrap_or(f).to_string_lossy().replace('\\', "/").as_bytes());
+        eat(&[0]);
+        // Line ends as written on any machine.
+        eat(&std::fs::read(f).unwrap_or_default().into_iter().filter(|&b| b != b'\r').collect::<Vec<_>>());
+        eat(&[0]);
+    }
+    format!("{h:016x}")
 }
 
 fn summary(r: &Report) -> String {

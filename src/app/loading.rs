@@ -127,6 +127,7 @@ impl App {
         });
         if self.settled() {
             self.loading = None;
+            self.backdrop = None;
         }
     }
 
@@ -237,6 +238,7 @@ impl App {
 
     fn finish_loading(&mut self) {
         self.loading = None;
+        self.backdrop = None;
         // The session's spend starts once you are in: making the world is not counted
         // (it stays in the world's all-time total).
         if let Some(l) = &self.llm {
@@ -256,6 +258,12 @@ impl App {
                 live.types = self.sim.types_in_use();
             }
             self.schedule_regions();
+        }
+        if let (Some(b), Some(g)) = (self.backdrop.as_mut(), self.win) {
+            b.tick((self.screen.w as f32 * g.cell_w, self.screen.h as f32 * g.cell_h));
+            if b.frame().is_some() {
+                self.dirty = true;
+            }
         }
         let settled = self.settled();
         let Some(mut l) = self.loading.take() else { return };
@@ -347,7 +355,13 @@ impl App {
         // Map and log between the title and the bar.
         let mid_top = top + 1 + under + if lines.is_empty() { 0 } else { lines.len() as u16 + 1 };
         let mid_h = bar_y.saturating_sub(1).saturating_sub(mid_top);
-        if cw >= 72 && mid_h >= 6 {
+        let behind = self.backdrop.as_ref().is_some_and(|b| b.frame().is_some());
+        if behind {
+            // Maple Cove shows where the map would be; what is being made
+            // runs low on the left.
+            let log_h = (mid_h / 3).clamp(1, 6);
+            self.draw_lines(&l, x0, mid_top + mid_h - log_h, (cw * 55 / 100).max(cw.min(40)), log_h);
+        } else if cw >= 72 && mid_h >= 6 {
             let map_w = cw * 58 / 100;
             self.draw_map(&mut l, x0, mid_top, map_w, mid_h, t);
             self.draw_lines(&l, x0 + map_w + 3, mid_top, cw - map_w - 3, mid_h);
@@ -412,6 +426,20 @@ impl App {
         self.screen.text(rx, bar_y + 1, &right, right_fg, BG, false);
         if !done && bar_y + 2 < h {
             self.screen.text(x0, bar_y + 2, "Esc menu", FAINT, BG, false);
+        }
+        if behind {
+            // Darkened for the words on it, the more towards the bar; it
+            // fades in and through dark between its views.
+            let shown = self.backdrop.as_ref().map_or(0.0, |b| b.shown());
+            let (fw, fh) = (w as f32, h as f32);
+            let alpha = 0.35 + 0.65 * (1.0 - shown);
+            self.screen.deco(crate::term::Deco { x: 0.0, y: 0.0, w: fw, h: fh, fill: BG, alpha, radius: 0.0, shadow: false, border: None });
+            // Soft: each step down a little darker than the one above.
+            for k in 0..8 {
+                let low = (bar_y as f32 - 10.0 + k as f32 * 1.25).max(0.0);
+                self.screen.deco(crate::term::Deco { x: 0.0, y: low, w: fw, h: fh - low, fill: BG, alpha: 0.07, radius: 0.0, shadow: false, border: None });
+            }
+            self.screen.show_through(BG);
         }
         if l.leaving {
             self.draw_leaving();

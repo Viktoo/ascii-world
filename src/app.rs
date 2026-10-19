@@ -219,6 +219,9 @@ pub struct App {
     last_pick: Instant,
     /// The loading screen, until the world around you is made.
     loading: Option<loading::Loading>,
+    /// Maple Cove behind the loading screen, kept on from the title (see
+    /// `panorama`); let go once the world is stepped into.
+    pub backdrop: Option<crate::panorama::Panorama>,
     /// What this world has seen the player do (achievements).
     achievements: crate::achievements::Tracker,
     /// Achievement popups waiting, the first one showing since when.
@@ -291,7 +294,12 @@ impl App {
         let player = s.db.player();
         let (pos, yaw, t_game) = match player {
             Some(p) => (crate::model::afloat(&s.snap.terrain, Vec3::new(p.x, 0.0, p.z)), p.yaw, p.t_game),
-            None => (s.snap.spawn, 0.0, 0.33 * sky::DAY_SECONDS),
+            // A first arrival: when and facing where the world says, if it does.
+            None => {
+                let num = |k: &str| s.db.kv_get(k).and_then(|v| v.parse::<f64>().ok());
+                let t = num("start.hour").map_or(0.33, |h| (h / 24.0).rem_euclid(1.0)) * sky::DAY_SECONDS;
+                (s.snap.spawn, num("start.yaw").unwrap_or(0.0) as f32, t)
+            }
         };
         let seed = s.seed.unwrap_or_else(|| s.db.universe().map(|u| u.seed as u64).unwrap_or(1) ^ (crate::db::now() as u64).rotate_left(17));
         let mut sim = Sim::new(s.db.clone(), s.snap.clone(), pos, yaw, t_game, seed);
@@ -356,6 +364,7 @@ impl App {
             pointed_loose: false,
             last_pick: Instant::now(),
             loading: None,
+            backdrop: None,
             achievements,
             toasts: VecDeque::new(),
             work: work::WorkBox::default(),
@@ -2365,11 +2374,23 @@ impl App {
     }
 
     pub fn last_frame(&self) -> Option<&Frame> {
-        self.last_frame.as_ref()
+        match self.loading_backdrop() {
+            Some(f) => Some(f),
+            None => self.last_frame.as_ref(),
+        }
     }
 
     pub fn view_rows(&self) -> u16 {
+        if self.loading_backdrop().is_some() {
+            return self.screen.h;
+        }
         self.layout().1
+    }
+
+    /// The view behind the loading screen, while there is one.
+    fn loading_backdrop(&self) -> Option<&Frame> {
+        self.loading.as_ref()?;
+        self.backdrop.as_ref()?.frame()
     }
 
     /// Frames are drawn apart and blended (a window, the GPU, the setting on).

@@ -404,7 +404,9 @@ def main():
         json.dump(g, f, indent=1)
         f.write("\n")
     w = {"seed": 31, "prompt": "A cozy, peaceful autumn fishing village on a northern coast: bright-roofed single-storey cottages round a green above a wooden pier, a cove facing the sunset, meadows of goldenrod and asters, apple orchards, and a woodcutters' hamlet in woods of red maple, gold birch and pine.",
-         "spawn": list(W(*village.SPAWN)), "regions": [], "difficulty": "peaceful"}
+         "spawn": list(W(*village.SPAWN)), "regions": [], "difficulty": "peaceful",
+         # The first look: late afternoon, facing the gazebo, the sun low behind.
+         "start_hour": 17.0, "facing": 90}
     with open(os.path.join(HERE, "world.json"), "w") as f:
         json.dump(w, f, indent=1)
     build_land()

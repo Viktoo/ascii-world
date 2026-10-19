@@ -1,33 +1,52 @@
-//! Behind the title: a world, slowly turning, seen from above its trees.
-//! The same world for everyone (a showcase made from the game's own land and
-//! pieces, no AI needed), so a first-time player sees it too. It loads in the
-//! background; until the first frame the land of words is shown, and the
-//! world fades in over it. Only on a GPU: the CPU renderer is too slow.
+//! Behind the title and the loading screen: Maple Cove (see `starter`),
+//! cutting between a few views of it while its people go about their day.
+//! The same for everyone, so a first-time player sees it too. It loads in
+//! the background; until the first frame the land of words is shown, and
+//! the world fades in over it. Only on a GPU: the CPU renderer is too slow.
+//!
+//! It lives from the title until a world is stepped into (it is kept behind
+//! that world's loading screen), and starts again on the way back to the
+//! title. Nothing in it is saved, and it asks no AI for anything.
 
 use crate::render::{self, Camera, Frame, FrameRequest, RenderHandle, RenderMsg};
 use crate::sim::Sim;
 use crate::world::WorldSnapshot;
 use glam::Vec3;
-use std::path::PathBuf;
+use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Radians a second: a whole turn in about two minutes.
-const TURN: f32 = 0.05;
-/// Metres above a standing eye.
-const LIFT: f32 = 14.0;
-/// The time of day it opens at (afternoon: blue sky, long light).
-const HOUR: f64 = 16.5;
+/// Seconds each view is held, and how long the fade through dark between
+/// two takes (half out, half in).
+const HOLD: f32 = 12.0;
+const FADE: f32 = 1.2;
 /// Lines drawn (the window scales them up, softly: it is a backdrop).
 const LINES: f32 = 300.0;
+
+/// One view: where to stand and look, as `pocket snapshot --at x,z,yawDeg
+/// --lift M --pitch D --time H` takes them, and a slow turn (degrees a second).
+#[derive(Deserialize, Clone, Debug)]
+pub struct Shot {
+    #[allow(dead_code)]
+    pub name: String,
+    pub at: [f32; 3],
+    #[serde(default)]
+    pub lift: f32,
+    #[serde(default)]
+    pub pitch: f32,
+    pub hour: f64,
+    #[serde(default)]
+    pub turn: f32,
+}
+
+pub fn shots() -> Vec<Shot> {
+    serde_json::from_str(crate::starter::SHOTS).unwrap_or_default()
+}
 
 struct Ready {
     snap: Arc<WorldSnapshot>,
     sim: Sim,
     render: RenderHandle,
-    eye: Vec3,
-    yaw: f32,
-    t_game: f64,
 }
 
 type Loaded = (Arc<crate::db::Db>, Arc<render::gpu::Gpu>, Arc<WorldSnapshot>);
@@ -38,23 +57,32 @@ pub struct Panorama {
     frame: Option<Frame>,
     waiting: bool,
     next_id: u64,
-    start: Instant,
+    shots: Vec<Shot>,
+    /// The view now (an index into `shots`), and since when.
+    shot: usize,
+    since: Instant,
+    last: Instant,
     /// When the first frame came (the world fades in from then).
     first: Option<Instant>,
 }
 
 impl Panorama {
-    /// Begin making (the first time) and loading the showcase in the background.
+    /// Begin loading Maple Cove in the background.
     pub fn start() -> Panorama {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let _ = std::thread::Builder::new().name("panorama".into()).spawn(move || {
-            let got = showcase().and_then(|p| crate::load_with(&p, false).ok()).and_then(|l| l.gpu.map(|g| (l.db, g, l.snap)));
+            let got = crate::starter::backdrop()
+                .map_err(|e| crate::log::info(format!("panorama: {e:#}")))
+                .ok()
+                .and_then(|p| crate::load_with(&p, false).ok())
+                .and_then(|l| l.gpu.map(|g| (l.db, g, l.snap)));
             if got.is_none() {
-                crate::log::info("panorama: no view (no GPU, or the showcase didn't load)");
+                crate::log::info("panorama: no view (no GPU, or Maple Cove didn't load)");
             }
             let _ = tx.send(got);
         });
-        Panorama { loading: Some(rx), ready: None, frame: None, waiting: false, next_id: 1, start: Instant::now(), first: None }
+        let now = Instant::now();
+        Panorama { loading: Some(rx), ready: None, frame: None, waiting: false, next_id: 1, shots: shots(), shot: 0, since: now, last: now, first: None }
     }
 
     /// Take what came back and ask for the next frame, `size` pixels of window.
@@ -63,20 +91,32 @@ impl Panorama {
             if let Ok(got) = rx.try_recv() {
                 self.loading = None;
                 if let Some((db, gpu, snap)) = got {
-                    let (stand, yaw) = vista(&snap.terrain);
-                    // Above the treetops, for the lie of the land.
-                    let eye = stand + Vec3::Y * LIFT;
-                    let t_game = HOUR / 24.0 * render::sky::DAY_SECONDS;
-                    let sim = Sim::new(db, snap.clone(), stand, yaw, t_game, 1);
-                    self.ready = Some(Ready { snap, sim, render: render::gpu::spawn(gpu), eye, yaw, t_game });
+                    if let Some(s) = self.shots.first() {
+                        let stand = Vec3::new(s.at[0], snap.terrain.height(s.at[0], s.at[1]), s.at[1]);
+                        let sim = Sim::new(db, snap.clone(), stand, s.at[2].to_radians(), hour(s.hour), 1);
+                        self.ready = Some(Ready { snap, sim, render: render::gpu::spawn(gpu) });
+                        self.cut(0);
+                    }
                 }
             }
         }
+        let now = Instant::now();
+        let dt = now.duration_since(self.last).as_secs_f32();
+        self.last = now;
+        if self.ready.is_none() {
+            return;
+        }
+        // On to the next view once this one has been held (cut while dark).
+        if self.since.elapsed().as_secs_f32() >= HOLD + FADE * 0.5 {
+            self.cut((self.shot + 1) % self.shots.len());
+        }
         let Some(r) = self.ready.as_mut() else { return };
+        // Its people go about their day; the light moves with the clock.
+        r.sim.step(dt);
         while let Ok(f) = r.render.rx.try_recv() {
             self.waiting = false;
             if f.width > 0 {
-                self.first.get_or_insert_with(Instant::now);
+                self.first.get_or_insert(now);
                 self.frame = Some(f);
             }
         }
@@ -85,14 +125,13 @@ impl Panorama {
         }
         let k = (LINES / size.1.max(1.0)).min(1.0);
         let (w, h) = (((size.0 * k).round() as u32).max(8), ((size.1 * k).round() as u32).max(8));
-        let t = self.start.elapsed().as_secs_f32();
-        let cam = Camera { pos: r.eye, yaw: r.yaw + t * TURN, pitch: -0.14, fov_y: 1.1, roll: 0.0 };
+        let s = &self.shots[self.shot];
+        let t = self.since.elapsed().as_secs_f32();
+        let cam = camera(&r.snap, s, t);
         let aspect = w as f32 / h as f32;
         let drawn = r.sim.draw(cam.pos, render::VIEW_DIST);
         let culled = crate::world::cull::cull(&r.snap, &mut r.sim.cache, &cam, aspect, &drawn.insts, &Default::default());
-        // The day goes on, slowly: the light shifts while you look.
-        let t_game = r.t_game + t as f64 * 4.0;
-        let light = render::sky::lighting(t_game, &r.snap.look.palette);
+        let light = render::sky::lighting(r.sim.t, &r.snap.look.palette);
         let sp = render::SceneParams {
             terrain: &r.snap.terrain,
             palette: &r.snap.look.palette,
@@ -101,7 +140,7 @@ impl Panorama {
             height: h,
             pixel_aspect: 1.0,
             light,
-            time: t,
+            time: self.first.map_or(0.0, |f| f.elapsed().as_secs_f32()),
             frame: self.next_id as u32,
             shadows: true,
             lights: &drawn.lights,
@@ -113,14 +152,29 @@ impl Panorama {
         self.waiting = r.render.tx.send(RenderMsg::Frame(Box::new(req))).is_ok();
     }
 
+    /// Go to view `i`: stand there at its hour.
+    fn cut(&mut self, i: usize) {
+        self.shot = i;
+        self.since = Instant::now();
+        let (Some(r), Some(s)) = (self.ready.as_mut(), self.shots.get(i)) else { return };
+        r.sim.player.pos = Vec3::new(s.at[0], r.snap.terrain.height(s.at[0], s.at[1]), s.at[1]);
+        r.sim.t = hour(s.hour);
+    }
+
     /// The latest view, once there is one.
     pub fn frame(&self) -> Option<&Frame> {
         self.frame.as_ref()
     }
 
-    /// 0 → 1 over the first second and a half of the view.
+    /// How much of the view shows: 0 → 1 over the first second and a half,
+    /// and down to dark and back up again across each cut.
     pub fn shown(&self) -> f32 {
-        self.first.map_or(0.0, |t| (t.elapsed().as_secs_f32() / 1.5).min(1.0))
+        let Some(first) = self.first else { return 0.0 };
+        let fade_in = (first.elapsed().as_secs_f32() / 1.5).min(1.0);
+        let t = self.since.elapsed().as_secs_f32();
+        let half = FADE * 0.5;
+        let cut = if t < half && first.elapsed().as_secs_f32() > t { t / half } else if t > HOLD { 1.0 - ((t - HOLD) / half).min(1.0) } else { 1.0 };
+        fade_in.min(cut)
     }
 }
 
@@ -132,59 +186,24 @@ impl Drop for Panorama {
     }
 }
 
-/// The world behind the title for everyone: the same land each time, made
-/// from the game's own pieces (no AI needed), kept beside your worlds.
-pub fn showcase() -> Option<PathBuf> {
-    let path = crate::log::dir().join("showcase.pocket");
-    if !path.exists() {
-        let _ = std::fs::create_dir_all(crate::log::dir());
-        let look = serde_json::to_string(&crate::world::Look::default()).ok()?;
-        let tmp = path.with_extension("making");
-        let _ = std::fs::remove_file(&tmp);
-        crate::db::Db::create(&tmp, SEED, "", &look).ok()?;
-        std::fs::rename(&tmp, &path).ok()?;
-    }
-    Some(path)
+fn hour(h: f64) -> f64 {
+    (h / 24.0).rem_euclid(1.0) * render::sky::DAY_SECONDS
 }
 
-/// The land the showcase is made from.
-pub const SEED: u32 = 7;
+/// Where the view looks from `t` seconds into a shot (as `pocket snapshot`
+/// places its camera, turning slowly).
+fn camera(snap: &WorldSnapshot, s: &Shot, t: f32) -> Camera {
+    let (x, z) = (s.at[0], s.at[1]);
+    let y = snap.terrain.height(x, z).max(snap.terrain.water(x, z) - 0.4) + 1.65 + s.lift;
+    Camera { pos: Vec3::new(x, y, z), yaw: (s.at[2] + s.turn * t).to_radians(), pitch: s.pitch.to_radians(), fov_y: 1.05, roll: 0.0 }
+}
 
-/// Where to stand for the showcase: a gentle hilltop above the shore that
-/// looks out over lower land (and water, when there is some), and the way
-/// to face first. The same for everyone (the land is the same).
-pub fn vista(t: &crate::terrain::Terrain) -> (Vec3, f32) {
-    let mut best = (f32::MIN, Vec3::ZERO, 0.0);
-    for i in -12..=12 {
-        for j in -12..=12 {
-            let (x, z) = (i as f32 * 40.0, j as f32 * 40.0);
-            let h = t.height(x, z);
-            if h < t.sea + 6.0 || t.water(x, z) > h - 0.5 {
-                continue;
-            }
-            // Level enough to stand on.
-            let slope = (t.height(x + 3.0, z) - t.height(x - 3.0, z)).abs() + (t.height(x, z + 3.0) - t.height(x, z - 3.0)).abs();
-            if slope > 2.5 {
-                continue;
-            }
-            // How far the land falls away around, and which way it falls most.
-            let (mut drop, mut low, mut low_yaw) = (0.0, f32::MAX, 0.0);
-            for k in 0..16 {
-                let a = k as f32 / 16.0 * std::f32::consts::TAU;
-                let (dx, dz) = (a.sin(), -a.cos());
-                let far = t.height(x + dx * 120.0, z + dz * 120.0).max(t.water(x + dx * 120.0, z + dz * 120.0));
-                drop += (h - far).max(0.0);
-                if far < low {
-                    low = far;
-                    low_yaw = a;
-                }
-            }
-            let score = drop / 16.0 - (h - t.sea - 25.0).max(0.0) * 0.5 - (x * x + z * z).sqrt() * 0.004;
-            if score > best.0 {
-                best = (score, Vec3::new(x, h, z), low_yaw);
-            }
-        }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_shot_reads() {
+        let shots = super::shots();
+        assert!(shots.len() >= 3, "worlds/starter/shots.json");
+        assert!(shots.iter().all(|s| (0.0..24.0).contains(&s.hour)));
     }
-    let p = best.1;
-    (Vec3::new(p.x, p.y + 1.65 + 1.0, p.z), best.2)
 }

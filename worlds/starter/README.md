@@ -19,7 +19,16 @@ python3 worlds/starter/make.py
 ./target/release/pocket author worlds/starter
 ```
 
-That writes `worlds/starter/starter.pocket` (about 0.9 MB, 30 s).
+That writes `worlds/starter/starter.pocket` (about 1.1 MB, 45 s). The game
+ships it gzipped:
+
+```bash
+gzip -9 -kf worlds/starter/starter.pocket
+```
+
+Commit `starter.pocket.gz` with the folder (a test checks they match).
+`shots.json` holds the views shown behind the title and loading screen. See
+`docs/starter-world-plan.md`.
 
 ## What is where
 

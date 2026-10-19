@@ -21,8 +21,9 @@ buttons). No icons on buttons; the look comes from the moving background.
 
 ```
 pocket ──► (first time, no key) Welcome: what the AI is for, paste a key, it is checked
-       ──► Title (a showcase world turning behind it, seen from above the trees)
+       ──► Title (Maple Cove behind it, cutting between views)
             ├─ Continue  «last world»         → loading → play
+            │  (no worlds yet: Open Maple Cove, Make a new world)
             ├─ Worlds                         → Worlds
             ├─ Play together                  → Together
             ├─ Settings                       → Settings
@@ -65,15 +66,16 @@ Settings (same screen from the title and from Paused), tabs:
 
 ## The world behind the title
 
-Not the player's last world: one showcase world, the same for everyone, so a
-first-time player sees it too. It is made once (`~/.pocket/showcase.pocket`,
-seed 7) from the game's own land and pieces, with no AI. The camera stands on
-a hilltop picked by `panorama::vista`, 14 m up, at 4:30 pm, and turns once in
-about two minutes. Until it loads (or with no GPU) the hills of words show.
-`pocket showcase` prints where it stands, for `pocket snapshot … --lift 14`.
+Maple Cove, the starter world (`src/starter.rs`, made from `worlds/starter`),
+the same for everyone, so a first-time player sees it too. `panorama` cuts
+between the views in `worlds/starter/shots.json` (each as `pocket snapshot`
+takes it: `at` x,z,yaw, `lift`, `pitch`, `hour`, and a slow `turn`), 12 s
+each with a fade through dark, while its people go about their day. It is
+kept on behind the next world's loading screen (where the map would be) and
+let go once that world is stepped into. Until it loads (or with no GPU) the
+hills of words show. See docs/starter-world-plan.md for its lifecycle.
 
 ## Not done yet
 
-- A showcase world written by hand (a lake, a village) instead of seed 7.
 - Icons on tabs.
 - Rebinding keys.

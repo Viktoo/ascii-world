@@ -166,6 +166,18 @@ impl Screen {
         }
     }
 
+    /// Cells of background `bg` show the world through them instead (their
+    /// letters stay): a screen drawn on a plain colour, set over a view.
+    pub fn show_through(&mut self, bg: [u8; 3]) {
+        for (c, see) in self.cells.iter_mut().zip(self.see.iter_mut()) {
+            if c.bg == bg {
+                // White: a cell over the world tints it by its colour.
+                c.bg = [255, 255, 255];
+                *see = true;
+            }
+        }
+    }
+
     /// The top `rows` rows show the world itself (window mode).
     pub fn fill_world(&mut self, rows: u16) {
         let n = rows.min(self.h) as usize * self.w as usize;

@@ -152,7 +152,7 @@ pub fn browser_name() -> &'static str {
 }
 
 /// `dir/stem.pocket`, or `stem 2.pocket`… if that is taken.
-fn free_path(dir: &Path, stem: &str) -> PathBuf {
+pub(crate) fn free_path(dir: &Path, stem: &str) -> PathBuf {
     let first = dir.join(format!("{stem}.pocket"));
     if !first.exists() {
         return first;

@@ -24,6 +24,7 @@ mod random_world;
 mod render;
 mod settings;
 mod share;
+mod starter;
 mod sim;
 mod term;
 mod terrain;
@@ -156,13 +157,6 @@ fn run(args: Vec<String>) -> Result<()> {
             None => session(Start::Title, None, None, shot),
         },
         Some("snapshot") => snapshot(&args[1..]),
-        Some("showcase") => {
-            let path = panorama::showcase().context("couldn't make the showcase world")?;
-            let l = load(&path)?;
-            let (p, yaw) = panorama::vista(&l.snap.terrain);
-            println!("{} --at {:.0},{:.0},{:.0}", path.display(), p.x, p.z, yaw.to_degrees());
-            Ok(())
-        }
         Some("describe") => describe(&args[1..]),
         Some("bench") => bench(&args[1..]),
         Some("selftest") => selftest(),
@@ -278,6 +272,8 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
     let stop = win.stop.clone();
     // A line for the worlds list (why a game together ended).
     let mut note: Option<String> = None;
+    // Maple Cove behind the title, kept on behind the next world's loading.
+    let mut pano = None;
     loop {
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             break;
@@ -294,7 +290,7 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                     Start::New(given) => ui::screens::Entry::New(given),
                     _ => ui::screens::Entry::Title,
                 };
-                match ui::screens::menus(&mut win, entry, note.take()) {
+                match ui::screens::menus(&mut win, entry, note.take(), &mut pano) {
                     ui::screens::Choice::Open(p) => Start::Play(p, false),
                     ui::screens::Choice::New(prompt, d) => Start::Create(prompt, Some(d)),
                     ui::screens::Choice::Host(p, internet) => Start::Host(p, net::PORT, net::new_code(), internet),
@@ -310,21 +306,24 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
                 }
                 Start::Play(path, true)
             }
-            Start::Play(path, fresh) => match play(&mut win, &path, fresh, remember, None, &stop)? {
+            Start::Play(path, fresh) => match play(&mut win, &path, fresh, remember, None, pano.take(), &stop)? {
                 (true, why) => {
                     note = why;
                     Start::Title
                 }
                 (false, _) => break,
             },
-            Start::Host(path, port, code, internet) => match play(&mut win, &path, false, remember, Some((port, code, internet)), &stop)? {
+            Start::Host(path, port, code, internet) => match play(&mut win, &path, false, remember, Some((port, code, internet)), pano.take(), &stop)? {
                 (true, why) => {
                     note = why;
                     Start::Title
                 }
                 (false, _) => break,
             },
-            Start::Join(addr, code) => match join(&mut win, &addr, &code, &stop) {
+            Start::Join(addr, code) => match {
+                pano = None;
+                join(&mut win, &addr, &code, &stop)
+            } {
                 Ok((true, why)) => {
                     note = why;
                     Start::Title
@@ -343,7 +342,7 @@ fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, sho
 
 /// Play one world in the window (hosting it on `host`, a port, if given);
 /// true when the player went back to their worlds, and why if not by choice.
-fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: Option<(u16, String, bool)>, stop: &AtomicBool) -> Result<(bool, Option<String>)> {
+fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: Option<(u16, String, bool)>, backdrop: Option<panorama::Panorama>, stop: &AtomicBool) -> Result<(bool, Option<String>)> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if remember {
         let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
@@ -384,6 +383,7 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
         seed: None,
     });
     app.path = Some(path.clone());
+    app.backdrop = backdrop;
     app.start_loading();
     let r = window::play(win, &mut app, stop);
     app.shutdown();

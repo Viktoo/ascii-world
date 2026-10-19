@@ -81,8 +81,10 @@ struct Menus {
     checked: Option<Result<(), String>>,
 }
 
-/// Run the screens until a world is chosen (or the window closes).
-pub fn menus(win: &mut Win, entry: Entry, note: Option<String>) -> Choice {
+/// Run the screens until a world is chosen (or the window closes), Maple
+/// Cove behind them (`pano`, started here if it isn't yet, and left running
+/// for the loading screen after).
+pub fn menus(win: &mut Win, entry: Entry, note: Option<String>, pano: &mut Option<crate::panorama::Panorama>) -> Choice {
     crate::net::update::ask();
     let (w, h, _) = win.grid();
     let mut scr = Screen::new(w, h, true);
@@ -124,8 +126,10 @@ pub fn menus(win: &mut Win, entry: Entry, note: Option<String>) -> Choice {
         m.stack.push(P::Welcome);
     }
     ui.focus = Some(0);
-    // A world turning behind it all, once it has loaded.
-    let mut pano = Some(crate::panorama::Panorama::start());
+    // Maple Cove behind it all, once it has loaded.
+    if pano.is_none() {
+        *pano = Some(crate::panorama::Panorama::start());
+    }
     loop {
         let evs = win.pump(Duration::from_millis(33));
         for e in &evs {
@@ -296,7 +300,12 @@ impl Menus {
             y += bh + 0.8;
         }
         if self.list.is_empty() {
-            if ui.button(s, R::new(x, y, bw, bh), "Make your first world", Kind::Primary) {
+            // The first time: step into the world behind the menus.
+            if ui.button(s, R::new(x, y, bw, bh), &format!("Open {}", crate::starter::NAME), Kind::Primary) {
+                go = self.starter().map(|p| Go::Done(Choice::Open(p)));
+            }
+            y += bh + 0.8;
+            if ui.button(s, R::new(x, y, bw, bh), "Make a new world", Kind::Normal) {
                 self.draft = Draft::rolled();
                 go = Some(Go::To(P::New));
             }
@@ -335,6 +344,18 @@ impl Menus {
             s.labels.push(Label { x: w - 1.5 - t.chars().count() as f32 * 0.8, y: h - 1.5, text: t, size: 0.8, color: ACCENT, face: Face::Body, center: false });
         }
         go
+    }
+
+    /// A new Maple Cove of your own (or why not).
+    fn starter(&mut self) -> Option<PathBuf> {
+        match crate::starter::new_copy() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                crate::log::error(format!("copy Maple Cove: {e:#}"));
+                self.note = Some(format!("Couldn't open Maple Cove: {e}"));
+                None
+            }
+        }
     }
 
     fn worlds(&mut self, ui: &mut Ui, s: &mut Screen) -> Option<Go> {
@@ -624,7 +645,11 @@ impl Menus {
         let mut go = None;
         let y = p.y + 4.6;
         let mut rows = Rows { x, y, w: cw, top: y, bottom: p.y + p.h };
-        let names: Vec<String> = self.list.iter().map(|w| w.name.clone()).collect();
+        // The most recent world first; with none yet, Maple Cove (made when hosted).
+        let mut names: Vec<String> = self.list.iter().map(|w| w.name.clone()).collect();
+        if names.is_empty() {
+            names.push(crate::starter::NAME.into());
+        }
         self.host = self.host.min(names.len().saturating_sub(1));
         let r = rows.next(ROW);
         if let Some(i) = ui.dropdown(s, r, "World", &names, self.host, false) {
@@ -638,11 +663,15 @@ impl Menus {
         }
         let path = self.list.get(self.host).map(|w| w.path.clone());
         let b = R::new(x, p.y + p.h - 5.4, cw, 2.2).cols(2, 0.8);
-        if ui.button_on(s, b[0], "Host on this network", Kind::Primary, path.is_some()) {
-            go = path.clone().map(|p| Go::Done(Choice::Host(p, false)));
+        let mut internet = None;
+        if ui.button(s, b[0], "Host on this network", Kind::Primary) {
+            internet = Some(false);
         }
-        if ui.button_on(s, b[1], "Host for anyone (ngrok)", Kind::Normal, path.is_some() && self.ngrok) {
-            go = path.map(|p| Go::Done(Choice::Host(p, true)));
+        if ui.button_on(s, b[1], "Host for anyone (ngrok)", Kind::Normal, self.ngrok) {
+            internet = Some(true);
+        }
+        if let Some(i) = internet {
+            go = path.or_else(|| self.starter()).map(|p| Go::Done(Choice::Host(p, i)));
         }
         let back = R::new(p.x + p.w - 20.0, p.y + p.h - 2.8, 18.0, 2.0);
         if ui.button(s, back, "Back", Kind::Quiet) || ui.back() {
@@ -715,7 +744,7 @@ impl Menus {
         s.labels.push(left(x, r.y + 2.3, "Welcome to Infinite Pocket", 2.0, ACCENT, Face::Title));
         let mut y = r.y + 4.4;
         y = para(s, x, y, cw, "Every world here is made from a few words you write: its land, its people, what they say and make. An AI does the making.", TEXT) + 0.5;
-        y = para(s, x, y, cw, "To begin, add an Anthropic API key. It stays on this computer, and you can set a spending limit in Settings.", DIM) + 0.8;
+        y = para(s, x, y, cw, "To begin, add an Anthropic API key. It stays on this computer, and you can set a spending limit in Settings. Without one you can still walk around Maple Cove; its people talk once there is a key.", DIM) + 0.8;
         let worked = matches!(self.checked, Some(Ok(())));
         let mut go = None;
         // The key, and a button to paste it.
