@@ -640,7 +640,7 @@ fn render(ro: vec3f, rd: vec3f) -> vec4f {
     var ao = 1.0;
     if (h.id < 0.0) {
       n = terrain_normal(p, h.t);
-      albedo = ground_color(p.x, p.z, p.y, n.y);
+      albedo = ground_color(p.x, p.z, p.y, n.y, h.t);
       // Inside the ground: its rock and earth.
       if (G.extra.y > 0u && p.y < terrain_height(p.x, p.z) - 0.3) {
         let v = vnoise3(p.x * 1.7, p.y * 1.7, p.z * 1.7, G.seed.x + 77u);
@@ -807,6 +807,6 @@ fn probe_main(@builtin(global_invocation_id) gid: vec3u) {
     probe_io[i] = vec4f(n, r, wt.w[0], wt.w[1]);
   } else {
     let h = terrain_height(q.x, q.z);
-    probe_io[i] = vec4f(h, ground_color(q.x, q.z, h, 1.0));
+    probe_io[i] = vec4f(h, ground_color(q.x, q.z, h, 1.0, 1.0e4));
   }
 }

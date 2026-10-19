@@ -132,3 +132,26 @@ climate's weights and adds the rise before the hills, on the CPU and the GPU
 alike (`render::tests::landforms_agree_on_gpu_and_cpu`). The ridges of
 `rugged` are baked in on the CPU, so the GPU only reads the map. Outside the
 map the seed's land goes on as ever; worlds without landforms are unchanged.
+
+## Ground grain
+
+Every biome's ground carries a fine texture drawn into its colour, so it
+costs no geometry (`Grain` in `src/terrain.rs`, `ground_grain` in
+`shaders/common.wgsl`, twins). A biome may set it in genesis:
+
+```json
+"grain": { "blades": 0.6, "flecks": 0.4, "fleck": [78, 108, 48], "fleck2": [200, 172, 104] }
+```
+
+- `blades` 0..1: fine blades combed along a way that wanders over the land
+  (grass, reeds, heather); 0 for sand, mud, snow or rock. Shows within about
+  45 m.
+- `flecks` 0..1: how thick small spots lie, in clusters; `fleck` and
+  `fleck2` their two colours (clover and straw, fallen leaves, pebbles,
+  lichen). Each is its own size, stretched, turned and shaded. Shows within
+  about 70 m.
+- Further out, a mottle of clumps carries on to about 220 m.
+
+Left out, it is chosen from the ground colours: green ground gets blades,
+other ground a little grit, and flecks of a darker and a drier shade of its
+own ground. Ground laid with a colour (roads, squares) is drawn over it.

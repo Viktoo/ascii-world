@@ -57,6 +57,95 @@ pub struct Biome {
     /// small, rims overlapping (the Moon's highlands). See `Terrain::craters`.
     #[serde(default)]
     pub craters: f32,
+    /// The ground's own fine texture, close up (see `Grain`); left out, it
+    /// is chosen from the ground's colours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grain: Option<Grain>,
+}
+
+/// What the ground is like underfoot, drawn into its colour, so it costs no
+/// geometry: fine blades combed one way (grass, reeds, heather), and flecks
+/// of two colours scattered in clusters (clover and dry straw in a meadow,
+/// fallen leaves in a wood, pebbles on a shore, lichen on tundra). Both fade
+/// with distance, where a broad mottle carries on instead.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Grain {
+    /// How strongly blades show, 0 (smooth: sand, mud, snow) … 1.
+    #[serde(default)]
+    pub blades: f32,
+    /// How many flecks, 0 none … 1 thick.
+    #[serde(default)]
+    pub flecks: f32,
+    /// The flecks' two colours.
+    pub fleck: [u8; 3],
+    pub fleck2: [u8; 3],
+}
+
+impl Biome {
+    /// The grain it has, or one chosen from its colours: green ground gets
+    /// grass blades, other ground a little grit; flecks of a darker and a
+    /// drier shade of its own ground.
+    pub fn grain(&self) -> Grain {
+        if let Some(g) = &self.grain {
+            return Grain { blades: g.blades.clamp(0.0, 1.0), flecks: g.flecks.clamp(0.0, 1.0), ..g.clone() };
+        }
+        let [r, g, b] = self.ground.map(|v| v as f32);
+        let green = ((g - r.max(b)) / g.max(1.0)).clamp(0.0, 1.0);
+        let shade = |c: [u8; 3], k: f32| c.map(|v| (v as f32 * k).clamp(0.0, 255.0) as u8);
+        Grain { blades: 0.15 + 0.5 * smoothstep(0.0, 0.25, green), flecks: 0.25, fleck: shade(self.ground, 0.72), fleck2: shade(self.ground2, 1.18) }
+    }
+}
+
+/// The grain's shading of ground colour `c` at (x, z), `dist` from the eye,
+/// for biome weights `w` (the twin of `ground_grain` in common.wgsl).
+pub fn ground_grain(biomes: &[Biome], w: &[f32], c: glam::Vec3, x: f32, z: f32, dist: f32, seed: u32) -> glam::Vec3 {
+    use crate::noise::{h2, u2f, vnoise2};
+    let (mut blades, mut flecks, mut f1, mut f2) = (0.0, 0.0, glam::Vec3::ZERO, glam::Vec3::ZERO);
+    for (i, b) in biomes.iter().enumerate().take(MAX_BIOMES) {
+        let g = b.grain();
+        blades += w[i] * g.blades;
+        flecks += w[i] * g.flecks;
+        f1 += w[i] * rgbv(g.fleck);
+        f2 += w[i] * rgbv(g.fleck2);
+    }
+    // A mottle of clumps and thinner patches, out to the middle distance.
+    let mid = smoothstep(220.0, 40.0, dist);
+    let mut c = c * (1.0 + (vnoise2(x * 0.7, z * 0.7, seed.wrapping_add(306)) - 0.5) * 0.22 * blades * mid);
+    let near = smoothstep(45.0, 12.0, dist);
+    if near > 0.0 {
+        // Blades: thin streaks combed along a way that wanders over the land.
+        let a = vnoise2(x * 0.04, z * 0.04, seed.wrapping_add(307)) * 6.2832;
+        let (sa, ca) = a.sin_cos();
+        let u = x * ca + z * sa;
+        let v = z * ca - x * sa;
+        let row = (v * 22.0).floor();
+        let cell = (u * 3.0 + u2f(h2(row as i32, 0, seed.wrapping_add(308))) * 3.0).floor();
+        let hb = u2f(h2(row as i32, cell as i32, seed.wrapping_add(309)));
+        c *= 1.0 + (hb - 0.5) * 0.34 * blades * near;
+    }
+    let speck = smoothstep(70.0, 18.0, dist);
+    if speck > 0.0 && flecks > 0.0 {
+        // Flecks: one in some cells, thick where the patches are, each its
+        // own size, stretched and turned (a leaf, a clover, a pebble), its
+        // edge ragged and its shade its own.
+        let (gx, gz) = ((x * 3.0).floor(), (z * 3.0).floor());
+        let hc = h2(gx as i32, gz as i32, seed.wrapping_add(310));
+        let clump = vnoise2(x * 0.3, z * 0.3, seed.wrapping_add(311));
+        if u2f(hc) < flecks * clump * 0.8 {
+            let r1 = |k: u32| u2f(crate::noise::pcg(hc ^ k));
+            let (px, pz) = (gx + 0.2 + 0.6 * r1(0x5bd1), gz + 0.2 + 0.6 * r1(0x2c1b));
+            let (sa, ca) = (r1(0x7f4a) * 3.1416).sin_cos();
+            let (dx, dz) = (x * 3.0 - px, z * 3.0 - pz);
+            let (du, dv) = (dx * ca + dz * sa, (dz * ca - dx * sa) / 0.55);
+            let r = 0.12 + 0.18 * r1(0x1e35);
+            let d = (du * du + dv * dv).sqrt() + (vnoise2(x * 14.0, z * 14.0, seed.wrapping_add(312)) - 0.5) * 0.12;
+            if d < r {
+                let col = if r1(0x68e3) < 0.5 { f1 } else { f2 };
+                c = c.lerp(col * (0.8 + 0.4 * r1(0x3a9c)), smoothstep(r, r * 0.55, d) * 0.7 * speck);
+            }
+        }
+    }
+    c
 }
 
 fn d_amp() -> f32 {
@@ -140,6 +229,7 @@ fn base_biomes() -> Vec<Biome> {
             cliffs: 0.0,
             clump: Default::default(),
             craters: 0.0,
+            grain: None,
         },
         Biome {
             name: "pine forest".into(),
@@ -152,6 +242,7 @@ fn base_biomes() -> Vec<Biome> {
             cliffs: 0.15,
             clump: Default::default(),
             craters: 0.0,
+            grain: None,
         },
         Biome {
             name: "highlands".into(),
@@ -164,6 +255,7 @@ fn base_biomes() -> Vec<Biome> {
             cliffs: 0.7,
             clump: Default::default(),
             craters: 0.0,
+            grain: None,
         },
         Biome {
             name: "lakeshore".into(),
@@ -176,6 +268,7 @@ fn base_biomes() -> Vec<Biome> {
             cliffs: 0.0,
             clump: Default::default(),
             craters: 0.0,
+            grain: None,
         },
         Biome {
             name: "heath".into(),
@@ -188,6 +281,7 @@ fn base_biomes() -> Vec<Biome> {
             cliffs: 0.3,
             clump: Default::default(),
             craters: 0.0,
+            grain: None,
         },
     ]
 }
@@ -869,6 +963,7 @@ impl Terrain {
             let g2 = rgbv(b.ground2);
             c += w[i] * g1.lerp(g2, (v * 0.5 + v2 * 0.8).clamp(0.0, 1.0));
         }
+        c = ground_grain(&self.biomes, &w, c, x, z, dist, self.seed);
         let rock = rgbv(pal.rock);
         let sand = rgbv(pal.sand);
         let snow = rgbv(pal.snow);
@@ -906,6 +1001,23 @@ pub fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grain_follows_the_ground_and_fades() {
+        let b = default_biomes();
+        let meadow = b.iter().find(|b| b.name == "meadow").unwrap().grain();
+        assert!(meadow.blades > 0.5, "green ground gets grass blades: {meadow:?}");
+        let sand = Biome { ground: [210, 190, 150], ground2: [190, 170, 130], ..b[0].clone() };
+        assert!(sand.grain().blades < 0.3, "sand gets only grit");
+        let set = Biome { grain: Some(Grain { blades: 3.0, flecks: 0.2, fleck: [1, 2, 3], fleck2: [4, 5, 6] }), ..b[0].clone() };
+        assert_eq!(set.grain().blades, 1.0, "a world's own grain is kept, clamped");
+        // Far off, the ground is its plain colour; near, the grain varies it.
+        let w = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let c = glam::Vec3::new(0.3, 0.5, 0.2);
+        assert_eq!(ground_grain(&b, &w, c, 10.0, 20.0, 500.0, 7), c);
+        let near: Vec<glam::Vec3> = (0..64).map(|i| ground_grain(&b, &w, c, i as f32 * 0.37, i as f32 * 0.11, 3.0, 7)).collect();
+        assert!(near.iter().any(|v| (*v - c).length() > 0.01), "grain shows up close");
+    }
 
     #[test]
     fn heights_are_sane() {

@@ -61,6 +61,8 @@ pub struct Globals {
     pub craters: [[f32; 4]; 2],
     /// The landform map (see `landforms::LandMap::globals`; 0 samples: none).
     pub lands: [f32; 4],
+    /// Each biome's ground grain, two per biome: (fleck rgb, blades), (fleck2 rgb, flecks).
+    pub grain: [[f32; 4]; MAX_BIOMES * 2],
 }
 
 pub const MAX_LIGHTS: usize = 8;
@@ -446,6 +448,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
     let l = &weathered(&sp.light, w);
     let mut biomes = [[0.0f32; 4]; 18];
     let mut craters = [[0.0f32; 4]; 2];
+    let mut grain = [[0.0f32; 4]; MAX_BIOMES * 2];
     for (i, b) in t.biomes.iter().enumerate().take(MAX_BIOMES) {
         let c = Terrain::center(i);
         let g1 = rgbv(b.ground);
@@ -454,6 +457,10 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         biomes[i * 3 + 1] = [b.rough, g1.x, g1.y, g1.z];
         biomes[i * 3 + 2] = [g2.x, g2.y, g2.z, b.cliffs];
         craters[i / 4][i % 4] = b.craters;
+        let gr = b.grain();
+        let (f1, f2) = (rgbv(gr.fleck), rgbv(gr.fleck2));
+        grain[i * 2] = [f1.x, f1.y, f1.z, gr.blades];
+        grain[i * 2 + 1] = [f2.x, f2.y, f2.z, gr.flecks];
     }
     let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
     let mut flags = 0;
@@ -534,6 +541,7 @@ pub fn build_globals(sp: &SceneParams, n_inst: usize, grid: Option<&Grid>) -> Gl
         voids,
         craters,
         lands: t.lands.as_ref().map(|m| m.globals()).unwrap_or_default(),
+        grain,
     }
 }
 

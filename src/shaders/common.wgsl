@@ -37,6 +37,7 @@ struct Globals {
   voids: array<vec4f, 80>,     // caves: per capsule (a.xyz, r), (b.xyz, -); per box (c.xyz, -1), (half.xyz, yaw)
   craters: array<vec4f, 2>,    // how cratered each biome is, four to a row
   lands: vec4f,       // landform map: origin x, origin z, cell size, samples a side (0 = none)
+  grain: array<vec4f, 12>,     // per biome: (fleck rgb, blades), (fleck2 rgb, flecks)
 }
 
 struct Inst {
@@ -580,7 +581,67 @@ fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
   return t * t * (3.0 - 2.0 * t);
 }
 
-fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
+// The ground's fine grain: blades combed one way, flecks in clusters, a
+// mottle further out. Twin: `terrain::ground_grain`.
+fn ground_grain(w6: array<f32, 6>, c0: vec3f, x: f32, z: f32, dist: f32, s: u32) -> vec3f {
+  var wt = w6;
+  var blades = 0.0;
+  var flecks = 0.0;
+  var f1 = vec3f(0.0);
+  var f2 = vec3f(0.0);
+  for (var i = 0u; i < 6u; i = i + 1u) {
+    if (i < G.seed.y) {
+      let a = G.grain[i * 2u];
+      let b = G.grain[i * 2u + 1u];
+      blades = blades + wt[i] * a.w;
+      flecks = flecks + wt[i] * b.w;
+      f1 = f1 + wt[i] * a.xyz;
+      f2 = f2 + wt[i] * b.xyz;
+    }
+  }
+  let mid = sstep(220.0, 40.0, dist);
+  var c = c0 * (1.0 + (vnoise2(x * 0.7, z * 0.7, s + 306u) - 0.5) * 0.22 * blades * mid);
+  let near = sstep(45.0, 12.0, dist);
+  if (near > 0.0) {
+    let a = vnoise2(x * 0.04, z * 0.04, s + 307u) * 6.2832;
+    let sa = sin(a);
+    let ca = cos(a);
+    let u = x * ca + z * sa;
+    let v = z * ca - x * sa;
+    let row = floor(v * 22.0);
+    let cell = floor(u * 3.0 + u2f(h2(i32(row), 0, s + 308u)) * 3.0);
+    let hb = u2f(h2(i32(row), i32(cell), s + 309u));
+    c = c * (1.0 + (hb - 0.5) * 0.34 * blades * near);
+  }
+  let speck = sstep(70.0, 18.0, dist);
+  if (speck > 0.0 && flecks > 0.0) {
+    let gx = floor(x * 3.0);
+    let gz = floor(z * 3.0);
+    let hc = h2(i32(gx), i32(gz), s + 310u);
+    let clump = vnoise2(x * 0.3, z * 0.3, s + 311u);
+    if (u2f(hc) < flecks * clump * 0.8) {
+      let px = gx + 0.2 + 0.6 * u2f(pcg(hc ^ 0x5bd1u));
+      let pz = gz + 0.2 + 0.6 * u2f(pcg(hc ^ 0x2c1bu));
+      let an = u2f(pcg(hc ^ 0x7f4au)) * 3.1416;
+      let sa = sin(an);
+      let ca = cos(an);
+      let dx = x * 3.0 - px;
+      let dz = z * 3.0 - pz;
+      let du = dx * ca + dz * sa;
+      let dv = (dz * ca - dx * sa) / 0.55;
+      let r = 0.12 + 0.18 * u2f(pcg(hc ^ 0x1e35u));
+      let d = sqrt(du * du + dv * dv) + (vnoise2(x * 14.0, z * 14.0, s + 312u) - 0.5) * 0.12;
+      if (d < r) {
+        let col = select(f2, f1, u2f(pcg(hc ^ 0x68e3u)) < 0.5);
+        c = mix(c, col * (0.8 + 0.4 * u2f(pcg(hc ^ 0x3a9cu))), sstep(r, r * 0.55, d) * 0.7 * speck);
+      }
+    }
+  }
+  return c;
+}
+
+// `dist`: how far from the eye (the fine grain fades with it).
+fn ground_color(x: f32, z: f32, h: f32, ny: f32, dist: f32) -> vec3f {
   let wt = terrain_weights(x, z);
   let s = G.seed.x;
   let v = vnoise2(x * 0.11, z * 0.11, s + 303u);
@@ -593,6 +654,7 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
       c = c + wt.w[i] * mix(b1.yzw, b2.xyz, clamp(v * 0.5 + v2 * 0.8, 0.0, 1.0));
     }
   }
+  c = ground_grain(wt.w, c, x, z, dist, s);
   let steep = sstep(0.82, 0.68, ny);
   let strata = sstep(0.3, 0.7, vnoise2(h * 0.9, (x + z) * 0.015, s + 305u));
   let bed = G.rock.xyz * (0.55 + 0.25 * v + 0.45 * strata);
@@ -603,7 +665,7 @@ fn ground_color(x: f32, z: f32, h: f32, ny: f32) -> vec3f {
   c = mix(c, G.snow.xyz, snowy);
   let gp = ground_paint(x, z);
   if (gp.w > 0.0) {
-    let lay = pattern_shade(ground_pattern(x, z), x, z, length(vec3f(x, h, z) - G.cam_pos.xyz), s);
+    let lay = pattern_shade(ground_pattern(x, z), x, z, dist, s);
     c = mix(c, gp.xyz / max(gp.w, 1.0 / 255.0) * (0.9 + 0.2 * v) * lay, gp.w);
   }
   if (G.extra.x > 0u) {
