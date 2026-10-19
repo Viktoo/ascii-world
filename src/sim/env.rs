@@ -326,6 +326,7 @@ impl Sim {
         // The weather on whatever is out in it.
         let sky_amount = self.wx.falls.as_ref().map(|f| f.amount).unwrap_or(0.0);
         let sky_wind = self.wx.wind;
+        let wind_dir = self.wx.wind_dir;
         let falls = self.falls_props();
         let soak = self.wx.soak;
         let open_at = |s: &Sim, p: Vec3| if s.open_sky(p) { (sky_amount, sky_wind) } else { (0.0, 0.0) };
@@ -425,6 +426,9 @@ impl Sim {
         }
         let hour = self.hour();
         let night = self.night() as u32 as f32;
+        // Too much already burning: fire takes in nothing new until some of
+        // it has burnt down (and the pass stays small).
+        let crowded = ents.iter().filter(|e| e.props[P_FIRE] > 0.0).count() >= self.cfg.max_burning;
         // Neighbours: other entities, untouched scatter cells and placed objects.
         if max_near > 0.0 {
             let mut extra: Vec<Ent> = Vec::new();
@@ -438,7 +442,8 @@ impl Sim {
                     continue;
                 }
                 let p = e.pos;
-                for it in self.cache.items_near(&snap, p, r + 2.0) {
+                let cells = if crowded { Vec::new() } else { self.cache.items_near(&snap, p, r + 2.0) };
+                for it in cells {
                     let key = Key::Cell(it.cell.0, it.cell.1);
                     if index.contains_key(&key) || extra_keys.contains(&key) || self.things.taken.contains_key(&it.cell) {
                         continue;
@@ -567,7 +572,11 @@ impl Sim {
                         let vi = EntView { props: &ei.props, water: ei.water, held: ei.held, ground: ei.ground, falling: ei.falling, wind: ei.wind, air: ei.air };
                         let vj = EntView { props: &ej.props, water: ej.water, held: ej.held, ground: ej.ground, falling: ej.falling, wind: ej.wind, air: ej.air };
                         let mut my_next = ents[i].next.clone();
-                        let f = rules::run_pair(r, &vi, &vj, gap, dt, hour, night, &mut my_next, &mut other_next);
+                        // The wind on self, along the way to other.
+                        let d = ej.pos - ei.pos;
+                        let to = glam::Vec2::new(d.x, d.z).normalize_or_zero();
+                        let downwind = ei.wind * to.dot(wind_dir);
+                        let f = rules::run_pair_in_wind(r, &vi, &vj, gap, downwind, dt, hour, night, &mut my_next, &mut other_next);
                         if f {
                             ents[i].next = my_next;
                         }
@@ -826,7 +835,7 @@ pub fn watches(vocab: &Vocab) -> Vec<Watch> {
 /// them; `n` is what the part is called ("the oak", "Oda").
 fn phenomena(watch: &[Watch], before: &Props, after: &Props, n: &str) -> Vec<(super::incident::Crossed, String)> {
     let mut v = Vec::new();
-    let env = rules::Env { me: after, other: &[], dt: 0.0, dist: 0.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0, air: 1.0 };
+    let env = rules::Env { me: after, other: &[], dt: 0.0, dist: 0.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0, downwind: 0.0, air: 1.0 };
     let holds = |e: &Option<rules::RExpr>| e.as_ref().is_none_or(|e| e.eval(&env) != 0.0);
     for w in watch {
         let (Some(b), Some(a)) = (before.get(w.i), after.get(w.i)) else { continue };

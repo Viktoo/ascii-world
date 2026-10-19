@@ -35,6 +35,7 @@ pub const P_MARK: usize = 22;
 pub const P_BODY: usize = 23;
 pub const P_KIND: usize = 24;
 pub const P_AIR: usize = 25;
+pub const P_SAP: usize = 26;
 
 /// Act properties: what an action is doing right now, not what a thing is
 /// (`force` while someone works a tool). The engine sets them for a moment;
@@ -79,6 +80,7 @@ pub const BUILTIN: &[(&str, f32, &str)] = &[
     ("body", 0.0, "1 for a being's own body (people and creatures; set by the engine)"),
     ("kindness", 0.0, "how warmly someone is touching right now, 0..1: a hug, a gift handed over (set by actions; nothing has it by itself)"),
     ("air", 0.0, "breathable air it gives whoever wears or holds it, or is inside it, 0..1, for a world with little or none of its own"),
+    ("sap", 0.0, "the water a living plant draws up and keeps itself wet with, 0..1; a fire must boil it off before the plant will burn"),
 ];
 
 /// A threshold crossing worth telling ("the grass tuft caught fire").
@@ -196,6 +198,7 @@ fn builtin_scale(name: &str) -> &'static str {
         "fragile" => "stone 0, a clay pot 0.6, glass 0.9",
         "conducts" => "wood 0.05, stone 0.2, iron 0.8",
         "heat" => "0 for most things, a lantern 120, a stove 300, a forge 900",
+        "sap" => "0 for what is not a growing plant, dry summer grass 0.15, a meadow 0.3, a green oak 0.5, a lush fern or moss 0.7, a cactus 0.9",
         "air" => "0 for most things, a space suit, a diving helmet or an air tank 1, a sealed habitat, dome or airship cabin 1",
         _ => "",
     }
@@ -418,10 +421,13 @@ pub fn type_props(vocab: &Vocab, ty: &TypeEntry) -> Props {
     if !ty.solid {
         p[P_SOLID] = 0.0;
     }
-    let plant = ["tree", "pine", "bush", "grass", "flower", "plant", "reed", "crop"].iter().any(|t| tag(ty, t));
+    // "tallgrass", "seagrass": any kind of grass.
+    let grass = ty.ct.meta.tags.iter().any(|t| t.contains("grass"));
+    let plant = grass || ["tree", "pine", "bush", "shrub", "fern", "moss", "vine", "hedge", "flower", "plant", "reed", "crop"].iter().any(|t| tag(ty, t));
     if plant {
         p[P_ALIVE] = 1.0;
-        p[P_BURNS] = if tag(ty, "grass") { 0.9 } else { 0.6 };
+        p[P_BURNS] = if grass { 0.9 } else { 0.6 };
+        p[P_SAP] = if grass { 0.2 } else { 0.45 };
     }
     if tag(ty, "wood") || tag(ty, "stick") {
         p[P_BURNS] = 0.8;
@@ -449,6 +455,8 @@ pub fn type_props(vocab: &Vocab, ty: &TypeEntry) -> Props {
         }
     }
     p[P_MASS] = p[P_MASS].max(0.001);
+    // A living plant starts as wet as its sap keeps it.
+    p[P_WET] = p[P_WET].max(p[P_SAP] * p[P_ALIVE].clamp(0.0, 1.0));
     p
 }
 
@@ -528,7 +536,7 @@ pub fn sanitize(p: &mut Props) {
         }
         *v = v.clamp(-1e5, 1e5);
     }
-    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_PROTECT, P_FORCE, P_MARK, P_BODY, P_KIND] {
+    for i in [P_FIRE, P_WET, P_CHAR, P_GROWTH, P_BOUNCE, P_FRICTION, P_BURNS, P_FRAGILE, P_CONDUCTS, P_STRANGE, P_TOY, P_PROTECT, P_FORCE, P_MARK, P_BODY, P_KIND, P_SAP] {
         p[i] = p[i].clamp(0.0, 1.0);
     }
     p[P_LIGHT] = p[P_LIGHT].clamp(0.0, 2.0);

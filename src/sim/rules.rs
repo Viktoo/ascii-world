@@ -11,7 +11,7 @@ use super::props::*;
 use serde::{Deserialize, Serialize};
 
 /// Names rules use for themselves; universe properties may not take them.
-pub const RESERVED: &[&str] = &["self", "other", "dt", "dist", "hour", "night", "water", "held", "ground", "falling", "wind", "air", "and", "or", "not", "min", "max", "clamp", "abs", "true", "false"];
+pub const RESERVED: &[&str] = &["self", "other", "dt", "dist", "hour", "night", "water", "held", "ground", "falling", "wind", "downwind", "air", "and", "or", "not", "min", "max", "clamp", "abs", "true", "false"];
 pub const MAX_NEAR: f32 = 10.0;
 pub const MAX_UNIVERSE_RULES: usize = 12;
 
@@ -36,6 +36,7 @@ pub enum Var {
     Ground,
     Falling,
     Wind,
+    Downwind,
     Air,
 }
 
@@ -116,6 +117,9 @@ pub struct Env<'a> {
     /// How much falls on it from the sky (0 under a roof), and the wind.
     pub falling: f32,
     pub wind: f32,
+    /// For a pair: how much the wind blows from self towards other (the
+    /// wind's strength, less as it blows across, negative against).
+    pub downwind: f32,
     /// The air about it to breathe and burn, 0..1 (see `Sim::air_at`).
     pub air: f32,
 }
@@ -138,6 +142,7 @@ impl RExpr {
                 Var::Ground => e.ground,
                 Var::Falling => e.falling,
                 Var::Wind => e.wind,
+                Var::Downwind => e.downwind,
                 Var::Air => e.air,
             },
             RExpr::Neg(a) => -a.eval(e),
@@ -187,7 +192,7 @@ impl RExpr {
     fn reads_pair(&self) -> bool {
         match self {
             RExpr::Prop { other, .. } => *other,
-            RExpr::Var(Var::Dist) => true,
+            RExpr::Var(Var::Dist | Var::Downwind) => true,
             RExpr::Num(_) | RExpr::Var(_) => false,
             RExpr::Neg(a) | RExpr::Not(a) => a.reads_pair(),
             RExpr::Bin(_, a, b) => a.reads_pair() || b.reads_pair(),
@@ -407,6 +412,8 @@ impl Parser<'_> {
                     "ground" => Ok(RExpr::Var(Var::Ground)),
                     "falling" => Ok(RExpr::Var(Var::Falling)),
                     "wind" => Ok(RExpr::Var(Var::Wind)),
+                    "downwind" if self.pair => Ok(RExpr::Var(Var::Downwind)),
+                    "downwind" => Err("'downwind' needs \"near\"".into()),
                     "air" => Ok(RExpr::Var(Var::Air)),
                     "min" | "max" | "clamp" | "abs" => {
                         let f = match w.as_str() {
@@ -431,7 +438,7 @@ impl Parser<'_> {
                         }
                         Ok(RExpr::Call(f, args))
                     }
-                    _ => Err(format!("unknown name '{w}' (use self.<property>, other.<property>, dt, dist, hour, night, water, held, ground, falling, wind)")),
+                    _ => Err(format!("unknown name '{w}' (use self.<property>, other.<property>, dt, dist, hour, night, water, held, ground, falling, wind, downwind, air)")),
                 }
             }
             Some(t) => Err(format!("unexpected {t:?}")),
@@ -520,7 +527,8 @@ pub fn builtin_specs() -> Vec<RuleSpec> {
         spec("keeps its own cold", None, "self.heat < 0 && self.temp > self.heat", &["self.temp = self.heat"]),
         spec("fire is hot", None, "self.fire > 0", &["self.temp = max(self.temp, 350 + 450 * self.fire)"]),
         spec("heat spreads", Some(6.0), "self.temp > 45 && other.temp < 10 + min(self.temp - 15, 135) / (1 + dist * dist)", &["other.temp += (15 + min(self.temp - 15, 135) / (1 + dist * dist) - other.temp) * 0.5 * dt"]),
-        spec("flames spread", Some(6.0), "self.fire > 0 && other.burns > 0 && other.fire <= 0 && self.temp > other.temp + 30", &["other.temp += (self.temp - other.temp) * 0.3 * dt / (1 + dist * dist)"]),
+        // Flames lick further downwind, and hardly at all against it.
+        spec("flames spread", Some(4.0), "self.fire > 0 && other.burns > 0 && other.fire <= 0 && self.temp > other.temp + 30", &["other.temp += (self.temp - other.temp) * 0.3 * max(0.15, 1 + 3 * downwind) * dt / (1 + dist * dist)"]),
         spec("cools down", None, "self.temp > self.heat && abs(self.temp - 15) > 0.5", &["self.temp += (15 - self.temp) * 0.05 * dt"]),
         spec("warms up", None, "self.temp < 14.5", &["self.temp += (15 - self.temp) * 0.05 * dt"]),
         spec("catches fire", None, "self.burns > 0 && self.fire <= 0 && self.fuel > 0 && self.wet < 0.4 && air > 0.2 && self.temp > 240 - 60 * self.burns", &["self.fire = 0.2"]),
@@ -529,11 +537,18 @@ pub fn builtin_specs() -> Vec<RuleSpec> {
         spec("beaten out", Some(0.5), "self.fire > 0 && other.force > 0", &["self.fire -= 0.8 * other.force * dt", "self.temp = min(self.temp, 150)"]),
         spec("doused", None, "self.fire > 0 && self.wet > 0.5", &["self.fire = 0", "self.temp = min(self.temp, 60)"]),
         spec("smothered", None, "self.fire > 0 && air < 0.2", &["self.fire = 0", "self.temp = min(self.temp, 150)"]),
+        // Water boils before it gets hotter: heat past 100° goes into drying
+        // it out, and only a dry thing heats on towards burning.
+        spec("boils dry", None, "self.wet > 0 && self.temp > 100 && self.fire <= 0 && self.heat <= 100", &["self.wet -= (self.temp - 100) * 0.002", "self.temp = 100"]),
         spec("soaked in water", None, "water > 0", &["self.wet = 1"]),
-        spec("dries", None, "self.wet > 0 && water <= 0", &["self.wet -= (0.004 + max(0, self.temp - 30) * 0.0004) * dt"]),
+        // A living plant keeps itself as wet as its sap, and draws it back up
+        // while a fire dries it (a green tree outlasts a passing grass fire).
+        spec("draws up sap", None, "self.alive > 0 && self.body <= 0 && held <= 0 && self.wet < self.sap", &["self.wet += (self.sap - self.wet) * 0.2 * dt"]),
+        spec("dries", None, "self.wet > self.sap * self.alive && water <= 0", &["self.wet -= (0.004 + max(0, self.temp - 30) * 0.0004) * dt"]),
         spec("wets what it touches", Some(1.2), "other.wet > 0.8 && self.wet < other.wet - 0.1 && water <= 0", &["self.wet += 0.25 * dt"]),
         spec("grows", None, "self.alive > 0 && self.body <= 0 && self.growth < 1 && self.fire <= 0 && held <= 0", &["self.growth += (0.002 + 0.006 * self.wet) * dt"]),
-        spec("killed by heat", None, "self.alive > 0 && self.body <= 0 && self.temp > 120", &["self.alive = 0"]),
+        // A plant dies when scorched, or when heat has boiled off half its sap.
+        spec("killed by heat", None, "self.alive > 0 && self.body <= 0 && (self.temp > 120 || (self.temp >= 100 && self.wet < 0.5 * self.sap))", &["self.alive = 0"]),
         spec("broken open, it burns", None, "self.health <= 0 && self.burns > 0 && self.fuel > 0 && self.fire <= 0 && self.temp > 90", &["self.fire = 1"]),
         spec("conducts heat", Some(0.8), "self.conducts > 0 && other.conducts > 0 && self.temp > other.temp + 5", &["other.temp += (self.temp - other.temp) * self.conducts * other.conducts * dt"]),
         // A glow on a body (a touch's dust) fades; one hot enough to shine keeps it.
@@ -574,7 +589,7 @@ pub fn apply(target: &mut [f32], prop: usize, op: Assign, v: f32) {
 /// `me.props`). Returns the names of rules that fired.
 pub fn run_single<'r>(rules: &'r [Rule], me: &EntView, out: &mut [f32], dt: f32, hour: f32, night: f32, fired: &mut Vec<&'r str>) {
     for r in rules.iter().filter(|r| r.near.is_none()) {
-        let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind, air: me.air };
+        let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind, downwind: 0.0, air: me.air };
         if r.when_self.iter().all(|c| c.eval(&env) != 0.0) {
             for e in &r.effects {
                 apply(out, e.prop, e.op, e.value.eval(&env));
@@ -586,7 +601,7 @@ pub fn run_single<'r>(rules: &'r [Rule], me: &EntView, out: &mut [f32], dt: f32,
 
 /// Whether a pair rule's self-only conditions hold (so neighbours are worth checking).
 pub fn pair_self_ok(r: &Rule, me: &EntView, dt: f32, hour: f32, night: f32) -> bool {
-    let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind, air: me.air };
+    let env = Env { me: me.props, other: &[], dt, dist: 0.0, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind, downwind: 0.0, air: me.air };
     r.when_self.iter().all(|c| c.eval(&env) != 0.0)
 }
 
@@ -594,7 +609,14 @@ pub fn pair_self_ok(r: &Rule, me: &EntView, dt: f32, hour: f32, night: f32) -> b
 /// as deltas (Set effects are applied directly). Returns true if it fired.
 #[allow(clippy::too_many_arguments)]
 pub fn run_pair(r: &Rule, me: &EntView, other: &EntView, dist: f32, dt: f32, hour: f32, night: f32, out_me: &mut [f32], out_other: &mut [f32]) -> bool {
-    let env = Env { me: me.props, other: other.props, dt, dist, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind, air: me.air };
+    run_pair_in_wind(r, me, other, dist, 0.0, dt, hour, night, out_me, out_other)
+}
+
+/// `run_pair` for two things apart in the open, the wind blowing `downwind`
+/// from `me` towards `other`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_pair_in_wind(r: &Rule, me: &EntView, other: &EntView, dist: f32, downwind: f32, dt: f32, hour: f32, night: f32, out_me: &mut [f32], out_other: &mut [f32]) -> bool {
+    let env = Env { me: me.props, other: other.props, dt, dist, hour, night, water: me.water, held: me.held, ground: me.ground, falling: me.falling, wind: me.wind, downwind, air: me.air };
     if !r.when_pair.iter().all(|c| c.eval(&env) != 0.0) {
         return false;
     }
@@ -620,14 +642,14 @@ mod tests {
         let mut me = vo.defaults.clone();
         let mut ot = vo.defaults.clone();
         me[P_TEMP] = 250.0;
-        let env = |me: &[f32], ot: &[f32]| e.eval(&Env { me, other: ot, dt: 0.1, dist: 1.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0, air: 1.0 });
+        let env = |me: &[f32], ot: &[f32]| e.eval(&Env { me, other: ot, dt: 0.1, dist: 1.0, hour: 12.0, night: 0.0, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0, downwind: 0.0, air: 1.0 });
         assert_eq!(env(&me, &ot), 1.0);
         me[P_WET] = 0.7;
         assert_eq!(env(&me, &ot), 0.0);
         ot[P_FIRE] = 0.5;
         assert_eq!(env(&me, &ot), 1.0);
         let e2 = parse_expr("clamp(-self.temp / 0, 1, 3) + min(2, abs(-5))", &vo, false).unwrap();
-        assert_eq!(e2.eval(&Env { me: &me, other: &[], dt: 0.0, dist: 0.0, hour: 0.0, night: 0.0, water: 0.0, held: 0.0, ground: 0.0, falling: 0.0, wind: 0.0, air: 1.0 }), 3.0);
+        assert_eq!(e2.eval(&Env { me: &me, other: &[], dt: 0.0, dist: 0.0, hour: 0.0, night: 0.0, water: 0.0, held: 0.0, ground: 0.0, falling: 0.0, wind: 0.0, downwind: 0.0, air: 1.0 }), 3.0);
     }
 
     #[test]
@@ -658,6 +680,50 @@ mod tests {
         assert!(heat.when_self.len() == 1 && heat.when_pair.len() == 1, "cheap self check first, then neighbours");
         let wets = rules.iter().find(|r| r.spec.name == "wets what it touches").unwrap();
         assert_eq!((wets.when_self.len(), wets.when_pair.len()), (1, 2), "self-only parts are checked first");
+    }
+
+    /// Seconds until a plant with this much sap catches from a steady fire
+    /// `dist` metres off, the wind blowing `downwind` from the fire to it.
+    fn secs_to_catch(sap: f32, dist: f32, downwind: f32) -> Option<f32> {
+        let vo = v();
+        let rules = builtin_rules(&vo);
+        let mut fire = vo.defaults.clone();
+        (fire[P_FIRE], fire[P_TEMP], fire[P_BURNS]) = (1.0, 800.0, 0.6);
+        let mut b = vo.defaults.clone();
+        (b[P_ALIVE], b[P_BURNS], b[P_SAP], b[P_WET]) = (1.0, 0.6, sap, sap);
+        let dt = 0.25;
+        for k in 0..240 {
+            let mut next = b.clone();
+            let vb = EntView { props: &b, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: 0.0, air: 1.0 };
+            run_single(&rules, &vb, &mut next, dt, 12.0, 0.0, &mut Vec::new());
+            let va = EntView { props: &fire, water: 0.0, held: 0.0, ground: 1.0, falling: 0.0, wind: downwind.abs(), air: 1.0 };
+            for r in rules.iter().filter(|r| r.near.is_some_and(|n| dist <= n)) {
+                if pair_self_ok(r, &va, dt, 12.0, 0.0) {
+                    run_pair_in_wind(r, &va, &vb, dist, downwind, dt, 12.0, 0.0, &mut fire.clone(), &mut next);
+                }
+            }
+            sanitize(&mut next);
+            b = next;
+            if b[P_FIRE] > 0.0 {
+                return Some(k as f32 * dt);
+            }
+        }
+        None
+    }
+
+    /// Water boils off before a thing heats past 100°: a green plant holds
+    /// out where a dry one burns, unless the fire is close; flames reach
+    /// further downwind and hardly against it.
+    #[test]
+    fn sap_must_boil_off_and_wind_carries_flames() {
+        let dry = secs_to_catch(0.0, 2.0, 0.0).expect("dry grass 2 m from a fire catches");
+        let meadow = secs_to_catch(0.2, 2.0, 0.0).expect("a meadow catches, later");
+        assert!(meadow > dry, "sap slows it ({dry} s dry, {meadow} s with sap)");
+        assert!(secs_to_catch(0.45, 3.0, 0.0).is_none(), "a green tree 3 m off holds out");
+        assert!(secs_to_catch(0.45, 0.5, 0.0).is_some(), "but not in the flames");
+        assert!(secs_to_catch(0.2, 3.8, 0.8).is_some(), "downwind the flames reach further");
+        assert!(secs_to_catch(0.2, 3.8, -0.8).is_none(), "and hardly at all upwind");
+        eprintln!("dry {dry} s, meadow {meadow} s, tree close {:?}, downwind {:?}", secs_to_catch(0.45, 0.5, 0.0), secs_to_catch(0.2, 3.8, 0.8));
     }
 
     #[test]
