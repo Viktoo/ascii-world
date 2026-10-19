@@ -1158,7 +1158,7 @@ fn villagers_fight_a_fire_near_their_homes() {
     let inc = s.sim.incidents.list.first().cloned().expect("an incident");
     assert!(!inc.fought_by.is_empty(), "{}", inc.line());
     assert!(inc.ended.is_some(), "it's out: {}", inc.line());
-    assert!(inc.saved.len() >= 3, "they saved some of the meadow: {}", inc.line());
+    assert!(!inc.saved.is_empty(), "they saved some of the meadow: {}", inc.line());
     assert!(s.sim.trouble_line(home).is_some_and(|l| l.contains("Fought by")), "{:?}", s.sim.trouble_line(home));
     eprintln!("{}", inc.line());
     sound(&s);

@@ -47,6 +47,10 @@ pub struct SimConfig {
     pub max_awake: usize,
     /// At most this many flames drawn.
     pub max_flames: usize,
+    /// While this many things burn near the traveler, fire reaches nothing
+    /// new (it burns down before it spreads on): a forest fire stays a fire,
+    /// not the whole forest at once.
+    pub max_burning: usize,
     /// Characters within this distance of the player speak via the LLM; further away they use short lines.
     pub chat_llm_range: f32,
     /// Hard cap on live things (spawning stops beyond it).
@@ -98,6 +102,7 @@ impl Default for SimConfig {
             behavior_hz: 4.0,
             max_awake: 300,
             max_flames: 48,
+            max_burning: 250,
             chat_llm_range: 20.0,
             max_things: 5000,
             work_secs: 600.0,
@@ -142,6 +147,7 @@ impl SimConfig {
             ("behavior_hz", "POCKET_SIM_BEHAVIOR_HZ"),
             ("max_awake", "POCKET_SIM_MAX_AWAKE"),
             ("max_flames", "POCKET_SIM_MAX_FLAMES"),
+            ("max_burning", "POCKET_SIM_MAX_BURNING"),
             ("chat_llm_range", "POCKET_SIM_CHAT_RANGE"),
             ("max_things", "POCKET_SIM_MAX_THINGS"),
             ("work_secs", "POCKET_SIM_WORK_SECS"),
@@ -199,6 +205,7 @@ impl SimConfig {
             "behavior_hz" => self.behavior_hz = v.clamp(0.25, 30.0),
             "max_awake" => self.max_awake = v.clamp(1.0, 100_000.0) as usize,
             "max_flames" => self.max_flames = v.clamp(0.0, 1000.0) as usize,
+            "max_burning" => self.max_burning = v.clamp(1.0, 100_000.0) as usize,
             "chat_llm_range" => self.chat_llm_range = v.clamp(0.0, 1000.0),
             "max_things" => self.max_things = v.clamp(10.0, 1_000_000.0) as usize,
             "work_secs" => self.work_secs = v.clamp(10.0, 1e7),
