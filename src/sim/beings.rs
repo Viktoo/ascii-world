@@ -211,9 +211,15 @@ impl Sim {
         let me = ActorId::Npc(cid);
         let pos = self.actor(me)?.pos;
         let strength = self.strength(me);
+        // What lives only in the water goes only after what lands in it.
+        let aquatic = self.cast.get(cid).is_some_and(|n| n.species.water_only());
+        let ter = &self.snap.terrain;
         let mut best: Option<(f32, ThingId, ActorId)> = None;
         for t in self.things.live() {
             let Some((by, when)) = t.thrown_by else { continue };
+            if aquatic && ter.water(t.pos.x, t.pos.z) - t.pos.y < 0.2 {
+                continue;
+            }
             if by == me || self.t - when > 25.0 || t.held() || t.anchored || t.mass() > strength || self.vocab.harm(&t.props) > 0.0 {
                 continue;
             }
@@ -437,10 +443,16 @@ impl Sim {
     /// The nearest prey a hungry predator could chase.
     pub(super) fn prey_near(&self, me: ActorId, range: f32) -> Option<(ActorId, Vec3)> {
         let pos = self.actor(me)?.pos;
+        // What lives only in the water hunts only what is in it.
+        let aquatic = self.species_of(me).is_some_and(|s| s.water >= 1.0);
+        let t = &self.snap.terrain;
         let mut best: Option<(f32, ActorId, Vec3)> = None;
         for o in self.actor_ids() {
             let Some(x) = self.actor(o) else { continue };
             let d = (x.pos - pos).length();
+            if aquatic && t.water(x.pos.x, x.pos.z) - x.pos.y < 0.3 {
+                continue;
+            }
             if d < range && self.hunts(me, o) && best.is_none_or(|b| d < b.0) {
                 best = Some((d, o, x.pos));
             }
@@ -573,9 +585,14 @@ impl Sim {
         let grazes = diet.grazes();
         let found = self.nearest_matching(p, range, |pr| (pr[P_EDIBLE] > 0.05 && pr[P_MASS] < strength.max(1.0)) || (grazes && grazable(pr)))?;
         // Not what they found out of their reach a moment ago.
+        (!self.shunned(cid, found.1)).then_some(found)
+    }
+
+    /// Whether `at` is where something lay out of their reach a little while
+    /// ago (they look elsewhere rather than try again and again).
+    pub fn shunned(&self, cid: i64, at: Vec3) -> bool {
         let t = self.t;
-        let shunned = self.cast.get(cid).is_some_and(|n| n.unreachable.iter().any(|(q, until)| *until > t && (*q - found.1).length() < 1.5));
-        (!shunned).then_some(found)
+        self.cast.get(cid).is_some_and(|n| n.unreachable.iter().any(|(q, until)| *until > t && (*q - at).length() < 1.5))
     }
 
     /// Does this being eat plants as they grow (grass, leaves)?

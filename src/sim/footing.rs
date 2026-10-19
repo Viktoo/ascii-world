@@ -121,13 +121,18 @@ impl Sim {
         // out of a harbour), as it pulls itself out onto a bank.
         let wl_here = self.snap.terrain.water(pos.x, pos.z);
         let mut out_top = None;
-        if cap.swims && !solids.is_empty() && pos.y < wl_here - 0.3 {
+        if cap.swims && cap.needs_water <= 0.0 && !solids.is_empty() && pos.y < wl_here - 0.3 {
             out_top = Some(wl_here + 0.9);
         }
         let mut ground = match cached {
             Some(g) if grounded && vy == 0.0 => g,
             _ => support_under(&self.snap.terrain, &solids, pos, cap.radius, top),
         };
+        // A being of the water is not lifted out onto a step or a ledge just
+        // under the surface: it swims over it.
+        if cap.needs_water > 0.0 && ground > wl_here - cap.needs_water && ground > self.snap.terrain.height(pos.x, pos.z) + 0.05 {
+            ground = self.snap.terrain.height(pos.x, pos.z);
+        }
         // Near the top only (a roof down on the bed is no step out).
         if let Some(t) = out_top {
             let up = support_under(&self.snap.terrain, &solids, pos, cap.radius, t);

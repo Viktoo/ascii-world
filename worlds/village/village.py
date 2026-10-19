@@ -127,13 +127,13 @@ def balustrades(p, terrace_h):
             edges.append((x, a))
             x = b
         edges.append((x, WALL_X - 0.9))
+        # Long lengths, then short ones, end to end, closing each run.
         for a, b in edges:
-            n = int((b - a) // 4.0)
-            if n < 1:
-                continue
-            left = (a + b) / 2 - n * 2.0
-            for i in range(n):
-                p.put("stone balustrade", left + 2.0 + 4.0 * i, z0 + 0.3, 0, y=terrace_h(z0 + 1))
+            x = a
+            for ty, L in (("stone balustrade", 4.0), ("short balustrade", 1.0), ("half balustrade", 0.5)):
+                while b - x >= L - 1e-6:
+                    p.put(ty, x + L / 2, z0 + 0.3, 0, y=terrace_h(z0 + 1))
+                    x += L
 
 
 def walls(p, terrace_h):

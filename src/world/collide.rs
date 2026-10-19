@@ -230,7 +230,7 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
     let afloat = b.swims && from.y < out && [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.0, 0.0)].iter().any(|(dx, dz)| terrain.height(start.x + dx, start.y + dz) < wl - 0.05);
     // Afloat, what stands no higher than that (a step, a slipway, a
     // pontoon) is somewhere to climb onto, not a wall in the way.
-    let feet = if afloat && !obs.solids.is_empty() {
+    let feet = if afloat && b.needs_water <= 0.0 && !obs.solids.is_empty() {
         let q = Vec3::new(from.x + delta.x, from.y, from.z + delta.z);
         let up = support_under(terrain, obs.solids, q, radius, out);
         // Only near the top: a roof down on the bed is no way out.
@@ -245,7 +245,9 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
     let water_ok = |q: Vec2| {
         if b.needs_water > 0.0 {
             // A fish keeps to its water; stranded, it never goes shallower.
-            let there = terrain.water(q.x, q.y) - terrain.height(q.x, q.y);
+            // Over a step or a slipway the water is only as deep as over it.
+            let floor = if obs.solids.is_empty() { terrain.height(q.x, q.y) } else { support_under(terrain, obs.solids, Vec3::new(q.x, feet, q.y), radius, feet + b.step) };
+            let there = terrain.water(q.x, q.y) - floor;
             there >= b.needs_water || there >= here
         } else if b.swims {
             !afloat || terrain.height(q.x, q.y) < out.max(feet + b.step)
@@ -268,8 +270,12 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
         };
     }
     if !obs.solids.is_empty() || !obs.bodies.is_empty() {
-        let d_start = dist(from.x, from.z);
-        if d_start < radius * 0.5 && !obs.clear(from.x, from.z, feet, b) {
+        // Overlapping a solid already (an old save, a building that appeared
+        // on top of us): free to walk out. Overlapping only other bodies
+        // (two stood on one spot) is not leave to walk through walls.
+        let walls = Obstacles { solids: obs.solids, bodies: &[] };
+        let d_start = walls.dist_body(from.x, from.z, feet, b);
+        if d_start < radius * 0.5 && !walls.clear(from.x, from.z, feet, b) {
             // Already overlapping something (an old save, or a building that
             // appeared on top of us): move freely until clear, so we can walk out.
             return Vec3::new(p.x, feet, p.y);

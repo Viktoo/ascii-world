@@ -1321,7 +1321,9 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     };
     let ox = r.0 as f32 * REGION;
     let oz = r.1 as f32 * REGION;
-    let clampl = |v: f32| v.clamp(4.0, REGION - 4.0);
+    // Inside the region, a little off its edges (a world written by hand
+    // stands its people exactly where it says).
+    let clampl = |v: f32| if authored() { v.clamp(0.0, REGION) } else { v.clamp(4.0, REGION - 4.0) };
     // Set up off the ground ("height" metres), on what holds it there (a
     // platform in a great tree, a ledge, stilts): placed before it.
     // Or, in a world written by hand, at a level ("y", metres over the sea,

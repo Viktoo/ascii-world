@@ -338,7 +338,7 @@
    "social": "pack",
    "diet": {
     "plants": 0,
-    "meat": 1
+    "meat": 0.4
    },
    "temper": {
     "bold": 0.5,
@@ -393,7 +393,7 @@
      }
     ]
    ],
-   "description": "a pod that follows the fishing boats in and out of the bay"
+   "description": "a pod that follows the fishing boats in and out of the bay, after the fish they stir up"
   }
  ],
  "landforms": [

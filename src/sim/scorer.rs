@@ -340,7 +340,7 @@ impl Sim {
                 }
             }
             // Toys and what is aimed at.
-            let ball = self.nearest_matching(pos, 30.0, is_toy);
+            let ball = self.nearest_matching(pos, 30.0, is_toy).filter(|(_, at)| !self.shunned(cid, *at));
             let ball_held = held.filter(|h| self.things.get(*h).is_some_and(|x| is_toy(&x.props)));
             let toy = ball_held.or_else(|| ball.as_ref().and_then(|(tg, _)| self.liven(tg)));
             if let Some(id) = toy {
@@ -370,7 +370,7 @@ impl Sim {
                 }
             }
             // Loose small things: bring some home, or toss one.
-            let loose = if held.is_none() { self.loose_thing(pos, home, 14.0) } else { None };
+            let loose = if held.is_none() { self.loose_thing(pos, home, 14.0).filter(|(_, at)| !self.shunned(cid, *at)) } else { None };
             if let Some((tg, _)) = loose {
                 let pile = self.things.near(home, 4.0).len() as f32;
                 if (pos - home).length() > 6.0 {
