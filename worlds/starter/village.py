@@ -216,6 +216,9 @@ def green(p, gh, rnd):
     # Set out for the harvest supper: two long tables north of the gazebo.
     for x in (-6.5, 6.5):
         p.put("harvest table", gx + x, gz + 9.5, 0, y=gh)
+        # Two pumpkins down the middle of each.
+        for dx in (-1.1, 1.1):
+            p.put("pumpkin", gx + x + dx, gz + 9.5, rnd.uniform(0, 360), y=gh + 0.79)
     # Flowers round the gazebo and along the green's edges, pumpkins by its
     # steps, leaves raked into piles under the maples.
     for i in range(10):
