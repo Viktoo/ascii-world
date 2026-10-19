@@ -222,15 +222,18 @@ ITEMS = [("fishing rod", "Nonno Beppe"), ("fishing rod", "Tomi"), ("fishing rod"
 def creatures(h):
     return [
         # In Marinella: cats everywhere, a dog or two.
-        {"species": "cat", "count": 3, "x": -18.0, "z": -15.0, "names": ["Sardina", "Moro", "Bianca"], "owner": "", "description": "harbour cats begging at the fish crates"},
-        {"species": "cat", "count": 3, "x": 6.0, "z": 50.0, "names": ["Pepe", "Tigre", "Nuvola"], "owner": "Sofia", "description": "the piazza's cats, fed by Sofia"},
-        {"species": "cat", "count": 2, "x": -50.0, "z": 0.0, "names": ["Ombra", "Fiocco"], "owner": "", "description": "cats asleep on the warm steps"},
-        {"species": "dog", "count": 1, "x": -2.0, "z": -20.0, "names": ["Capitano"], "owner": "Marco", "description": "a scruffy black-and-white boat dog"},
-        {"species": "dog", "count": 1, "x": 82.0, "z": 96.0, "names": ["Vento"], "owner": "Franco", "description": "a lean grey hound who climbs the tower with Franco"},
+        {"species": "cat", "count": 3, "x": -12.0, "z": -23.0, "names": ["Sardina", "Moro", "Bianca"], "owner": "", "description": "harbour cats begging at the fish crates"},
+        {"species": "cat", "count": 3, "x": 8.0, "z": 14.0, "names": ["Pepe", "Tigre", "Nuvola"], "owner": "Sofia", "description": "the piazza's cats, fed by Sofia"},
+        {"species": "cat", "count": 2, "x": -18.0, "z": -4.0, "names": ["Ombra", "Fiocco"], "owner": "Nino", "description": "cats asleep on the barber's warm step"},
+        {"species": "cat", "count": 2, "x": 24.0, "z": 40.0, "names": ["Ricciolo", "Mela"], "owner": "Sara", "description": "the vet's two one-eyed cats"},
+        {"species": "dog", "count": 1, "x": -20.0, "z": -22.0, "names": ["Capitano"], "owner": "Marco", "description": "a scruffy black-and-white boat dog"},
+        {"species": "dog", "count": 1, "x": 12.0, "z": -22.0, "names": ["Vento"], "owner": "Franco", "description": "a lean grey hound who climbs the tower with Franco"},
+        {"species": "dog", "count": 1, "x": 22.0, "z": -2.0, "names": ["Briciola"], "owner": "Sara", "description": "a fat little brown mongrel who follows the vet everywhere"},
+        {"species": "dog", "count": 1, "x": 3.0, "z": 23.0, "names": ["Duca"], "owner": "Paola", "description": "the hotel's dignified old setter, asleep by the door"},
         # In the bay: dolphins following the boats.
         {"species": "bottlenose dolphin", "count": 6, "x": 10.0, "z": -150.0, "names": [], "owner": "", "description": "a pod playing round the harbour mouth"},
         {"species": "bottlenose dolphin", "count": 4, "x": -170.0, "z": -130.0, "names": [], "owner": "", "description": "dolphins off the sandy cove"},
-        # Boscoverde: the horses, the dog.
+        # Boscoverde: the horses and the dog.
         {"species": "horse", "count": 3, "x": 154.0, "z": 492.0, "names": ["Castagna", "Fumo", "Stella"], "owner": "Silvia", "description": "the hamlet's sturdy chestnut work horses"},
         {"species": "dog", "count": 1, "x": 126.0, "z": 507.0, "names": ["Orso"], "owner": "Bruno", "description": "a huge shaggy brown dog"},
         # Wild: deer at the wood's edges, horses in the meadows.
@@ -242,13 +245,50 @@ def creatures(h):
     ]
 
 
+# What the first villagers gained with the new village: kin and friends.
+MORE_RELS = {
+    "Pietro": ["Gino: uncle, lives with him"], "Giulia": ["Gino: father", "Paola: sends her guests"], "Elena": ["Rita: best friend", "Mirella: making her a dress", "Ada: wants to learn the light"],
+    "Tomi": ["Leo: best friend", "Lidia: teacher", "Nico: follows him about"], "Sofia": ["Gabri: little friend", "Sara: helps with the cats", "Lidia: teacher"],
+    "Marco": ["Salvatore: drinks at his osteria"], "Lucia": ["Concetta: sells her fish"], "Carla": ["Chiara: sells her lemons"],
+    "Rosa": ["Luca: rival oven"], "Don Anselmo": ["Assunta: housekeeper", "Ottavio: chess partner"], "Matteo": ["Rina: wife"], "Franco": ["Martina: shows her the stars"],
+}
+
+
 def lay(p, cape_h, clearing):
-    p.people += villagers(cape_h) + woodcutters(clearing)
-    for c in p.people:
+    import interiors
+    import newcomers
+    import village
+    folk = villagers(cape_h) + newcomers.newcomers()
+    by_name = {c["name"]: c for c in folk}
+    # Everyone stands by day at their own door, the household side by side.
+    for key, names in newcomers.HOUSEHOLDS.items():
+        x, z, h = village.door_of(key)
+        for i, n in enumerate(names):
+            c = by_name[n]
+            c["home_x"], c["home_z"], c["y"] = round(x + (i - (len(names) - 1) / 2) * 1.2, 2), round(z - 0.5 * (i % 2), 2), h
+            if c["home"].startswith("a ") or "house" in c["home"] and key not in ("canonica",):
+                c["home"] = f"over the {village_name(key)}"
+    for n, extra in MORE_RELS.items():
+        by_name[n]["relationships"] += extra
+    for c in folk:
         if c["name"] in GOALS:
             c["goals"], c["aims"] = GOALS[c["name"]]
+    p.people += folk + woodcutters(clearing)
     homes = {c["name"]: (c["home_x"], c["home_z"]) for c in p.people}
-    for ty, who in ITEMS:
-        x, z = homes[who]
-        p.item(ty, who, x, z)
+    for ty, who in ITEMS + newcomers.ITEMS:
+        if who in homes:
+            x, z = homes[who]
+            p.item(ty, who, x, z)
+    for ty, who in newcomers.RIDES:
+        c = by_name[who]
+        p.put(ty, c["home_x"] - 1.6, c["home_z"] - 1.4, 90, y=c["y"])
     p.creatures += creatures(clearing)
+    households = {key: (key in newcomers.COUPLES, sum(1 for n in names if n in newcomers.CHILDREN), newcomers.HOBBY.get(key)) for key, names in newcomers.HOUSEHOLDS.items()}
+    interiors.lay(p, households)
+
+
+def village_name(key):
+    return {"cantiere": "boatyard", "pescheria": "fish shop", "osteria": "osteria", "gelateria": "gelateria", "capitaneria": "harbourmaster's office",
+            "bar": "bar", "farmacia": "pharmacy", "macelleria": "butcher's", "alimentari": "grocer's", "pizzeria": "pizzeria", "barbiere": "barber's",
+            "veterinario": "vet's", "libreria": "bookshop", "panetteria": "bakery", "sartoria": "tailor's", "albergo": "hotel", "caffe": "Caffè del Porto",
+            "fioraio": "flower shop", "scuola": "school", "canonica": "church"}[key]

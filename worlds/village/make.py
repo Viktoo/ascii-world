@@ -67,10 +67,11 @@ GRAVEL = (194, 182, 156)
 SAND = (232, 216, 174)
 PAVING = (196, 166, 128)
 
-# (south edge z, north edge z, height): the quay, then the terraces.
-TERRACES = [(-26, -12, 1.8), (-12, 12, 4.6), (12, 34, 7.8), (34, 58, 10.6), (58, 80, 13.6), (80, 106, 16.6)]
-WALL_X = 92.0
-WALL_N = 108.0
+# (south edge z, north edge z, height): the quay, then the terraces, each
+# 3 m over the one below (a flight of stone stairs climbs each step).
+TERRACES = [(-30, -10, 1.8), (-10, 10, 4.8), (10, 36, 7.8), (36, 58, 10.8)]
+WALL_X = 46.0
+WALL_N = 58.0
 
 
 def terrace_h(z):
@@ -151,26 +152,27 @@ def build_land():
 def lay_ground(p, nat):
     # Terraces, each a level shelf held by a stone wall at its foot.
     for z0, z1, h in TERRACES:
-        p.rect("terrace", -WALL_X - 6, z0, WALL_X + 6, z1, "level", height=h, sides=0.7, color=COBBLE if z0 < -11 else PAVING,
-               rim=STONE, rim_width=0.5, name="the quay" if z0 < -11 else "", pattern="setts" if z0 < -11 else "flagstones")
+        quay = z0 < -20
+        p.rect("terrace", -WALL_X - 4, z0, WALL_X + 4, z1, "level", height=h, sides=0.7, color=COBBLE if quay else PAVING,
+               rim=STONE, rim_width=0.5, name="the quay" if quay else "", pattern="setts" if quay else "flagstones")
     # Behind the wall the hill comes down to the meadows, softly.
-    p.rect("hill", -WALL_X - 6, 106, WALL_X + 6, 118, "level", height=16.6, sides=22)
+    p.rect("hill", -WALL_X - 4, 57, WALL_X + 4, 64, "level", height=10.8, sides=16)
     # The harbour: a basin dug to the sea bed, its quay wall sheer.
-    p.rect("harbour", -64, -78, 64, -26, "cut", height=-3.5, sides=0.6, rim=STONE, rim_width=0.8, name="the harbour")
-    p.line("breakwater", [(70, -24), (74, -58), (52, -86), (18, -94)], 7, "fill", height=2.2, sides=1.5, color=STONE, rim=(150, 146, 136), rim_width=1.0, name="the breakwater")
+    p.rect("harbour", -40, -72, 40, -30, "cut", height=-3.5, sides=0.6, rim=STONE, rim_width=0.8, name="the harbour")
+    p.line("breakwater", [(46, -28), (50, -54), (34, -76), (10, -84)], 7, "fill", height=2.2, sides=1.5, color=STONE, rim=(150, 146, 136), rim_width=1.0,
+           name="the breakwater", pattern="setts", pattern_size=0.3)
     # The cove west of the village: a sandy beach shelving into the sea.
     for x in range(-205, -100, 15):
         p.line("beach", [(x, -18), (x, -32), (x, -48), (x, -70)], 20, "level", height=[3.0, 1.4, -0.2, -2.0], sides=6)
     p.rect("sand", -210, -70, -100, -16, "paint", color=SAND, name="Spiaggia della Conca")
-    # Streets: the quay promenade, two ramps up the sides, the piazza.
-    p.line("ramp", [(-74, -16), (-74, 104)], 6, "level", height=[1.8, 16.6], sides=1.2, color=COBBLE, name="Via del Ponente", pattern="cobbles")
-    p.line("ramp", [(76, -16), (76, 104)], 6, "level", height=[1.8, 16.6], sides=1.2, color=COBBLE, name="Via del Levante", pattern="cobbles")
-    p.rect("piazza", -44, 36, 46, 56, "paint", color=(196, 140, 108), name="Piazza del Mare", pattern="bricks")
-    for z0, z1, h in TERRACES[1:]:
-        p.line("lane", [(-WALL_X + 6, z0 + 3), (WALL_X - 6, z0 + 3)], 4.2, "paint", color=COBBLE, name="", pattern="cobbles")
+    # Streets: a ramp up the west side for carts and scooters, the lanes, the piazza.
+    p.line("ramp", [(-41, -24), (-41, -12), (-41, 44)], 5, "level", height=[1.8, 1.8, 10.8], sides=1.0, color=COBBLE, name="Via del Ponente", pattern="cobbles")
+    p.rect("piazza", -36, 11, 44, 26, "paint", color=(196, 140, 108), name="Piazza del Mare", pattern="bricks")
+    p.line("lane", [(-37, -6), (WALL_X - 2, -6)], 5.0, "paint", color=COBBLE, name="Via del Porto", pattern="cobbles")
+    p.line("lane", [(-37, 40), (WALL_X - 2, 40)], 4.0, "paint", color=COBBLE, name="Via della Chiesa", pattern="cobbles")
     # Roads out of the gate: north to the woods, east and west along the coast,
     # down to the cove and out to the lighthouse on the cape.
-    p.line("road", [(0, 112), (12, 150), (34, 210), (70, 300), (100, 400), (124, 458), (128, 492)], 4.0, "level", color=DIRT, name="the woodcutters' road")
+    p.line("road", [(27, 60), (30, 110), (34, 210), (70, 300), (100, 400), (124, 458), (128, 492)], 4.0, "level", color=DIRT, name="the woodcutters' road")
     p.line("road", [(34, 210), (-90, 226), (-220, 240), (-380, 262)], 4.0, "level", color=DIRT, name="the coast road")
     p.line("road", [(34, 210), (150, 196), (290, 190), (420, 186)], 4.0, "level", color=DIRT, name="the coast road")
     p.line("path", [(-150, -14), (-158, 60), (-176, 150), (-200, 236)], 2.6, "level", color=GRAVEL, name="the cove path")
