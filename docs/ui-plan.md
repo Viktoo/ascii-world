@@ -73,7 +73,7 @@ takes it: `at` x,z,yaw, `lift`, `pitch`, `hour`, and a slow `turn`), 12 s
 each with a fade through dark, while its people go about their day. It is
 kept on behind the next world's loading screen (where the map would be) and
 let go once that world is stepped into. Until it loads (or with no GPU) the
-drawn cove shows (`ui::title::Backdrop`: Maple Cove in letters at dusk; `POCKET_NO_PANORAMA=1` shows only it). See docs/starter-world-plan.md for its lifecycle.
+stock backdrop shows (`ui::title::Backdrop`, also behind opening a world and notices): a night sky drawn on the CPU, real-looking stars, a few twinkling, and a soft light breathing in the middle. `POCKET_NO_PANORAMA=1` shows only it. See docs/starter-world-plan.md for its lifecycle.
 
 ## Not done yet
 

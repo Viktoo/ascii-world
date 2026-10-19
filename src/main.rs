@@ -406,7 +406,7 @@ fn opening(win: &mut window::Win, name: &str, path: &Path, pano: &mut Option<pan
     std::thread::Builder::new().name("opening".into()).spawn(move || {
         let _ = tx.send(load_with(&p, true));
     })?;
-    let back = ui::title::Backdrop::new();
+    let mut back = ui::title::Backdrop::new();
     let start = Instant::now();
     loop {
         let _ = win.pump(Duration::from_millis(33));
@@ -431,7 +431,7 @@ fn opening(win: &mut window::Win, name: &str, path: &Path, pano: &mut Option<pan
         ui::note(&mut scr, cx, cy + 1.0, &format!("opening{dots:<3}"), ui::DIM);
         match frame {
             Some((f, _)) => win.present(&scr, h, Some(f)),
-            None => win.present(&scr, 0, None),
+            None => win.present(&scr, h, Some(back.frame((w as f32 * g.cell_w, h as f32 * g.cell_h), t))),
         }
     }
 }

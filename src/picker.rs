@@ -242,12 +242,13 @@ pub fn delete_world(path: &Path) -> std::io::Result<()> {
 
 /// A title and a line in the middle (while a world opens), over the land of words.
 pub fn notice(win: &mut Win, title: &str, line: &str) {
-    let (w, h, _) = win.grid();
+    let (w, h, g) = win.grid();
     let mut scr = Screen::new(w, h, true);
-    crate::ui::title::Backdrop::new().draw(&mut scr, 0.0, 1.0);
+    let mut back = crate::ui::title::Backdrop::new();
+    back.draw(&mut scr, 0.0, 0.5);
     scr.title(w as f32 / 2.0, h as f32 / 2.0 - 1.5, title, 2.4, crate::ui::ACCENT);
     crate::ui::note(&mut scr, w as f32 / 2.0, h as f32 / 2.0 + 1.0, &crate::ui::fit(line, w as f32 - 4.0, 0.92), crate::ui::DIM);
-    win.present(&scr, 0, None);
+    win.present(&scr, h, Some(back.frame((w as f32 * g.cell_w, h as f32 * g.cell_h), 0.0)));
 }
 
 #[cfg(test)]

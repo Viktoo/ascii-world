@@ -89,7 +89,7 @@ pub fn menus(win: &mut Win, entry: Entry, note: Option<String>, pano: &mut Optio
     let (w, h, _) = win.grid();
     let mut scr = Screen::new(w, h, true);
     let mut ui = Ui::new();
-    let back = Backdrop::new();
+    let mut back = Backdrop::new();
     let mut m = Menus {
         stack: vec![P::Title],
         list: picker::worlds(),
@@ -194,7 +194,7 @@ pub fn menus(win: &mut Win, entry: Entry, note: Option<String>, pano: &mut Optio
         win.set_hand(ui.hot);
         match frame {
             Some((f, _)) => win.present(&scr, h, Some(f)),
-            None => win.present(&scr, 0, None),
+            None => win.present(&scr, h, Some(back.frame((w as f32 * g.cell_w, h as f32 * g.cell_h), ui.t))),
         }
     }
 }
