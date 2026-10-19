@@ -133,7 +133,7 @@ def villagers():
         person("Ivy Crane", 35, "a family cottage on Orchard Lane",
                "a cheerful woman with short black hair, paint on her hands and her overalls, a red bandana",
                F(height=1.62, hair=0.25, hair_color=0.05, skin=0.5, undertone=0.55, top=0.05, top_shade=0.5, top_cover=0.8, sleeves=0.5, bottom=0.62, bottom_shade=0.4, legs=1.0, shoes=0.45, hat=0.2),
-               "bright, playful, a little untidy, sees colour everywhere", "paints the village's signs and the boats' names, and paints the cove at sunset; teaches Clara to paint",
+               "bright, playful, a little untidy, sees colour everywhere", "paints the village's signs and the boats' names, and paints the cove at sunset at her easel on the beach, the painting still half done; teaches Clara to paint",
                "bright and quick", ["Eli Crane: husband", "Lily Crane: daughter", "Clara Ames: her pupil"], T(0.8, 0.8, 0.8, 0.5, 0.7, 0.8),
                aims=[{"text": "paint the sunset from the pier head"}]),
         person("Lily Crane", 8, "a family cottage on Orchard Lane",

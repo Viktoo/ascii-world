@@ -28,6 +28,11 @@ def lay(p):
         put("adirondack chair", x, -20.5 + rnd.uniform(-0.4, 0.4), 180 + rnd.uniform(-12, 12))
     put("picnic blanket", -74.0, -21.0, 170)
     put("beach ball", -71.0, -24.0)
+    # Someone's easel down by the water, a painting of the sunset half done,
+    # and a smooth rock beside it to sit on and look.
+    put("easel", -62.0, -25.5, 0)
+    put("granite boulder", -60.0, -27.6, 30)
+    put("driftwood log", -64.5, -22.0, 100)
     # A fire ring of stones with driftwood logs round it, for evenings.
     put("fire pit", -112.0, -18.0, 0)
     put("driftwood log", -112.0, -14.8, 0)
