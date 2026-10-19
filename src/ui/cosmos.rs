@@ -593,7 +593,8 @@ impl Cosmos {
             // Its edge stays crisp; the glow behind it widens as it goes.
             let wd = (1.2 + a * 0.5) * sc.max(0.3);
             let trail = (34.0 + a * 46.0) * sc.max(0.3);
-            let i = 1.1 * (1.0 - a / RING_LIFE).powf(1.5) * (a * 8.0).min(1.0);
+            // Half as bright as it could be: a background, not the thing to look at.
+            let i = 0.55 * (1.0 - a / RING_LIFE).powf(1.5) * (a * 8.0).min(1.0);
             let (dmin, dmax) = ((r - trail).max(0.0), r + 5.0 * wd);
             // Its colours turn slowly round it: violet, cyan, gold.
             let (ca, sa) = ((t * 0.35 + g as f32).cos(), (t * 0.35 + g as f32).sin());
@@ -612,7 +613,7 @@ impl Cosmos {
                         let (u, v) = (dx / d, dy / d);
                         let k1 = 0.5 + 0.5 * (u * ca + v * sa);
                         let k2 = 0.5 + 0.5 * (u * sa - v * ca);
-                        let hue = mix(mix([0.62, 0.40, 1.0], [0.30, 0.86, 1.0], k1), [1.0, 0.80, 0.46], k2 * k2 * 0.8);
+                        let hue = mix(mix(mix([0.62, 0.40, 1.0], [0.30, 0.86, 1.0], k1), [1.0, 0.80, 0.46], k2 * k2 * 0.8), [0.75, 0.75, 0.8], 0.5);
                         // The edge: bright and sharp, a cyan fringe outside it
                         // and a rose one just inside.
                         let edge = (1.0 - (q / 1.1).powi(2)).max(0.0).powi(3);
