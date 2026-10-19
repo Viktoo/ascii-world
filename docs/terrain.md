@@ -155,3 +155,9 @@ costs no geometry (`Grain` in `src/terrain.rs`, `ground_grain` in
 Left out, it is chosen from the ground colours: green ground gets blades,
 other ground a little grit, and flecks of a darker and a drier shade of its
 own ground. Ground laid with a colour (roads, squares) is drawn over it.
+
+Laid ground (roads, paths, squares, quays) has a grit of its own in
+`ground::pattern_shade`: a soft mottle out to 120 m and, close up, small
+stones each a little lighter or darker than the ground round them. Plain
+laid ground gets it fully; a pattern's pieces (setts, cobbles, planks…) get
+it at half strength over their own shading.

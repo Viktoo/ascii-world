@@ -184,11 +184,42 @@ impl Pattern {
     }
 }
 
-/// How a laid pattern shades the ground at (x, z) seen from `dist` metres:
-/// a factor on its colour, the joints between pieces darker and each piece
-/// a little lighter or darker than the next; fading out where the joints
-/// grow thinner than a pixel. Twin of `pattern_shade` in common.wgsl.
+/// How laid ground shades at (x, z) seen from `dist` metres: a factor on
+/// its colour. Every laid surface has a faint grit (small stones, a soft
+/// mottle), fully on plain ground (a gravel path, a dirt road) and half
+/// over a pattern's own pieces. Twin of `pattern_shade` in common.wgsl.
 pub fn pattern_shade(code: u32, x: f32, z: f32, dist: f32, seed: u32) -> f32 {
+    let lay = laid_shade(code, x, z, dist, seed);
+    lay * grit(x, z, dist, seed, if code & 255 == 0 { 1.0 } else { 0.5 })
+}
+
+/// The grit of laid ground: a mottle out to 120 m, and close up small
+/// stones, each a little lighter or darker than the ground round it.
+fn grit(x: f32, z: f32, dist: f32, seed: u32, k: f32) -> f32 {
+    use crate::noise::{h2, pcg, u2f, vnoise2};
+    let mid = smoothstep(120.0, 25.0, dist);
+    if mid <= 0.0 {
+        return 1.0;
+    }
+    let mut f = 1.0 + (vnoise2(x * 1.3, z * 1.3, seed.wrapping_add(320)) - 0.5) * 0.12 * k * mid;
+    let near = smoothstep(30.0, 8.0, dist);
+    if near > 0.0 {
+        let (gx, gz) = ((x * 6.0).floor(), (z * 6.0).floor());
+        let h = h2(gx as i32, gz as i32, seed.wrapping_add(321));
+        let (px, pz) = (gx + 0.25 + 0.5 * u2f(pcg(h)), gz + 0.25 + 0.5 * u2f(pcg(h ^ 0x51ed)));
+        let d = ((x * 6.0 - px).powi(2) + (z * 6.0 - pz).powi(2)).sqrt();
+        let r = 0.18 + 0.2 * u2f(pcg(h ^ 0x2b3c));
+        if d < r {
+            f *= 1.0 + (u2f(h) - 0.5) * 0.22 * k * near * smoothstep(r, r * 0.6, d);
+        }
+    }
+    f
+}
+
+/// A laid pattern's own shading: the joints between pieces darker and each
+/// piece a little lighter or darker than the next; fading out where the
+/// joints grow thinner than a pixel.
+fn laid_shade(code: u32, x: f32, z: f32, dist: f32, seed: u32) -> f32 {
     use crate::noise::{h2, u2f};
     let kind = code & 255;
     if kind == 0 {

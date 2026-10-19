@@ -377,6 +377,31 @@ fn pedge(f: f32) -> f32 { return min(f, 1.0 - f); }
 // How a laid pattern shades the ground at (x, z) seen from `dist`: twin of
 // ground.rs: pattern_shade.
 fn pattern_shade(code: u32, x: f32, z: f32, dist: f32, seed: u32) -> f32 {
+  return laid_shade(code, x, z, dist, seed) * grit(x, z, dist, seed, select(0.5, 1.0, (code & 255u) == 0u));
+}
+
+// Every laid surface's faint grit: a mottle, small stones close up.
+fn grit(x: f32, z: f32, dist: f32, seed: u32, k: f32) -> f32 {
+  let mid = sstep(120.0, 25.0, dist);
+  if (mid <= 0.0) { return 1.0; }
+  var f = 1.0 + (vnoise2(x * 1.3, z * 1.3, seed + 320u) - 0.5) * 0.12 * k * mid;
+  let near = sstep(30.0, 8.0, dist);
+  if (near > 0.0) {
+    let gx = floor(x * 6.0);
+    let gz = floor(z * 6.0);
+    let h = h2(i32(gx), i32(gz), seed + 321u);
+    let px = gx + 0.25 + 0.5 * u2f(pcg(h));
+    let pz = gz + 0.25 + 0.5 * u2f(pcg(h ^ 0x51edu));
+    let d = length(vec2f(x * 6.0 - px, z * 6.0 - pz));
+    let r = 0.18 + 0.2 * u2f(pcg(h ^ 0x2b3cu));
+    if (d < r) {
+      f = f * (1.0 + (u2f(h) - 0.5) * 0.22 * k * near * sstep(r, r * 0.6, d));
+    }
+  }
+  return f;
+}
+
+fn laid_shade(code: u32, x: f32, z: f32, dist: f32, seed: u32) -> f32 {
   let kind = code & 255u;
   if (kind == 0u) { return 1.0; }
   let s = f32((code >> 8u) & 255u) / 20.0;
