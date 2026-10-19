@@ -263,7 +263,7 @@ def region_of(x, z):
     return (math.floor(x / REGION), math.floor(z / REGION))
 
 
-KNOWN = {"olive tree", "stone pine", "chestnut tree", "wildflowers", "tall grass", "bracken", "broom", "limestone boulder",
+KNOWN = {"olive tree", "stone pine", "chestnut tree", "wildflowers", "tall grass", "bracken", "flowering shrub", "broom", "limestone boulder",
          "sea grass", "bench", "lamppost", "boat", "bridge", "door", "hatch", "walkway"}
 FACTS = [
     "Marinella's wall was built against pirates long ago; now its watchtower watches for storms and returning boats.",

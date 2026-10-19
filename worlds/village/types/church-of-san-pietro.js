@@ -5,7 +5,7 @@
 // Its door opens on the piazza (+z).
 export const meta = {
   name: "church of san pietro",
-  bounds: [9.0, 24.4, 9.5],
+  bounds: [9.0, 25.6, 9.5],
   tags: ["building", "landmark", "church"],
   props: { mass: 100000, burns: 0.1, light: 1 },
   sound: { hard: 1, dry: 0.4, ring: 0.6 },
@@ -40,11 +40,20 @@ export function sdf(x, y, z, k) {
   const spire = max((max(abs(cx), abs(cz)) - 1.7 + (y - 21.2) * 0.56) * 0.85, max(21.2 - y, y - 24.2));
   const bell = cappedCone(cx, y - 19.0, cz, 0.55, 0.62, 0.28);
   const link = box(x - 5.6, y - 3.0, z + 5.0, 0.7, 3.0, 1.2);
-  return min(min(min(walls, front), min(roof, rose)), min(min(steps, pews), min(altar, min(min(tower, cornice), min(spire, min(bell, link))))));
+  // Crosses: on the front's peak, on the spire, and over the altar inside.
+  const cross1 = min(box(x, y - 13.1, z - 9.05, 0.08, 0.75, 0.08), box(x, y - 13.4, z - 9.05, 0.38, 0.08, 0.08));
+  const cross2 = min(box(cx, y - 24.75, cz, 0.06, 0.55, 0.06), box(cx, y - 24.95, cz, 0.28, 0.06, 0.06));
+  const cross3 = min(box(x, y - 3.1, z + 8.55, 0.09, 0.85, 0.05), box(x, y - 3.45, z + 8.55, 0.5, 0.09, 0.05));
+  const crosses = min(cross1, min(cross2, cross3));
+  return min(min(min(min(walls, front), min(roof, rose)), min(min(steps, pews), min(altar, min(min(tower, cornice), min(spire, min(bell, link)))))), crosses);
 }
 
 export function color(x, y, z, k) {
   const n = noise3(x * 1.4, y * 1.4, z * 1.4);
+  // The crosses: wrought iron outside, gilded over the altar.
+  if (y > 12.3 && abs(x) < 0.45 && abs(z - 9.05) < 0.12) return rgb(40, 40, 44);
+  if (y > 24.15) return rgb(196, 160, 60);
+  if (abs(z + 8.55) < 0.07 && abs(x) < 0.55 && y > 2.2 && y < 4.0) return glow(rgb(220, 180, 70), 0.3);
   const cx = x - 7.1;
   const cz = z + 5.0;
   if (x > 5.45 && abs(cz) < 1.9) {

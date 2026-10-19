@@ -40,7 +40,10 @@ impl Sim {
         let (swims, needs_water) = match id {
             ActorId::Player | ActorId::Traveler(_) => (true, 0.0),
             ActorId::Npc(c) => match self.cast.get(c) {
-                Some(n) if n.species.water_only() => (true, (a.dims.height * 0.5).clamp(0.2, 3.0)),
+                // A creature of the water keeps to water deep enough for it,
+                // and one that dives deep to water half as deep as it dives
+                // (a dolphin stays off the shallows and out of harbours).
+                Some(n) if n.species.water_only() => (true, (a.dims.height * 0.5).max(n.species.depth[1] * 0.5).clamp(0.2, 4.0)),
                 // Any body that swims goes in, unless it shuns being wet.
                 Some(n) => (n.species.moves.swim > 0.0 && !n.species.shuns.iter().any(|p| p == "wet"), 0.0),
                 None => (false, 0.0),

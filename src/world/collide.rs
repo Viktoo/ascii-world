@@ -220,6 +220,10 @@ pub fn too_steep(terrain: &Terrain, from: Vec2, to: Vec2, feet: f32) -> bool {
 /// Move a body by `delta` (XZ), sliding along surfaces. Returns the new feet
 /// position (its height unchanged: footing settles it, see `sim::footing`).
 pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b: Capsule) -> Vec3 {
+    // Another body only stands in the way of a step toward it: two who
+    // touch can always step apart, or round each other.
+    let toward: Vec<(Vec3, f32)> = obs.bodies.iter().copied().filter(|(o, _)| (o.x - from.x) * delta.x + (o.z - from.z) * delta.z > 0.0).collect();
+    let obs = &Obstacles { solids: obs.solids, bodies: &toward };
     let radius = b.radius;
     let start = Vec2::new(from.x, from.z);
     // A swimmer goes into deep water and, in it or at its edge, pulls
@@ -304,6 +308,15 @@ pub fn move_body(terrain: &Terrain, obs: &Obstacles, from: Vec3, delta: Vec3, b:
         let d_end = dist(p.x, p.y);
         if d_end < radius && d_end < d_start - 1e-4 && !ok(p.x, p.y, d_end) {
             p = Vec2::new(from.x, from.z);
+        }
+        // Met someone head on and got nowhere: step to the right of them.
+        let step = Vec2::new(delta.x, delta.z);
+        if !obs.bodies.is_empty() && step.length() > 1e-4 && (p - start).length() < step.length() * 0.2 {
+            let right = Vec2::new(-step.y, step.x);
+            let q = start + step * 0.5 + right * 0.85;
+            if passable(q) && ok(q.x, q.y, dist(q.x, q.y)) {
+                p = q;
+            }
         }
     }
     Vec3::new(p.x, feet, p.y)

@@ -1217,7 +1217,7 @@ async fn region(ctx: &Ctx, r: (i32, i32)) -> anyhow::Result<()> {
     let task = format!("{task}\nSpecies in this universe:\n{}\n{}", species_list(&ctx.db), folk_note(&ctx.db));
     // People already living in the land, so this region's are new people.
     let people: Vec<String> = ctx.db.characters().unwrap_or_default().iter().filter_map(|c| serde_json::from_str::<Persona>(&c.persona_json).ok()).filter(|p| p.species.is_empty()).map(|p| p.name).take(80).collect();
-    let task = if people.is_empty() { task } else { format!("{task}\nPeople already living elsewhere in the land: {}. This region's characters are other people: give them names, trades and families of their own (they may know these people, in relationships).", people.join(", ")) };
+    let task = if people.is_empty() { task } else { format!("{task}\nPeople already living elsewhere in the land: {}. This region's characters are other people: give them names (none of these; a longer form where a short one is taken), trades and families of their own (they may know these people, in relationships).", people.join(", ")) };
     let task = if r == info.start {
         // The first thing a newcomer finds is someone to meet.
         let (x, z) = (info.spawn.x - r.0 as f32 * crate::world::REGION, info.spawn.z - r.1 as f32 * crate::world::REGION);

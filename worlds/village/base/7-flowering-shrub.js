@@ -1,7 +1,7 @@
 // A Mediterranean shrub: rosemary and myrtle mounds, and broom heaped with
 // yellow flowers in spring, a whole stand flowering alike.
 export const meta = {
-  name: "broom",
+  name: "flowering shrub",
   bounds: [1.3, 1.3, 1.3],
   tags: ["bush"],
   props: { mass: 25, burns: 0.85, alive: 1, fuel: 0.8 },

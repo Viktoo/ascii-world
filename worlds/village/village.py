@@ -180,6 +180,8 @@ def harbour(p):
 
 def cape(p, cape_h):
     p.put("cape lighthouse", 240, -184, 180, y=cape_h)
+    # Where the roads meet below the gate, a signpost for the way on.
+    p.put("crossroads signpost", 38.5, 205.5, 0, y=10.7)
 
 
 def lay(p, terrace_h, clearing, cape_h):
