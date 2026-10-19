@@ -71,6 +71,11 @@ impl Panorama {
     pub fn start() -> Panorama {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let _ = std::thread::Builder::new().name("panorama".into()).spawn(move || {
+            // POCKET_NO_PANORAMA=1: only the drawn cove (as with no GPU), to look at it.
+            if std::env::var_os("POCKET_NO_PANORAMA").is_some() {
+                let _ = tx.send(None);
+                return;
+            }
             let got = crate::starter::backdrop()
                 .map_err(|e| crate::log::info(format!("panorama: {e:#}")))
                 .ok()

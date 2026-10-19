@@ -222,6 +222,10 @@ pub struct App {
     /// Maple Cove behind the loading screen, kept on from the title (see
     /// `panorama`); let go once the world is stepped into.
     pub backdrop: Option<crate::panorama::Panorama>,
+    /// The world opened on a quick first picture (land and plants only);
+    /// the loading screen holds until the whole of it, buildings and all,
+    /// has come.
+    pub full_pending: bool,
     /// What this world has seen the player do (achievements).
     achievements: crate::achievements::Tracker,
     /// Achievement popups waiting, the first one showing since when.
@@ -365,6 +369,7 @@ impl App {
             last_pick: Instant::now(),
             loading: None,
             backdrop: None,
+            full_pending: false,
             achievements,
             toasts: VecDeque::new(),
             work: work::WorkBox::default(),
@@ -1222,6 +1227,7 @@ impl App {
     }
 
     fn flip(&mut self, snap: Arc<WorldSnapshot>, region: Option<((i32, i32), String)>) {
+        self.full_pending = false;
         let old: HashSet<i64> = self.snap.instances.iter().map(|p| p.id).collect();
         let now = Instant::now();
         for p in &snap.instances {

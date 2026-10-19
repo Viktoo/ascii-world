@@ -348,11 +348,12 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
         let _ = std::fs::write(log::dir().join("last"), path.display().to_string());
     }
     let name = picker::worlds().into_iter().find(|w| w.path == path).map(|w| w.name).unwrap_or_else(|| "a new world".into());
-    picker::notice(win, &name, "opening…");
     win.set_title(&format!("{name} · Infinite Pocket"));
-    let l = load_with(&path, true)?;
+    let mut backdrop = backdrop;
+    let l = opening(win, &name, &path, &mut backdrop)?;
     let llm = llm::Llm::from_env(l.db.clone());
     let genesis = fresh || l.db.kv_get("genesis").is_none();
+    let partial = l.partial;
     let (etx, erx) = crossbeam_channel::unbounded();
     let brain = brain::Brain::start(l.model, llm.clone(), etx, l.partial);
     let render = match &l.gpu {
@@ -384,6 +385,7 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
     });
     app.path = Some(path.clone());
     app.backdrop = backdrop;
+    app.full_pending = partial;
     app.start_loading();
     let r = window::play(win, &mut app, stop);
     app.shutdown();
@@ -394,6 +396,44 @@ fn play(win: &mut window::Win, path: &Path, fresh: bool, remember: bool, host: O
     r?;
     log::info(format!("saved {}", path.display()));
     Ok((app.to_worlds, app.left_because.take()))
+}
+
+/// Load a world, showing Maple Cove (or the drawn cove, before it has
+/// come) with the world's name until it is read.
+fn opening(win: &mut window::Win, name: &str, path: &Path, pano: &mut Option<panorama::Panorama>) -> Result<Loaded> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let p = path.to_path_buf();
+    std::thread::Builder::new().name("opening".into()).spawn(move || {
+        let _ = tx.send(load_with(&p, true));
+    })?;
+    let back = ui::title::Backdrop::new();
+    let start = Instant::now();
+    loop {
+        let _ = win.pump(Duration::from_millis(33));
+        if let Ok(l) = rx.try_recv() {
+            return l;
+        }
+        let (w, h, g) = win.grid();
+        if let Some(p) = pano.as_mut() {
+            p.tick((w as f32 * g.cell_w, h as f32 * g.cell_h));
+        }
+        let mut scr = term::Screen::new(w, h, true);
+        let t = start.elapsed().as_secs_f32();
+        let frame = pano.as_ref().and_then(|p| p.frame().map(|f| (f, p.shown())));
+        match frame {
+            Some((_, shown)) => back.draw_world(&mut scr, t, 0.5, shown),
+            None => back.draw(&mut scr, t, 0.5),
+        }
+        let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+        scr.title(cx + 0.12, cy - 1.4, name, 2.4, [20, 14, 8]);
+        scr.title(cx, cy - 1.5, name, 2.4, ui::ACCENT);
+        let dots = ".".repeat(1 + (t * 2.0) as usize % 3);
+        ui::note(&mut scr, cx, cy + 1.0, &format!("opening{dots:<3}"), ui::DIM);
+        match frame {
+            Some((f, _)) => win.present(&scr, h, Some(f)),
+            None => win.present(&scr, 0, None),
+        }
+    }
 }
 
 /// Join someone's world and play in it until it ends; as `play`.

@@ -61,6 +61,10 @@ pub(super) struct Loading {
     eta: f32,
     /// Since when the countdown has been ahead of progress and is held back.
     held: Option<Instant>,
+    /// Something is being made (genesis, or land in sight): once it is, the
+    /// world waits for a key. Otherwise it is only being set out, and you
+    /// step in as soon as it is.
+    making: bool,
 }
 
 struct Line {
@@ -124,7 +128,12 @@ impl App {
             intro: 0,
             eta: ETA_FULL,
             held: None,
+            making: false,
         });
+        let making = self.genesis_pending || !self.settle_regions().into_iter().all(|r| self.region_settled(r));
+        if let Some(l) = self.loading.as_mut() {
+            l.making = making;
+        }
         if self.settled() {
             self.loading = None;
             self.backdrop = None;
@@ -158,6 +167,9 @@ impl App {
 
     /// Nothing more is coming for the land around you (or nothing can).
     fn settled(&self) -> bool {
+        if self.full_pending {
+            return false;
+        }
         if !self.brain.has_llm || self.budget_paused {
             return true;
         }
@@ -274,8 +286,15 @@ impl App {
             l.woke = Some(Instant::now());
         }
         l.opening(quiet);
-        // Real progress fills what the creep left.
-        let target = if settled { 1.0 } else { (l.creep + (1.0 - l.creep) * self.load_progress(&l)).min(0.99) };
+        // Real progress fills what the creep left; only setting it out, the
+        // bar runs on time (it takes a few seconds).
+        let target = if settled {
+            1.0
+        } else if !l.making {
+            (1.0 - (-l.start.elapsed().as_secs_f32() / 2.5).exp()) * 0.95
+        } else {
+            (l.creep + (1.0 - l.creep) * self.load_progress(&l)).min(0.99)
+        };
         if target > l.shown {
             l.shown = (l.shown + (target - l.shown) * (dt * 2.5).min(1.0) + dt * 0.02).min(target);
         }
@@ -295,8 +314,13 @@ impl App {
         if l.last_draw.elapsed() > Duration::from_millis(66) {
             self.dirty = true;
         }
-        // The world waits for a key: whoever started it may have walked away.
+        // A made world waits for a key: whoever started it may have walked
+        // away. One only being set out opens once the bar is full.
+        let enter = !l.making && l.shown >= 0.999 && self.menu.is_none() && !l.leaving;
         self.loading = Some(l);
+        if enter {
+            self.finish_loading();
+        }
     }
 
     pub(super) fn compose_loading(&mut self) {
@@ -394,6 +418,8 @@ impl App {
             "ready".to_string()
         } else if self.budget_paused {
             "budget reached".to_string()
+        } else if !l.making {
+            "setting everything in its place".to_string()
         } else if self.genesis_pending {
             match l.work.get(&Task::Genesis).copied().unwrap_or(0.0) {
                 f if f < 0.7 => "dreaming up the land",
@@ -420,6 +446,10 @@ impl App {
         }
         if done {
             right = "any key to step in".into();
+        }
+        // Only being set out: it opens by itself in a moment.
+        if !l.making {
+            right.clear();
         }
         let rx = (x0 + cw).saturating_sub(right.chars().count() as u16 + 1);
         let right_fg = if done { mix(TEXT, ACCENT, (t * 2.0).sin() * 0.5 + 0.5) } else { FAINT };
@@ -648,7 +678,9 @@ impl Loading {
         let t = self.start.elapsed().as_secs_f32();
         let words: Vec<&str> = self.prompt.split_whitespace().collect();
         let asked = if words.len() > 7 { format!("“{}…”", words[..7].join(" ")) } else { format!("“{}”", words.join(" ")) };
-        let lines: Vec<(f32, &'static str, String)> = if self.genesis {
+        let lines: Vec<(f32, &'static str, String)> = if !self.making {
+            vec![(0.3, "opening", "the land, its people and their homes".into())]
+        } else if self.genesis {
             vec![
                 (0.3, "reading", if words.is_empty() { "a blank page".into() } else { asked }),
                 (1.6, "asking", "the builder to dream up a land".into()),

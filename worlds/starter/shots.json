@@ -1,8 +1,8 @@
 [
  {"name": "the cove at sunset", "at": [70, 30, -69], "lift": 14, "pitch": -10, "hour": 17.6, "turn": -0.5},
  {"name": "the green", "at": [18, 10, 58], "lift": 2, "pitch": -5, "hour": 16.5, "turn": 0.6},
- {"name": "the easel on the beach", "at": [-21, 63, -100], "lift": 0.4, "pitch": -12, "hour": 17.4, "turn": 0.4},
+ {"name": "the easel on the beach", "at": [-21, 63, -124], "lift": 0.4, "pitch": -12, "hour": 17.4, "turn": -0.3},
  {"name": "the pier, looking home", "at": [-50, -4, 90], "lift": 2.5, "pitch": -2, "hour": 17.3, "turn": -0.4},
- {"name": "Lantern Point", "at": [-110, -238, -90], "lift": 2, "pitch": -3, "hour": 17.8, "turn": 0.3},
+ {"name": "Lantern Point", "at": [-110, -238, -110], "lift": 2, "pitch": -3, "hour": 17.8, "turn": -0.3},
  {"name": "Pine Hollow", "at": [470, -150, 55], "lift": 2, "pitch": -4, "hour": 16.0, "turn": 0.5}
 ]

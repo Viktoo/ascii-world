@@ -63,5 +63,5 @@ def lay(p):
         put("granite boulder", x, z, rnd.uniform(0, 360))
     p.creatures += [
         {"species": "rock crab", "count": 4, "x": -100.0, "z": -27.0, "names": [], "owner": "", "description": "crabs scuttling along the tide line"},
-        {"species": "rock crab", "count": 3, "x": -60.0, "z": -27.0, "names": [], "owner": "", "description": "crabs among the rocks by the landing"},
+        {"species": "rock crab", "count": 3, "x": -82.0, "z": -26.0, "names": [], "owner": "", "description": "crabs on the open sand by the water"},
     ]
