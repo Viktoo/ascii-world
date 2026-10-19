@@ -189,6 +189,7 @@ def lineup(p, nat):
         b = re.search(r"bounds: \[([\d.]+), ([\d.]+), ([\d.]+)\]", src)
         if m and b and max(float(v) for v in b.groups()) < 2.7 and '"body"' not in src and "sign" not in m.group(1):
             small.append(m.group(1))
+    small = ["tall grass", "blueberry bush", "autumn wildflowers", "leaf litter", "bracken"] + small
     h = round(nat(60, 140), 2)
     p.rect("lineup", 40, 126, 100, 172, "level", height=h, sides=3, color=(150, 150, 150))
     for i, ty in enumerate(small):
@@ -314,7 +315,7 @@ def region_of(x, z):
     return (math.floor(x / REGION), math.floor(z / REGION))
 
 
-KNOWN = {"sugar maple", "paper birch", "red oak", "white pine", "apple tree", "autumn wildflowers", "tall grass", "bracken", "blueberry bush", "granite boulder", "eelgrass",
+KNOWN = {"sugar maple", "paper birch", "red oak", "white pine", "apple tree", "autumn wildflowers", "tall grass", "bracken", "blueberry bush", "granite boulder", "eelgrass", "leaf litter",
          "sea grass", "bench", "lamppost", "boat", "bridge", "door", "hatch", "walkway"}
 FACTS = [
     "Maple Cove's pier was rebuilt in oak after the big storm years ago; everyone in the village drove a piling.",

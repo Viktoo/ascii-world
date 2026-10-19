@@ -17,10 +17,17 @@ export function sdf(x, y, z, k) {
   const s = sin(b);
   const qx = x * c + z * s;
   const qz = z * c - x * s;
-  const fr = ellipsoid(qx - 0.35, y - 0.42 + qx * qx * 0.9, qz, 0.4, 0.04, 0.12);
-  return fr * 0.7;
+  const fr = ellipsoid(qx - 0.35, y - 0.42 + qx * qx * 0.9, qz, 0.4, 0.025, 0.13 * clamp(1.15 - qx * 1.3, 0.2, 1.0));
+  // Cut into leaflets along the frond, a midrib left down its middle.
+  const slit = abs(fract(qx * 14.0) - 0.5) * 0.071 - 0.012;
+  const leaflets = max(fr, min(-slit, abs(qz) - 0.008));
+  const stalk = capsule(qx, y, qz, 0, 0, 0, 0.1, 0.4, 0, 0.008);
+  return min(leaflets * 0.7, stalk);
 }
 
 export function color(x, y, z, k) {
-  return mix(mix(rgb(176, 110, 46), rgb(214, 170, 70), k.a), rgb(140, 120, 56), noise3(x * 8, y * 8, z * 8) * 0.6);
+  const r = length2(x, z);
+  const n = noise3(x * 8, y * 8, z * 8);
+  const autumn = mix(rgb(176, 96, 40), rgb(222, 170, 70), k.a);
+  return mix(rgb(96, 120, 50), autumn, smoothstep(0.15, 0.45, r + (n - 0.5) * 0.2)) * (0.85 + 0.15 * n);
 }

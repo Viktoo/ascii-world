@@ -12,9 +12,8 @@ export function sdf(x, y, z, k) {
   const s = 0.78 + hash(k.seed) * 0.26;
   const turn = hash(k.seed, 2) * 6.2832;
   const trunk = cappedCone(x, y - 0.65 * s, z, 0.65 * s, 0.22 * s, 0.132 * s);
-  const ring = length2(x, z) - 2.38 * s;
-  // Leaves on the ground: only near it is the ring's edge worth finding.
-  const ground = y > 0.3 ? max(y - 0.024, ring) : max(cylinder(x, y - 0.012, z, 2.38 * s, 0.012), length2(x, z) - (1.05 + noise3(x * 0.9, 3.0, z * 0.9) * 1.32) * s);
+  const ring = 10.0;
+  const ground = 10.0;
   // Far from the crown, its bounding sphere is enough.
   const far = length3(x, y - 2.45 * s, z) - 2.88 * s;
   if (far > 0.5) return min(min(trunk, ground), far * 0.8);
@@ -43,11 +42,6 @@ export function color(x, y, z, k) {
   if (hash(k.seed, 7) < 0.25) f = hash(k.seed, 8);
   const n = noise3(x * 2.6, y * 2.6, z * 2.6);
   const m = noise3(x * 0.45 + k.seed * 0.01, y * 0.45, z * 0.45);
-  // The fallen leaves on the ground.
-  if (y < 0.06) {
-    const g = hash(floor(x * 7.0), floor(z * 7.0), k.seed);
-    return mix(hsv(0.16 + (m - 0.5) * 0.06 + (n - 0.5) * 0.04, 0.62, 0.46 + n * 0.22), rgb(120, 84, 44), 0.35 * g) * (0.7 + 0.3 * g);
-  }
   // Bark on the trunk and the limbs low in the crown.
   if (y < 1.37 * s && length2(x, z) < 0.35 * s) return mix(rgb(70, 58, 46), rgb(98, 82, 64), noise3(x * 6, y * 6, z * 6));
   if (y < 1.99 * s && n < 0.45 && length2(x, z) < 1.20 * s) return mix(rgb(70, 58, 46), rgb(98, 82, 64), noise3(x * 6, y * 6, z * 6));

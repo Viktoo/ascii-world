@@ -15,8 +15,9 @@ export const meta = {
 
 export function sdf(x, y, z, k) {
   const legs = min(capsule(abs(x), y, z, 0.32, 0.0, 0.1, 0.05, 1.7, 0.0, 0.022), capsule(x, y, z, 0, 0.0, -0.45, 0, 1.6, -0.05, 0.02));
-  const ledge = box(x, y - 0.72, z - 0.06, 0.38, 0.02, 0.05);
-  const canvas = box(x, y - 1.08, z - 0.02 + (y - 1.08) * 0.08, 0.36, 0.34, 0.012);
+  const ledge = box(x, y - 0.72, z - 0.1, 0.38, 0.02, 0.05);
+  // The canvas leans back with the front legs, just in front of them.
+  const canvas = box(x, y - 1.08, z - 0.135 + y * 0.0588, 0.36, 0.34, 0.012);
   const stool = min(cylinder(x, y - 0.46, z - 0.8, 0.18, 0.025), box(abs(x) - 0.13, y - 0.22, abs(z - 0.8) - 0.0, 0.02, 0.22, 0.12));
   const palette = cylinder(x - 0.18, y - 0.495, z - 0.76, 0.1, 0.008);
   const jar = cappedCone(x + 0.4, y - 0.08, z - 0.5, 0.08, 0.05, 0.045);
@@ -27,7 +28,7 @@ export function sdf(x, y, z, k) {
 export function color(x, y, z, k) {
   // The painting: the upper part done (sky, sun, its path on the water),
   // the lower still pencil lines on white.
-  if (abs(x) < 0.355 && abs(y - 1.08) < 0.335 && z > 0.0 && abs(z - 0.02 - (y - 1.08) * 0.08) < 0.02) {
+  if (abs(x) < 0.355 && abs(y - 1.08) < 0.335 && z - 0.135 + y * 0.0588 > 0.004) {
     const u = x / 0.355;
     const v = (y - 1.08) / 0.335;
     if (v > -0.1) {

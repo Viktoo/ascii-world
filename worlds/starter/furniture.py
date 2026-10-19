@@ -680,17 +680,18 @@ t("scarecrow", "A scarecrow on a pole over the hay: a straw-stuffed plaid shirt 
   if (y > 0.88) return rgb(70, 96, 140);
   return rgb(120, 100, 70);""")
 t("fallen-leaves", "A drift of fallen leaves on the ground, red maple, gold birch and brown\noak, blown into a loose patch.",
-  "fallen leaves", (1.7, 0.06, 1.7), '["prop", "leaves", "nonsolid"]', "{ mass: 1, burns: 0.95 }",
+  "fallen leaves", (1.7, 0.3, 1.7), '["prop", "leaves", "nonsolid"]', "{ mass: 1, burns: 0.95 }",
   """  const r = length2(x, z) - 1.0 - (noise3(x * 1.4, k.seed * 0.01, z * 1.4) - 0.5) * 1.2;
-  return max(box(x, y - 0.015, z, 1.65, 0.015, 1.65), r);""",
+  return max(max(r, y - 0.03), -y - 0.25);""",
   """  const g = hash(floor(x * 8.0), floor(z * 8.0), k.seed);
   if (g < 0.15) return rgb(110, 76, 40);
   return hsv(g * 0.13, 0.8, 0.5 + 0.3 * hash(floor(z * 8.0), floor(x * 8.0)));""")
 t("easel", "An artist's easel set up on the sand facing the cove, a half-finished\npainting on it: the sunset over the water, the sky and sun done in reds and\ngolds, the sea and the pier still bare pencil on white canvas. A folding\nstool before it with a palette of paint blobs and a jar of brushes. The\npainting faces +z, where the painter sits; beyond it, the view.",
   "easel", (0.55, 1.75, 0.95), '["furniture", "art", "seat"]', "{ mass: 8, burns: 0.8 }",
   """  const legs = min(capsule(abs(x), y, z, 0.32, 0.0, 0.1, 0.05, 1.7, 0.0, 0.022), capsule(x, y, z, 0, 0.0, -0.45, 0, 1.6, -0.05, 0.02));
-  const ledge = box(x, y - 0.72, z - 0.06, 0.38, 0.02, 0.05);
-  const canvas = box(x, y - 1.08, z - 0.02 + (y - 1.08) * 0.08, 0.36, 0.34, 0.012);
+  const ledge = box(x, y - 0.72, z - 0.1, 0.38, 0.02, 0.05);
+  // The canvas leans back with the front legs, just in front of them.
+  const canvas = box(x, y - 1.08, z - 0.135 + y * 0.0588, 0.36, 0.34, 0.012);
   const stool = min(cylinder(x, y - 0.46, z - 0.8, 0.18, 0.025), box(abs(x) - 0.13, y - 0.22, abs(z - 0.8) - 0.0, 0.02, 0.22, 0.12));
   const palette = cylinder(x - 0.18, y - 0.495, z - 0.76, 0.1, 0.008);
   const jar = cappedCone(x + 0.4, y - 0.08, z - 0.5, 0.08, 0.05, 0.045);
@@ -698,7 +699,7 @@ t("easel", "An artist's easel set up on the sand facing the cove, a half-finishe
   return min(min(min(legs, ledge), min(canvas, stool)), min(palette, min(jar, max(brushes, -1.0))));""",
   f"""  // The painting: the upper part done (sky, sun, its path on the water),
   // the lower still pencil lines on white.
-  if (abs(x) < 0.355 && abs(y - 1.08) < 0.335 && z > 0.0 && abs(z - 0.02 - (y - 1.08) * 0.08) < 0.02) {{
+  if (abs(x) < 0.355 && abs(y - 1.08) < 0.335 && z - 0.135 + y * 0.0588 > 0.004) {{
     const u = x / 0.355;
     const v = (y - 1.08) / 0.335;
     if (v > -0.1) {{

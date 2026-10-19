@@ -1,6 +1,5 @@
 // A paper birch: a slender white trunk marked with black forking into thin
-// limbs, a narrow, airy crown of small lobes of leaves gone bright gold, a
-// scatter of gold leaves on the ground.
+// limbs, a narrow, airy crown of small lobes of leaves gone bright gold.
 export const meta = {
   name: "paper birch",
   bounds: [2.8, 9.2, 2.8],
@@ -12,9 +11,8 @@ export function sdf(x, y, z, k) {
   const s = 0.78 + hash(k.seed) * 0.26;
   const turn = hash(k.seed, 2) * 6.2832;
   const trunk = cappedCone(x, y - 2.1 * s, z, 2.1 * s, 0.17 * s, 0.102 * s);
-  const ring = length2(x, z) - 2.08 * s;
-  // Leaves on the ground: only near it is the ring's edge worth finding.
-  const ground = y > 0.3 ? max(y - 0.024, ring) : max(cylinder(x, y - 0.012, z, 2.08 * s, 0.012), length2(x, z) - (0.84 + noise3(x * 0.9, 3.0, z * 0.9) * 1.32) * s);
+  const ring = 10.0;
+  const ground = 10.0;
   // Far from the crown, its bounding sphere is enough.
   const far = length3(x, y - 6.10 * s, z) - 3.22 * s;
   if (far > 0.5) return min(min(trunk, ground), far * 0.8);
@@ -43,11 +41,6 @@ export function color(x, y, z, k) {
   if (hash(k.seed, 7) < 0.25) f = hash(k.seed, 8);
   const n = noise3(x * 2.6, y * 2.6, z * 2.6);
   const m = noise3(x * 0.45 + k.seed * 0.01, y * 0.45, z * 0.45);
-  // The fallen leaves on the ground.
-  if (y < 0.06) {
-    const g = hash(floor(x * 7.0), floor(z * 7.0), k.seed);
-    return mix(hsv(0.115 + (m - 0.5) * 0.05 + (n - 0.5) * 0.02, 0.8, 0.66 + n * 0.28), rgb(120, 84, 44), 0.35 * g) * (0.7 + 0.3 * g);
-  }
   // Bark on the trunk and the limbs low in the crown.
   if (y < 4.41 * s && length2(x, z) < 0.27 * s) return (noise3(x * 4, y * 9, z * 4) > 0.7 ? rgb(46, 42, 40) : mix(rgb(222, 218, 206), rgb(244, 240, 230), noise3(x * 8, y * 3, z * 8)));
   if (y < 5.34 * s && n < 0.45 && length2(x, z) < 0.96 * s) return (noise3(x * 4, y * 9, z * 4) > 0.7 ? rgb(46, 42, 40) : mix(rgb(222, 218, 206), rgb(244, 240, 230), noise3(x * 8, y * 3, z * 8)));

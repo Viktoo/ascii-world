@@ -163,14 +163,16 @@
     "birch": 0.05,
     "oak": 0.03,
     "bush": 0.25,
-    "rock": 0.06
+    "rock": 0.06,
+    "leaves": 0.35
    },
    "clump": {
     "flower": 1.0,
     "tallgrass": 0.85,
     "tree": 0.8,
     "birch": 0.8,
-    "oak": 0.8
+    "oak": 0.8,
+    "leaves": 0.8
    }
   },
   {
@@ -222,14 +224,16 @@
     "fern": 0.9,
     "grass": 1.0,
     "mushroom": 0.3,
-    "rock": 0.14
+    "rock": 0.14,
+    "leaves": 1.4
    },
    "clump": {
     "tree": 0.4,
     "birch": 0.6,
     "oak": 0.5,
     "pine": 0.7,
-    "fern": 0.7
+    "fern": 0.7,
+    "leaves": 0.5
    }
   },
   {
@@ -279,12 +283,14 @@
     "tallgrass": 1.0,
     "tree": 0.06,
     "bush": 0.2,
-    "rock": 0.08
+    "rock": 0.08,
+    "leaves": 0.35
    },
    "clump": {
     "apple": 0.85,
     "flower": 0.9,
-    "tree": 0.8
+    "tree": 0.8,
+    "leaves": 0.8
    }
   }
  ],

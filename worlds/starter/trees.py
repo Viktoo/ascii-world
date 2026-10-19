@@ -1,7 +1,7 @@
 """The broadleaf trees of Maple Cove, written from one recipe: a trunk that
 forks into limbs, a crown of separate leafy lobes on the limbs' ends with
 sky between them, colour that wanders across the crown in patches and is
-darker inside, and a ring of fallen leaves on the ground beneath.
+darker inside,.
 
     python3 worlds/starter/trees.py   (writes base/1-, 2-, 3-, 5-*.js)
 """
@@ -24,7 +24,7 @@ NEWPART = '''  const ring = {ring};
 '''
 
 
-def tree(fname, name, desc, tag, bounds, trunk_h, trunk_r, limbs, lobes, top, lobe_r, spread, colour, bark, leaves=True, extra_sdf="", extra_color="", props="{ mass: 3500, burns: 0.5, alive: 1, fuel: 1 }"):
+def tree(fname, name, desc, tag, bounds, trunk_h, trunk_r, limbs, lobes, top, lobe_r, spread, colour, bark, leaves=False, extra_sdf="", extra_color="", props="{ mass: 3500, burns: 0.5, alive: 1, fuel: 1 }"):
     """`limbs`: how many forks; `lobes`: how many leafy lobes round the
     crown (plus one on top at `top`); `spread`: how far out they reach;
     `colour`: JS returning the leaf colour from f (the stand's choice), n
@@ -75,6 +75,12 @@ export function color(x, y, z, k) {{
   return {colour} * (0.62 + 0.38 * out) * (0.9 + 0.2 * spec);
 }}
 """
+    if not leaves:
+        # No ring of leaves: a flat ring can't follow a slope (it floats
+        # off the downhill side); fallen leaves are scattered on their own.
+        import re
+        src = re.sub(r"  // Leaves on the ground.*\n  const ground = .*\n", "  const ground = 10.0;\n", src)
+        src = re.sub(r"  // The fallen leaves on the ground\.\n  if \(y < 0\.06\) \{\n.*?\n.*?\n  \}\n", "", src, flags=re.S)
     with open(os.path.join(HERE, "base", fname), "w") as f:
         f.write(src)
 
@@ -88,15 +94,15 @@ if __name__ == "__main__":
     # Maples: each stand scarlet, flame orange or gold, the colour wandering
     # across the crown (a red maple going orange at its edges, gold on top).
     tree("1-sugar-maple.js", "sugar maple",
-         "A sugar maple in its autumn colour: a straight grey-brown trunk forking into\nlimbs under a tall crown of separate leafy lobes gone scarlet, flame orange\nor gold, the colour wandering across it, a ring of fallen leaves beneath.",
+         "A sugar maple in its autumn colour: a straight grey-brown trunk forking into\nlimbs under a tall crown of separate leafy lobes gone scarlet, flame orange\nor gold, the colour wandering across it.",
          "tree", (4.6, 10.6, 4.6), 3.2, 0.42, 3, 5, 8.4, 1.9, 2.3,
          "hsv((f < 0.4 ? 0.005 : (f < 0.75 ? 0.045 : 0.1)) + (m - 0.5) * 0.09 + (n - 0.5) * 0.02, 0.86, 0.62 + n * 0.25)", BARK_GREY)
     tree("2-paper-birch.js", "paper birch",
-         "A paper birch: a slender white trunk marked with black forking into thin\nlimbs, a narrow, airy crown of small lobes of leaves gone bright gold, a\nscatter of gold leaves on the ground.",
+         "A paper birch: a slender white trunk marked with black forking into thin\nlimbs, a narrow, airy crown of small lobes of leaves gone bright gold.",
          "birch", (2.8, 9.2, 2.8), 4.2, 0.17, 2, 4, 8.0, 1.1, 1.2,
          "hsv(0.115 + (m - 0.5) * 0.05 + (n - 0.5) * 0.02, 0.8, 0.66 + n * 0.28)", BARK_BIRCH, props="{ mass: 900, burns: 0.6, alive: 1, fuel: 0.9 }")
     tree("3-red-oak.js", "red oak",
-         "A red oak: a thick dark trunk forking low into heavy limbs under a broad,\nspreading crown of lobes gone russet, burgundy and copper, holding its\nleaves late, brown leaves and acorns under it.",
+         "A red oak: a thick dark trunk forking low into heavy limbs under a broad,\nspreading crown of lobes gone russet, burgundy and copper, holding its\nleaves late.",
          "oak", (5.4, 9.6, 5.4), 2.6, 0.6, 3, 6, 7.8, 2.0, 3.0,
          "hsv(0.025 + hash(k.seed, 3) * 0.035 + (m - 0.5) * 0.05 + (n - 0.5) * 0.02, 0.78, 0.5 + n * 0.26)", BARK_DARK, props="{ mass: 5000, burns: 0.45, alive: 1, fuel: 1 }")
     tree("5-apple-tree.js", "apple tree",

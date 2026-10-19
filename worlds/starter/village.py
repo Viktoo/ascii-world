@@ -82,10 +82,52 @@ def door_of(key, out=1.0):
     return px, pz, h + (0.2 if porch else 0.0)
 
 
-def footprint(key, grow=1.5):
+def yard(key):
+    """How far a building's level yard reaches past its walls: (sides,
+    front, back). A cottage's holds its fenced front garden and the
+    vegetable patch behind."""
+    ty = PLACED[key][4]
+    if ty in ("cottage", "family cottage"):
+        return 1.5, 4.6, 6.4
+    return 1.5, 1.5 + SHAPE[ty][3], 1.5
+
+
+def footprint(key):
     x, z, b, h, ty = PLACED[key]
     W, D, dx, porch = SHAPE[ty]
-    return [local(key, sx * (W + grow), sz * (D + grow) + (porch if sz > 0 else 0)) for sx, sz in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    gs, gf, gb = yard(key)
+    return [local(key, sx * (W + gs), D + gf if sz > 0 else -D - gb) for sx, sz in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+
+
+YARD_SIDES = 3.5
+
+
+def ground(nat, x, z):
+    """The ground's height at (x, z) once the yards and the green are laid:
+    level on them, easing back to the land over their soft sides."""
+    h = nat(x, z)
+    best = None
+    for key, (bx, bz, b, bh, ty) in PLACED.items():
+        if key in ON_LANDING:
+            continue
+        W, D, dx, porch = SHAPE[ty]
+        gs, gf, gb = yard(key)
+        r = math.radians(b)
+        lx = (x - bx) * math.cos(r) - (z - bz) * math.sin(r)
+        lz = (x - bx) * math.sin(r) + (z - bz) * math.cos(r)
+        dxo = max(abs(lx) - (W + gs), 0.0)
+        dzo = max(lz - (D + gf), -lz - (D + gb), 0.0)
+        d = math.hypot(dxo, dzo)
+        if d < YARD_SIDES and (best is None or d < best[0]):
+            best = (d, bh)
+    gx, gz = GREEN
+    d = math.hypot(max(abs(x - gx) - 21, 0.0), max(z - (gz + 14), gz - 13 - z, 0.0))
+    if d < 6.0 and (best is None or d / 6.0 < best[0] / YARD_SIDES):
+        best = (d * YARD_SIDES / 6.0, nat(gx, gz))
+    if best is None:
+        return h
+    t = best[0] / YARD_SIDES
+    return best[1] + (h - best[1]) * t
 
 
 def homes():
@@ -113,7 +155,7 @@ def buildings(p, signs):
     for key, (x, z, b, h, ty) in PLACED.items():
         p.put(ty, x, z, b, y=h)
         if key not in ON_LANDING:
-            p.area("yard", footprint(key), "level", height=h, sides=3.5)
+            p.area("yard", footprint(key), "level", height=h, sides=YARD_SIDES)
         if key in signs:
             W, D, dx, porch = SHAPE[ty]
             if porch:
@@ -206,7 +248,7 @@ def lanes(p, nat, rnd):
             x, z, ux, uz = along(pts, d)
             side = 1 if int(d / 22) % 2 else -1
             lx, lz = x - uz * 2.8 * side, z + ux * 2.8 * side
-            p.put("street lantern", lx, lz, math.degrees(math.atan2(-uz * side, ux * side)) - 90, y=round(nat(lx, lz), 2))
+            p.put("street lantern", lx, lz, math.degrees(math.atan2(-uz * side, ux * side)) - 90, y=round(ground(nat, lx, lz), 2) - 0.05)
             d += 22.0
 
 
@@ -255,7 +297,7 @@ def trees(p, nat, rnd):
         if z < -6 or not free(x, z, r):
             return
         taken.append((x, z, r))
-        p.put(ty, x, z, rnd.uniform(0, 360), y=round(nat(x, z), 2) - 0.1)
+        p.put(ty, x, z, rnd.uniform(0, 360), y=round(ground(nat, x, z), 2) - 0.25)
 
     for lane, pts in LANES.items():
         L = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))

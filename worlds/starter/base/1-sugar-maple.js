@@ -1,6 +1,6 @@
 // A sugar maple in its autumn colour: a straight grey-brown trunk forking into
 // limbs under a tall crown of separate leafy lobes gone scarlet, flame orange
-// or gold, the colour wandering across it, a ring of fallen leaves beneath.
+// or gold, the colour wandering across it.
 export const meta = {
   name: "sugar maple",
   bounds: [4.6, 10.6, 4.6],
@@ -12,9 +12,8 @@ export function sdf(x, y, z, k) {
   const s = 0.78 + hash(k.seed) * 0.26;
   const turn = hash(k.seed, 2) * 6.2832;
   const trunk = cappedCone(x, y - 1.6 * s, z, 1.6 * s, 0.42 * s, 0.252 * s);
-  const ring = length2(x, z) - 3.82 * s;
-  // Leaves on the ground: only near it is the ring's edge worth finding.
-  const ground = y > 0.3 ? max(y - 0.024, ring) : max(cylinder(x, y - 0.012, z, 3.82 * s, 0.012), length2(x, z) - (1.61 + noise3(x * 0.9, 3.0, z * 0.9) * 2.28) * s);
+  const ring = 10.0;
+  const ground = 10.0;
   // Far from the crown, its bounding sphere is enough.
   const far = length3(x, y - 5.80 * s, z) - 4.88 * s;
   if (far > 0.5) return min(min(trunk, ground), far * 0.8);
@@ -43,11 +42,6 @@ export function color(x, y, z, k) {
   if (hash(k.seed, 7) < 0.25) f = hash(k.seed, 8);
   const n = noise3(x * 2.6, y * 2.6, z * 2.6);
   const m = noise3(x * 0.45 + k.seed * 0.01, y * 0.45, z * 0.45);
-  // The fallen leaves on the ground.
-  if (y < 0.06) {
-    const g = hash(floor(x * 7.0), floor(z * 7.0), k.seed);
-    return mix(hsv((f < 0.4 ? 0.005 : (f < 0.75 ? 0.045 : 0.1)) + (m - 0.5) * 0.09 + (n - 0.5) * 0.02, 0.86, 0.62 + n * 0.25), rgb(120, 84, 44), 0.35 * g) * (0.7 + 0.3 * g);
-  }
   // Bark on the trunk and the limbs low in the crown.
   if (y < 3.36 * s && length2(x, z) < 0.67 * s) return mix(rgb(84, 76, 70), rgb(118, 108, 98), noise3(x * 6, y * 2, z * 6));
   if (y < 4.76 * s && n < 0.45 && length2(x, z) < 1.84 * s) return mix(rgb(84, 76, 70), rgb(118, 108, 98), noise3(x * 6, y * 2, z * 6));
