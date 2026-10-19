@@ -6,6 +6,7 @@
 //! (`ui.button(..)` and so on); each draws itself and says whether it was
 //! used, from the input fed in since the last frame.
 
+mod cosmos;
 pub mod screens;
 pub mod settings;
 pub mod title;

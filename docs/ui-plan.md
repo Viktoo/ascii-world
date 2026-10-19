@@ -73,7 +73,7 @@ takes it: `at` x,z,yaw, `lift`, `pitch`, `hour`, and a slow `turn`), 12 s
 each with a fade through dark, while its people go about their day. It is
 kept on behind the next world's loading screen (where the map would be) and
 let go once that world is stepped into. Until it loads (or with no GPU) the
-stock backdrop shows (`ui::title::Backdrop`, also behind opening a world and notices): a night sky drawn on the CPU, real-looking stars, a few twinkling, and a soft light breathing in the middle. `POCKET_NO_PANORAMA=1` shows only it. See docs/starter-world-plan.md for its lifecycle.
+stock backdrop shows (`ui::cosmos`, also behind opening a world and notices): deep space drawn on the CPU. A soft light in the middle sends out a ring every 3 s (a crisp edge, colour fringes, a glow behind and sparks in its wake); each ring brings 2–4 planets made from templates (Earth, Jupiter, ringed giant, Mars, ice giant, moon, water world) recoloured, resized, spun and tilted, lit from the light, and the next ring takes them away. Stars twinkle and drift as if the view turns. `POCKET_NO_PANORAMA=1` shows only it. See docs/starter-world-plan.md for its lifecycle.
 
 ## Not done yet
 
