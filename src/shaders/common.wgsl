@@ -395,7 +395,7 @@ fn grit(x: f32, z: f32, dist: f32, seed: u32, k: f32) -> f32 {
     let d = length(vec2f(x * 6.0 - px, z * 6.0 - pz));
     let r = 0.18 + 0.2 * u2f(pcg(h ^ 0x2b3cu));
     if (d < r) {
-      f = f * (1.0 + (u2f(h) - 0.5) * 0.22 * k * near * sstep(r, r * 0.6, d));
+      f = f * (1.0 + (u2f(h) - 0.5) * 0.15 * k * near * sstep(r, r * 0.6, d));
     }
   }
   return f;

@@ -658,6 +658,14 @@ fn own_body(mut t: NewType, name: &str, from: Option<&str>) -> NewType {
     t
 }
 
+/// Keep only the look ranges a newly written body also has a slider for
+/// (by name): the rest belonged to the generic body it was written from.
+fn keep_shared_looks(look: &mut std::collections::BTreeMap<String, [f32; 2]>, t: &NewType) {
+    let names: std::collections::HashSet<String> =
+        t.ct.meta.body.as_ref().map(|b| b.look.iter().map(|(n, _, _)| crate::world::species::look_name(n)).collect()).unwrap_or_default();
+    look.retain(|k, _| names.contains(&crate::world::species::look_name(k)));
+}
+
 /// Add `from: "<name>"` at the start of a module's `body: { … }` meta.
 fn insert_body_from(src: &str, from: &str) -> Option<String> {
     let esc = from.replace(['\\', '"'], "");
@@ -805,10 +813,20 @@ async fn species_from(ctx: &Ctx, system: &str, list: &[Value], max: usize) -> (V
             body = write.map(|w| w.0).unwrap_or_else(|| if sapient { "figure".into() } else { "quadruped".into() });
         }
         if let Some(o) = v.as_object_mut() {
-            // A body of its own from a generic one: its sliders are its own
-            // (the generic ranges don't apply).
+            // A body of its own from a generic one: its sliders are its own,
+            // but where it shares one with the generic body (hue, shade) the
+            // species' range still holds (a cat stays ginger, not green).
             if template_of.is_some() && !TEMPLATE_BODIES.contains(&body.as_str()) {
-                o.remove("look");
+                let own = types.iter().find(|t| t.ct.meta.name == body);
+                match (own, o.get("look").and_then(|l| serde_json::from_value::<std::collections::BTreeMap<String, [f32; 2]>>(l.clone()).ok())) {
+                    (Some(t), Some(mut look)) => {
+                        keep_shared_looks(&mut look, t);
+                        o.insert("look".into(), serde_json::json!(look));
+                    }
+                    _ => {
+                        o.remove("look");
+                    }
+                }
             }
             // A body written now keeps the height the species' size gave it
             // on the generic body (with no size, it stands as written).
@@ -850,7 +868,7 @@ async fn species_body(ctx: &Ctx, species: &str, template: &str) -> anyhow::Resul
         sp.size = size_on_own_body(sp.size, body_height(&ctx.db, template), h);
     }
     sp.body = sp.name.clone();
-    sp.look.clear();
+    keep_shared_looks(&mut sp.look, &t);
     let new = serde_json::to_string(&sp)?;
     // Stored first: the commit's snapshot carries the species with it.
     ctx.db.with(|c| crate::db::put_species(c, &sp.name, &new))?;

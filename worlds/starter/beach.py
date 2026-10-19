@@ -4,6 +4,7 @@ the sunset, a beach ball and a picnic."""
 import random
 
 # The beach's fall from the meadow's edge to under the water: (plan z, height).
+PICNIC = (-74.0, -21.0, 170.0)
 PROFILE = [(-6, None), (-14, 2.2), (-22, 1.1), (-30, 0.2), (-40, -0.9), (-64, -2.6)]
 
 
@@ -20,13 +21,24 @@ def sand_h(z):
 def lay(p):
     rnd = random.Random(7)
     put = lambda ty, x, z, b=180.0: p.put(ty, x, z, b, y=round(sand_h(z), 2))
+    bx0, bz0, _ = PICNIC
+    p.rect("picnic sand", bx0 - 1.4, bz0 - 1.2, bx0 + 1.4, bz0 + 1.2, "level", height=round(sand_h(bz0), 2), sides=1.5)
     # Shells strewn along the tide line.
     for i in range(18):
         put("seashells", rnd.uniform(-146, -54), rnd.uniform(-29.5, -24.0), rnd.uniform(0, 360))
     # Chairs on the sand facing the sunset, a blanket and a basket, the ball.
     for x in (-84.0, -81.6, -79.0):
         put("adirondack chair", x, -20.5 + rnd.uniform(-0.4, 0.4), 180 + rnd.uniform(-12, 12))
-    put("picnic blanket", -74.0, -21.0, 170)
+    # The picnic: a blanket on a level patch of sand, a basket and two
+    # apples on it, each its own thing.
+    import math
+    bx, bz, bb = PICNIC
+    put("picnic blanket", bx, bz, bb)
+    r = math.radians(bb)
+    on = lambda lx, lz: (bx + lx * math.cos(r) + lz * math.sin(r), bz - lx * math.sin(r) + lz * math.cos(r))
+    p.put("picnic basket", *on(-0.5, 0.3), bb + 10, y=sand_h(bz) + 0.012)
+    p.put("apple", *on(0.3, -0.2), 40, y=sand_h(bz) + 0.012)
+    p.put("apple", *on(0.42, -0.28), 200, y=sand_h(bz) + 0.012)
     put("beach ball", -71.0, -24.0)
     # Someone's easel down by the water, a painting of the sunset half done,
     # and a smooth rock beside it to sit on and look.

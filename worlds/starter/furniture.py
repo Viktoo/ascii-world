@@ -661,17 +661,27 @@ t("adirondack-chair", "A wooden Adirondack chair, wide-armed and low, its slatte
   if (c < 2) return rgb(80, 150, 130) * n;
   return rgb(240, 238, 230) * n;""",
   ['{ kind: "seat", at: [0, 0.38, -0.05], face: 0 }'])
-t("picnic-blanket", "A red-and-white checked picnic blanket spread on the sand, a wicker basket\non it with a loaf, apples and a thermos of cider.",
-  "picnic blanket", (1.0, 0.35, 0.8), '["prop", "seat", "nonsolid"]', "{ mass: 4, burns: 0.8 }",
-  """  const cloth = box(x, y - 0.01, z, 0.95, 0.01, 0.75);
-  const basket = box(x - 0.5, y - 0.14, z + 0.35, 0.22, 0.13, 0.15);
-  const handle = max(abs(length2(x - 0.5, y - 0.27) - 0.15) - 0.015, abs(z - 0.35) - 0.015);
-  const apples = min(sphere(x + 0.3, y - 0.05, z - 0.2, 0.045), sphere(x + 0.2, y - 0.05, z - 0.3, 0.045));
-  return min(min(cloth, basket), min(max(handle, 0.27 - y), apples));""",
-  """  if (y > 0.03 && abs(x + 0.25) < 0.1) return rgb(196, 30, 30);
-  if (y > 0.03) return y > 0.26 ? rgb(150, 110, 64) : (fract(y * 20.0) < 0.4 ? rgb(150, 110, 64) : rgb(196, 156, 100));
-  return step(0.5, fract(x * 5.0)) + step(0.5, fract(z * 5.0)) == 1 ? rgb(200, 40, 40) : rgb(246, 242, 236);""",
-  ['{ kind: "seat", at: [0.3, 0.05, 0.2], face: 0 }', '{ kind: "seat", at: [-0.3, 0.05, -0.2], face: 0 }'])
+t("picnic-blanket", "A red-and-white checked picnic blanket spread flat on the ground, its edges\nsunk a little into the sand, for sitting on.",
+  "picnic blanket", (1.0, 0.25, 0.8), '["prop", "seat", "nonsolid"]', "{ mass: 2, burns: 0.8 }",
+  """  // A cloth on the ground, its underside sunk so a slope doesn't lift it.
+  return box(x, y + 0.1, z, 0.95, 0.112, 0.75);""",
+  """  return step(0.5, fract(x * 5.0)) + step(0.5, fract(z * 5.0)) == 1 ? rgb(200, 40, 40) : rgb(246, 242, 236);""",
+  ['{ kind: "seat", at: [0.3, 0.02, 0.2], face: 0 }', '{ kind: "seat", at: [-0.3, 0.02, -0.2], face: 0 }'])
+item("picnic-basket", "picnic basket", "A lidded wicker picnic basket with a bent-wood handle over it, a checked\ncloth peeking out under the lid.", (0.24, 0.32, 0.17), "{ mass: 2, burns: 0.8 }",
+     """  const body = roundBox(x, y - 0.1, z, 0.21, 0.1, 0.14, 0.02);
+  const lid = roundBox(x, y - 0.215, z, 0.22, 0.015, 0.15, 0.01);
+  // The handle: an arch over the lid, its feet on the basket's sides.
+  const handle = max(abs(length2(x, y - 0.2) - 0.1) - 0.012, max(abs(z) - 0.012, 0.2 - y));
+  return min(min(body, lid), handle);""",
+     """  if (y > 0.235) return rgb(150, 110, 70);
+  if (abs(y - 0.198) < 0.006) return step(0.5, fract(x * 30.0)) > 0.5 ? rgb(200, 40, 40) : rgb(246, 242, 236);
+  return step(0.4, fract(y * 30.0)) + step(0.5, fract(x * 14.0 + z * 14.0)) == 1 ? rgb(150, 110, 64) : rgb(196, 156, 100);""", tags='["item", "container"]')
+item("apple", "apple", "A crisp red apple from the orchards, its stalk and a leaf still on.", (0.05, 0.1, 0.05), "{ mass: 0.2, edible: 0.6, burns: 0.3 }",
+     """  const a = smoothSubtract(sphere(x, y - 0.042, z, 0.042), sphere(x, y - 0.09, z, 0.016), 0.012);
+  return min(a, capsule(x, y, z, 0, 0.07, 0, 0.006, 0.095, 0.0, 0.004));""",
+     """  if (y > 0.075) return rgb(90, 70, 40);
+  return mix(rgb(176, 24, 28), rgb(226, 80, 44), noise3(x * 40, y * 40, z * 40)) * (0.85 + 0.15 * step(0.03, y));""", tags='["item", "food"]')
+
 t("driftwood-log", "A long driftwood log, bleached silver-grey by the sea and smooth from\nyears of waves, washed up on the sand: a seat for three by the fire ring.",
   "driftwood log", (1.6, 0.5, 0.35), '["prop", "seat", "wood"]', "{ mass: 120, burns: 0.8, fuel: 0.8 }",
   """  const log = capsule(x, y, z, -1.4, 0.24, 0.0, 1.4, 0.2, 0.05, 0.22 - abs(x) * 0.03);

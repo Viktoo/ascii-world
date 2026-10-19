@@ -210,7 +210,7 @@ fn grit(x: f32, z: f32, dist: f32, seed: u32, k: f32) -> f32 {
         let d = ((x * 6.0 - px).powi(2) + (z * 6.0 - pz).powi(2)).sqrt();
         let r = 0.18 + 0.2 * u2f(pcg(h ^ 0x2b3c));
         if d < r {
-            f *= 1.0 + (u2f(h) - 0.5) * 0.22 * k * near * smoothstep(r, r * 0.6, d);
+            f *= 1.0 + (u2f(h) - 0.5) * 0.15 * k * near * smoothstep(r, r * 0.6, d);
         }
     }
     f
