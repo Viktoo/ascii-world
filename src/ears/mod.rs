@@ -9,7 +9,7 @@
 //!   the pause.
 //!
 //! The model (`ggml-base.en.bin`, 148 MB) is fetched once into the voice
-//! folder (`voice::pack::dir()`). The mic is only open while listening.
+//! folder (`voice::pack::SPEECH`), when the player asks for it in settings. The mic is only open while listening.
 
 pub mod bench;
 pub mod mic;
@@ -132,8 +132,6 @@ pub enum Heard {
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
     Starting,
-    /// Fetching the model: share done.
-    Fetching(f32),
     Ready,
     Failed(String),
 }
@@ -206,14 +204,10 @@ impl Drop for Ears {
 }
 
 fn run(cmds: Receiver<Cmd>, heard: Sender<Heard>, state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, level: Arc<AtomicU32>, open: Arc<AtomicBool>) {
-    if !pack::ready_of(&[MODEL]) {
-        *state.lock() = State::Fetching(0.0);
-        let st = state.clone();
-        if let Err(e) = pack::fetch_of(&[MODEL], &|p| *st.lock() = State::Fetching(p)) {
-            crate::log::info(&format!("speech model: {e:#}"));
-            *state.lock() = State::Failed(format!("couldn't fetch the speech model: {e}"));
-            return;
-        }
+    // Fetched only when the player asks, in settings.
+    if !pack::SPEECH.ready() {
+        *state.lock() = State::Failed("the speech model isn't downloaded (Settings → Sound)".into());
+        return;
     }
     if stop.load(Ordering::Relaxed) {
         return;

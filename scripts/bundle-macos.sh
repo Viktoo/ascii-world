@@ -12,6 +12,9 @@ version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 arch=$(uname -m)
 app="dist/Infinite Pocket.app"
 rm -rf dist
+# Signed again (ad hoc) so the signature takes in the Info.plist that build.rs
+# puts in the binary: the system then knows it as the game, by its bundle id.
+codesign --force -s - target/release/pocket
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/pocket "$app/Contents/MacOS/pocket"
 cat > "$app/Contents/Info.plist" <<EOF

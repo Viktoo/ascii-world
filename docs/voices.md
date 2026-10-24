@@ -11,8 +11,13 @@ line.
 | | Voices (people speaking) | Speak to talk (you speaking) |
 |---|---|---|
 | Model | Kokoro, 82M parameters (Apache 2.0) via ONNX Runtime | whisper.cpp, `ggml-base.en` (MIT) |
-| Download | 353 MB, once, into `~/.pocket/voice` | 148 MB, once, into the same folder |
-| Setting | Settings → Sound → **Voices** (needs Sound) | Settings → Sound → **Speak to talk**, off by default |
+| Download | 354 MB, once, into `~/.pocket/voice`, from github.com/thewh1teagle/kokoro-onnx | 148 MB, once, into the same folder, from huggingface.co/ggerganov/whisper.cpp |
+| Setting | Settings → Sound → **Voices** (needs Sound) | Settings → Sound → **Speak to talk** |
+
+Both are off for a new player and nothing is fetched unasked: until its files are
+there, each row in Settings → Sound is a **Download** button with the size, a line on
+what it is, and its public page as a link. When the download finishes the setting turns
+on (`voice::pack::VOICES` and `SPEECH`).
 | Turn off for a run | `POCKET_NO_VOICE` | `POCKET_NO_MIC` |
 | Code | `src/voice`, `src/app/voices.rs` | `src/ears`, `src/app/ears.rs` |
 
@@ -87,8 +92,10 @@ they are made out.
 - Typing (Backspace too) takes over at once: the mic closes and the words stay to edit.
   `Esc` forgets what was heard. With someone, `Enter` on an empty line listens again.
 - The mic is open only while listening. Turning the setting on opens it once so the
-  system asks for permission right away (on a Mac, for the app the game was started
-  from).
+  system asks for permission right away. On a Mac a release build played from a
+  terminal starts itself again as its own app (`src/own_app.rs`), so the system asks
+  for Infinite Pocket, with the reason in the `Info.plist` that `build.rs` puts in the
+  binary, not for the terminal. A dev build is asked for as the terminal.
 - **Recogniser:** on the CPU with the voices' share of threads, live words every 0.4 s
   take 30–80 ms, and the whole line at the pause about 0.3 s. The names of who you're
   with, what you point at and what you hold are given as a prompt, so they come out

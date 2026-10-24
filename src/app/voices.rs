@@ -16,9 +16,9 @@ const VOICE_RANGE: f32 = 30.0;
 const GAP: f32 = 0.18;
 
 impl App {
-    /// Voices on when they and sound are.
+    /// Voices on when they and sound are, and they are downloaded.
     pub(super) fn sync_voice(&mut self) {
-        let want = self.settings.voices && self.settings.sound && self.sound.is_some() && !cfg!(test);
+        let want = self.settings.voices && self.settings.sound && self.sound.is_some() && !cfg!(test) && crate::voice::pack::VOICES.ready();
         match (&self.voice, want) {
             (None, true) => {
                 self.voice = Some(Speaker::start(crate::voice::threads()));
@@ -43,7 +43,6 @@ impl App {
         match self.voice.as_ref().map(|v| v.state()) {
             None => "on".into(),
             Some(State::Starting) => "on (starting)".into(),
-            Some(State::Fetching(p)) => format!("on (fetching the voices, {:.0}%)", p * 100.0),
             Some(State::Ready) => "on".into(),
             Some(State::Failed(e)) => format!("on (failed: {e})"),
         }
@@ -97,19 +96,23 @@ impl App {
 
     /// Made lines to the mixer, each after the speaker's last one ends.
     pub(super) fn voice_frame(&mut self) {
+        // Downloaded from settings just now: start them.
+        if crate::voice::pack::VOICES.take_done() {
+            self.sync_voice();
+            if self.voice.is_some() {
+                self.say(None, "Voices ready.", super::DIM);
+            }
+        }
         let Some(v) = &self.voice else { return };
-        // Fetching and being ready are news, once each.
+        // Failing is news, once.
         let state = v.state();
         let phase = match state {
             State::Starting => 0,
-            State::Fetching(_) => 1,
             State::Ready => 2,
             State::Failed(_) => 3,
         };
         if self.voice_told != Some(phase) {
             match &state {
-                State::Fetching(_) => self.say(None, "Fetching the characters' voices (about 350 MB, once)…", super::DIM),
-                State::Ready if self.voice_told == Some(1) => self.say(None, "Voices ready.", super::DIM),
                 State::Failed(e) => self.say(None, &format!("Voices are off: {e}"), super::DIM),
                 _ => {}
             }

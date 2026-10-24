@@ -68,7 +68,7 @@ pub const DETAILS: &[u32] = &[AUTO, 180, 240, 360, 480, 720, 1080, 0];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: true, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true, provider: "anthropic".into(), api_key: String::new(), base_url: String::new(), models: Default::default(), show_hints: true, tips: Default::default(), welcomed: false }
+        Settings { budget_usd: 0.0, fps: 60.0, shadows: true, region_radius: 2, show_work: ShowWork::Mine, sound: true, volume: 0.8, voices: false, voice_volume: 0.5, speak_to_talk: false, window_detail: AUTO, blend_frames: true, name: String::new(), token: String::new(), guest_budget_usd: 10.0, check_updates: true, provider: "anthropic".into(), api_key: String::new(), base_url: String::new(), models: Default::default(), show_hints: true, tips: Default::default(), welcomed: false }
     }
 }
 

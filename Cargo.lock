@@ -2852,6 +2852,7 @@ dependencies = [
  "fontdue",
  "futures-util",
  "glam",
+ "libc",
  "misaki-rs",
  "naga",
  "ort",

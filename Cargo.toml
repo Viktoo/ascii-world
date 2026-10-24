@@ -15,6 +15,7 @@ flate2 = "1"
 fontdue = "0.9"
 futures-util = "0.3.34"
 glam = "0.33.11"
+libc = "0.2"
 misaki-rs = { version = "0.6.0", default-features = false }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 ort = "2.0.0-rc.14"

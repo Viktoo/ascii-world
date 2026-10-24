@@ -3159,22 +3159,18 @@ mod tests {
         let vol = app.settings.volume;
         press(&mut app, KeyCode::Left);
         assert!(app.settings.volume < vol);
-        // Voices (no sound device in tests: never started).
+        // Voices and speak to talk: off, and not downloaded (tests never
+        // fetch). Each is a Download button, then its page as a link.
+        assert!(!app.settings.voices, "voices are off by default");
+        assert!(screen_text(&app).contains("Download · 354 MB"), "{}", screen_text(&app));
+        assert!(screen_text(&app).contains("github.com/thewh1teagle/kokoro-onnx"), "{}", screen_text(&app));
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
-        assert!(!app.settings.voices, "Enter turns voices off");
-        press(&mut app, KeyCode::Enter);
-        assert!(app.settings.voices && app.voice.is_none());
+        assert!(app.settings.voices && app.voice.is_none(), "asked for: on once they're here");
         press(&mut app, KeyCode::Down);
-        assert_eq!(app.settings.voice_volume, 0.5, "voices sit below the world by default");
-        press(&mut app, KeyCode::Left);
-        assert!(app.settings.voice_volume < 0.5);
-        // Speak to talk (the recogniser never starts in tests).
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
-        assert!(app.settings.speak_to_talk, "off by default; Enter turns speaking to talk on");
-        press(&mut app, KeyCode::Enter);
-        assert!(!app.settings.speak_to_talk && app.ears.is_none());
+        assert!(app.settings.speak_to_talk && app.ears.is_none(), "asked for: on once it's here");
         // Esc: back to the pause menu, then World options.
         press(&mut app, KeyCode::Esc);
         assert!(screen_text(&app).contains("Paused"));

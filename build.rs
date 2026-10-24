@@ -23,7 +23,7 @@ fn main() {
     // (`v0.1.0`); any other build is "dev".
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let tagged = git(&["tag", "--points-at", "HEAD"]).is_some_and(|t| t.lines().any(|l| l.trim() == format!("v{version}")));
-    let release = if tagged && !commit.ends_with("-dirty") && commit != "unknown" { version } else { "dev".into() };
+    let release = if tagged && !commit.ends_with("-dirty") && commit != "unknown" { version.clone() } else { "dev".into() };
     println!("cargo:rustc-env=POCKET_RELEASE={release}");
     // Again when the commit or the code changes.
     if let (Some(dir), Some(common)) = (git(&["rev-parse", "--git-dir"]), git(&["rev-parse", "--git-common-dir"])) {
@@ -34,6 +34,25 @@ fn main() {
         if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
             println!("cargo:rerun-if-changed={common}/{r}");
         }
+    }
+    // On a Mac the binary carries its own Info.plist: who the game is and why
+    // it asks for the microphone or the local network, which the system shows
+    // when it is played from a terminal (src/own_app.rs).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let plist = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("Info.plist");
+        std::fs::write(&plist, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.infinitepocket.game</string>
+  <key>CFBundleName</key><string>Infinite Pocket</string>
+  <key>CFBundleShortVersionString</key><string>{version}</string>
+  <key>NSMicrophoneUsageDescription</key><string>Speak to talk listens to you when you turn it on in settings.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Finds friends' games on your network, and lets them join yours.</string>
+</dict>
+</plist>
+"#)).unwrap();
+        println!("cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}", plist.display());
     }
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");

@@ -18,9 +18,10 @@ pub(super) struct Hearing {
 }
 
 impl App {
-    /// The recogniser runs while the setting is on (the mic only opens to listen).
+    /// The recogniser runs while the setting is on and its model is
+    /// downloaded (the mic only opens to listen).
     pub(super) fn sync_ears(&mut self) {
-        let want = self.settings.speak_to_talk && !cfg!(test);
+        let want = self.settings.speak_to_talk && !cfg!(test) && crate::voice::pack::SPEECH.ready();
         match (&self.ears, want) {
             (None, true) => {
                 self.ears = Some(Ears::start());
@@ -47,7 +48,6 @@ impl App {
             return "off".into();
         }
         match self.ears.as_ref().map(|e| e.state()) {
-            Some(State::Fetching(p)) => format!("on (fetching the speech model, {:.0}%)", p * 100.0),
             Some(State::Failed(e)) => format!("on (failed: {e})"),
             Some(State::Starting) => "on (starting)".into(),
             _ if self.ears_trouble.is_some() => format!("on ({})", self.ears_trouble.as_deref().unwrap_or_default()),
@@ -133,18 +133,20 @@ impl App {
 
     /// News from the recogniser, and what it heard.
     pub(super) fn ears_frame(&mut self) {
+        // Downloaded from settings just now: start listening, and ask for the mic.
+        if crate::voice::pack::SPEECH.take_done() {
+            self.sync_ears();
+            self.ask_mic();
+        }
         let Some(e) = &self.ears else { return };
         let state = e.state();
         let phase = match state {
             State::Starting => 0,
-            State::Fetching(_) => 1,
             State::Ready => 2,
             State::Failed(_) => 3,
         };
         if self.ears_told != Some(phase) {
             match &state {
-                State::Fetching(_) => self.say(None, "Fetching the speech model for speaking to talk (148 MB, once)…", DIM),
-                State::Ready if self.ears_told == Some(1) => self.say(None, "Speak to talk is ready: press / or Enter with someone, and speak.", DIM),
                 State::Failed(e) => self.say(None, &format!("Speak to talk is off: {e}"), DIM),
                 _ => {}
             }
@@ -213,7 +215,6 @@ impl App {
             return Some(("Enter send · type to edit · Esc cancel".into(), DIM));
         }
         match e.state() {
-            State::Fetching(p) => Some((format!("speech model {:.0}%", p * 100.0), DIM)),
             State::Starting => Some(("speech model loading".into(), DIM)),
             _ => None,
         }

@@ -5,6 +5,7 @@ use super::{ACCENT, DIM, FAINT, Kind, PANEL, PANEL_EDGE, R, TEXT, Ui, left};
 use crate::llm::{CLAUDE_MODELS, Role};
 use crate::settings::{self, Settings};
 use crate::term::{Deco, Face, Screen};
+use crate::voice::pack::{self, Get, Pack};
 
 pub const TABS: &[&str] = &["Video", "Sound", "AI", "Together", "General", "Controls"];
 const BUDGETS: &[f64] = &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 0.0];
@@ -231,16 +232,25 @@ impl Page {
                 }
                 let r = rows.next(ROW);
                 out.sound |= ui.slider(s, r, "Volume", &mut st.volume, 0.1, false);
-                let r = rows.next(ROW);
-                out.sound |= ui.toggle(s, r, "Voices", &mut st.voices, settings::env_voices());
-                if let Some(n) = &live.voices_note {
-                    rows.note(s, n);
+                if settings::env_voices() || pack::VOICES.ready() {
+                    let r = rows.next(ROW);
+                    out.sound |= ui.toggle(s, r, "Voices", &mut st.voices, settings::env_voices());
+                    if let Some(n) = &live.voices_note {
+                        rows.note(s, n);
+                    }
+                    let r = rows.next(ROW);
+                    out.sound |= ui.slider(s, r, "Voice volume", &mut st.voice_volume, 0.1, false);
+                } else if get_row(ui, s, &mut rows, "Voices", "Characters speak aloud, in voices made on this computer. A one-time download of Kokoro from", &pack::VOICES) {
+                    // On once it's here.
+                    st.voices = true;
                 }
-                let r = rows.next(ROW);
-                out.sound |= ui.slider(s, r, "Voice volume", &mut st.voice_volume, 0.1, false);
-                let r = rows.next(ROW);
-                out.ears |= ui.toggle(s, r, "Speak to talk (microphone)", &mut st.speak_to_talk, settings::env_mic());
-                rows.note(s, live.ears_note.as_deref().unwrap_or("Say what you want to say instead of typing it."));
+                if settings::env_mic() || pack::SPEECH.ready() {
+                    let r = rows.next(ROW);
+                    out.ears |= ui.toggle(s, r, "Speak to talk (microphone)", &mut st.speak_to_talk, settings::env_mic());
+                    rows.note(s, live.ears_note.as_deref().unwrap_or("Say what you want to say instead of typing it."));
+                } else if get_row(ui, s, &mut rows, "Speak to talk (microphone)", "Say what you want to say instead of typing it, heard on this computer. A one-time download of whisper.cpp from", &pack::SPEECH) {
+                    st.speak_to_talk = true;
+                }
             }
             "AI" => {
                 out.ai |= ai_who(ui, s, &mut rows, st);
@@ -341,6 +351,40 @@ impl Page {
             st.fps = step(FPS, st.fps as f64, d) as f32;
         }
     }
+}
+
+/// A download in place of a switch, until `pack` is here: a button to get
+/// it, then how far along it is; what it is, and its public page as a link.
+/// True when the player asks for it.
+fn get_row(ui: &mut Ui, s: &mut Screen, rows: &mut Rows, label: &str, what: &str, pack: &'static Pack) -> bool {
+    let r = rows.next(ROW);
+    if rows.shown(r) {
+        s.labels.push(left(r.x + 1.0, r.mid_y(), label, 1.0, TEXT, Face::Body));
+    }
+    let b = R::new(r.x + r.w - 23.0, r.y + 0.3, 22.0, r.h - 0.6);
+    let state = pack.state();
+    let asked = match &state {
+        Get::Fetching(p) => {
+            ui.button_on(s, b, &format!("Downloading {:.0}%", p * 100.0), Kind::Normal, false);
+            false
+        }
+        Get::Failed(_) => ui.button(s, b, "Try again", Kind::Normal),
+        Get::Idle => ui.button(s, b, &format!("Download · {} MB", pack.megabytes()), Kind::Normal),
+    };
+    if asked {
+        pack.start();
+    }
+    if let Get::Failed(e) = &state {
+        rows.note(s, &format!("Couldn't download it: {e}"));
+    }
+    rows.note(s, what);
+    let r = rows.next(1.5);
+    // Wide enough that the button's text isn't cut short (`super::fit`).
+    let w = pack.page.chars().count() as f32 * 0.85 * 0.85 + 2.0;
+    if ui.button(s, R::new(r.x + 0.6, r.y + 0.1, w, 1.3), pack.page, Kind::Quiet) {
+        let _ = crate::share::open_url(&format!("https://{}", pack.page));
+    }
+    asked
 }
 
 fn cap(s: &str) -> String {

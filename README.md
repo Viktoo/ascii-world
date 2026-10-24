@@ -26,6 +26,8 @@ pocket
 
 Then add an Anthropic API key in **Settings → AI**. Get one at [platform.claude.com](https://platform.claude.com/settings/keys).
 
+Characters' voices (354 MB) and speak to talk (148 MB) are optional downloads in **Settings → Sound**.
+
 Windows is coming.
 
 ## Play
@@ -66,12 +68,18 @@ The [full guide](docs/guide.md) has every command, setting and how it all works.
 ## Build from source
 
 ```bash
+xcode-select --install
+```
+
+```bash
 brew install cmake
 ```
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+Then open a new terminal, so `cargo` is found.
 
 ```bash
 cargo install --locked --git https://github.com/Viktoo/infinite-pocket

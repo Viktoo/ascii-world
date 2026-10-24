@@ -118,8 +118,6 @@ pub struct Clip {
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
     Starting,
-    /// Fetching the voice pack: share done.
-    Fetching(f32),
     Ready,
     Failed(String),
 }
@@ -167,14 +165,10 @@ impl Drop for Speaker {
 }
 
 fn run(jobs: Receiver<Job>, done: Sender<Clip>, state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, threads: usize) {
+    // Fetched only when the player asks, in settings.
     if !pack::ready() {
-        *state.lock() = State::Fetching(0.0);
-        let st = state.clone();
-        if let Err(e) = pack::fetch(&|p| *st.lock() = State::Fetching(p)) {
-            crate::log::info(&format!("voice pack: {e:#}"));
-            *state.lock() = State::Failed(format!("couldn't fetch the voices: {e}"));
-            return;
-        }
+        *state.lock() = State::Failed("the voices aren't downloaded (Settings → Sound)".into());
+        return;
     }
     if stop.load(Ordering::Relaxed) {
         return;

@@ -12,6 +12,12 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
+fn fetch() -> Result<()> {
+    pack::fetch_of(&[MODEL], &|p| eprint!("\rfetching the speech model: {:.0}%", p * 100.0))?;
+    eprintln!();
+    Ok(())
+}
+
 pub fn cli(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--mic") {
         return mic_once(&flag(args, "--prompt").unwrap_or_default());
@@ -19,8 +25,7 @@ pub fn cli(args: &[String]) -> Result<()> {
     let file = flag(args, "--hear").context("pocket listen --hear FILE.wav [--model PATH] [--gpu] [--prompt TEXT]")?;
     let model = flag(args, "--model").map(std::path::PathBuf::from).unwrap_or_else(|| pack::path(MODEL.name));
     if !model.exists() {
-        pack::fetch_of(&[MODEL], &|p| eprint!("\rfetching the speech model: {:.0}%", p * 100.0))?;
-        eprintln!();
+        fetch()?;
     }
     let pcm = read_wav(std::path::Path::new(&file))?;
     let gpu = args.iter().any(|a| a == "--gpu");
@@ -56,12 +61,14 @@ pub fn cli(args: &[String]) -> Result<()> {
 
 /// One go through the microphone, as in the game.
 fn mic_once(prompt: &str) -> Result<()> {
+    if !pack::SPEECH.ready() {
+        fetch()?;
+    }
     let ears = Ears::start();
     loop {
         match ears.state() {
             State::Ready => break,
             State::Failed(e) => bail!(e),
-            State::Fetching(p) => eprint!("\rfetching the speech model: {:.0}%", p * 100.0),
             State::Starting => {}
         }
         std::thread::sleep(std::time::Duration::from_millis(100));

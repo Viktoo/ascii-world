@@ -15,6 +15,7 @@ mod log;
 mod model;
 mod net;
 mod noise;
+mod own_app;
 mod pace;
 mod panorama;
 mod picker;
@@ -270,6 +271,9 @@ enum Start {
 fn session(mut next: Start, difficulty: Option<usize>, out: Option<PathBuf>, shot: Option<window::Shot>) -> Result<()> {
     // An unseen run (a check, a screenshot) leaves the player's last world be.
     let remember = shot.is_none();
+    if remember {
+        own_app::become_own_app();
+    }
     let mut win = match shot {
         Some(s) => window::Win::offscreen(s)?,
         None => window::Win::open()?,
