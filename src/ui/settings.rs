@@ -408,6 +408,7 @@ fn controls(s: &mut Screen, rows: &mut Rows) {
         ("1", "journal"),
         ("Esc", "pause menu"),
         ("F2", "inspect what you look at"),
+        ("F12", "screenshot (to Pictures/Infinite Pocket)"),
     ];
     for (k, what) in KEYS {
         let r = rows.next(1.6);

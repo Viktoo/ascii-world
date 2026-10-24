@@ -96,6 +96,7 @@ opens. `Cmd+V` pastes. `Cmd+Q`, or closing the window, saves and quits.
 | `Esc` or `F10` | pause menu |
 | `F1` / `F2` / `F3` | frame stats / the raw truth about what you point at / achievements |
 | `F5` | (playing together) copy the invite |
+| `F12` | screenshot, HUD and all, to `Pictures/Infinite Pocket` (on a Mac laptop, `fn F12`) |
 
 You point with the small `+` in the middle of the view. Under it you see the name of
 what you look at and the keys that act on it (`Enter talk to Mara`, `E pet`). Tips

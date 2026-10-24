@@ -140,8 +140,44 @@ pub struct Win {
     /// The pointer is a hand (over a button).
     hand: bool,
     shot: Option<ShotState>,
+    /// F12 was pressed: the next screen shown is also saved as a PNG.
+    snap: bool,
+    /// The last screenshot's file and when it was saved, shown a moment.
+    snapped: Option<(Instant, String)>,
     /// Set by SIGTERM / SIGINT: every screen closes as if the window had.
     pub stop: Arc<AtomicBool>,
+}
+
+const SNAP_NOTE_SECS: f32 = 2.5;
+
+/// `screen` with a small note at the top right saying the screenshot was saved.
+fn snap_note(screen: &Screen, name: &str) -> Screen {
+    use crate::term::{Deco, Face};
+    let mut s = screen.clone();
+    let line = format!("Screenshot saved · {name}");
+    let size = 0.9;
+    let w = text::measure(&line, Face::Body, size) + 2.4;
+    let x = s.w as f32 - w - 1.6;
+    s.over_decor.push(Deco { x, y: 0.8, w, h: 1.9, fill: crate::ui::PANEL, alpha: 0.92, radius: 0.6, shadow: true, border: Some(crate::ui::PANEL_EDGE) });
+    s.over_labels.push(crate::ui::left(x + 1.2, 0.8 + 0.95, &line, size, crate::ui::TEXT, Face::Body));
+    s
+}
+
+/// `2026-10-24 14.03.22` (UTC), for a screenshot's file name.
+fn snap_name(t: std::time::SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let (days, rest) = ((secs / 86400) as i64, secs % 86400);
+    // Days since 1970 to a calendar date (Howard Hinnant's civil_from_days).
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y}-{m:02}-{d:02} {:02}.{:02}.{:02}", rest / 3600, rest / 60 % 60, rest % 60)
 }
 
 struct ShotState {
@@ -190,7 +226,7 @@ impl Win {
         surface.configure(&device, &config);
         crate::log::info(format!("window: {} ({:?}), {:?}", adapter.get_info().name, adapter.get_info().backend, config.format));
         let comp = Compositor::new(device, queue, config.format);
-        let mut win = Win { el: Some(el), h, gpu: Some(Gpu { surface, config }), comp, size: (1, 1), scale: 1.0, geom: geom(1.0), grabbed: false, hand: false, shot: None, stop: crate::term::signal_flag() };
+        let mut win = Win { el: Some(el), h, gpu: Some(Gpu { surface, config }), comp, size: (1, 1), scale: 1.0, geom: geom(1.0), grabbed: false, hand: false, shot: None, snap: false, snapped: None, stop: crate::term::signal_flag() };
         win.fit();
         Ok(win)
     }
@@ -208,7 +244,7 @@ impl Win {
         let keys = shot.key_codes();
         let held = shot.held();
         let target = comp.offscreen(size);
-        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, hand: false, shot: Some(ShotState { shot, start: Instant::now(), keys, held, target, text: None }), stop: crate::term::signal_flag() })
+        Ok(Win { el: None, h: Handler::default(), gpu: None, comp, size, scale, geom: g, grabbed: false, hand: false, shot: Some(ShotState { shot, start: Instant::now(), keys, held, target, text: None }), snap: false, snapped: None, stop: crate::term::signal_flag() })
     }
 
     /// The screen size in cells, and each cell's size in pixels.
@@ -264,6 +300,14 @@ impl Win {
             el.pump_app_events(Some(d), &mut self.h);
         }
         let mut evs = std::mem::take(&mut self.h.events);
+        // F12 on any screen: a screenshot, HUD and all.
+        evs.retain(|e| match e {
+            Ev::Key(k) if k.code == KeyCode::F(12) => {
+                self.snap |= k.kind == KeyEventKind::Press;
+                false
+            }
+            _ => true,
+        });
         if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
             evs.push(Ev::Close);
         }
@@ -306,12 +350,37 @@ impl Win {
             }
             _ => return,
         };
+        if std::mem::take(&mut self.snap) {
+            self.screenshot(screen, view_rows, frame);
+        }
         let view = tex.texture.create_view(&Default::default());
-        self.comp.draw(&view, self.size, screen, view_rows, frame, cell);
+        let noted = self.snapped.as_ref().filter(|(t, _)| t.elapsed().as_secs_f32() < SNAP_NOTE_SECS).map(|(_, name)| snap_note(screen, name));
+        self.comp.draw(&view, self.size, noted.as_ref().unwrap_or(screen), view_rows, frame, cell);
         if let Some(w) = self.h.window.as_ref() {
             w.pre_present_notify();
         }
         self.comp.queue.present(tex);
+    }
+
+    /// Draw `screen` once more offscreen and save it in the screenshots folder.
+    fn screenshot(&mut self, screen: &Screen, view_rows: u16, frame: Option<&Frame>) {
+        let target = self.comp.offscreen(self.size);
+        let view = target.create_view(&Default::default());
+        self.comp.draw(&view, self.size, screen, view_rows, frame, (self.geom.cell_w, self.geom.cell_h));
+        let rgb = self.comp.read_back(&target);
+        let (w, h) = self.size;
+        let dir = dirs::picture_dir().filter(|d| d.is_dir()).map(|d| d.join("Infinite Pocket")).unwrap_or_else(|| crate::log::dir().join("screenshots"));
+        let path = dir.join(format!("{}.png", snap_name(std::time::SystemTime::now())));
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.snapped = Some((Instant::now(), name));
+        // Encoding a big PNG takes a moment: not on the frame.
+        std::thread::spawn(move || {
+            let r = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, crate::png::encode(w, h, &rgb)));
+            match r {
+                Ok(()) => crate::log::info(format!("screenshot: {}", path.display())),
+                Err(e) => crate::log::error(format!("screenshot {}: {e}", path.display())),
+            }
+        });
     }
 
     /// Save the shot, if this is an offscreen window.
@@ -560,4 +629,14 @@ fn key(e: &winit::event::KeyEvent, mods: ModifiersState) -> Option<KeyEvent> {
         _ => KeyEventKind::Press,
     };
     Some(KeyEvent::new_with_kind(code, m, kind))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn snap_names_are_dates() {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_843_402);
+        assert_eq!(super::snap_name(t), "2026-10-24 12.03.22");
+        assert_eq!(super::snap_name(std::time::UNIX_EPOCH), "1970-01-01 00.00.00");
+    }
 }
