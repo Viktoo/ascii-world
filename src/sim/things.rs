@@ -286,6 +286,9 @@ pub struct Things {
     pub taken: HashMap<(i32, i32), ThingId>,
     /// Removed ids not yet deleted from the database.
     pub removed: Vec<ThingId>,
+    /// Saved things kept back on a quick start until the whole world (their
+    /// kind, the placed thing they came from) has come.
+    pub waiting: Vec<ThingId>,
     /// Scatter cells whose item was used up (eaten, burnt), and when.
     pub spent_cells: std::collections::BTreeMap<(i32, i32), f64>,
 }

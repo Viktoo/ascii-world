@@ -332,6 +332,8 @@ pub struct WorldSnapshot {
     pub figure_type: Option<u32>,
     pub species: Arc<species::SpeciesBook>,
     pub spawn: Vec3,
+    /// A quick first picture (land and plants only); the whole world flips in later.
+    pub partial: bool,
 }
 
 impl WorldSnapshot {

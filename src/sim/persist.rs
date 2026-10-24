@@ -153,7 +153,9 @@ pub fn events_about(db: &Db, subject: &str, n: usize) -> Vec<SimEvent> {
     .unwrap_or_default()
 }
 
-pub fn load(sim: &mut Sim) {
+/// Live things from the database: all of them, or only the ones in `only`
+/// (those that waited for the whole world after a quick start).
+pub(super) fn load_things(sim: &mut Sim, only: Option<&[i64]>) {
     let db = sim.db.clone();
     let rows: Vec<(i64, u32, [f32; 6], String, String, String, Option<String>, Option<String>, bool, bool, String, f64)> = db
         .with(|c| {
@@ -187,16 +189,25 @@ pub fn load(sim: &mut Sim) {
         .unwrap_or_default();
     let alive: HashSet<i64> = sim.snap.instances.iter().map(|p| p.id).collect();
     let mut gone = Vec::new();
+    // On a quick start the world's own things and most kinds aren't here
+    // yet: what needs them waits for the whole world, not deleted.
+    let partial = sim.snap.partial;
+    let mut loaded = HashSet::new();
     for (id, type_id, v, params_json, state_json, props_json, holder, co_holder, asleep, anchored, origin_json, born) in rows {
-        let Some((ty, base)) = sim.type_info(type_id) else {
-            gone.push(id);
-            continue;
-        };
-        let origin: Origin = serde_json::from_str(&origin_json).unwrap_or_default();
-        if origin.instance.is_some_and(|i| !alive.contains(&i)) {
-            gone.push(id);
+        if only.is_some_and(|o| !o.contains(&id)) {
             continue;
         }
+        let origin: Origin = serde_json::from_str(&origin_json).unwrap_or_default();
+        let ready = sim.type_info(type_id).filter(|_| !origin.instance.is_some_and(|i| !alive.contains(&i)));
+        let Some((ty, base)) = ready else {
+            if partial {
+                sim.things.waiting.push(id);
+                sim.things.next_id = sim.things.next_id.max(id + 1);
+            } else {
+                gone.push(id);
+            }
+            continue;
+        };
         let mut params = [0.5f32; 8];
         let all = serde_json::from_str::<Vec<f32>>(&params_json).unwrap_or_default();
         for (i, x) in all.iter().take(8).enumerate() {
@@ -224,6 +235,7 @@ pub fn load(sim: &mut Sim) {
         t.co_holder = parse_actor(co_holder);
         t.shape = shapes.get(&id).cloned().unwrap_or_default();
         t.dirty = false;
+        loaded.insert(id);
         sim.things.insert(t);
     }
     for id in gone {
@@ -232,11 +244,11 @@ pub fn load(sim: &mut Sim) {
     // What travelers who aren't here hold and wear goes with them.
     sim.stow_absent();
     // Who holds what.
-    let held: Vec<(i64, Option<ActorId>, Option<ActorId>)> = sim.things.live().map(|t| (t.id, t.holder, t.co_holder)).collect();
+    let held: Vec<(i64, Option<ActorId>, Option<ActorId>)> = sim.things.live().filter(|t| loaded.contains(&t.id)).map(|t| (t.id, t.holder, t.co_holder)).collect();
     for (id, h, c) in held {
         for a in [h, c].into_iter().flatten() {
             match sim.actor_mut(a) {
-                Some(x) if x.held.is_none() => x.held = Some(id),
+                Some(x) if x.held.is_none_or(|e| e == id) => x.held = Some(id),
                 _ => {
                     if let Some(t) = sim.things.get_mut(id) {
                         if t.holder == Some(a) {
@@ -250,6 +262,11 @@ pub fn load(sim: &mut Sim) {
             }
         }
     }
+}
+
+pub fn load(sim: &mut Sim) {
+    let db = sim.db.clone();
+    load_things(sim, None);
     // Changed scatter cells.
     let cells: Vec<(i32, i32, String, bool)> = db
         .with(|c| {

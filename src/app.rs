@@ -215,6 +215,8 @@ pub struct App {
     pub pointed: Option<Picked>,
     /// The pointed thing is loose with no use of its own (e picks it up).
     pointed_loose: bool,
+    /// Whether g can take hold of what is pointed at (Some(true): alone).
+    pointed_grab: Option<bool>,
     last_pick: Instant,
     /// The loading screen, until the world around you is made.
     loading: Option<loading::Loading>,
@@ -371,6 +373,7 @@ impl App {
             inspect: false,
             pointed: None,
             pointed_loose: false,
+            pointed_grab: None,
             last_pick: Instant::now(),
             loading: None,
             backdrop: None,
@@ -1493,6 +1496,11 @@ impl App {
             self.dirty = true;
         }
         self.pointed_loose = loose;
+        let grab = picked.as_ref().filter(|p| p.dist < crate::sim::actor::REACH + 1.0).and_then(|p| self.sim.grabbable(&p.target));
+        if grab != self.pointed_grab {
+            self.dirty = true;
+        }
+        self.pointed_grab = grab;
         self.pointed = picked;
     }
 

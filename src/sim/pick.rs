@@ -205,6 +205,24 @@ impl Sim {
         plain && !self.target_hinged(t) && self.target_drive(t).is_none() && !self.target_seats(t)
     }
 
+    /// Whether the grab key can take hold of a target: Some(true) to lift
+    /// it alone, Some(false) to grip one end of something that needs two.
+    pub fn grabbable(&mut self, t: &Target) -> Option<bool> {
+        match t {
+            Target::Thing(id) => self.things.get(*id).filter(|x| !x.held() && x.liftable(2)).map(|x| x.liftable(1)),
+            Target::Cell(c) => match self.things.taken.get(&(c[0], c[1])) {
+                Some(id) => self.grabbable(&Target::Thing(*id)),
+                None => {
+                    let snap = self.snap.clone();
+                    let it = self.cache.item_at(&snap, (c[0], c[1]));
+                    it.and_then(|i| snap.type_of(i.inst.info[0])).filter(|ty| ty.has_tag("small")).map(|_| true)
+                }
+            },
+            Target::Instance(i) => self.things.by_instance.get(i).copied().and_then(|id| self.grabbable(&Target::Thing(id))),
+            _ => None,
+        }
+    }
+
     /// The nearest small loose thing within reach in front of someone (for
     /// picking things up without aiming).
     pub fn nearest_in_front(&mut self, who: ActorId) -> Option<Target> {

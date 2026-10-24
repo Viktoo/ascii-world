@@ -232,6 +232,12 @@ impl App {
             None if self.pointed_loose => vec![k("E", "pick up")],
             None => vec![k("E", "use")],
         };
+        // Something with a use of its own can still be taken up with g.
+        if held.is_none() && !self.pointed_loose {
+            if let Some(alone) = self.pointed_grab {
+                p.keys.push(k("G", if alone { "pick up" } else { "grab one end" }));
+            }
+        }
         p
     }
 

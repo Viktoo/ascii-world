@@ -586,6 +586,7 @@ impl WorldModel {
             figure_type: full.figure_type,
             species: full.species.clone(),
             spawn: full.spawn,
+            partial: true,
         }))
     }
 
@@ -653,6 +654,7 @@ impl WorldModel {
             figure_type,
             species: self.species.clone(),
             spawn: self.spawn,
+            partial: false,
         })
     }
 

@@ -894,6 +894,11 @@ impl Sim {
             self.things.forget(id);
         }
         self.snap = snap.clone();
+        // What waited through a quick start comes now.
+        if !snap.partial && !self.things.waiting.is_empty() {
+            let w = std::mem::take(&mut self.things.waiting);
+            persist::load_things(self, Some(&w));
+        }
         self.rooms = rooms::rooms_of(&snap);
         self.climbs = climb::climbs_of(&snap);
         self.levels = levels::levels_of(&snap, &self.climbs, &self.rooms);

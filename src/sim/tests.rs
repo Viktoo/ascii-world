@@ -963,6 +963,37 @@ fn live_things_cells_and_relationships_persist() {
     assert!((s.sim.social.affection(ActorId::Npc(a), ActorId::Npc(b)) - aff).abs() < 1e-3);
 }
 
+/// A world opened on a quick first picture keeps what isn't there yet (a
+/// placed thing taken up, held in the hand) until the whole world comes,
+/// instead of deleting it.
+#[test]
+fn a_held_thing_waits_through_a_quick_start() {
+    let w = world("quick", 41);
+    let p = dry_spot(&w, 6.0, 0.1);
+    let ball = add_type(&w, &fixture("sims/ball.js"));
+    let ball_id = place(&w, ball, p + Vec3::new(1.0, 0.0, 0.0), 0.0);
+    let tid = {
+        let mut s = session(&w, 11, None);
+        let t = s.sim.liven(&Target::Instance(ball_id)).unwrap();
+        s.sim.things.get_mut(t).unwrap().holder = Some(ActorId::Player);
+        s.sim.things.get_mut(t).unwrap().dirty = true;
+        s.sim.player.held = Some(t);
+        s.save();
+        t
+    };
+    let live = Arc::new(parking_lot::Mutex::new(crate::model::Live::default()));
+    let mut model = crate::model::WorldModel::load(w.db.clone(), None, live).unwrap();
+    let quick = model.snapshot_base().unwrap();
+    assert!(quick.type_of(ball).is_none() && quick.instances.is_empty());
+    let mut sim = Sim::new(w.db.clone(), quick, p, 0.0, 0.0, 11);
+    assert!(sim.things.get(tid).is_none() && sim.things.waiting.contains(&tid));
+    super::persist::save(&mut sim);
+    sim.flip(model.snapshot().unwrap());
+    assert!(sim.things.get(tid).is_some_and(|t| t.holder == Some(ActorId::Player)), "the ball came back");
+    assert_eq!(sim.player.held, Some(tid));
+    assert!(sim.cache.overlay.hidden.contains(&ball_id), "the static copy stays hidden");
+}
+
 /// F2 / pocket inspect show the raw truth.
 #[test]
 fn inspect_shows_props_state_origin_and_minds() {
@@ -4851,6 +4882,8 @@ export function color(x, y, z, k) { return rgb(120, 90, 60); }"#);
     assert_ne!(far.map(|p| p.target), Some(Target::Thing(r)), "25 cm off is the ground");
     assert!(s.sim.just_to_pick_up(&Target::Thing(r)));
     assert!(!s.sim.just_to_pick_up(&Target::Thing(l)), "too heavy");
+    assert_eq!(s.sim.grabbable(&Target::Thing(r)), Some(true));
+    assert_eq!(s.sim.grabbable(&Target::Thing(l)), Some(false), "g grips one end of the log");
 }
 
 
