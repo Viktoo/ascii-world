@@ -2,8 +2,7 @@
 
 ## Think in primitives
 
-The goal is emergence: small general parts that combine, so interesting things
-happen that nobody wrote.
+The goal is emergence: small general parts that combine, so interesting things happen.
 
 - Add primitives, not features. Ask what general part would let the AI make the
   thing, and many others.
