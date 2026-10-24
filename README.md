@@ -1,8 +1,8 @@
-<p align="center"><img src="logo/infinite-pocket-wide.jpg" alt="Infinite Pocket: 3D letters in an autumn meadow, an orchardist with a basket of apples beside them and a white cat walking past"></p>
+![Infinite Pocket: 3D letters in an autumn meadow, an orchardist with a basket of apples beside them and a white cat walking past](logo/infinite-pocket-wide.jpg)
 
 # Infinite Pocket
 
-**A 3D world that never ends, written by an AI while you walk through it.**
+**Infinite Pocket is a creative game powered by an AI harness for creating and interacting with 3D digital worlds.** 
 
 Type what you want and it's there: `/a lighthouse on that hill`, `/a griffin that lets me ride it`, `/rub the stone on the lantern`. The AI writes it as code, on the spot, and it becomes part of the world for good.
 
@@ -26,13 +26,21 @@ Windows and Linux are coming.
 
 ## Play
 
-| | |
-|---|---|
+
+|                        |                                                  |
+| ---------------------- | ------------------------------------------------ |
 | `W` `A` `S` `D`, mouse | walk and look (click the view to grab the mouse) |
-| `Enter` | talk to whoever is in front of you |
-| `/` | make or do anything, in words |
-| `e` `g` `f` | use, pick up, throw |
-| `Esc` | pause, settings, play together |
+| `Enter`                | talk to whoever is in front of you               |
+| `/`                    | make or do anything, in words                    |
+| `e` `g` `f`            | use, pick up, throw                              |
+| `Esc`                  | pause, settings, play together                   |
+
+
+
+
+## Multiplayer
+
+Host a world and your friends join it, on the same network or over the internet with ngrok. See [Multiplayer](docs/multiplayer.md).
 
 ## Build worlds with a coding agent
 
