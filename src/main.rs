@@ -21,6 +21,7 @@ mod picker;
 mod png;
 mod prompts;
 mod random_world;
+mod record;
 mod render;
 mod settings;
 mod share;
@@ -68,6 +69,9 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
 
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
                        [--lift M] [--phase ID=RAD,…] [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
+  pocket record FILE --at x,z,yawDeg --out DIR [--lift M] [--pitch DEG] [--to x,z,yawDeg [--to-lift M] [--to-pitch DEG]]
+                     [--follow ID [--dist M]] [--seconds S | --frames N] [--fps 15] [--speed 1] [--time HOUR] [--size 800x450]
+                     [--mp4] [--webp] [--gif] [--frames-only]   the world run unseen, saved as frames and a clip (ffmpeg)
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
   pocket gpubench FILE --at x,z,yawDeg [--px 640x360] [--breakdown]   GPU time for one view, by part
@@ -157,6 +161,7 @@ fn run(args: Vec<String>) -> Result<()> {
             None => session(Start::Title, None, None, shot),
         },
         Some("snapshot") => snapshot(&args[1..]),
+        Some("record") => record::cli(&args[1..]),
         Some("describe") => describe(&args[1..]),
         Some("bench") => bench(&args[1..]),
         Some("selftest") => selftest(),
