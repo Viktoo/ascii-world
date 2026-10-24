@@ -4,9 +4,13 @@
 
 **Infinite Pocket is a creative game powered by an AI harness for creating and interacting with 3D digital worlds.** 
 
+![A slow flight down over Maple Cove's village green at golden hour: a gazebo, pumpkins and flower stalls, homes all round and the sea behind](docs/clips/hero-flyover.webp)
+
 Type what you want and it's there: `/a lighthouse on that hill`, `/a griffin that lets me ride it`, `/rub the stone on the lantern`. The AI writes it as code, on the spot, and it becomes part of the world for good.
 
 The people in it remember you. They have homes, needs, friends and plans. They gossip, carry logs together, play catch, and make things of their own. Dogs fetch, goats bolt from wolves, fire spreads through dry grass and stops at a green tree. At night something comes for you.
+
+![Pine Hollow in the morning: a father plays catch with his son by the campfire while neighbours gather and a dog wanders past](docs/clips/campfire-catch.webp)
 
 Then invite a friend into your world and build it together.
 
@@ -21,6 +25,8 @@ pocket
 ```
 
 You start in **Maple Cove**, an autumn village that's ready to play. To make new things and talk to people, add an Anthropic API key in **Settings → AI** (or any OpenAI-compatible endpoint). Without a key you can still walk around and explore.
+
+![A whole day in Maple Cove from the hill above the village, noon to noon: sunset, lamps and lit windows, a starry night, morning](docs/clips/full-day.webp)
 
 Windows and Linux are coming.
 
@@ -44,13 +50,14 @@ Host a world and your friends join it, on the same network or over the internet 
 
 ## Build worlds with a coding agent
 
-Everything in the game is code the AI can read and write, and the game can check its own work. `pocket` takes screenshots, describes what's in view, and runs a world headless, so a coding agent (Claude Code, Codex, Cursor…) can build a place, look at it, and fix it:
+Everything in the game is code the AI can read and write, and the game can check its own work. `pocket` takes screenshots, records clips, describes what's in view, and runs a world headless, so a coding agent (Claude Code, Codex, Cursor…) can build a place, look at it, and fix it:
 
 ```bash
 pocket snapshot my.pocket --at 0,0,90 --time 17       # a view from anywhere
 pocket my.pocket --shot out.png --after 8             # a real frame of the game
 pocket describe my.pocket --at 0,0,90                 # what's in view, as JSON
 pocket sim my.pocket --hours 24                       # run a day and see what happened
+pocket record my.pocket --at 0,0,90 --to 20,0,90 --out clip --webp   # a clip of the world going on
 ```
 
 The [full guide](docs/guide.md) has every command, setting and how it all works.

@@ -539,6 +539,7 @@ Opening an older world adds the new tables and built-in types.
 ```bash
 pocket snapshot FILE --at 0,0,90 --size 120x40 [--ascii] [--mono] [--time 21] [--weather storm]   # one frame as text
 pocket describe FILE --at 0,0,90                                                # visible things as JSON
+pocket record FILE --at 0,0,90 [--to 20,0,90 | --follow ID] --seconds 8 --out DIR [--webp] [--speed 100 --loop 30]  # the world going on, as frames and a clip
 pocket bench FILE --distance 2000 --size 250x70                                 # scripted walk, frame stats
 pocket gpubench FILE --at 0,0,90 --px 640x360 [--breakdown]                       # GPU time for one view, and by part
 pocket gpubench FILE --at 0,0,90 --px 640x360 --ab 32 --shots DIR               # A/B two flag sets in one run: speed and picture
@@ -556,6 +557,8 @@ pocket listen --demo --out DIR                                                  
 pocket listen FILE --species wolf                                               # a species' calls
 pocket listen FILE --at 0,0,90 --hour 23 --walk --calls --verbose               # walk somewhere and record it
 ```
+
+`pocket record` runs a private copy of the world as in play and saves each frame as a PNG, then a clip with ffmpeg (mp4, or `--webp`/`--gif`). The camera stands still, moves in a straight line from `--at` to `--to` (`--lift`, `--pitch`, `--to-lift`, `--to-pitch`), or follows a character (`--follow ID --dist M`). `--speed` is game seconds per clip second (a whole day is 1200), and `--loop N` fades N extra frames into the start so the clip loops cleanly. The traveler waits out of sight 45 m behind the camera, so people carry on with each other. The README's clips in `docs/clips` were made this way.
 
 `pocket sim` works on a private copy unless you pass `--save`, uses the LLM if one is
 configured (`--no-llm` to run on rules alone), and prints metrics: events by kind,
