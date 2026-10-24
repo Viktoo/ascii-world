@@ -1,215 +1,219 @@
-# Bodies, insides and tools
+# Bodies, things and tools
 
-Built 2026-10-04 on branch `physics`. One set of small primitives that an
-LLM fills in per world; the engine knows no houses, swords or shovels.
+**This is how bodies move, how things are used, and what happens when something
+hits something.** The engine knows no houses, swords, carts or guns. It knows a few
+fields that any shape can carry: where its doorways and seats are, how it is held,
+whether it can be driven, whether it goes off. The AI fills them in for each world,
+and everything it writes works with everything else.
+
+| A shape can say | Field | Example |
+|---|---|---|
+| where things go on it | `meta.anchors` | a doorway, a seat, a bed, stairs, a shelf holding a sword |
+| it swings on a hinge | `meta.joint` | a door, a gate, a lid |
+| how it is held and worked | `meta.tool` | a sword swings, an axe chops, a spade digs, a bow shoots |
+| it can be driven | `meta.drive` | a cart, a boat, a flying carpet |
+| it goes off | `meta.burst` | a firework, a powder keg, dynamite |
+| it takes the ground away under it | `meta.hollow`, `meta.in_ground` | a cellar, a burrow, a house dug into a hill ([levels.md](levels.md)) |
+
+The field definitions are in `src/lang/ir.rs`; the language reference the AI sees is
+in `src/prompts.rs`.
+
+---
 
 ## Bodies (`sim/footing.rs`, `world/collide.rs`)
 
-Every body (the traveler, characters, animals, mounts) is an upright capsule
-sized by its own body: radius, height (less when crouching) and a step of a
-quarter of its height.
+Every body (you, characters, animals, mounts) is an upright capsule sized by its own
+body: a radius, a height, and a step of a quarter of its height.
 
-- **Footing**: a body stands on the highest support under it: the terrain
-  (with hollows) or the top of any solid between the ground and its step
-  height (a floor, a stair, a roof, a rock). It steps down stairs, falls off
-  ledges, lands. A solid that fills the column at step height is a wall, not
-  a floor.
-- **Walls**: solids block from just above the step to the top of the head,
-  sampled through the body's height. Shapes carved by subtraction (a doorway
-  cut out of a wall) report distances that are too small near the cut, so a
-  near miss is confirmed by marching out to the rim and up its height (the
-  sign is right even where the distance is not). Low growth (bushes,
-  flowers) gives way below half a metre.
-- **Jump** (half its height), **crouch** (down to 58%; stands up only with
-  room overhead), **run** (×1.7). Characters crouch on their own when a gap
-  fits them crouched and not standing.
-- A body that is already pressing into something may move only if that
-  doesn't press it deeper (no jostling in place).
+| | |
+|---|---|
+| **Standing** | on the highest support under it: the ground, or the top of any solid below its step (a floor, a stair, a roof, a rock). It steps down stairs, falls off ledges, lands. |
+| **Walls** | solids block from just above the step to the top of the head. Low growth (bushes, flowers) gives way below half a metre. |
+| **Jump** | half its height |
+| **Crouch** | down to 58%; stands up only with room overhead. Characters crouch on their own when a gap fits them crouched but not standing. |
+| **Run** | × 1.7 |
+| **Falls** | from higher than 1.5 × its height they hurt, 12% per metre beyond |
+| **Swimming** | in deep water a body swims; `Space` and `c` go up and down |
 
-## Shapes say what goes where (`lang/ir.rs`: `meta.anchors`, `joint`, `tool`, `hollow`)
+So the same house is a home to a person and closed to a giant, and a cat walks
+through a gap a dog can't.
 
-- `anchors`: `door` (an opening, its size and the way out), `slot` (a real
-  thing set there: `holds` a type name), `part` (a fixed part), `stairs`
-  (foot and top), `bed`, `seat`, `light`.
-- `joint`: a hinge (axis, pivot, how far it opens).
-- `tool`: grip, tip, and the motions it knows (swing, chop, thrust, dig, pour).
-- `hollow`: the ground taken away under it, down to a floor (a cellar, a
-  burrow, a house set into a hill).
+---
 
-Things now turn fully (`GpuInst::tilt`, a quaternion after the yaw; CPU and
-GPU agree, tested): doors swing on it, tools swing with it, a felled tree
-lies on it.
+## Doors, rooms and what's inside
 
-## What the world does with them
+`meta.anchors` lists named points on a shape:
 
-- **Placing** a shape places its children (`model::children`): the built-in
-  `door` hung in each doorway at the anchor's size, the thing named by each
-  slot sitting on it (a real thing: `g` picks it up), each part. A probe
-  check refuses a doorway that isn't really open or has no room behind it.
-- **Doors** open and shut (`sim/joint.rs`): `e`, `/open the door`, plans
-  (`{"do": "open"}` / `"close"`). Anyone with hands works one, and so does a
-  body big and clever enough. Collision turns with the door.
-- **Insides** (`sim/rooms.rs`): a shape with a doorway is a room. Characters
-  walk in and out through the doorway and between floors by the stairs,
-  open shut doors in their way, and sleep in a bed in the house by their
-  home at night.
-- **Clearance**: region and building tasks are told the folk height (the
-  tallest people who build here, and the traveler), and doorways are sized
-  for them; houses of beings too small for the traveler stay closed.
-- **Tools** (`sim/tool.rs`): a held tool is held by its grip and turned
-  through keyframed motions; at the motion's impact the tip lands on what was
-  aimed at with its own speed: things are knocked and broken by physics and
-  touched by the world's rules (with `force`), a chop notches and wears down
-  what grows until it falls, a dig opens or deepens a pit in the ground
-  (saved), a blow hurts a being (who flees, distrusts, or plans a response).
-- **Roads and lamps**: a settlement's buildings are joined door to door by a
-  spanning tree of roads (painted on the ground, kept clear of scatter);
-  lamps of the plan's type stand along them. Placed things with `light`, and
-  `light` anchors, shine and light the ground at night.
+| Anchor | Means |
+|---|---|
+| `door` | an opening: its size and the way out. A door is hung in it. |
+| `hatch` | an opening in a floor or roof (see [levels.md](levels.md)) |
+| `slot` | a real thing set there (`holds` a type name): `g` picks it up |
+| `part` | a fixed part |
+| `stairs` | foot and top (also ladders) |
+| `bed`, `seat` | where a body lies or sits |
+| `light` | shines at night |
 
-## Known gaps
+- **Placing** a shape places its children: the built-in `door` in each doorway, the
+  thing named by each slot, each part. The probe refuses a doorway that isn't really
+  open or has no room behind it.
+- **Doors** (`sim/joint.rs`) swing on their `joint`: `e`, `/open the door`, or
+  `{"do": "open"}`. Anyone with hands works one, and so does a body big and clever
+  enough. Collision turns with the door.
+- **Rooms** (`sim/rooms.rs`). A shape with a doorway is a room. Characters walk in
+  and out by the doorway, between floors by the stairs, open shut doors in their way,
+  and sleep in a bed in their house at night.
+- **Clearance.** Region plans are told the folk height (the tallest people who build
+  there, and you), so doorways fit them. Houses of beings too small for you stay
+  closed to you.
+- **Roads and lamps.** A settlement's buildings are joined door to door by roads
+  painted on the ground (kept clear of grass and rocks), with lamps of the plan's
+  kind along them.
 
-- Interiors are lit only by the sky by day (they look dim and blue); `light`
-  anchors light them at night.
-- Characters route through one room's doorways and stairs; a building made
-  of several shapes, or a path that leaves and enters by different doors, is
-  not planned as a whole.
-- The traveler takes no harm from blows.
-- Sitting in a vehicle or carrying an animal isn't saved: after a restart
-  the traveler stands where they were.
-- Carts can't be hitched to a horse yet; characters don't drive.
+Things turn fully, not only around the vertical (`GpuInst::tilt`; CPU and GPU agree,
+tested): doors swing, tools swing, a felled tree lies down.
+
+---
+
+## Tools (`sim/tool.rs`)
+
+`meta.tool` gives a `grip`, a `tip`, the `motions` it knows (`swing`, `chop`,
+`thrust`, `dig`, `pour`, `shoot`), how `sharp` it is (0 a club, 0.6 an axe, 0.9 a
+spear), and for launchers, what it shoots.
+
+A held tool is held by its grip and moved through keyframed motions. At the impact
+the tip lands on what was aimed at, with its own speed:
+
+```mermaid
+flowchart LR
+    motion["A held tool's motion<br/>swing · chop · thrust · dig"] --> tip["The tip lands<br/>on what you aim at"]
+    tip --> thing["A thing<br/>knocked or broken by physics,<br/>touched by the rules (force)"]
+    tip --> tree["Something growing<br/>notched and worn down<br/>until it falls"]
+    tip --> ground["The ground<br/>a pit opens or deepens<br/>(saved)"]
+    tip --> body["A body<br/>hurt, jolted, afraid"]
+    body --> after["flees, distrusts,<br/>or plans what to do"]
+```
+
+---
+
+## Seats and vehicles (`sim/vehicle.rs`, `meta.drive`)
+
+- **Anything with a `seat` anchor can be sat on**: a bench (built in, seats two), a
+  chair, a throne. An animal wearing something with a seat (a saddle) can be ridden.
+- A shape with `meta.drive: { speed, on, by }` and a seat is a **vehicle**. The first
+  seat steers; the others carry passengers.
+
+| `on` | Goes |
+|---|---|
+| `land` | keeps to the ground and tilts with it |
+| `water` | floats at the water line; crawls in the shallows |
+| `under` | a submarine: from the bed up to the surface |
+| `air` | turns in place, `Space` up and `c` down, or follows your look while moving; left alone it hovers |
+
+| `by` | Means |
+|---|---|
+| `legs`, `oars` | muscle: goes at the driver's strength and tires them |
+| `wind` | a sail: goes with the weather's wind |
+| `beast` | needs an animal harnessed: the nearest willing one big enough is hitched |
+| `engine` (anything else) | goes at its speed |
+
+- **Driving:** `e` on it, `/drive` or `/ride the cart` gets in; `e` again or
+  `/dismount` gets out beside the seat. `W` `S` throttle and brake (then reverse),
+  `A` `D` steer. Land and water vehicles turn only while moving. Everything is
+  stopped by solids and bodies at its height.
+- **Characters drive.** One going far takes a free cart. One whose way crosses water
+  takes a boat, steers a route through the water (which passes under bridge arches),
+  and gets out where the water ends nearest the goal.
+
+---
 
 ## Creatures in hand (`sim/carry.rs`)
 
-- **e on a being** does what fits, told in the key hint: pet an animal
-  close by, ride a mount that lets you, call an animal further off, nod
-  to a stranger or shake hands with someone you know close by, wave at
-  someone further off. With something in hand: give it (food to an
-  animal is feeding), or work the held tool on them. The being meant is
-  the one pointed at, else the one in front within 4 m (small animals
-  are hard to point at).
-- **Petting** (`{"do": "pet"}`): an animal easy with you (liking less
-  wariness) makes a happy noise, wags and likes you more (more the less
-  it does yet); a wary one shies off. Petting a horse until it trusts
-  you is how a stranger's horse comes to be ridden.
-- **Picking up** (`g`, `hold` on a being): small animals only (under 80%
-  of what you can lift). One that trusts you settles in your arms for a
-  minute or two; one that doesn't is caught only if it is slower than
-  you walk or asleep, and squirms free in a few seconds and runs; a
-  quick one darts off; a meat eater or a bold one may nip and get away.
-  A carried animal sits at the holder's hands, can be petted, handed to
-  someone with free arms, or set down (`g`); it can't be thrown.
+- **`e` on a being** does what fits, and the key hint says which: pet an animal close
+  by, ride a mount that lets you, call one further off, shake hands with someone you
+  know, wave at someone further off. With something in hand: give it (food to an
+  animal is feeding), or work the tool on them.
+- **Petting** (`{"do": "pet"}`): an animal easy with you makes a happy noise and likes
+  you more; a wary one shies off. Petting a stranger's horse until it trusts you is
+  how you come to ride it.
+- **Picking up** (`g`): small animals only (under 80% of what you can lift). One that
+  trusts you settles in your arms for a minute or two. One that doesn't is caught only
+  if slower than you or asleep, and squirms free. A bold one or a meat eater may nip.
+  You can pet it, hand it on or set it down, but not throw it.
 
-## Vehicles (`sim/vehicle.rs`, `meta.drive`)
+---
 
-- A shape with `meta.drive: { speed, on: "land" | "water" | "air" }` and a
-  `seat` anchor is a vehicle: a cart, a car, a boat, a flying carpet. It is
-  never anchored, however heavy. `e` on it (or `/drive`, `/ride the car`)
-  gets in; `e` again, or `/dismount`, gets out beside the seat (not into
-  deep water).
-- Driving: W/S throttle and brake (then reverse), A/D or ←→ steer. Land
-  and water vehicles turn only while moving; flyers turn in place and
-  go up with Space and down with c (in place too), or follow the look
-  pitch while moving; let be, they hover. Land vehicles
-  keep to the ground and tilt with it; boats float at the water line and
-  can't leave it (they crawl in the shallows); everything is stopped by
-  solids and bodies at its height. The view rises out of a closed cab.
-- Boats set on water by a creation float there.
-- Only the traveler drives for now; characters can't board.
+## Blows, hurt, fear and remains (`sim/remains.rs`, `sim/fear.rs`)
 
-## Blows, hurts and remains (`sim/remains.rs`, `Actor::sway`, `Sim::jolt`)
+Nothing here is drawn per weapon or per kind of body. The body itself shows it.
 
-Nothing here is drawn per weapon or per kind of body; the body itself shows it.
+| | |
+|---|---|
+| **A blow** | rocks the whole body away from it for about half a second, less what it wears protects |
+| **Hurt** | under 60% health the gait shows it: slower, stooped, lurching, now and then a stumble. Living bodies mend in a game day. |
+| **Fear** | only from being hurt by someone. The struck fear the striker; anyone within 25 m who saw it fears whoever did it (the timid more). Fear halves over about two game days. Near someone they fear, more so if that one is armed, a being runs; one that thinks is asked what to do (plead, back off, flee, stand). |
+| **Death** | leaves a body: a thing of its own body type and look, named ("body of Oda"). It topples away from the blow. The rules keep acting on it (it no longer keeps warm), and it can be carried by those strong enough (two people for a person). |
+| **Finding a body** | a thinking being within 16 m of one it didn't know of stops, stares, remembers, and is asked what to do |
+| **Remains** | go after three game days, only while you are 90 m away; what they wore is left |
 
-- A blow (a sword, something heavy thrown) rocks the body that takes it: a
-  `Jolt` leans the whole shape about its feet, away from the blow, for about
-  half a second, and knocks it off its step for a third of that. Any body
-  can, since it is a tilt of the instance, not a pose.
-- Health under 0.6 shows in the gait: slower (a run no more than a hobble),
-  stooped, lurching onto one side every other step, and now and then a
-  stumble (a jolt forward). Living bodies mend, whole again in a game day.
-- A being that dies leaves its body: a live thing of its own body type, in its
-  look (sliders, clothes), `origin.remains` naming who it was ("body of Oda";
-  "Oda", "the body", "corpse" find it). Upright walkers topple away from the
-  blow; four-legged, crawling and floating bodies roll onto their side away
-  from it. The fall takes 0.8 s. Where it rests is probed from the shape
-  (`remains::lowest_point`), and any tilted thing that comes to rest is lifted
-  out of the ground the same way. Being a thing, the rules go on acting on it
-  (it no longer keeps itself warm), and it can be struck, cut, pushed, or
-  carried by those strong enough (two people for a person).
-- Remains go after three game days, only while the traveler is 90 m off;
-  what they wore is left there.
-- Fear (`sim/fear.rs`, `Rel::fear`, one way each) comes only from health
-  going down at someone's hand: the struck fear the striker, and everyone
-  within 25 m who saw a blow or a killing fears whoever did it (the timid
-  more, the brave less). It halves every two game days. Near someone they
-  fear, more so when that one holds a striking tool, a being runs; one that
-  thinks is asked what to do (plead, back off, flee, stand its ground), and
-  its fear and what the feared one holds are in its planner's context and
-  its talk. Planners have a `flee` step.
-- A thinking being that comes within 16 m of a body it didn't know of stops
-  and stares, remembers it, and is asked what to do, shaken by how close it
-  was to the dead (a dead animal shakes a person less). Those who saw the
-  death don't "find" it again.
-- In a world where things die (`hunting`), a body whose health the world's
-  rules wear to nothing dies of it.
+In a world where things die (`hunting`), a body whose health the world's own rules
+wear to nothing dies of it.
+
+---
 
 ## Things that fly and things that go off (`sim/missile.rs`, `sim/burst.rs`)
 
-Nothing here is per weapon: a bow, a musket, a sling, a cannon and a wand are
-one `launch` with different numbers; a grenade, dynamite, a powder keg, a
-shell and a firework are one `burst`.
+A bow, a musket, a sling, a cannon and a wand are one `launch` with different
+numbers. A grenade, dynamite, a powder keg, a shell and a firework are one `burst`.
 
-- **Keen** (`meta.tool.sharp`, 0..1; judged from the motions when not said):
-  thrown, a keen thing flies point first (it turns to face its flight and its
-  tip is what meets things). Striking fast enough along its point (7 m/s),
-  and keen enough (0.45), it sticks: in the ground, a tree, a wall (anchored,
-  `Shape::stuck`, saved), or a body (`Thing::stuck_in`, it goes where they go
-  and works loose after 45 s). A hand pulls it out (`g`, `hold`).
-- **Hurt from flying things**: anything someone threw or shot hurts a body it
-  hits by its energy, more if keen, against the body's size
-  (`missile::flight_hurt`): a ball tossed in play nothing, a stone a bruise, an
-  arrow a wound, a musket ball near death. What is worn softens it. It goes
-  through the same `take_blow` as a sword's blow and a blast (fear, flight,
-  memories, death).
-- **Fast things don't tunnel**: a step longer than the thing's size is swept
-  (sphere-traced against the ground, solids and bodies), so a musket ball
-  stops at the wall it hits. Flying things are followed out to three times the
-  usual distance; a shot gone further is dropped, and spent shots too small to
-  see are cleared when they come to rest.
-- **Launchers** (`meta.tool.launch { ammo, speed, spread, holds, per_shot,
-  ready }`): the `shoot` motion raises it to the aim and, after `ready`
-  seconds, sends `per_shot` of its ammunition (a type by name) from its tip,
-  aimed to drop onto the mark (`missile::aim`, the flatter arc). It holds
-  `holds` shots (`Shape::spent`, saved; 0: never runs out); ammunition lying
-  about loads it (`e` at it, or `hold` it, with the launcher in hand).
-  Ammunition nobody has written is asked for by name, and the built-in `shot`
-  flies until it comes. A keen shot sticks like a thrown spear.
-- **Bursts** (`meta.burst { radius, hurt, push, crater, fire, fuse, impact }`):
-  lit by `e`/`use` in hand, by fire or heat over 250 °C, or by another burst;
-  launched shells are lit as they leave. After the fuse, or on a hard hit when
-  `impact`, it goes off: bodies within the radius are hurt (fading with
-  distance) and thrown, loose things thrown, the ground blown into a crater
-  (`crater` m deep, a sloped bowl), holes torn in walls, trees and carts close
-  by, things heated (`fire`), other bursts set off a moment later. Everyone
-  within earshot startles; the hurt fear whoever lit it.
-- **Characters** do it all through the shared actions: plan steps `shoot`,
-  `load`, `light`, `throw at`; the planner is told what their held thing can
-  do ("it shoots arrows, 7 left"); someone holding a loaded launcher or a
-  burst is armed (feared). Phantoms take up launchers first, shoot from up to
-  45 m, and light and throw what goes off.
-- **Sound**: a gun cracks and a bow snaps when loosed; what flies fast whooshes
-  (lower and fuller the bigger); a lit fuse fizzes; a blast booms by its size;
-  hits and sticking thud by material.
+- **Sharp things** fly point first when thrown. Hitting fast enough along their point
+  (7 m/s) and sharp enough (0.45), they stick: in the ground, a tree, a wall (saved),
+  or a body (it moves with them and works loose after 45 s). `g` pulls one out.
+- **Hurt from flying things** goes by the energy, more if sharp, against the body's
+  size: a ball tossed in play nothing, a stone a bruise, an arrow a wound, a musket
+  ball near death. It goes through the same blow as a sword (fear, flight, memories,
+  death).
+- **Fast things don't pass through walls.** A step longer than the thing is swept
+  against ground, solids and bodies.
+- **Launchers** (`meta.tool.launch { ammo, speed, spread, holds, per_shot, ready }`):
+  the `shoot` motion raises it to the aim and, after `ready` seconds, sends
+  `per_shot` of its ammunition from the tip, aimed to drop onto the mark. It holds
+  `holds` shots (0: never runs out). Ammunition lying about loads it (`e` at it with
+  the launcher in hand). Ammunition nobody has written yet is asked for by name; the
+  built-in `shot` flies until it comes.
+- **Bursts** (`meta.burst { radius, hurt, push, crater, fire, fuse, impact }`) are lit
+  by `e` in hand, by fire or heat over 250 °C, or by another burst. After the fuse (or
+  on a hard hit, with `impact`) it goes off: bodies within the radius are hurt and
+  thrown, loose things thrown, a crater blown, holes torn in walls, trees and carts,
+  things heated, other bursts set off. Everyone in earshot startles; the hurt fear
+  whoever lit it.
+- **Characters** do all of it through the shared actions (`shoot`, `load`, `light`,
+  `throw at`). The planner is told what a held thing can do ("it shoots arrows, 7
+  left"). Phantoms take up launchers first and shoot from up to 45 m.
+- **Sound:** a gun cracks, a bow snaps, fast things whoosh, a fuse fizzes, a blast
+  booms by its size.
 
-Not yet: aiming help (a crosshair for long shots), merging many small
-craters. A lit fuse and stuck things are saved; something stuck in a body is
-not (it falls out on a restart).
+---
 
 ## Exposure (`sim/exposure.rs`)
 
-`Sim::exposure(p)` says how open a spot is to the sky, 0..1: how far it rises
-above the land within 25–60 m and above the water, broken up by standing growth
-within 22 m, and 0 inside a room. It knows nothing about wind; the wind's sound
-reads it now (`exposure^1.5`, so it is faint on flat meadows, gone in woods and
-indoors, and strong on bare hilltops), and weather, drying or fire can read it later.
+`Sim::exposure(p)` says how open a spot is to the sky, 0 to 1: how far it rises above
+the land around and the water, broken up by trees within 22 m, and 0 inside a room.
+The wind's sound reads it: faint on flat meadows, gone in woods and indoors, strong
+on bare hilltops.
+
+---
+
+## Known gaps
+
+- Physics is deliberately a toy: things are spheres against shapes, with no stacking
+  or joints between things.
+- Interiors are lit only by the sky by day (they look dim and blue); `light` anchors
+  light them at night.
+- Characters route through one building's doorways and stairs at a time. A building
+  made of several shapes, or a path in by one door and out by another, isn't planned
+  as a whole.
+- Sitting in a vehicle or carrying an animal isn't saved: after a restart you stand
+  where you were. Something stuck in a body falls out on a restart.
+- Land vehicles drive straight at where they go, not along roads.
+- No aiming help for long shots; many small craters aren't merged.

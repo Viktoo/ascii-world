@@ -1,515 +1,266 @@
-# Plan: species
+# Species, bodies and lives
 
-## Status
+**This is how a world gets more than people.** A dog follows its person and brings
+back a thrown stick. A cat won't be hugged by a stranger. Goats bolt together from a
+wolf. An elf and an orc start out wary and warm to each other one game at a time. A
+dragon wraps its wings round the one person it loves.
 
-All eight phases are built. Each phase's proof is a test in `src/sim/tests.rs` (the
-README lists them). Where the build differs from the plan:
+None of this is scripted per species. Every species is a **body** plus a few
+**numbers on shared axes**. Every body answers to the same **pose roles**. The verbs,
+needs, relationships and rules everyone already has do the rest. So the AI can write
+a new species in one call and it behaves without new code.
 
-- **Sliders:** a body has at most five (they are k.a … k.e). The human figure keeps
-  its five (height, build, skin, shirt, trousers).
-- **Generic bodies are starting points, not fixtures.** `figure` and `quadruped` are
-  templates: a non-human species named with one (the built-in dogs, cats, horses…)
-  gets its own body written from it in the background once it is about
-  (`Sim::ask_species_bodies`, `POCKET_SIM_OWN_BODIES=0` turns it off), and keeps its
-  height (`size` is rescaled). New bodies get the closest template as an example of
-  the contract. Without an LLM the templates are what everyone wears.
-- **A body's line:** `meta.body.from` names the body it was written from. Layers made
-  for any body up the line fit (a quadruped's collar on a cat's body), and births pair
-  any two whose lines start at the same body.
-- **One being's body can be reshaped** by a deed (`being.reshape`: "a poofy tail"): its
-  own body (`Persona::body`), written from the one it has with every role kept, so
-  gestures and walking still work. Its young take after it.
-- **Gait** sets how the walk phase runs: per metre by body size (biped, quad), along
-  the body (slither), or with time too (hover). Hands of bodies with arms that don't
-  start at the figure swing from the grip.
-- **Mounts** need three times the rider's mass (not 1.8× the size) and a `seat`.
-- **Spooking:** besides predators that would hunt them, plant eaters with any
-  wariness keep their distance from meat eaters (a horse from a wolf it could
-  kick). That is what makes a mount bolt.
-- **Hunting** is on by default: predators kill what they catch; the dead stay in
-  the save. With `POCKET_SIM_HUNTING=0` they chase, then give up.
-- **Beings made by deeds** are allowed by default, everywhere;
-  `POCKET_SIM_CREATE_BEINGS=0` turns them off. Curses need a world with its own properties (or
-  `POCKET_SIM_TRANSFORM`).
-- **Drift** is judged by a line's three youngest members. Variety and species names
-  are made from the drift ("tame wolves"), without an LLM call. A new species keeps
-  `kin_of`, so it shares its ancestor's population limit.
-- **Population limits** count kin within 150 m, not per region: a den on a region
-  border would leak otherwise.
-- **Births** happen between any two of one body who are bonded (people: partners), so
-  mixing is open, as decided.
+```mermaid
+flowchart LR
+    subgraph sp["A species"]
+        direction TB
+        body["Body<br/>a shape with a body contract:<br/>height, reach, grip, seat,<br/>pose roles, look sliders"]
+        axes["Numbers on shared axes<br/>size · mind · speech · diet ·<br/>social · temper · moves · water"]
+        extra["A few words and fields<br/>sounds, voice, hours,<br/>what it wants or shuns"]
+        body ~~~ axes ~~~ extra
+    end
+    sp --> rel["Relations worked out<br/>from the axes alone"]
+    rel --> b1["who hunts whom"]
+    rel --> b2["who can ride whom"]
+    rel --> b3["who herds, who follows<br/>their person"]
+    rel --> b4["who you can talk with"]
+    sp --> verbs["The same verbs as everyone<br/>follow, hold, eat, gesture, propose…"]
+```
 
-## Vision
+**Principles**
 
-The world has more than people. A dog follows its owner and brings back a
-thrown stick. A cat sleeps in the sun and won't be hugged by a stranger. An
-orc and an elf share a village and don't trust each other. A dragon wraps its
-wings around the one person it loves.
+1. **Meaning apart from animation.** A hug is consent, affection, distance and a
+   change in a relationship (`social.rs`). How a body shows it is up to that body.
+2. **Pose roles, not limbs.** Gestures move roles ("reach toward", "lower head"). Each
+   body decides what a role moves: arms, wings, paws, a neck.
+3. **Behaviour comes from the axes, never from names.** A wolf scares a goat because
+   it eats meat and is bigger, not because it is a "wolf".
+4. **Same verbs for everyone.** What a dog can't do, it can't do because of its body
+   or mind, not because of a special case.
+5. **Humans are one species.** You stay the human-shaped traveler, but your size and
+   dress are values like anyone else's.
+6. **Looks are data.** "A warrior village" or "everyone is a giant" changes values and
+   adds layers, never engine code.
 
-None of this is scripted per species. Every species is described with the
-same few numbers (the taxonomy), every body answers to the same pose roles,
-and the existing verbs, needs, relationships and rules do the rest.
+Built in: people, dogs, cats, horses, wolves, goats and deer (`src/builtin/species.json`).
+Worlds add their own at genesis and in region plans. Code: `src/world/species.rs`,
+`src/sim/beings.rs`, `motion.rs`, `life.rs`, `carry.rs`.
 
-Creating a species costs one builder call today. As models get cheaper, the
-same primitives allow more species, more variety and richer bodies without
-changing the engine.
+Scope: bodies from cat size (about 0.4 m) to dragons (about 12 m), and water life big
+enough to see (carp, seals, sharks, whales; a school of small fish drawn as one body).
+Nothing smaller: at low detail a mouse is a pixel. No swarms, insects or small birds.
 
-## Scope
+---
 
-- Bodies from cat or dog size (about 0.4 m) up to dragons (about 12 m). Nothing
-  smaller: at terminal resolution a mouse or a songbird is a pixel or less, and
-  you can't see it or point at it.
-- Earth worlds: humans plus animals like dogs, cats, horses, goats, deer, wolves.
-- Magic worlds: elves, orcs, giants, griffins, dragons… any number of species,
-  some of which fly.
-- Water life big enough to see (carp, seals, sharks, whales; small fish as a
-  school drawn as one body) lives by the `water` and `depth` axes below.
-- Not in scope: swarms, insects, small birds.
+## The body contract
 
-## Principles
-
-These carry over from `emergence-plan.md`, applied to bodies and minds.
-
-1. **Meaning apart from animation.** A hug is consent, affection, distance and
-   a relationship change (`social.rs`). How a body shows it is that body's
-   business.
-2. **Pose roles, not limbs.** Gestures move roles ("reach toward", "lower
-   head"). Each body decides what a role moves: arms, wings, paws, a neck.
-3. **Behaviour comes from the taxonomy, never from names.** A wolf scares a
-   goat because it eats meat and is bigger, not because it is a "wolf".
-4. **Same verbs for everyone.** A dog uses `follow`, `hold`, `catch`, `eat`,
-   `gesture`, `propose` like a person does. What it can't do, it can't do
-   because of its body or mind, not because of a special case.
-5. **Humans are just one species.** The built-in figure becomes the human body,
-   and old worlds load unchanged (missing species = human).
-6. **Looks are data, not fixed fields.** Proportions, colours and clothing are
-   open sliders and layers that a world, a region, a culture or one person can
-   set. "A warrior village" or "everyone is a giant" changes values and adds
-   layers. It never needs new engine code.
-7. **The traveler stays the traveler.** The player is always a human-shaped
-   traveler, but their size and dress are values like anyone else's.
-
-## What exists today
-
-- One built-in body, `src/builtin/figure.js`, shared by the player and every
-  character (`WorldSnapshot::figure_type`). Its pose is 8 floats (`k.s0…s7`).
-  7 are used, and the 8th is free.
-- Pose channels are named after human limbs: `l_raise`, `r_raise`, `l_fwd`,
-  `r_fwd`, `lean`, `nod`, `crouch` (`src/sim/actor.rs`). Built-in gestures are
-  hard-coded poses, and custom gestures are key poses written once by the LLM
-  and stored in the `gestures` table.
-- Where the hand is comes from Rust code that mirrors the figure's arms
-  (`Actor::hand`, `hand_local`). Eye height (1.65), reach (2.4) and walking
-  speeds are constants.
-- A character's look is `FigureLook` (height, build, skin, shirt, trousers).
-- Minds (`npc.rs`) are the same for everyone: needs, traits read from the
-  persona's words, option scoring (eat, rest, play, company, curiosity, flee,
-  gather, wander), and LLM goals within a budget.
-- Relationships (`social.rs`) are per pair, seeded from personas.
-
-## The primitives
-
-### 1. Body (a type with a body contract)
-
-A body is an ordinary object type (the strict JS subset, probed and compiled
-like any other) with the tag `body` and a `body` block in `meta`:
+A body is an ordinary kind of thing (the same checked code as any other) with the tag
+`body` and a `body` block in `meta`:
 
 ```js
 export const meta = { name: "dragon", bounds: [6, 5, 12], tags: ["body"],
   props: { mass: 4000, burns: 0, heat: 40 },
   body: {
-    height: 5,            // m, standing
-    eye: 4.2,             // m
-    radius: 2.5,          // collision radius
-    grip: [0, 3.8, 5.5],  // where held things sit (mouth, claw, hands), local
-    seat: [0, 3.2, 0.5],  // where a rider sits, local (omit if it can't be ridden)
-    reach: 3.5,           // m
-    roles: ["reach", "raise", "head", "crouch", "lean", "spread"],
-    gait: "quad",         // walk animation hint: biped | quad | slither | hover
+    height: 5, eye: 4.2, radius: 2.5, reach: 3.5,
+    grip: [0, 3.8, 5.5],      // where held things sit: a mouth, a claw, a hand
+    seat: [0, 3.2, 0.5],      // where a rider sits (leave out if it can't be ridden)
+    roles: ["reach_l", "reach_r", "raise_l", "raise_r", "head", "crouch", "lean", "spread"],
+    gait: "quad",             // biped | quad | slither | hover
     flies: true
   } };
-export function sdf(x, y, z, k) { /* reads k.s0…k.s7 as roles, k.f as walk phase */ }
-export function color(x, y, z, k) { /* … */ }
 ```
 
-The 8 pose slots get role names. Today's names stay as aliases, so saved
-gestures still load:
+| Field | |
+|---|---|
+| `height`, `eye`, `radius`, `reach` | its size, where it sees from, collision, how far it reaches |
+| `grip`, `seat` | where a held thing sits; where a rider sits |
+| `roles` | the pose roles its shape answers to |
+| `gait` | how the walk runs: per metre by size (`biped`, `quad`), along the body (`slither`), or in time (`hover`) |
+| `flies`, `arms` | it can fly; it has two hands (big things are held in both) |
+| `look`, `usual` | its look sliders with ranges (read as `k.a` … `k.e`, then `k.g` … `k.z`), and which have one usual value (most people are dressed) |
+| `from` | the body it was written from: layers and kin follow the line |
+| `rest`, `dead` | how it stands at rest and how it lies dead, per role |
 
-| Slot | Role | Human | Dog | Dragon |
-|---|---|---|---|---|
-| s0 / s1 | `raise_l` / `raise_r` | arm up sideways | front paw up | wing up |
-| s2 / s3 | `reach_l` / `reach_r` | arm forward | paw forward | wing wraps forward |
-| s4 | `lean` | bend at hips | front down, rear up (play bow) | neck forward |
-| s5 | `head` | nod | head down | head down |
-| s6 | `crouch` | crouch / sit | sit / lie | lie down |
-| s7 | `spread` | (none) | tail wag | wings spread / frill |
+A body's `parts(x, y, z, k)` says where its hands, head and chest are, so what it
+holds sits in its hand and what it wears fits.
 
-- A body says which roles it has (`roles`). The probe drives each role from 0
-  to 1 and checks the shape stays finite, in bounds and actually changes.
-- `Actor::hand` uses `grip` plus a small offset scaled by the reach role, and no
-  longer mirrors the figure's arm maths. The human figure gets a `grip` at the
-  right hand, so nothing visible changes.
-- Bodies have a tighter fuel budget than other types (many are on screen and
-  they're animated). The probe rejects slow bodies with a clear message, the
-  same way it rejects slow shapes today.
+**Pose roles.** Nine slots, each body giving them its own meaning, so every gesture
+plays on every body:
 
-### 2. Species (data)
+| Role | Human | Dog | Dragon |
+|---|---|---|---|
+| `raise_l`, `raise_r` | arm up sideways | front paw up | wing up |
+| `reach_l`, `reach_r` | arm forward | paw forward | wing wraps forward |
+| `lean` | bend at the hips | play bow | neck forward |
+| `head` | nod | head down | head down |
+| `crouch` | crouch, sit | sit, lie | lie down |
+| `spread` | | tail wag | wings spread |
+| `grip` | close the hand | close the mouth | close the claw |
 
-A species is a body plus a row of numbers and a few words, stored in a new
-`species` table (`name`, `body_type`, `json`). The built-in `human` species
-uses `figure.js`.
+The probe drives each listed role from 0 to 1 and checks the shape stays sound, in
+bounds and actually changes. Bodies get a tighter fuel budget than other things, since
+many are on screen at once.
 
-```json
-{ "name": "dragon", "body": "dragon", "plural": "dragons",
-  "size": 5.0,
-  "mind": "sapient",
-  "speech": "words",
-  "diet": { "plants": 0.0, "meat": 1.0, "props": { "heat": 0.5 } },
-  "social": "solitary",
-  "temper": { "bold": 0.9, "wary": 0.2, "playful": 0.2, "tame": 0.1 },
-  "move": { "walk": 2.0, "run": 8.0, "fly": 14.0, "swim": 0 },
-  "life": { "sleep_hours": [2, 9], "nocturnal": false },
-  "needs": { "hunger": 0.6, "fatigue": 1.0, "social": 0.2, "fun": 0.4, "curiosity": 0.8 },
-  "look": "description used when writing characters and talking about them" }
-```
+**Template bodies.** `figure` (people) and `quadruped` are starting points. A species
+drawn with one gets its own body written from it in the background once it is about
+(`POCKET_SIM_OWN_BODIES=0` turns this off), with every role kept. Without an AI the
+templates are what everyone wears. One being's body can be reshaped by a deed ("a
+poofy tail"): its own body is written from the one it has, so it still walks, gestures
+and fits a collar, and its young take after it.
 
-### 3. The taxonomy (shared axes)
+---
 
-Every species sits on the same axes, and every behaviour between species
-reads only these.
+## The shared axes
 
 | Axis | Values | What it drives |
 |---|---|---|
-| `size` | metres | who looks dangerous, who can carry whom, hug distance, collision, how far you notice it |
-| `mind` | `instinct` · `simple` · `sapient` | `instinct`: scoring only, no LLM. `simple`: rare LLM goals, no words. `sapient`: full minds, plans, crafts, create |
-| `speech` | `none` · `sounds` · `words` | can you talk with it? `sounds` answers in noises and gestures, `words` in dialogue. Gossip only passes between those that share words |
-| `diet` | weights for plants, meat, and any property | what counts as food for them (`edible` × diet), and who is prey |
-| `social` | `solitary` · `pair` · `pack` · `herd` · `village` | who they seek out for company and how far they stray from their group |
-| `temper` | bold, wary, playful, tame (0–1) | fear and flight distance, play, how quickly they warm to others |
-| `move` | walk, run, fly, swim speeds | paths, flight, escaping; any body with a swim speed swims, unless it `shuns` wet |
-| `water` | 0–1: 0 land, between both (otter, seal), 1 only water (fish) | where it wanders and starts; at 1 it never leaves its water, and stranded it suffers and flops back |
-| `depth` | [lo, hi] m under the surface | the depth it swims at, drifting through the band ([0, 0] at the top) |
-| `life` | sleep window, nocturnal | daily rhythm |
-| `needs` | how fast each need drifts | a dragon is rarely lonely, a dog often is |
+| `size` | metres | who looks dangerous, who can carry whom, hug distance, how far you notice it |
+| `mind` | `instinct` · `simple` · `sapient` | `instinct`: the scorer only, no AI. `simple`: asks the planner rarely (every 5 game minutes), no words. `sapient`: full minds, plans, crafts, makes things |
+| `speech` | `none` · `sounds` · `words` | can you talk with it? `sounds` answers in noises and gestures. Gossip passes only between those that share words. |
+| `diet` | weights for plants, meat, and any property | what counts as food for it, and who is prey |
+| `social` | `solitary` · `pair` · `pack` · `herd` · `village` | who it seeks out, how far it strays from its group |
+| `temper` | bold, wary, playful, tame (0–1) | fear and flight distance, play, how quickly it warms |
+| `moves` | walk, run, fly, swim speeds | paths, flight, escape |
+| `water`, `depth` | 0 land … 1 only water; a depth band | where it lives and swims; at 1 it never leaves the water |
+| `caves` | true / false | its home is a cave floor and it keeps to caves ([levels.md](levels.md)) |
+| `life`, `needs` | sleep hours; how fast each need drifts | a dragon is rarely lonely, a dog often is |
+| `mass` | kg at full size | carrying, riding, hunting |
 
-Derived relations, all computed from the axes:
+And a few fields for what a species is like:
 
-- **Predator and prey.** `A` hunts `B` when `A.diet.meat > 0.5` and
-  `B.size < 0.7 × A.size` and `B` is not in `A`'s group (family, owner,
-  village). `B` fears `A` by the same test seen from the other side. Fear and
-  flight distance scale with `B.temper.wary` and the size ratio. Hunting can be
-  turned off per universe (cosy worlds) with one setting. In that case predators
-  only stalk and chase, and nothing is killed.
-- **Mounts and carrying.** Someone can ride or be carried by a species whose
-  `size` is at least 1.8× their own and that is tame towards them.
-- **Pets and owners.** A relationship `"Bren: owner"` on a non-sapient species
-  means following, guarding, greeting and fetching. These are existing actions
-  (`follow`, `catch`, `gesture`), chosen by the scorer.
-- **Groups.** `pack` and `herd` add a "stay near my kind" option to the scorer,
-  and `herd` adds "flee together" when one member flees.
-- **Species attitudes.** Genesis can seed a starting attitude between sapient
-  species (affection, trust, rivalry), e.g. elves and orcs: trust −0.4. It's
-  only the starting value for a new pair. After that, each person's own
-  history with the other takes over, so a single orc can earn an elf's trust.
+| Field | Example |
+|---|---|
+| `sounds`, `voice`, `tone` | "woof", "a low purr", each with how it sounds; how speakers sound ([voices.md](voices.md)) |
+| `active` | `night` for owls, moths and horrors |
+| `want`, `touch`, `drive` | what it goes after, what its touch does, a purpose told to its mind |
+| `shuns`, `moves_unseen`, `hostile` | won't come near light; moves only while you aren't looking; means harm (the night's phantoms) |
+| `props` | its body beyond a plain living one: a fire spirit is hot, a ghost cold |
+| `weather`, `comes_with` | how it feels about rain or snow; it comes out only in fog ([weather.md](weather.md)) |
+| `breathes` | it needs air (false for a golem or a ghost) |
+| `signs` | what you notice when it's near but out of sight ("a rustle behind you") |
 
-### 4. Look: sliders, varieties and layers
+**Relations worked out from the axes**
 
-Today a person's look is five fixed numbers (`FigureLook`), and nobody wears
-anything. That becomes three open pieces.
+- **Hunting.** A hunts B when A eats mostly meat, isn't sapient, B isn't its own
+  species or kin, and B weighs less than 0.8 of A, counting A's pack within 30 m. A
+  sapient B is hunted only by the very bold. You are never hunted. Prey keeps its
+  distance; plant eaters with any wariness keep away from meat eaters, which is what
+  makes a mount bolt. With `POCKET_SIM_HUNTING=0` predators only chase.
+- **Riding.** The mount must weigh at least three times its rider, carry them, have a
+  seat, and agree (tame, plus liking the rider). A wild horse throws off a stranger; a
+  frightened mount that isn't fully tame throws its rider.
+- **Pets.** A relationship `"Bren: owner"` on a beast means following, greeting and
+  fetching, through the usual verbs.
+- **Groups.** `pack` and `herd` keep near their kind; a herd flees together.
+- **Peoples.** Genesis can seed a starting feeling between sapient species (elves and
+  orcs: trust −0.4). It is only where a new pair starts; each person's own history
+  takes over.
 
-**Sliders.** A body declares its own named look parameters with ranges, and
-the engine passes them in `k` like today's `k.a…k.e`:
+---
 
-```js
-body: { …, look: { height: [1.2, 2.4], build: [0.7, 1.4], skin: [0, 1],
-                   hair: [0, 1], ears: [0, 1], age: [0, 1] } }
-```
+## Looks, varieties and layers
 
-A dragon declares `scales`, `horns` and `belly` instead. A character stores
-`look` as a free map, and unknown keys are dropped with a warning. The human
-figure keeps its current five, plus `hair` and `age`.
+- **Sliders** are the body's own named look values with ranges: a person's height,
+  build, skin, face, hair and clothes (see the `look` list in `REGION_TASK`); a
+  dragon's scales and horns. A species and each variety narrow the ranges.
+- **Varieties** are named slider ranges plus default layers: "hill folk", short and
+  broad in wool cloaks; "a warrior village" in armour. They are data, so they cost no
+  AI call when they reuse existing layers.
+- **Layers** (armour, a cloak, a saddle) are small modules with the tag `layer`,
+  written against one body's code and drawn in its frame and pose. They are live
+  things: a cloak burns, armour makes you heavier. They are reused by name and fit any
+  body down the line (a quadruped's collar fits a cat). `wear` and `take_off` are
+  shared verbs.
+- **World scale.** Genesis can scale species ("everyone is a giant") and your own
+  height. Eye height, reach, speed and lifting follow from size, so "small among
+  giants" plays out with no special code.
 
-**Varieties.** A species can have varieties: named slider ranges plus default
-layers. "Hill folk": short and broad, with wool cloaks. "Tide elves": tall,
-with blue-grey skin. Genesis and region plans choose them per settlement, so
-"a warrior village" is a variety with armour, chosen for that village. A
-variety is data only (no code), so it costs no builder call when it reuses
-existing layers.
+---
 
-**Layers (dress and gear).** A layer is a small type module with the tag
-`layer`, written for one body. The builder gets the body's code in its prompt,
-so the layer follows the same pose maths (a breastplate tilts with `lean`, a
-cloak hangs from the shoulders). Each actor wears up to 3 layers, for example
-armour, a cloak and a hat.
+## Gestures across bodies
 
-- Rendering: the shader takes `min` over the body and its layers in the same
-  instance frame, and colour comes from whichever surface is nearest. Only
-  dressed actors pay for the extra layers.
-- Layers have properties like any thing (`burns`, `mass`, `fragile`), so the
-  rules apply: a cloak catches fire, and armour makes you heavier and slower.
-- A layer can be taken off and becomes a live thing (`drop` the helmet), and
-  a held layer can be put on (`wear`, a new small verb next to `hold`).
-- Layers are reused by name across a world. Once there's an "iron helmet" for
-  humans, any human can wear one.
+A gesture is role poses, so every gesture plays on any body that has those roles. If a
+body lacks a role a gesture needs, a fallback is used (`head` for a nod). If nothing
+fits, the AI writes that species' version once, kept as `name@species` (`cheer@naga`).
 
-**World-scale values.** Genesis can set:
+---
 
-- per-species size multipliers ("everyone is a giant": human height ×1.8)
-- the traveler's own size ("I'm small": traveler height 0.9 m)
+## Minds by species
 
-Eye height, reach, speed, what you can lift and contact distance all follow
-from size (see 5), so "small among giants" plays out without special code.
-Characters carry you, things are heavy, and doors are high.
+There is one mind (`npc.rs`). The species scales how needs drift, sets the sleep
+hours, adds the group, fear and owner options, and maps diet onto eating. `instinct`
+and `simple` minds don't use the dialogue model: pressing `Enter` near a dog gets a
+noise, a gesture and an action. They still remember: a dog remembers who fed it.
+Traits start from the species' temper and are shaped by the persona's words.
 
-### 5. Size-aware actors
+---
 
-`Actor` stops assuming a human:
+## Flight and riding (`motion.rs`, `carry.rs`)
 
-- Eye height, reach, collision radius and speeds come from the species and body.
-- Contact gestures keep a distance between surfaces, not centres:
-  `distance + radius_a + radius_b`. A person hugging a dragon stands at its side.
-- Contact gestures check the size gap. A hug between bodies whose sizes differ
-  more than 4× becomes "lean against", which is still a hug socially.
-- `liftable` and joint carrying include carrying a smaller actor (a child, a
-  cat) as a held body.
-- Placement and the region plan keep large species' homes on open ground.
+- A flyer cruises a few metres over the highest solid near its path and lands to eat,
+  sleep, hold or touch. Flight is a way of moving inside `goto`, chosen when the
+  target is far or across water.
+- **Riding** puts one body in another's seat (`ride`, `dismount`). You steer with the
+  walk keys at the mount's speed; on a flyer, `Space` and `c` (or looking up or down
+  while moving) climb and dive. Characters take their own mount for long trips.
+- The mount's own mind keeps running: fear makes it bolt, tiredness slows it, gentle
+  rides and feeding make it like the rider more.
 
-### 6. Gestures across bodies
+---
 
-- A gesture is role poses, so every built-in and custom gesture plays on any
-  body that has those roles.
-- If a body lacks a role a gesture needs, the engine uses the gesture's
-  fallback (`head` for `nod`, and `reach` for `high_five` on a body without
-  `raise`). If there's still no match, the first use asks the LLM once for that
-  species' version. It is stored in `gestures` as `name@species`, the same way
-  custom gestures are stored now.
-- `spread` lets bodies show feeling without arms: a tail wag on a greeting, wings
-  spread when angry. The scorer and plans can use it through gestures like
-  `/gesture wag`.
+## Deeds on beings
 
-### 7. Minds by species
+The `/` path works on beings too, and never writes free text into a body's code.
 
-- `npc.rs` keeps one mind. The species scales need drift, sets the sleep window,
-  adds the group, fear and owner options, and maps diet onto "eat".
-- `instinct` and `simple` minds don't use the dialogue model. Talking to them
-  (`Enter` near a dog) becomes a `Decide` with a sound, a gesture and an action,
-  answered by a template or the fast decider. They still have memories and
-  relationships: a dog remembers who fed it.
-- Traits (`Traits::from_persona`) start from the species `temper` and are then
-  adjusted by the persona's words, as they are today.
-- Non-sapient characters get a short persona: a name if someone gave them one,
-  an owner and a look, but no voice or trade.
+| | |
+|---|---|
+| **Dress** | `/give the guard a red cloak` adds or removes a layer. A person has to agree; a tame animal accepts a collar from someone it likes. |
+| **Change values** | `/feed the horse`, `/calm the dragon`, `/teach the dog to sit` change needs, feelings, sliders within range, or teach a gesture. Cached like every deed. |
+| **Transform** | a curse that turns someone into a toad, only in a world with forces of its own (or `POCKET_SIM_TRANSFORM=1`). Memories and relationships survive. |
+| **Create** | `/conjure a hound` makes a being of an existing or new species, on by default (`POCKET_SIM_CREATE_BEINGS=0` turns it off). The maker becomes its owner. |
 
-### 8. Flight and riding
+---
 
-- A flying actor has an altitude above the ground. It cruises a few metres
-  above the highest solid near its path (a sphere check against nearby SDFs,
-  the same as for things) and lands to eat, sleep, hold or do contact gestures.
-- Flight is a way of moving inside `goto`, not a new verb. The scorer picks it
-  when the target is far or across water.
-- The camera, culling and shadows already handle anything with bounds. Flying
-  bodies just need the vertical cull test to include their altitude.
+## Lives (`life.rs`)
 
-**Riding** reuses `hold`, but attaches an actor instead of a thing.
+- **Young.** Two bonded beings of one body line (people: partners) can have young.
+  Each slider is the parents' average plus a small drift; temper blends the same way;
+  the parents' variety is kept. Young start small, follow a parent and grow up over
+  some game days. Family relationships are set at birth.
+- **Limits.** Kin within 150 m count against `POCKET_SIM_MAX_CREATURES` (24), and births
+  slow as a place fills. `POCKET_SIM_LIFE_SPEED` speeds lives up or stops births.
+- **Drift.** Young of parents fed by people are a little tamer; hunted lines warier.
+  Judged by a line's three youngest, a line that drifts far enough is named a variety
+  ("tame wolves"), and further, a species of its own, with no AI call. A new species
+  keeps `kin_of`, so it shares its ancestor's limit, and everyone uses its new name.
 
-- A body that can be ridden declares a `seat` point. The `ride` and
-  `dismount` verbs join the shared action set, so the player, characters and
-  agents use them the same way.
-- **Who can ride:** the mount must be at least 1.8× the rider's size (see
-  Mounts and carrying), have a seat, and agree. Agreeing is a consent check
-  like a contact gesture: `tame` plus affection for the rider. A wild horse
-  throws off a stranger (dismount, with a small impact), and a horse that
-  knows you lets you on.
-- **While riding:** the rider follows the seat each step and their pose
-  switches to sitting (`crouch`). The rider can still talk, hold one thing,
-  and use or throw it.
-- **The traveler steering:** walk keys drive the mount at the mount's speed.
-  The camera moves to seat height plus the traveler's eye height. Turning
-  works as on foot, and a flying mount climbs and dives with look up and down.
-- **A character riding:** they give the mount a `goto`. The scorer picks
-  riding for long trips when they own or are close to a mount.
-- **The mount's own mind keeps running.** Fear can make it bolt or throw its
-  rider (a wolf spooks the horse), and fatigue makes it slow down and stop.
-  Affection for the rider grows with gentle rides and feeding.
-- The rider's mass counts toward what the mount carries, so a small pony can't
-  carry a giant.
-- Flying with a rider is just a flying `goto` with someone in the seat.
+---
 
-### 9. Doing, editing and creating with beings
+## Tests
 
-The free-text `/` path (do, edit, create) works on beings too, with the same
-schema the interpreter already uses. It never writes free text into a being's
-body code.
+Each is in `src/sim/tests`:
 
-- **Edit means layers.** `/give the guard a red cloak` or `/take off his
-  helmet` reshapes, adds or removes a layer through the existing reshape
-  pipeline. The body module stays fixed. A sapient being has to agree, which is
-  a social act like a contact gesture with its own intimacy (dressing someone
-  needs trust). Tame animals accept a collar, saddle or harness from someone
-  they like.
-- **Do means values.** `/feed the horse`, `/calm the dragon`, `/teach the dog to
-  sit` go through the interpreter, which answers only with property changes,
-  need changes, relationship changes, look sliders inside the body's ranges, or
-  a new learned gesture. Answers are cached by (what, with what, on whom), like
-  today.
-- **Body changes come from rules and magic.** A curse that turns someone into a
-  toad is a `transform` to another species, allowed only when the universe has
-  a rule or property for it. Size changes (`growth`) scale within the species'
-  range. Memories and relationships survive a transform.
-- **Create means a new being.** `/make a clay golem` or a wizard's plan can create
-  a being of an existing or new species. The universe setting `sim.create_beings`
-  (on by default) gates it, it goes through the species
-  pipeline, and it counts against the creature caps. The maker becomes the
-  creature's owner or parent.
+| Test | Shows |
+|---|---|
+| `a_dog_plays_the_same_gestures_with_its_own_body` | one gesture code on two bodies; a mouth grip |
+| `a_dog_follows_and_fetches_and_a_wary_cat_keeps_its_distance` | owners, fetch, a refused hug, noises not words |
+| `wolves_chase_a_herd_and_peoples_warm_to_each_other` | prey, herds, never people; elves and orcs warming |
+| `llm_written_species_live_hug_and_learn_their_own_gestures` | a dragon's wing hug; a naga's own cheer, written once |
+| `a_warrior_village_wears_its_armour_and_giants_dwarf_the_traveler` | varieties, layers that burn, world scale |
+| `deeds_dress_feed_teach_curse_and_conjure_beings` | consent, values, transform, create |
+| `species_get_own_bodies_and_one_being_can_be_reshaped` | template bodies replaced; one cat's tail made poofy |
+| `griffins_fly_horses_carry_and_bolt` | flight, riding, a mount bolting |
+| `families_grow_and_a_fed_wolf_line_turns_tame` | young, growth, limits, drift into a named variety |
 
-### 10. Breeding and change over time
+`pocket sim` metrics count events between species, chases and pets following their
+people. If these stay flat, the axes aren't doing anything.
 
-**Offspring.** Two beings of the same species (or of species the universe
-marks as able to mix), who are partners or pair-bonded and have high affection,
-with food and a home, can have young:
+---
 
-- The young are a new character of that species. Each look slider is the
-  parents' average plus a small random drift. Temper values blend the same way.
-  Layers aren't inherited, but the parents' variety is.
-- They start small (`growth` 0.3), follow a parent, and grow to full size over
-  some game days. The size-aware rules handle this for free: they can be
-  carried, they can't lift much, and they play more.
-- Sapient young get a name from a template at birth and a persona from the LLM
-  later, when they first matter (the player meets them, or they come of age).
-- Family relationships (`parent`, `child`, `sibling`) are seeded at birth.
-- Population caps per species and per region, plus a birth rate that drops as
-  a region fills up, keep numbers bounded. Death of old age is a universe
-  setting (`sim.lifespan`, off by default).
+## Not done
 
-**Lineages.** Each being records its parents. A lineage is the line of
-descent of one founding pair.
-
-**Drift.** Over generations, look sliders and temper drift with what happens:
-
-- Young born to parents who were fed and handled by people inherit a slightly
-  higher `tame`.
-- Lines that are hunted inherit a higher `wary`.
-- Sliders drift randomly within the body's ranges.
-
-All of this is in data. No code changes, and no LLM.
-
-**New varieties and species.** When a lineage's averages move far enough from
-its variety's ranges (a distance threshold on the taxonomy and look vectors),
-it becomes a new variety. That is one small LLM call to name and describe it,
-for example "the tame wolves of Pinewood, now called hounds". A further drift,
-or a big taxonomy change (diet, mind, social), makes a new species that reuses
-the same body module with new ranges. Universe rules can push drift on purpose
-(a magic spring makes everything born near it larger).
-
-### 11. Generation
-
-- **Genesis.** The universe call adds a `species` list: 1–5 species that fit the
-  world (earth: human plus a few animals. magic: the peoples and beasts of that
-  world). Each gets its body module in its own ```js block, like base types.
-- **Looks at genesis.** The same call can set size multipliers, the traveler's
-  size, and starting varieties with their layers ("a warrior culture": armour
-  and shields for humans).
-- **Regions.** The region plan's characters get `"species": "name"`, plus an
-  optional `"variety"` per settlement and per-character `look` sliders and
-  `layers`. The plan
-  may add `new_species` (at most one per region), which the builder writes
-  before the characters appear, the same way it writes `new_types`.
-- **Creatures in regions.** The plan gets a `creatures` list, separate from
-  characters, for non-sapient beings: a herd of goats by the farm, a wolf pack
-  in the wood, a cat by the inn. Each entry is a species, a count, a home and
-  optional names and owners.
-- **Characters in the world.** A sapient character can `create` a new species
-  only if the universe allows it (a wizard breeding griffins). It goes through
-  the same pipeline and caps.
-- **Old worlds.** Missing species means human, and the `species` table is added
-  on open.
-
-## Phases
-
-Each phase ends with a proof scenario as a test in `src/sim/tests.rs`, like the
-emergence plan.
-
-1. **Pose roles and the body contract.** Rename channels to roles (keep the old
-   names as aliases), add `meta.body`, move `Actor::hand` to `grip`, add `seat`, read eye,
-   reach and radius from the body, and probe role coverage and body fuel.
-   - *Proof:* every existing test passes unchanged, and a second built-in body
-     (`dog.js`) plays wave, sit and hug from the same gesture code.
-2. **Species and size.** The `species` table, built-in `human`, `dog` and `cat`,
-   `"species"` on characters, size-aware contact distance and lifting, and
-   speech levels for talking.
-   - *Proof:* a dog with an owner follows them, brings back a thrown stick
-     (catch plus mouth grip), and greets them with a tail wag. A stranger's hug
-     is refused by a wary cat. Talking to the dog gives a sound and a gesture,
-     never words.
-3. **The taxonomy at work.** Diet as food, predator and prey, fear distance,
-   packs and herds, owners, species attitudes, and the no-killing setting.
-   - *Proof (`pocket sim --hours 24`):* goats stay together and flee a wolf as a
-     group, the wolf never targets a grown person, elf and orc affection starts
-     low and rises for pairs who play or work together, and no species
-     disappears from the world.
-4. **LLM-written species.** Genesis `species`, region `new_species` and
-   `creatures`, per-species gesture variants written on first use, and probes
-   with repairs.
-   - *Proof (scripted model):* a dragon species is written, placed and hugs the
-     one character it has high affection for (a wing-wrap through `reach`).
-     A snake-like body without `raise` gets a written `high_five@naga` variant
-     once, then reuses it.
-5. **Looks and layers.** Body-declared sliders, varieties, layer modules
-   rendered in the same instance, the `wear` verb, world size multipliers and
-   the traveler's size.
-   - *Proof (scripted model):* "a warrior village" gives its people an armour
-     variety, and the armour tilts with `lean` and burns off in a fire. In
-     "a world where I'm small and everyone is big", the traveler's eye height,
-     reach and lifting all scale, and a character can carry them.
-6. **Doing, editing and creating with beings.** Layer edits with consent,
-   interpreter answers on beings, species `transform` by universe rules, and
-   `create` for beings behind its setting.
-   - *Proof:* `/give the guard a red cloak` adds a layer only when the guard
-     agrees. A cursed character becomes another species and still remembers
-     the player. A refused edit changes nothing.
-7. **Flight and riding.** Altitude, clearance, landing, flying as part of
-   `goto`, the `ride` and `dismount` verbs with consent, traveler steering
-   and camera, and mounts that bolt in fear.
-   - *Proof:* a griffin flies over a house to its owner across a lake, lands,
-     and is greeted. It never passes through a solid. The traveler rides a
-     horse that knows them, steers it with the walk keys, and the horse bolts
-     and throws them when a wolf appears. A stranger's horse refuses them. A
-     character rides a griffin to the next village, and both arrive.
-8. **Breeding and drift.** Offspring with blended sliders, growth, family
-   relationships, population caps, lineages, drift, and new varieties and
-   species past a threshold.
-   - *Proof (`pocket sim --days 30`):* a dog pair has pups that grow up and
-     follow their parents. The population stays under its cap. A wolf line fed
-     by villagers becomes measurably tamer and is named as a new variety. The
-     same seed gives the same lineage history.
-
-## Limits and performance
-
-- Bodies on screen: the renderer already culls to 1,500 instances and walks a
-  grid. The cost to watch is the cost of each body's shape, which the probe
-  enforces. The human figure (about 12 capsules) sets the budget.
-- Minds: `instinct` minds run only the scorer, at a lower rate when far away, and
-  never use the LLM. The LLM budget (`POCKET_LLM_PER_MIN`) still goes nearest
-  first, sapient minds first.
-- New limits as settings: `POCKET_SIM_MAX_CREATURES` (per region and in total),
-  `sim.hunting` (on or off), and the size range.
-- `pocket sim` metrics gain: events between different species, predator chases,
-  pets following owners, and species attitude drift. If these stay flat, the
-  taxonomy isn't doing anything.
-
-## Decided
-
-- The player stays the traveler (a human-shaped body). Their size and dress
-  can vary, but playing as another species is out for now.
-- Breeding and change over time are in (phase 8).
-
-- Mixing is not limited per universe by default: any two species that share a
-  body module can have young together, and a universe can allow more.
-- Once a line drifts into a new species, everyone uses the new name, including
-  memories and village talk from then on.
-
-## Parking lot
-
-- Layers that change a body's roles or abilities (a saddle with wings, a
-  jetpack). Wait until testing shows what people actually try to do with
-  bodies, then decide.
+- Layers that change what a body can do (wings on a saddle, a jetpack). Waiting to see
+  what people try.
+- Playing as another species: you stay the human-shaped traveler.
+- Nothing burrows or climbs rock; every body moves the same way over the ground (gait
+  only sets the animation).

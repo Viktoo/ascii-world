@@ -1,4 +1,4 @@
-//! The weather in the living world (see `world::weather`, docs/weather-plan.md):
+//! The weather in the living world (see `world::weather`, docs/weather.md):
 //! what falls on things out in the open, how bodies feel about it, the news
 //! when it turns, and weather made on purpose. Nothing here knows what rain
 //! is: a kind's falling stuff carries its own properties, a species its own

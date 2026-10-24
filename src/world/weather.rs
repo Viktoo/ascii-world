@@ -1,4 +1,4 @@
-//! Weather (docs/weather-plan.md). Each world has a climate: a short list of
+//! Weather (docs/weather.md). Each world has a climate: a short list of
 //! weather kinds written at genesis (fair, drizzle, ash fall, golden haze,
 //! a thunderstorm…), each a few numbers and, if anything falls, what it is
 //! and what it does to what it lands on (as properties). The engine runs

@@ -1,4 +1,4 @@
-//! Weather in the living world (docs/weather-plan.md): what falls acts on
+//! Weather in the living world (docs/weather.md): what falls acts on
 //! things through the rules, bodies feel it and act on it, it turning is
 //! news, and it can be made on purpose.
 
