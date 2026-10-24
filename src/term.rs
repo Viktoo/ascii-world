@@ -107,6 +107,8 @@ pub struct Field {
     pub y: u16,
     pub w: u16,
     pub text: String,
+    /// The caret's place, in chars.
+    pub at: usize,
     pub color: [u8; 3],
     pub caret: Option<[u8; 3]>,
 }

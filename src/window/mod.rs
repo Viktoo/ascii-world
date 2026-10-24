@@ -501,8 +501,9 @@ impl ApplicationHandler for Handler {
 
 /// A window key as the terminal would have reported it (with releases).
 fn key(e: &winit::event::KeyEvent, mods: ModifiersState) -> Option<KeyEvent> {
-    // Cmd shortcuts are the system's, not the game's keys.
-    if mods.super_key() {
+    // Cmd shortcuts are the system's, not the game's keys, but for editing the line.
+    let edit = matches!(e.logical_key, Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Backspace));
+    if mods.super_key() && !edit {
         return None;
     }
     let code = match &e.logical_key {
@@ -549,6 +550,9 @@ fn key(e: &winit::event::KeyEvent, mods: ModifiersState) -> Option<KeyEvent> {
     }
     if mods.alt_key() {
         m |= KeyModifiers::ALT;
+    }
+    if mods.super_key() {
+        m |= KeyModifiers::SUPER;
     }
     let kind = match (e.state, e.repeat) {
         (ElementState::Released, _) => KeyEventKind::Release,

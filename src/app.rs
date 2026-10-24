@@ -154,6 +154,8 @@ pub struct App {
     cam_y: f32,
     mode: Mode,
     input: String,
+    /// Chars of the input right of the caret (0: at the end, where dictation adds).
+    caret_back: usize,
     log: VecDeque<LogLine>,
     keys: Keys,
     debug: bool,
@@ -329,6 +331,7 @@ impl App {
             cam_y: pos.y + eye,
             mode: Mode::Walk,
             input: String::new(),
+            caret_back: 0,
             log: VecDeque::new(),
             keys: Keys::default(),
             debug: false,
@@ -609,6 +612,10 @@ impl App {
     }
 
     fn walk_key(&mut self, k: KeyEvent) {
+        // Cmd comes through only for editing the line.
+        if k.modifiers.contains(KeyModifiers::SUPER) && k.kind != KeyEventKind::Release {
+            return;
+        }
         if let Some(c) = key_char(k.code) {
             // Aboard or swimming, Space and c are held too: up and down for
             // a flyer or a swimmer.
@@ -861,7 +868,54 @@ impl App {
         self.mode = m;
         self.keys.down.clear();
         self.input.clear();
+        self.caret_back = 0;
         self.dirty = true;
+    }
+
+    /// The caret as a char index into the input; never before a command's '/'.
+    fn caret(&self) -> usize {
+        let n = self.input.chars().count();
+        let min = (self.mode == Mode::Command && self.input.starts_with('/')) as usize;
+        n.saturating_sub(self.caret_back).max(min)
+    }
+
+    fn set_caret(&mut self, at: usize) {
+        let n = self.input.chars().count();
+        let min = (self.mode == Mode::Command && self.input.starts_with('/')) as usize;
+        self.caret_back = n - at.clamp(min.min(n), n);
+    }
+
+    fn byte_at(&self, at: usize) -> usize {
+        self.input.char_indices().nth(at).map_or(self.input.len(), |(i, _)| i)
+    }
+
+    /// The start of the word before the caret, or the end of the one after.
+    fn word_edge(&self, back: bool) -> usize {
+        let cs: Vec<char> = self.input.chars().collect();
+        let mut i = self.caret();
+        if back {
+            while i > 0 && cs[i - 1] == ' ' {
+                i -= 1;
+            }
+            while i > 0 && cs[i - 1] != ' ' {
+                i -= 1;
+            }
+        } else {
+            while i < cs.len() && cs[i] == ' ' {
+                i += 1;
+            }
+            while i < cs.len() && cs[i] != ' ' {
+                i += 1;
+            }
+        }
+        i
+    }
+
+    fn insert_input(&mut self, text: &str) {
+        let room = 400usize.saturating_sub(self.input.chars().count());
+        let text: String = text.chars().take(room).collect();
+        let at = self.byte_at(self.caret());
+        self.input.insert_str(at, &text);
     }
 
     fn text_key(&mut self, k: KeyEvent) {
@@ -878,18 +932,48 @@ impl App {
             // Enter with nothing to say, in a conversation: speak instead.
             KeyCode::Enter if matches!(self.mode, Mode::Talk(_)) && self.input.trim().is_empty() && self.ears.is_some() => self.start_hearing(),
             KeyCode::Enter => self.submit_input(),
+            KeyCode::Backspace if self.mode == Mode::Command && self.input == "/" => self.set_mode(Mode::Walk),
             KeyCode::Backspace => {
-                self.input.pop();
-                if self.mode == Mode::Command && self.input.is_empty() {
-                    self.set_mode(Mode::Walk);
+                let to = self.caret();
+                let m = k.modifiers;
+                let from = if m.contains(KeyModifiers::SUPER) {
+                    0
+                } else if m.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) {
+                    self.word_edge(true)
+                } else {
+                    to.saturating_sub(1)
+                };
+                let from = from.max((self.mode == Mode::Command && self.input.starts_with('/')) as usize);
+                if from < to {
+                    let (a, b) = (self.byte_at(from), self.byte_at(to));
+                    self.input.replace_range(a..b, "");
                 }
             }
-            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => self.input.clear(),
+            KeyCode::Delete => {
+                let at = self.caret();
+                if self.caret_back > 0 {
+                    let (a, b) = (self.byte_at(at), self.byte_at(at + 1));
+                    self.input.replace_range(a..b, "");
+                    self.caret_back -= 1;
+                }
+            }
+            KeyCode::Left if k.modifiers.contains(KeyModifiers::SUPER) => self.set_caret(0),
+            KeyCode::Right if k.modifiers.contains(KeyModifiers::SUPER) => self.caret_back = 0,
+            KeyCode::Left if k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) => self.set_caret(self.word_edge(true)),
+            KeyCode::Right if k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) => self.set_caret(self.word_edge(false)),
+            KeyCode::Left => self.set_caret(self.caret().saturating_sub(1)),
+            KeyCode::Right => self.caret_back = self.caret_back.saturating_sub(1),
+            KeyCode::Home | KeyCode::Up => self.set_caret(0),
+            KeyCode::End | KeyCode::Down => self.caret_back = 0,
+            KeyCode::Char('a') if k.modifiers.contains(KeyModifiers::CONTROL) => self.set_caret(0),
+            KeyCode::Char('e') if k.modifiers.contains(KeyModifiers::CONTROL) => self.caret_back = 0,
+            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input = if self.mode == Mode::Command { "/".into() } else { String::new() };
+                self.caret_back = 0;
+            }
             KeyCode::Char(c) => {
                 let c = if k.modifiers.contains(KeyModifiers::SHIFT) { c.to_uppercase().next().unwrap_or(c) } else { c };
-                if self.input.chars().count() < 400 {
-                    self.input.push(c);
-                }
+                self.insert_input(&c.to_string());
             }
             _ => {}
         }
@@ -2144,7 +2228,7 @@ impl App {
         }
         if self.mode != Mode::Walk {
             self.stop_hearing();
-            self.input.push_str(&s.replace(['\n', '\r'], " "));
+            self.insert_input(&s.replace(['\n', '\r'], " "));
             self.dirty = true;
         }
     }
@@ -2598,6 +2682,31 @@ mod tests {
         assert_eq!(you("the traveler won't throw Mog"), "You won't throw Mog");
         assert_eq!(you("Mog darts out of the traveler's reach"), "Mog darts out of your reach");
         assert_eq!(you("too far away (3.0 m)"), "Too far away (3.0 m)");
+    }
+
+    #[test]
+    fn arrows_move_the_caret_in_the_line() {
+        let (mut app, _db) = make_app();
+        let k = |c| key(c, KeyEventKind::Press);
+        app.on_key(k(KeyCode::Char('/')));
+        app.stop_hearing();
+        for c in "dig hole".chars() {
+            app.on_key(k(KeyCode::Char(c)));
+        }
+        for _ in 0..4 {
+            app.on_key(k(KeyCode::Left));
+        }
+        for c in "a ".chars() {
+            app.on_key(k(KeyCode::Char(c)));
+        }
+        assert_eq!(app.input, "/dig a hole");
+        app.on_key(k(KeyCode::Home));
+        app.on_key(k(KeyCode::Backspace));
+        assert_eq!(app.input, "/dig a hole", "the / stays");
+        app.on_key(k(KeyCode::Delete));
+        app.on_key(k(KeyCode::End));
+        app.on_key(k(KeyCode::Char('!')));
+        assert_eq!(app.input, "/ig a hole!");
     }
 
     #[test]

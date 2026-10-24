@@ -422,9 +422,9 @@ impl App {
         // The words typed, and a mark at the right (heard, listening).
         let mark = self.hearing_mark().or_else(|| self.replying.is_some().then(|| ("…".to_string(), DIM)));
         let mark_w = mark.as_ref().map_or(0.0, |(m, _)| width(m, Face::Body, SIZE) + 1.0);
-        let text = match self.mode {
-            Mode::Command => self.input.strip_prefix('/').unwrap_or(&self.input).to_string(),
-            _ => self.input.clone(),
+        let (text, at) = match self.mode {
+            Mode::Command if self.input.starts_with('/') => (self.input[1..].to_string(), self.caret() - 1),
+            _ => (self.input.clone(), self.caret()),
         };
         let fx = tx.ceil();
         let room = (x + pw - 1.4 - mark_w - fx).max(4.0);
@@ -436,7 +436,7 @@ impl App {
             };
             words(s, fx + 0.3, mid, &fit(hint, room - 0.3, Face::Body, SIZE), SIZE, [110, 114, 132], Face::Body);
         }
-        s.field = Some(crate::term::Field { x: fx as u16, y: iy as u16, w: room as u16, text, color: TEXT, caret: blink.then_some(ACCENT) });
+        s.field = Some(crate::term::Field { x: fx as u16, y: iy as u16, w: room as u16, text, at, color: TEXT, caret: blink.then_some(ACCENT) });
         if let Some((m, fg)) = mark {
             words(s, x + pw - 1.2 - width(&m, Face::Body, SIZE), mid, &m, SIZE, fg, Face::Body);
         }

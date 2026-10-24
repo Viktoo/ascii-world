@@ -268,15 +268,24 @@ impl Text {
     fn field(&mut self, f: &Field, cell_w: f32, cell_h: f32, base: f32, px: f32, out: &mut Vec<Quad>) {
         let slots: Vec<(char, Slot)> = f.text.chars().map(|c| (c, self.glyph(c, Face::Body, px))).collect();
         let room = f.w as f32 * cell_w - (cell_h * 0.2).max(2.0);
+        // Show the end, unless the caret is further left: then from the caret on.
+        let at = f.at.min(slots.len());
         let mut width: f32 = slots.iter().map(|s| s.1.advance).sum();
         let mut first = 0;
-        while width > room && first < slots.len() {
+        while width > room && first < at {
             width -= slots[first].1.advance;
             first += 1;
         }
         let col = f.color.map(|v| v as f32 / 255.0);
-        let (mut pen, baseline) = (f.x as f32 * cell_w, f.y as f32 * cell_h + base);
-        for (ch, s) in &slots[first..] {
+        let (x0, baseline) = (f.x as f32 * cell_w, f.y as f32 * cell_h + base);
+        let (mut pen, mut caret_x) = (x0, x0);
+        for (i, (ch, s)) in slots.iter().enumerate().skip(first) {
+            if i == at {
+                caret_x = pen;
+            }
+            if pen + s.advance - x0 > room {
+                break;
+            }
             if s.w > 0 && *ch != ' ' {
                 out.push(Quad {
                     rect: [(pen + s.xmin).round(), (baseline - s.ymin - s.h as f32).round(), s.w as f32, s.h as f32],
@@ -286,10 +295,13 @@ impl Text {
             }
             pen += s.advance;
         }
+        if at == slots.len() {
+            caret_x = pen;
+        }
         if let Some(c) = f.caret {
             let c = c.map(|v| v as f32 / 255.0);
             let (w, h) = ((cell_h * 0.08).max(1.5).round(), (cell_h * 0.78).round());
-            out.push(Quad { rect: [pen.round(), (f.y as f32 * cell_h + (cell_h - h) * 0.5).round(), w, h], uv: [0.5, 0.5, 1.5, 1.5], color: [c[0], c[1], c[2], 1.0] });
+            out.push(Quad { rect: [caret_x.round(), (f.y as f32 * cell_h + (cell_h - h) * 0.5).round(), w, h], uv: [0.5, 0.5, 1.5, 1.5], color: [c[0], c[1], c[2], 1.0] });
         }
     }
 
@@ -400,7 +412,7 @@ mod tests {
     fn a_long_field_shows_its_end() {
         let mut s = Screen::new(20, 1, true);
         let text = "a long line of words that will not fit in twenty cells at the end";
-        s.field = Some(Field { x: 1, y: 0, w: 18, text: text.into(), color: [255, 255, 255], caret: Some([255, 0, 0]) });
+        s.field = Some(Field { x: 1, y: 0, w: 18, text: text.into(), at: text.chars().count(), color: [255, 255, 255], caret: Some([255, 0, 0]) });
         let (mut t, mut q) = (Text::new(), Vec::new());
         t.layout(&s, 10.0, 20.0, &mut q);
         let caret = q.last().unwrap().rect[0];
