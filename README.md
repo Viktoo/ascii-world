@@ -34,9 +34,9 @@ Windows and Linux are coming.
 | `e` `g` `f` | use, pick up, throw |
 | `Esc` | pause, settings, play together |
 
-## Build worlds with Claude Code
+## Build worlds with a coding agent
 
-Everything in the game is code the AI can read and write, and the game can check its own work. `pocket` takes screenshots, describes what's in view, and runs a world headless, so Claude Code can build a place, look at it, and fix it:
+Everything in the game is code the AI can read and write, and the game can check its own work. `pocket` takes screenshots, describes what's in view, and runs a world headless, so a coding agent (Claude Code, Codex, Cursor…) can build a place, look at it, and fix it:
 
 ```bash
 pocket snapshot my.pocket --at 0,0,90 --time 17       # a view from anywhere
