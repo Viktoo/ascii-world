@@ -86,3 +86,7 @@ cargo install --locked --git https://github.com/Viktoo/infinite-pocket
 ```
 
 Tests and releases: [docs/guide.md](docs/guide.md#tests), [docs/releases.md](docs/releases.md).
+
+## License
+
+[GPL-3.0](LICENSE)
