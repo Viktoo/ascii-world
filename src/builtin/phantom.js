@@ -3,7 +3,7 @@
 // always reaching (its rest stance, so what it wears follows), the head hanging
 // forward and over to one side, the other arm hanging dead, a dragging left leg.
 // Skin like candle wax gone grey at the edges; a skull pressed out through the
-// face, deep sockets with a pinpoint of cold light far back in each (out when
+// face, deep sockets with a cold light far back in each (out when
 // it dies, or for a flicker as it blinks), the jaw hanging too low in a long
 // black maw; lank black hair hanging over the face; arms too long, bent at
 // the elbow, ending in long hooked fingers; clothes gone grey and torn.
@@ -117,12 +117,12 @@ export function sdf(x, y, z, k) {
   const jaw = ellipsoid(r.x, r.y + 0.15, r.z - 0.03, 0.05, 0.045, 0.065);
   head = smoothUnion(head, jaw, 0.04);
   // Deep sockets, and the long maw between cheek and jaw.
-  head = smoothSubtract(head, ellipsoid(abs(r.x) - 0.034, r.y - 0.005, r.z - 0.09, 0.022, 0.019, 0.03), 0.006);
+  head = smoothSubtract(head, ellipsoid(abs(r.x) - 0.034, r.y - 0.005, r.z - 0.09, 0.026, 0.022, 0.032), 0.006);
   head = smoothSubtract(head, ellipsoid(r.x, r.y + 0.105, r.z - 0.085, 0.026, 0.06, 0.04), 0.008);
   // Where the nose was, two slits.
   head = smoothSubtract(head, ellipsoid(abs(r.x) - 0.009, r.y + 0.045, r.z - 0.098, 0.006, 0.014, 0.012), 0.004);
-  // A pinpoint of light far back in each socket.
-  const eyes = sphere(abs(r.x) - 0.034, r.y - 0.003, r.z - 0.07, 0.006 + 0.0015 * sign(r.x));
+  // A cold light in each socket, big enough to be seen from afar at night.
+  const eyes = sphere(abs(r.x) - 0.034, r.y - 0.003, r.z - 0.07, 0.013 + 0.0015 * sign(r.x));
   // Lank black hair from the crown, hanging past the jaw, parted over the
   // face; one hank across the left eye.
   const scalp = max(ellipsoid(r.x, r.y - 0.02, r.z + 0.006, 0.093, 0.122, 0.108), -(r.y - 0.04 - max(r.z - 0.02, 0) * 0.6));
@@ -157,11 +157,11 @@ export function color(x, y, z, k) {
   // The head and neck.
   if (q.y > 0.58 && py > hip) {
     const r = rotZ(q.x - 0.05, q.y - 0.74 + nod * 0.03, q.z - 0.12 - nod * 0.04, -0.3);
-    // The lights: cold, small, far back; out when the eyes shut.
+    // The lights: cold, far back; out when the eyes shut.
     const ex = abs(r.x) - 0.034;
     const ey = r.y - 0.003;
     const ez = r.z - 0.07;
-    if (ex * ex + ey * ey + ez * ez < 0.0001) {
+    if (ex * ex + ey * ey + ez * ez < 0.0003) {
       if (k.s10 > 0.5) {
         return rgb(12, 12, 14);
       }

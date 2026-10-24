@@ -41,8 +41,7 @@ Windows and Linux are coming.
 | `e` `g` `f`            | use, pick up, throw                              |
 | `Esc`                  | pause, settings, play together                   |
 
-
-
+![Playing: holding a sword in Lilyshore Meadows while Aino Lahti warns you off the nets, with the keys for what you point at, the feed, and the bar to type into](docs/img/playing.webp)
 
 ## Multiplayer
 
@@ -59,6 +58,10 @@ pocket describe my.pocket --at 0,0,90                 # what's in view, as JSON
 pocket sim my.pocket --hours 24                       # run a day and see what happened
 pocket record my.pocket --at 0,0,90 --to 20,0,90 --out clip --webp   # a clip of the world going on
 ```
+
+An agent can look at anyone it made, in front of their own home. Here are 36 people and creatures from 13 generated worlds (`pocket snapshot my.pocket --face ID --open`):
+
+![36 portraits of people and creatures from 13 generated worlds, each in front of their own home](docs/clips/faces-sheet.jpg)
 
 The [full guide](docs/guide.md) has every command, setting and how it all works.
 

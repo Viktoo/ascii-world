@@ -68,7 +68,7 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
   runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
 
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
-                       [--lift M] [--phase ID=RAD,…] [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
+                       [--lift M] [--phase ID=RAD,…] [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S] [--open]]  (a portrait of a character)
   pocket record FILE --at x,z,yawDeg --out DIR [--lift M] [--pitch DEG] [--to x,z,yawDeg [--to-lift M] [--to-pitch DEG]]
                      [--follow ID [--dist M]] [--seconds S | --frames N] [--fps 15] [--speed 1] [--time HOUR] [--size 800x450] [--loop N]
                      [--mp4] [--webp] [--gif] [--frames-only]   the world run unseen, saved as frames and a clip (ffmpeg)
@@ -508,6 +508,9 @@ fn parse_size(args: &[String]) -> Result<(u16, u16)> {
     Ok((w.parse::<u16>()?.clamp(8, 1000), h.parse::<u16>()?.clamp(4, 500)))
 }
 
+/// A person's half-width, to size a close-up of anything wider by.
+const NPC_SPAN: f32 = world::collide::NPC_RADIUS;
+
 /// One frame, rendered synchronously (shared by snapshot and tests).
 /// A portrait: one character stood before the camera, posed and dressed as asked.
 #[derive(Default)]
@@ -519,6 +522,8 @@ struct Portrait {
     talk: f32,
     blink: f32,
     clock: Option<f64>,
+    /// Out in the open near where they are, their own place behind them.
+    open: bool,
 }
 
 impl Portrait {
@@ -531,7 +536,7 @@ impl Portrait {
             let (k, v) = kv.split_once('=').context("--look expects name=value,…")?;
             look.push((k.trim().to_string(), v.trim().parse::<f32>().context("--look value")?));
         }
-        Ok(Some(Portrait { id, dist: num("--dist", 1.2), turn: num("--turn", 0.0).to_radians(), look, talk: num("--talk", 0.0), blink: num("--blink", 0.0), clock: flag(args, "--clock").and_then(|v| v.parse().ok()) }))
+        Ok(Some(Portrait { id, dist: num("--dist", 1.2), turn: num("--turn", 0.0).to_radians(), look, talk: num("--talk", 0.0), blink: num("--blink", 0.0), clock: flag(args, "--clock").and_then(|v| v.parse().ok()), open: has(args, "--open") }))
     }
 
     /// Put the character before `cam` and look at their face.
@@ -540,6 +545,12 @@ impl Portrait {
             Some(id) => id,
             None => live.cast.npcs.iter().filter(|n| n.here()).min_by(|a, b| (a.a.pos - cam.pos).length().total_cmp(&(b.a.pos - cam.pos).length())).map(|n| n.def.id).context("no character here to portray")?,
         };
+        if self.open {
+            if let Some((at, yaw)) = self.open_spot(live, id) {
+                cam.pos = at;
+                cam.yaw = yaw;
+            }
+        }
         let fwd = Vec3::new(cam.yaw.sin(), 0.0, cam.yaw.cos());
         let snap = live.snap.clone();
         let n = live.cast.get_mut(id).with_context(|| format!("no character {id}"))?;
@@ -550,12 +561,17 @@ impl Portrait {
                 n.sliders[i] = *v;
             }
         }
-        let flat = cam.pos + fwd * self.dist;
+        // A close-up keeps a body bigger than a person (a horse, a stone elder)
+        // as far off as its size, so its head fills the frame as a face would.
+        let big = if self.dist < 2.0 { (n.a.dims.height / 1.75).max(n.a.dims.radius / NPC_SPAN).max(1.0) } else { 1.0 };
+        let flat = cam.pos + fwd * self.dist * big;
         let ground = snap.terrain.height(flat.x, flat.z);
         n.a.pos = Vec3::new(flat.x, ground, flat.z);
         n.a.yaw = cam.yaw + std::f32::consts::PI + self.turn;
         n.a.pose = Default::default();
         n.a.asleep = false;
+        // Whatever their hours (a night walker by day), they sit for it.
+        n.away = false;
         // Near: the face; farther: all of them.
         if self.dist < 2.0 {
             cam.pos.y = n.a.pos.y + n.a.dims.eye - 0.05;
@@ -567,6 +583,41 @@ impl Portrait {
         cam.pitch = 0.0;
         live.face_hold = Some((self.talk, self.blink));
         Ok(())
+    }
+
+    /// Where to stand the camera so the character is out in the open: the
+    /// nearest spot round where they are with sky over it, dry ground, and
+    /// nothing solid between them and the camera, looking back toward where
+    /// they were (their home, their street) behind them.
+    fn open_spot(&self, live: &mut sim::Sim, id: i64) -> Option<(Vec3, f32)> {
+        use world::collide::{Capsule, Obstacles};
+        let c = live.cast.get(id)?.a.pos;
+        let t = live.snap.terrain.clone();
+        let dry = |p: Vec3| t.water(p.x, p.z) < t.height(p.x, p.z) + 0.05;
+        for ring in 0..20 {
+            let r = 3.0 + ring as f32 * 2.0;
+            for k in 0..16 {
+                let a = (k as f32 + 0.5 * (ring % 2) as f32) / 16.0 * std::f32::consts::TAU;
+                let s = c + Vec3::new(a.sin(), 0.0, a.cos()) * r;
+                let fwd = (c - s).with_y(0.0).normalize_or_zero();
+                let cam = s - fwd * self.dist;
+                let (s, cam) = (s.with_y(t.height(s.x, s.z)), cam.with_y(t.height(cam.x, cam.z)));
+                if !dry(s) || !dry(cam) || (s.y - cam.y).abs() > 1.0 || !live.open_sky(s + Vec3::Y) || !live.open_sky(cam + Vec3::Y) {
+                    continue;
+                }
+                let solids = live.solids_near((s + cam) * 0.5, self.dist * 0.5 + 3.0);
+                let obs = Obstacles { solids: &solids, bodies: &[] };
+                let body = Capsule::of(2.0, 0.45);
+                let clear = (0..=8).all(|i| {
+                    let p = cam.lerp(s, i as f32 / 8.0);
+                    obs.clear(p.x, p.z, t.height(p.x, p.z), body)
+                });
+                if clear {
+                    return Some((cam, fwd.x.atan2(fwd.z)));
+                }
+            }
+        }
+        None
     }
 }
 

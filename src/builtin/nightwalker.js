@@ -47,9 +47,10 @@ export function sdf(x, y, z, k) {
   let head = ellipsoid(q.x, q.y - hy, q.z - hz, 0.085, 0.1, 0.17);
   // A ridge of brow over the eyes, and sockets under it.
   head = smoothUnion(head, capsule(q.x, q.y - hy, q.z - hz, -0.055, 0.03, 0.115, 0.055, 0.03, 0.115, 0.016), 0.02);
-  head = smoothSubtract(head, ellipsoid(abs(q.x) - 0.042, q.y - hy - 0.0, q.z - hz - 0.14, 0.026, 0.014, 0.03), 0.006);
-  // Two slits of light deep in them, tipped in toward the middle.
-  const eyes = ellipsoid(abs(q.x) - 0.042, q.y - hy + 0.001 - (abs(q.x) - 0.042) * 0.35, q.z - hz - 0.122, 0.02, 0.006, 0.01);
+  head = smoothSubtract(head, ellipsoid(abs(q.x) - 0.042, q.y - hy - 0.0, q.z - hz - 0.14, 0.04, 0.022, 0.034), 0.006);
+  // Two slits of light in them, tipped in toward the middle, big enough
+  // to be seen across a field at night.
+  const eyes = ellipsoid(abs(q.x) - 0.042, q.y - hy + 0.001 - (abs(q.x) - 0.042) * 0.35, q.z - hz - 0.122, 0.036, 0.012, 0.016);
   // Knuckles of spine down the back.
   const knots = sphere(q.x, q.y - clamp(round(q.y * 14) / 14, 0.07, 0.65), q.z + 0.055 * w, 0.022 * w);
   // Arms hang from the shoulders, nearly to the ground.
@@ -98,7 +99,7 @@ export function color(x, y, z, k) {
   const ex = abs(q.x) - 0.042;
   const ey = q.y - hy + 0.001 - ex * 0.35;
   const ez = q.z - hz - 0.122;
-  if ((ex * ex) / 0.0006 + (ey * ey) / 0.00007 + (ez * ez) / 0.00025 < 1) {
+  if ((ex * ex) / 0.0016 + (ey * ey) / 0.0002 + (ez * ez) / 0.0004 < 1) {
     if (k.s10 > 0.5) {
       return rgb(8, 6, 6);
     }
