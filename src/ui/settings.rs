@@ -190,7 +190,7 @@ fn ai_who(ui: &mut Ui, s: &mut Screen, rows: &mut Rows, st: &mut Settings) -> bo
         changed |= ui.field(s, r, "Address", &mut st.base_url, "http://localhost:11434/v1", false, settings::env_provider());
     }
     let r = rows.next(ROW);
-    let hint = if st.provider == "other" { "if it needs one" } else { "sk-ant-… from console.anthropic.com" };
+    let hint = if st.provider == "other" { "if it needs one" } else { "sk-ant-… from platform.claude.com" };
     changed |= ui.field(s, r, "API key", &mut st.api_key, hint, true, settings::env_key(&st.provider));
     changed
 }

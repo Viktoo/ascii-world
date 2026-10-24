@@ -161,6 +161,17 @@ impl App {
         self.dirty = true;
     }
 
+    /// The settings' AI tab, where a key goes.
+    pub(super) fn open_ai_settings(&mut self) {
+        if self.menu.is_none() {
+            self.open_menu(false);
+        }
+        self.menu_page(Page::Settings);
+        if let Some(m) = self.menu.as_mut() {
+            m.settings.tab = crate::ui::settings::TABS.iter().position(|t| *t == "AI").unwrap_or(0);
+        }
+    }
+
     pub(super) fn menu_page(&mut self, p: Page) {
         if p == Page::Creations {
             self.open_creations();

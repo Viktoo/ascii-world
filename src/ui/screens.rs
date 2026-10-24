@@ -454,7 +454,8 @@ impl Menus {
         }
         for k in keys {
             match self.draft.key(k) {
-                Edit::Done(prompt) => go = Some(Go::Done(Choice::New(prompt, self.difficulty))),
+                Edit::Done(prompt) if self.settings.has_llm() => go = Some(Go::Done(Choice::New(prompt, self.difficulty))),
+                Edit::Done(_) => {}
                 Edit::Cancel => go = Some(Go::Back),
                 Edit::Stay => {}
             }
@@ -498,27 +499,37 @@ impl Menus {
             self.difficulty = (self.difficulty as i32 + d).clamp(0, levels.len() as i32 - 1) as usize;
         }
         rows.note(s, difficulty_words(self.difficulty));
-        rows.head(s, "AI");
+        // The models are chosen in Settings → AI; here only the key, if none yet.
         let changed = if self.settings.has_llm() {
-            page::models(ui, s, &mut rows, &mut self.settings)
+            rows.note(s, "Making a world costs about $4, and playing about $1 an hour.");
+            false
         } else if self.settings.provider != "other" {
-            // No key yet: room for it here (other providers are in Settings → AI).
+            rows.head(s, "Claude API key");
             let r = rows.next(ROW);
-            let k = ui.field(s, r, "Anthropic API key", &mut self.settings.api_key, "sk-ant-… from console.anthropic.com", true, false);
-            k | page::models(ui, s, &mut rows, &mut self.settings)
+            let k = ui.field(s, r, "Key", &mut self.settings.api_key, "sk-ant-…", true, false);
+            let r = rows.next(ROW);
+            if ui.button(s, R::new(r.x, r.y, 34.0f32.min(r.w), r.h), "Get a key at platform.claude.com", Kind::Normal) {
+                if let Err(e) = crate::share::open_url(KEYS_URL) {
+                    crate::log::error(format!("open the browser: {e:#}"));
+                }
+            }
+            rows.note(s, "A world is made by Claude, so it needs a key. Making one costs about $4, and playing about $1 an hour.");
+            k
         } else {
-            page::ai(ui, s, &mut rows, &mut self.settings)
+            rows.head(s, "AI");
+            let c = page::ai(ui, s, &mut rows, &mut self.settings);
+            if !self.settings.has_llm() {
+                rows.note(s, "A world is made by the AI, so it needs one set up.");
+            }
+            c
         };
         if changed {
             self.settings.save();
         }
-        if !self.settings.has_llm() {
-            rows.note(s, "Without a key the land is made, but no people or stories.");
-        }
         ui.clip = None;
         let b = R::new(p.x + p.w - 38.0, p.y + p.h - 2.9, 36.0, 2.1).cols(2, 0.8);
         let prompt: String = self.draft.text.iter().collect();
-        if ui.button_on(s, b[1], "Create world", Kind::Primary, !prompt.trim().is_empty()) {
+        if ui.button_on(s, b[1], "Create world", Kind::Primary, !prompt.trim().is_empty() && self.settings.has_llm()) {
             go = Some(Go::Done(Choice::New(prompt.trim().to_string(), self.difficulty)));
         }
         if ui.button(s, b[0], "Back", Kind::Quiet) || ui.back() {
@@ -745,7 +756,7 @@ impl Menus {
         s.labels.push(left(x, r.y + 2.3, "Welcome to Infinite Pocket", 2.0, ACCENT, Face::Title));
         let mut y = r.y + 4.4;
         y = para(s, x, y, cw, "Every world here is made from a few words you write: its land, its people, what they say and make. An AI does the making.", TEXT) + 0.5;
-        y = para(s, x, y, cw, "To begin, add an Anthropic API key. It stays on this computer, and you can set a spending limit in Settings. Without one you can still walk around Maple Cove; its people talk once there is a key.", DIM) + 0.8;
+        y = para(s, x, y, cw, "To begin, add a Claude API key. Making a new world costs about $4, and playing about $1 an hour. The key stays on this computer, and you can set a spending limit in Settings.", DIM) + 0.8;
         let worked = matches!(self.checked, Some(Ok(())));
         let mut go = None;
         // The key, and a button to paste it.
@@ -770,8 +781,8 @@ impl Menus {
         };
         s.labels.push(left(x, y + 0.5, &line, 0.95, color, Face::Body));
         let row = R::new(r.x + 2.0, r.y + r.h - 5.6, r.w - 4.0, 2.1).cols(2, 0.8);
-        if ui.button(s, row[0], "Get a key (opens the browser)", Kind::Normal) {
-            if let Err(e) = crate::share::open_url("https://console.anthropic.com/settings/keys") {
+        if ui.button(s, row[0], "Get a key at platform.claude.com", Kind::Normal) {
+            if let Err(e) = crate::share::open_url(KEYS_URL) {
                 crate::log::error(format!("open the browser: {e:#}"));
             }
         }
@@ -783,7 +794,7 @@ impl Menus {
             go = Some(Go::To(P::Settings));
         }
         let row = R::new(r.x + 2.0, r.y + r.h - 3.0, r.w - 4.0, 2.1).cols(2, 0.8);
-        if ui.button(s, row[0], "Skip for now", Kind::Quiet) || ui.back() {
+        if ui.button(s, row[0], "Just look around (no one talks)", Kind::Quiet) || ui.back() {
             self.settings.welcomed = true;
             self.settings.save();
             go = Some(Go::Back);
@@ -830,6 +841,9 @@ impl Menus {
         None
     }
 }
+
+/// Where Claude API keys are made.
+pub const KEYS_URL: &str = "https://platform.claude.com/settings/keys";
 
 fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })

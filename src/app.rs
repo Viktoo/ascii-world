@@ -415,7 +415,7 @@ impl App {
             None if app.is_guest() => {}
             None => {
                 app.llm_note = Some("no AI key: Esc → Settings → AI".into());
-                app.say(None, "No AI key yet: the land is here, but its stories and people are not. Add one in Settings → AI.", DIM);
+                app.say(None, "No AI key yet: the land is here, but its people don't talk. Add one in Esc → Settings → AI.", DIM);
             }
         }
         if app.render.cpu_fallback {
@@ -671,7 +671,8 @@ impl App {
                         return;
                     }
                     if !self.brain.has_llm && !self.is_guest() {
-                        self.say(None, &format!("{name} looks at you, but words need an LLM key."), DIM);
+                        self.say(None, &format!("{name} looks at you, but words need a Claude API key. Add one here, then open this world again."), DIM);
+                        self.open_ai_settings();
                         return;
                     }
                     self.set_mode(Mode::Talk(id));
