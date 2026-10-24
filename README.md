@@ -49,21 +49,23 @@ Host a world and your friends join it, on the same network or over the internet 
 
 ## Build worlds with a coding agent
 
-Everything in the game is code the AI can read and write, and the game can check its own work. `pocket` takes screenshots, records clips, describes what's in view, and runs a world headless, so a coding agent (Claude Code, Codex, Cursor…) can build a place, look at it, and fix it:
-
-```bash
-pocket snapshot my.pocket --at 0,0,90 --time 17       # a view from anywhere
-pocket my.pocket --shot out.png --after 8             # a real frame of the game
-pocket describe my.pocket --at 0,0,90                 # what's in view, as JSON
-pocket sim my.pocket --hours 24                       # run a day and see what happened
-pocket record my.pocket --at 0,0,90 --to 20,0,90 --out clip --webp   # a clip of the world going on
-```
+Everything in the game is code the AI can read and write, and the game can check its own work. `pocket` takes screenshots, records clips, describes what's in view, and runs a world headless, so a coding agent (Claude Code, Codex, Cursor…) can build a place, look at it, and fix it.
 
 An agent can look at anyone it made, in front of their own home. Here are 36 people and creatures from 13 generated worlds (`pocket snapshot my.pocket --face ID --open`):
 
 ![36 portraits of people and creatures from 13 generated worlds, each in front of their own home](docs/clips/faces-sheet.jpg)
 
-The [full guide](docs/guide.md) has every command, setting and how it all works.
+## Docs
+
+- [Full guide](docs/guide.md): every command, setting and how it all works
+- [Playing together](docs/multiplayer.md)
+- [Species, bodies and lives](docs/species.md)
+- [Bodies, things and tools](docs/physics.md)
+- [The land](docs/terrain.md), [ways, water and hollows](docs/ways.md), [under the ground and up off it](docs/levels.md)
+- [Weather, clouds and sunsets](docs/weather.md)
+- [Sound](docs/sound.md), [voices and speaking to talk](docs/voices.md)
+- [Releases](docs/releases.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Build from source
 
