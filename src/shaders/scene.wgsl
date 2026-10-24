@@ -338,7 +338,7 @@ fn soft_shadow(ro: vec3f, rd: vec3f) -> f32 {
     // face: there a heightmap cell spans the wall and would put the start
     // of the ray inside it (black blots along the foot of every cliff).
     let m = map_ray(p, t, SHADOW_LOD, 1.0);
-    res = min(res, 10.0 * m.z / t);
+    res = min(res, 40.0 * m.z / t);
     if (res < 0.02) { return 0.0; }
     t = t + clamp(m.x, 0.08 + 0.04 * t, 3.0);
     if (t > tmax) { break; }

@@ -67,7 +67,7 @@ const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
   runs unseen for a while, presses the keys a second before the end, and saves the window as a PNG.
 
   pocket snapshot FILE --at x,z,yawDeg [--size 120x40] [--ascii|--blocks] [--mono] [--time HOUR] [--weather NAME] [--pitch DEG] [--hands POSE]
-                       [--lift M] [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
+                       [--lift M] [--phase ID=RAD,…] [--face [ID] [--dist M] [--turn DEG] [--look name=v,…] [--talk 0-1] [--blink 0-1] [--clock S]]  (a portrait of a character)
   pocket describe FILE --at x,z,yawDeg [--size 120x40]   JSON of what is visible
   pocket bench FILE [--distance 2000] [--size 120x40]
   pocket gpubench FILE --at x,z,yawDeg [--px 640x360] [--breakdown]   GPU time for one view, by part
@@ -566,9 +566,13 @@ impl Portrait {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_once(l: &Loaded, mut cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>, hands: Option<&str>, face: Option<&Portrait>) -> Result<render::Frame> {
+fn render_once(l: &Loaded, mut cam: render::Camera, w: u32, h: u32, pixel_aspect: f32, t_game: f64, weather: Option<&str>, hands: Option<&str>, face: Option<&Portrait>, strides: &[(i64, f32)]) -> Result<render::Frame> {
     let snap = &l.snap;
     let mut live = sim::Sim::new(l.db.clone(), snap.clone(), cam.pos, cam.yaw, t_game, 1);
+    // Caught mid-stride: a walk phase (radians) for each character asked.
+    for (id, phase) in strides {
+        live.cast.get_mut(*id).with_context(|| format!("no character {id}"))?.a.phase = *phase;
+    }
     if let Some(p) = face {
         p.stage(&mut live, &mut cam)?;
         if let Some(c) = p.clock {
@@ -655,7 +659,12 @@ fn snapshot(args: &[String]) -> Result<()> {
         (false, false) => (w as u32 * 2, h as u32 * 2, 0.5),
     };
     let face = Portrait::from_args(args)?;
-    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref(), flag(args, "--hands").as_deref(), face.as_ref())?;
+    let mut strides = Vec::new();
+    for kv in flag(args, "--phase").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        let (id, p) = kv.split_once('=').context("--phase expects ID=radians,…")?;
+        strides.push((id.trim().parse::<i64>().context("--phase id")?, p.trim().parse::<f32>().context("--phase radians")?));
+    }
+    let f = render_once(&l, cam, pw, ph, pa, t_game, flag(args, "--weather").as_deref(), flag(args, "--hands").as_deref(), face.as_ref(), &strides)?;
     if let Some(png) = png_out {
         let s = if ascii { 4u32 } else { 2 };
         let mut rgb = Vec::with_capacity((f.width * s * f.height * s * 3) as usize);
