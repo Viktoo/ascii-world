@@ -7,13 +7,19 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, channel};
 
 /// Where releases are published.
-pub const REPO: &str = "Viktoo/ascii-world";
+pub const REPO: &str = "Viktoo/infinite-pocket";
 
 /// A release newer than this one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Newer {
     pub version: String,
     pub url: String,
+}
+
+/// Installed with Homebrew (it lives in a Cellar): it updates with
+/// `brew upgrade pocket`, not from the release page.
+pub fn from_brew() -> bool {
+    std::env::current_exe().and_then(|p| p.canonicalize()).is_ok_and(|p| p.components().any(|c| c.as_os_str() == "Cellar"))
 }
 
 static ASKED: OnceLock<parking_lot::Mutex<Receiver<Option<Newer>>>> = OnceLock::new();

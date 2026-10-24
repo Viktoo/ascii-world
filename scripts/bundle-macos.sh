@@ -1,6 +1,9 @@
 #!/bin/sh
 # Bundle the release build as "Infinite Pocket.app", zipped for a GitHub
-# release: dist/Infinite-Pocket-<version>-macos-<arch>.zip.
+# release: dist/Infinite-Pocket-<version>-macos-<arch>.zip; and the bare
+# binary: dist/pocket-<version>-macos-<arch>.tar.gz, and as a Homebrew bottle
+# (poured as is, with no check of Apple's command line tools):
+# dist/pocket-<version>.all.bottle.tar.gz.
 # Run after `cargo build --release`.
 set -eu
 
@@ -34,3 +37,12 @@ EOF
 zip="dist/Infinite-Pocket-$version-macos-$arch.zip"
 ditto -c -k --keepParent "$app" "$zip"
 echo "$zip"
+tgz="dist/pocket-$version-macos-$arch.tar.gz"
+COPYFILE_DISABLE=1 tar -czf "$tgz" -C target/release pocket
+echo "$tgz"
+bottle="dist/pocket-$version.all.bottle.tar.gz"
+mkdir -p "dist/bottle/pocket/$version/bin"
+cp target/release/pocket "dist/bottle/pocket/$version/bin/pocket"
+COPYFILE_DISABLE=1 tar -czf "$bottle" -C dist/bottle pocket
+rm -rf dist/bottle
+echo "$bottle"

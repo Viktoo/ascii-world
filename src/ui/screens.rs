@@ -340,7 +340,8 @@ impl Menus {
         }
         s.labels.push(left(1.5, h - 1.0, &crate::db::build_name(), 0.8, FAINT, Face::Body));
         if let Some(n) = crate::net::update::newer() {
-            let t = format!("{} is out: {}", n.version, n.url.trim_start_matches("https://"));
+            let how = if crate::net::update::from_brew() { "brew upgrade pocket" } else { n.url.trim_start_matches("https://") };
+            let t = format!("{} is out: {how}", n.version);
             s.labels.push(Label { x: w - 1.5 - t.chars().count() as f32 * 0.8, y: h - 1.5, text: t, size: 0.8, color: ACCENT, face: Face::Body, center: false });
         }
         go

@@ -37,8 +37,12 @@ socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 wgpu = "30.0.1"
-whisper-rs = { version = "0.16", features = ["metal"] }
+whisper-rs = "0.16"
 winit = "0.30.13"
+
+# Whisper on the Apple GPU; elsewhere it runs on the CPU.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
 
 [features]
 # Long scenarios (a village day, a meadow fire fought, generations of

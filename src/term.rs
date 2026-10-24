@@ -13,7 +13,12 @@ pub fn truecolor() -> bool {
 /// Set by SIGTERM / SIGHUP / SIGINT; the main loop exits cleanly when it flips.
 pub fn signal_flag() -> std::sync::Arc<AtomicBool> {
     let f = std::sync::Arc::new(AtomicBool::new(false));
-    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP, signal_hook::consts::SIGINT, signal_hook::consts::SIGQUIT] {
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+        let _ = signal_hook::flag::register(sig, f.clone());
+    }
+    // Windows has neither.
+    #[cfg(unix)]
+    for sig in [signal_hook::consts::SIGHUP, signal_hook::consts::SIGQUIT] {
         let _ = signal_hook::flag::register(sig, f.clone());
     }
     f

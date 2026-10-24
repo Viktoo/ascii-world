@@ -1,6 +1,7 @@
 # A release: push a tag vX.Y.Z (matching Cargo.toml's version) and this
-# builds Infinite Pocket for Apple Silicon Macs and attaches it to a GitHub
-# release of that tag. See docs/releases.md.
+# builds Infinite Pocket for Apple Silicon Macs, attaches it to a GitHub
+# release of that tag, and points `brew install viktoo/tap/pocket` at it.
+# See docs/releases.md.
 name: release
 
 on:
@@ -44,10 +45,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          **Infinite Pocket for Macs with Apple Silicon.** Unzip, and move Infinite Pocket to Applications.
+          **Infinite Pocket for Macs with Apple Silicon.** Install it with Homebrew, then run `pocket`:
 
-          The app isn't signed yet, so the first time macOS says it can't check it: right-click it, choose Open, then Open again. After that it opens normally.
+          ```
+          brew install viktoo/tap/pocket
+          ```
+
+          Or unzip the app and move Infinite Pocket to Applications. It isn't signed yet, so the first time macOS won't open it: open System Settings → Privacy & Security and click Open Anyway.
 
           Playing together needs everyone on this same release.
           EOF
-          gh release create "$GITHUB_REF_NAME" dist/*.zip --title "Infinite Pocket ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/pocket-*.tar.gz --title "Infinite Pocket ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes
+      # Needs a TAP_TOKEN secret: a token that can push to Viktoo/homebrew-tap.
+      - name: Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "no TAP_TOKEN secret: the tap is not updated"
+            exit 0
+          fi
+          v=${GITHUB_REF_NAME#v}
+          sha=$(shasum -a 256 dist/pocket-$v-macos-arm64.tar.gz | cut -d' ' -f1)
+          bottle_sha=$(shasum -a 256 dist/pocket-$v.all.bottle.tar.gz | cut -d' ' -f1)
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/Viktoo/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sh scripts/homebrew-formula.sh "$v" "$sha" "$bottle_sha" > tap/Formula/pocket.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/pocket.rb
+          git commit -m "pocket $v"
+          git push
