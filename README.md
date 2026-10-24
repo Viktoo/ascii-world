@@ -6,9 +6,9 @@
 
 ![A slow flight down over Maple Cove's village green at golden hour: a gazebo, pumpkins and flower stalls, homes all round and the sea behind](docs/clips/hero-flyover.webp)
 
-Type what you want and it's there: `/a lighthouse on that hill`, `/a griffin that lets me ride it`, `/rub the stone on the lantern`. The AI writes it as code, on the spot, and it becomes part of the world for good.
+Type what you want and it's there: `/a hobbit hut`, `/a pegasus I can ride`, `/poke my eye out with this stick`. The AI writes it as code, on the spot, and it becomes part of the world.
 
-The people in it remember you. They have homes, needs, friends and plans. They gossip, carry logs together, play catch, and make things of their own. Dogs fetch, goats bolt from wolves, fire spreads through dry grass and stops at a green tree. At night something comes for you.
+The people in it remember you. They have homes, needs, friends and plans. They gossip, collaborate, play catch, and make things of their own. Dogs fetch, sheep bolt from wolves, fire spreads. At night something comes for you.
 
 ![Pine Hollow in the morning: a father plays catch with his son by the campfire while neighbours gather and a dog wanders past](docs/clips/campfire-catch.webp)
 
