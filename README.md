@@ -24,11 +24,9 @@ brew install viktoo/tap/pocket
 pocket
 ```
 
-You start in **Maple Cove**, an autumn village that's ready to play. To make new things and talk to people, add an Anthropic API key in **Settings → AI** (or any OpenAI-compatible endpoint). 
+Then add an Anthropic API key in **Settings → AI**. Get one at [platform.claude.com](https://platform.claude.com/settings/keys).
 
-![A whole day in Maple Cove from the hill above the village, noon to noon: sunset, lamps and lit windows, a starry night, morning](docs/clips/full-day.webp)
-
-Windows and Linux are coming.
+Windows is coming.
 
 ## Play
 

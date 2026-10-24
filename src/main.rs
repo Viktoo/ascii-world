@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "Infinite Pocket — an infinite 3D world, made from words
+const USAGE: &str = "Infinite Pocket — living worlds, written as code
 
   pocket                                 open the game (the title: continue, worlds, settings…)
   pocket FILE                            open the game straight into a world

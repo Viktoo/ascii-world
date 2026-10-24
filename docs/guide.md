@@ -155,6 +155,12 @@ the mic and your words fill the line as you speak. Nothing is sent until you pre
 - **Journal** (`1`): filters for all, talk, notable, life, made, and elsewhere (what
   changed beyond earshot, with where: `✧ … (Khar Mod Heights, 240 m north)`).
 
+### Day and night
+
+Days pass, and light, lamps and windows follow the hour.
+
+![A whole day in Maple Cove from the hill above the village, noon to noon: sunset, lamps and lit windows, a starry night, morning](clips/full-day.webp)
+
 ### Night and difficulty
 
 Every world has a difficulty. New worlds start on normal. On peaceful nothing comes;

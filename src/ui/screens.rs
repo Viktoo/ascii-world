@@ -279,8 +279,8 @@ impl Menus {
         // A soft shadow under the name and the line, so they read over any sky.
         s.title(cx + 0.12, ty + 0.1, "Infinite Pocket", 4.4, [20, 14, 8]);
         s.title(cx, ty, "Infinite Pocket", 4.4, ACCENT);
-        s.labels.push(Label { x: cx + 0.08, y: ty + 3.06, text: "worlds made from words".into(), size: 1.1, color: [10, 10, 16], face: Face::Bold, center: true });
-        s.labels.push(Label { x: cx, y: ty + 3.0, text: "worlds made from words".into(), size: 1.1, color: [240, 232, 250], face: Face::Bold, center: true });
+        s.labels.push(Label { x: cx + 0.08, y: ty + 3.06, text: "living worlds, written as code".into(), size: 1.1, color: [10, 10, 16], face: Face::Bold, center: true });
+        s.labels.push(Label { x: cx, y: ty + 3.0, text: "living worlds, written as code".into(), size: 1.1, color: [240, 232, 250], face: Face::Bold, center: true });
         let bw = 32.0f32.min(w - 6.0);
         let x = cx - bw * 0.5;
         let mut y = (ty + 5.5).max(h * 0.38);
@@ -755,7 +755,7 @@ impl Menus {
         let cw = r.w - 5.0;
         s.labels.push(left(x, r.y + 2.3, "Welcome to Infinite Pocket", 2.0, ACCENT, Face::Title));
         let mut y = r.y + 4.4;
-        y = para(s, x, y, cw, "Every world here is made from a few words you write: its land, its people, what they say and make. An AI does the making.", TEXT) + 0.5;
+        y = para(s, x, y, cw, "Every world here is made from a few words you write: its land, its people, what they say and make. An AI writes it all as code.", TEXT) + 0.5;
         y = para(s, x, y, cw, "To begin, add a Claude API key. Making a new world costs about $4, and playing about $1 an hour. The key stays on this computer, and you can set a spending limit in Settings.", DIM) + 0.8;
         let worked = matches!(self.checked, Some(Ok(())));
         let mut go = None;
