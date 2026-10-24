@@ -1,4 +1,4 @@
-![Infinite Pocket: 3D letters in an autumn meadow, an orchardist with a basket of apples beside them and a white cat walking past](logo/infinite-pocket-wide.jpg)
+![Infinite Pocket: 3D letters in an autumn meadow, an orchardist with a basket of apples beside them and a white cat walking past](logo/infinite-pocket-banner.jpg)
 
 # Infinite Pocket
 

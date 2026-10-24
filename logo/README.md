@@ -1,6 +1,7 @@
 # The Infinite Pocket logo
 
-`infinite-pocket-wide.jpg` (3840×2160) and `infinite-pocket-square.png`
+`infinite-pocket-wide.jpg` (3840×2160), `infinite-pocket-banner.jpg` (its
+middle half, 3840×1080, the README's header) and `infinite-pocket-square.png`
 (2048×2048) are one in-game render, with nothing painted on afterwards:
 "INFINITE" over "POCKET" in solid 3D letters in a meadow of Maple Cove
 (`worlds/starter`) at 16:54. Owen Fairbanks, the orchardist, stands beside
