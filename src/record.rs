@@ -54,12 +54,15 @@ pub struct Plan {
     pub width: u32,
     pub height: u32,
     pub path: Move,
+    /// Frames rendered past the end and faded into the start, so the clip
+    /// loops without a jump (clouds and people don't come back to where they began).
+    pub fade: u32,
 }
 
 impl Plan {
     /// Where the camera is at frame `i` of the clip (smoothed in and out).
     fn camera(&self, sim: &Sim, i: u32, last: Option<Camera>) -> Result<Camera> {
-        let k = if self.frames > 1 { i as f32 / (self.frames - 1) as f32 } else { 0.0 };
+        let k = if self.frames > 1 { (i as f32 / (self.frames - 1) as f32).min(1.0) } else { 0.0 };
         let ease = k * k * (3.0 - 2.0 * k);
         Ok(match &self.path {
             Move::Still(p) => p.camera(&sim.snap),
@@ -112,7 +115,7 @@ impl Plan {
             }
             None => (800, 450),
         };
-        Ok(Plan { frames, fps, speed: num("--speed")?.unwrap_or(1.0).max(0.0), hour: flag(args, "--time").map(|h| h.parse::<f64>()).transpose().context("--time takes an hour")?, width, height, path })
+        Ok(Plan { frames, fps, speed: num("--speed")?.unwrap_or(1.0).max(0.0), hour: flag(args, "--time").map(|h| h.parse::<f64>()).transpose().context("--time takes an hour")?, width, height, path, fade: flag(args, "--loop").map(|v| v.parse::<u32>()).transpose().context("--loop takes a count of frames")?.unwrap_or(0).min(frames) })
     }
 }
 
@@ -135,7 +138,7 @@ pub fn cli(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub const USAGE: &str = "usage: pocket record FILE --at x,z,yawDeg --out DIR [--lift M] [--pitch DEG] [--to x,z,yawDeg [--to-lift M] [--to-pitch DEG]] [--follow ID [--dist M]] [--seconds S | --frames N] [--fps 15] [--speed 1] [--time HOUR] [--size 800x450] [--mp4] [--webp] [--gif] [--frames-only]";
+pub const USAGE: &str = "usage: pocket record FILE --at x,z,yawDeg --out DIR [--lift M] [--pitch DEG] [--to x,z,yawDeg [--to-lift M] [--to-pitch DEG]] [--follow ID [--dist M]] [--seconds S | --frames N] [--fps 15] [--speed 1] [--time HOUR] [--size 800x450] [--loop N] [--mp4] [--webp] [--gif] [--frames-only]";
 
 /// Run the world and save each frame as `DIR/frame00000.png`; how many were saved.
 pub fn record(file: &Path, plan: &Plan, out: &Path) -> Result<u32> {
@@ -166,7 +169,8 @@ pub fn record(file: &Path, plan: &Plan, out: &Path) -> Result<u32> {
     let per_frame = plan.speed / plan.fps;
     let mut last = None;
     let result = (|| {
-        for i in 0..plan.frames {
+        let mut head = Vec::new();
+        for i in 0..plan.frames + plan.fade {
             let cam = plan.camera(&sim, i, last)?;
             last = Some(cam);
             // The world is lived in around the traveler, but people come to
@@ -179,6 +183,17 @@ pub fn record(file: &Path, plan: &Plan, out: &Path) -> Result<u32> {
             for px in &f.pixels {
                 rgb.extend_from_slice(&render::unpack(*px));
             }
+            if i < plan.fade {
+                head.push(rgb.clone());
+            }
+            // Past the end: the clip goes on from here into its start again.
+            let (i, rgb) = match i.checked_sub(plan.frames) {
+                Some(k) => {
+                    let w = (k + 1) as f32 / (plan.fade + 1) as f32;
+                    (k, rgb.iter().zip(&head[k as usize]).map(|(a, b)| (*a as f32 * (1.0 - w) + *b as f32 * w).round() as u8).collect())
+                }
+                None => (i, rgb),
+            };
             std::fs::write(out.join(format!("frame{i:05}.png")), crate::png::encode(f.width, f.height, &rgb))?;
             // On to the next frame's moment (the sim steps a quarter second at most).
             let mut left = per_frame;
